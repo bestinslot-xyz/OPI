@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -euxo pipefail
+
+BRANCH=$1
+CHAIN=$2
+DOMAIN=$3
+
+if [[ ! -d ord ]]; then
+  git clone https://github.com/ordinals/ord.git
+fi
+
+cd ord
+
+git fetch origin
+git checkout -B $BRANCH
+git reset --hard origin/$BRANCH
+
+COMMIT=$(git rev-parse --short HEAD)
+
+./deploy/setup $CHAIN $DOMAIN $BRANCH $COMMIT

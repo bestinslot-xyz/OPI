@@ -1,0 +1,235 @@
+:root {
+  --common: grey;
+  --dark-bg: #131516;
+  --dark-fg: #98a3ad;
+  --epic: darkorchid;
+  --legendary: gold;
+  --light-bg: #292c2f;
+  --light-fg: #a1adb8;
+  --link: #4169e1;
+  --mythic: #f2a900;
+  --rare: cornflowerblue;
+  --search-bg: #b7b7b7;
+  --search-border: #aaaaaa;
+  --search-fg: #000000;
+  --uncommon: forestgreen;
+}
+
+html {
+  background-color: var(--dark-bg);
+  color: var(--dark-fg);
+}
+
+main {
+  margin: 0 auto;
+  padding: 0 1rem 1rem;
+  max-width: 100%;
+  width: 50rem;
+}
+
+h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+iframe {
+  aspect-ratio: 1 / 1;
+  border: none;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+a:visited {
+  color: var(--link);
+}
+
+dt {
+  font-weight: bold;
+  margin-top: 0.5rem;
+}
+
+nav {
+  align-items: center;
+  background-color: var(--light-bg);
+  display: flex;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+nav > :first-child {
+  color: var(--light-fg);
+  font-weight: bold;
+}
+
+form {
+  display: flex;
+  flex-grow: 1;
+  gap: 1rem;
+  margin-left: auto;
+  width: 100%;
+}
+
+input[type=text] {
+  background-color: var(--search-bg);
+  border-radius: 3px;
+  border: 1px solid var(--search-border);
+  color: var(--search-fg);
+  flex-grow: 1;
+  min-width: 0;
+}
+
+dl {
+  overflow-wrap: break-word;
+}
+
+ol, ul {
+  overflow: hidden;
+}
+
+@media (max-width: 38rem) {
+  nav {
+    flex-direction: column;
+  }
+}
+
+.block-list {
+  font-family: monospace, monospace;
+  list-style-position: inside;
+  white-space: nowrap;
+}
+
+.block {
+  background-color: var(--light-bg);
+  border-radius: 0.5%;
+  margin: 3%;
+  padding: 0.5%;
+  text-align: center;
+}
+
+.block a {
+  color: var(--light-fg);
+  margin-top: 1%;
+}
+
+.block h2 {
+  margin: 1%;
+}
+
+.light-fg a {
+  color: var(--light-fg);
+}
+.center {
+  text-align: center;
+}
+
+.monospace {
+  font-family: monospace, monospace;
+}
+
+span.common, span.uncommon, span.rare, span.epic, span.legendary, span.mythic {
+  border-radius: 0.25rem;
+  color: white;
+  padding: 0.125rem 0.25rem;
+}
+
+span.common {
+  background-color: var(--common);
+}
+
+span.uncommon {
+  background-color: var(--uncommon);
+}
+
+span.rare {
+  background-color: var(--rare);
+}
+
+span.epic {
+  background-color: var(--epic);
+}
+
+span.legendary {
+  background-color: var(--legendary);
+}
+
+span.mythic {
+  background-color: var(--mythic);
+}
+
+a.common {
+  color: var(--common);
+}
+
+a.uncommon {
+  color: var(--uncommon);
+}
+
+a.rare {
+  color: var(--rare);
+}
+
+a.epic {
+  color: var(--epic);
+}
+
+a.legendary {
+  color: var(--legendary);
+}
+
+a.mythic {
+  color: var(--mythic);
+}
+
+.thumbnails {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.thumbnails > a {
+  border-radius: 2%;
+  margin: 1%;
+  overflow: hidden;
+  width: 23%;
+}
+
+.thumbnails iframe {
+  height: 100%;
+  pointer-events: none;
+  width: 100%;
+}
+
+.inscription {
+  display: flex;
+  justify-content: center;
+}
+
+.inscription > *:nth-child(1), .inscription > *:nth-child(3) {
+  color: var(--dark-bg);
+  flex: 1;
+  font-size: 200%;
+  text-decoration: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.inscription > a:nth-child(1):hover, .inscription > a:nth-child(3):hover {
+  color: var(--dark-fg);
+}
+
+.inscription > *:nth-child(2) {
+  flex: 0 75%;
+}
+
+.inscription > a > iframe {
+  width: 100%;
+}

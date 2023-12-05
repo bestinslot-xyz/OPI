@@ -1,0 +1,26 @@
+[package]
+name = "fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+members = ["."]
+
+[package.metadata]
+cargo-fuzz = true
+
+[profile.release]
+debug = 1
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+bitcoin = { version = "0.30.0", features = ["rand"] }
+libfuzzer-sys = "0.4"
+ord = { path = ".." }
+
+[[bin]]
+name = "transaction-builder"
+path = "fuzz_targets/transaction_builder.rs"
+test = false
+doc = false
