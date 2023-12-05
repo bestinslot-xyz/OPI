@@ -71,12 +71,12 @@ cd ord; cargo build --release;
 
 **Install node modules**
 ```bash
-cd helpers/main_index; npm install;
+cd modules/main_index; npm install;
 cd ../brc20_api; npm install;
 cd ../bitmap_api; npm install;
 ```
 *Optional:*
-Remove following from `helpers/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
+Remove following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
 ```js
 if (pubkey && pubkey.length) {
   if (!(0, ecc_lib_1.getEccLib)().isXOnlyPoint(pubkey))
@@ -98,25 +98,25 @@ Copy `.env_sample` in main_index, brc20_index, brc20_api, bitmap_index and bitma
 
 **Main Metaprotocol Indexer**
 ```bash
-cd helpers/main_index; node index.js;
+cd modules/main_index; node index.js;
 ```
 
 **BRC-20 Indexer**
 ```bash
-cd helpers/brc20_index; python3 brc20_index.py;
+cd modules/brc20_index; python3 brc20_index.py;
 ```
 
 **BRC-20 API**
 ```bash
-cd helpers/brc20_api; node api.js;
+cd modules/brc20_api; node api.js;
 ```
 
 **Bitmap Indexer**
 ```bash
-cd helpers/bitmap_index; python3 bitmap_index.py;
+cd modules/bitmap_index; python3 bitmap_index.py;
 ```
 
 **Bitmap API**
 ```bash
-cd helpers/bitmap_api; node api.js;
+cd modules/bitmap_api; node api.js;
 ```
