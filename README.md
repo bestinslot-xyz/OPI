@@ -4,16 +4,16 @@ Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** 
 OPI uses a fork of **ord 0.9.0** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind. The main indexer indexes all text/json inscriptions and modules can extend it with different meta-protocols.
 All modules in OPI have been built with **reorg protection**.
 
-Currently OPI has modules for **brc-20** and **bitmaps**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
+Currently OPI has modules for **BRC-20** and **Bitmap**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
 
-## Main Meta-protocol Indexer
+## Main Meta-Protocol Indexer
 
-**Meta-protocol indexer** sits in the core of OPI. It indexes **all json/text inscriptions** and their **first 2 transfers**.
-Transfer limit can be changed via `INDEX_TX_LIMIT` variable in ord fork. This limit has been added since there are some UTXO's with a lot of inscription content and their movement floods transfers tables. Also, base indexing of most protocols only needs first two transfers. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time, etc.
+**Meta-Protocol indexer** sits in the core of OPI. It indexes **all json/text inscriptions** and their **first 2 transfers**.
+Transfer limit can be changed via `INDEX_TX_LIMIT` variable in ord fork. This limit has been added since there are some UTXO's with a lot of inscription content and their movement floods transfers tables. Also, base indexing of most protocols only needs the first two transfers. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time.
 
 ## BRC-20 Indexer / API
 
-**BRC-20 Indexer** is the first module of OPI. It follows the official protocol rules hosted [here](https://layer1.gitbook.io/layer1-foundation/protocols/brc-20/indexing). BRC-20 Indexer saves all historical balance changes and all brc-20 events.
+**BRC-20 Indexer** is the first module of OPI. It follows the official protocol rules hosted [here](https://layer1.gitbook.io/layer1-foundation/protocols/brc-20/indexing). BRC-20 Indexer saves all historical balance changes and all BRC-20 events.
 
 In addition to indexing all events, it also calculates a block hash and cumulative hash of all events for easier db comparison. Here's the pseudocode for hash calculation:
 ```python
@@ -76,7 +76,7 @@ cd ../brc20_api; npm install;
 cd ../bitmap_api; npm install;
 ```
 *Optional:*
-Remove following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
+Remove the following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
 ```js
 if (pubkey && pubkey.length) {
   if (!(0, ecc_lib_1.getEccLib)().isXOnlyPoint(pubkey))
@@ -96,7 +96,7 @@ Copy `.env_sample` in main_index, brc20_index, brc20_api, bitmap_index and bitma
 
 # Run
 
-**Main Metaprotocol Indexer**
+**Main Meta-Protocol Indexer**
 ```bash
 cd modules/main_index; node index.js;
 ```
