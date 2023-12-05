@@ -76,7 +76,7 @@ app.get('/v1/brc20/activity_on_block', async (request, response) => {
     return
   }
 
-  let res1 = await db_pool.query('select event_type_name, event_type_id from event_types;')
+  let res1 = await db_pool.query('select event_type_name, event_type_id from brc20_event_types;')
   let event_type_id_to_name = {}
   res1.rows.forEach((row) => {
     event_type_id_to_name[row.event_type_id] = row.event_type_name
