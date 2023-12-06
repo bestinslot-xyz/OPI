@@ -92,6 +92,7 @@ pip3 install psycopg2-binary;
 ```
 
 **Setup .env files**
+
 Copy `.env_sample` in main_index, brc20_index, brc20_api, bitmap_index and bitmap_api as `.env` and fill necessary information.
 
 # Run
