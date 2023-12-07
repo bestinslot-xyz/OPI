@@ -27,7 +27,7 @@ var db_pool = new Pool({
   database: process.env.DB_DATABASE || 'postgres',
   password: process.env.DB_PASSWD,
   port: parseInt(process.env.DB_PORT || "5432"),
-  max: 200, // maximum number of clients!!
+  max: process.env.DB_MAX_CONNECTIONS || 200, // maximum number of clients!!
   ssl: process.env.DB_SSL == 'true' ? true : false
 })
 
