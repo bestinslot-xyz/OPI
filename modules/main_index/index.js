@@ -27,7 +27,7 @@ var db_pool = new Pool({
   database: process.env.DB_DATABASE || 'postgres',
   password: process.env.DB_PASSWD,
   port: parseInt(process.env.DB_PORT || "5432"),
-  max: process.env.DB_MAX_CONNECTIONS || 200, // maximum number of clients!!
+  max: process.env.DB_MAX_CONNECTIONS || 50, // maximum number of clients!!
   ssl: process.env.DB_SSL == 'true' ? true : false
 })
 
@@ -50,6 +50,7 @@ async function main_index() {
   await check_db()
 
   let first = true;
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     if (first) first = false
     else await delay(2)
@@ -201,7 +202,7 @@ async function main_index() {
     }
     if (!next_expected_start) {
       console.error("logs didn't end with block_end - did ord crash?")
-      all_tm = +(new Date()) - start_tm
+      let all_tm = +(new Date()) - start_tm
       ord_index_tm = Math.round(ord_index_tm)
       all_tm = Math.round(all_tm)
 
@@ -350,7 +351,7 @@ async function main_index() {
     ord_sql_tm = Math.round(ord_sql_tm)
     update_log_tm = Math.round(update_log_tm)
     
-    all_tm = +(new Date()) - start_tm
+    let all_tm = +(new Date()) - start_tm
     all_tm = Math.round(all_tm)
 
     await db_pool.query(`INSERT into ord_indexer_work_stats
@@ -388,23 +389,23 @@ function wallet_from_pkscript(pkscript) {
   try {
     let address = bitcoin.payments.p2tr({ output: Buffer.from(pkscript, 'hex') })
     return address.address
-  } catch {}
+  } catch { /* try others */ }
   try {
     let address = bitcoin.payments.p2wsh({ output: Buffer.from(pkscript, 'hex') })
     return address.address
-  } catch {}
+  } catch { /* try others */ }
   try {
     let address = bitcoin.payments.p2wpkh({ output: Buffer.from(pkscript, 'hex') })
     return address.address
-  } catch {}
+  } catch { /* try others */ }
   try {
     let address = bitcoin.payments.p2sh({ output: Buffer.from(pkscript, 'hex') })
     return address.address
-  } catch {}
+  } catch { /* try others */ }
   try {
     let address = bitcoin.payments.p2pkh({ output: Buffer.from(pkscript, 'hex') })
     return address.address
-  } catch {}
+  } catch { /* end */ }
 
   return null
 }
@@ -417,10 +418,10 @@ async function handle_reorg(block_height) {
   await db_pool.query(`DELETE from ord_content where block_height > $1;`, [last_correct_blockheight])
   await db_pool.query(`DELETE from block_hashes where block_height > $1;`, [last_correct_blockheight])
   
-  await db_client.query(`SELECT setval('ord_transfers_id_seq', max(id)) from ord_transfers;`)
-  await db_client.query(`SELECT setval('ord_number_to_id_id_seq', max(id)) from ord_number_to_id;`)
-  await db_client.query(`SELECT setval('ord_content_id_seq', max(id)) from ord_content;`)
-  await db_client.query(`SELECT setval('block_hashes_id_seq', max(id)) from block_hashes;`)
+  await db_pool.query(`SELECT setval('ord_transfers_id_seq', max(id)) from ord_transfers;`)
+  await db_pool.query(`SELECT setval('ord_number_to_id_id_seq', max(id)) from ord_number_to_id;`)
+  await db_pool.query(`SELECT setval('ord_content_id_seq', max(id)) from ord_content;`)
+  await db_pool.query(`SELECT setval('block_hashes_id_seq', max(id)) from block_hashes;`)
 }
 
 async function check_db() {

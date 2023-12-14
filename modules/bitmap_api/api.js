@@ -15,7 +15,7 @@ var db_pool = new Pool({
   database: process.env.DB_DATABASE || 'postgres',
   password: process.env.DB_PASSWD,
   port: parseInt(process.env.DB_PORT || "5432"),
-  max: process.env.DB_MAX_CONNECTIONS || 100, // maximum number of clients!!
+  max: process.env.DB_MAX_CONNECTIONS || 10, // maximum number of clients!!
   ssl: process.env.DB_SSL == 'true' ? true : false
 })
 const api_port = parseInt(process.env.API_PORT || "8001")
@@ -40,7 +40,7 @@ async function get_block_height_of_db() {
 app.get('/v1/bitmap/block_height', (request, response) => response.send(get_block_height_of_db()))
 
 app.get('/v1/bitmap/get_hash_of_all_activity', async (request, response) => {
-  let block_height = params.block_height
+  let block_height = request.params.block_height
 
   let current_block_height = await get_block_height_of_db()
   if (block_height > current_block_height) {

@@ -15,7 +15,7 @@ var db_pool = new Pool({
   database: process.env.DB_DATABASE || 'postgres',
   password: process.env.DB_PASSWD,
   port: parseInt(process.env.DB_PORT || "5432"),
-  max: process.env.DB_MAX_CONNECTIONS || 100, // maximum number of clients!!
+  max: process.env.DB_MAX_CONNECTIONS || 10, // maximum number of clients!!
   ssl: process.env.DB_SSL == 'true' ? true : false
 })
 const api_port = parseInt(process.env.API_PORT || "8000")
@@ -41,9 +41,9 @@ app.get('/v1/brc20/block_height', (request, response) => response.send(get_block
 
 // get a given ticker balance of a given pkscript at the start of a given block height
 app.get('/v1/brc20/balance_on_block', async (request, response) => {
-  let block_height = params.block_height
-  let pkscript = params.pkscript
-  let tick = params.ticker.toLowerCase()
+  let block_height = request.params.block_height
+  let pkscript = request.params.pkscript
+  let tick = request.params.ticker.toLowerCase()
 
   let current_block_height = await get_block_height_of_db()
   if (block_height > current_block_height + 1) {
@@ -68,7 +68,7 @@ app.get('/v1/brc20/balance_on_block', async (request, response) => {
 
 // get all brc20 activity of a given block height
 app.get('/v1/brc20/activity_on_block', async (request, response) => {
-  let block_height = params.block_height
+  let block_height = request.params.block_height
 
   let current_block_height = await get_block_height_of_db()
   if (block_height > current_block_height) {
@@ -94,7 +94,7 @@ app.get('/v1/brc20/activity_on_block', async (request, response) => {
     let inscription_id = row.inscription_id
     event.event_type = event_type
     event.inscription_id = inscription_id
-    result.push(event_obj)
+    result.push(event)
   }
   response.send({ error: null, result: result })
 });
@@ -129,7 +129,7 @@ app.get('/v1/brc20/get_current_balance_of_wallet', async (request, response) => 
 });
 
 app.get('/v1/brc20/get_hash_of_all_activity', async (request, response) => {
-  let block_height = params.block_height
+  let block_height = request.params.block_height
 
   let current_block_height = await get_block_height_of_db()
   if (block_height > current_block_height) {
