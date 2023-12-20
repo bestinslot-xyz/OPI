@@ -507,7 +507,7 @@ def check_for_reorg():
   if cur.rowcount == 0: return None ## nothing indexed yet
   last_block = cur.fetchone()
 
-  cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (last_block[0],))
+  cur_metaprotocol.execute('select block_height, block_hash from brc20_block_hashes where block_height = %s;', (last_block[0],))
   last_block_ord = cur_metaprotocol.fetchone()
   if last_block_ord[1] == last_block[1]: return None ## last block hashes are the same, no reorg
 
@@ -515,7 +515,7 @@ def check_for_reorg():
   cur.execute('select block_height, block_hash from brc20_block_hashes order by block_height desc limit 10;')
   hashes = cur.fetchall() ## get last 10 hashes
   for h in hashes:
-    cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (h[0],))
+    cur_metaprotocol.execute('select block_height, block_hash from brc20_block_hashes where block_height = %s;', (h[0],))
     block = cur_metaprotocol.fetchone()
     if block[1] == h[1]: ## found reorg height by a matching hash
       print("REORG HEIGHT FOUND: " + str(h[0]))
@@ -599,7 +599,7 @@ else:
 check_if_there_is_residue_from_last_run()
 while True:
   ## check if a new block is indexed
-  cur_metaprotocol.execute('''SELECT coalesce(max(block_height), -1) as max_height from block_hashes;''')
+  cur_metaprotocol.execute('''SELECT coalesce(max(block_height), -1) as max_height from brc20_block_hashes;''')
   max_block_of_metaprotocol_db = cur_metaprotocol.fetchone()[0]
   cur.execute('''select max(block_height) from brc20_block_hashes;''')
   row = cur.fetchone()
@@ -612,7 +612,7 @@ while True:
     continue
   
   print("Processing block %s" % current_block)
-  cur_metaprotocol.execute('select block_hash from block_hashes where block_height = %s;', (current_block,))
+  cur_metaprotocol.execute('select block_hash from brc20_block_hashes where block_height = %s;', (current_block,))
   current_block_hash = cur_metaprotocol.fetchone()[0]
   reorg_height = check_for_reorg()
   if reorg_height is not None:
