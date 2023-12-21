@@ -12,7 +12,9 @@ ticks = {}
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-INDEXER_VERSION = "bis-brc20-open-source v0.1.0"
+CAN_BE_FIXED_INDEXER_VERSIONS = [ "bis-brc20-open-source v0.1.0" ]
+INDEXER_VERSION = "bis-brc20-open-source v0.1.1"
+DB_VERSION = 1
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -122,6 +124,7 @@ def fix_numstr_decimals(num_str, decimals):
     num_str = num_str[:-18] + '.' + num_str[-18:]
     if decimals < 18:
       num_str = num_str[:-18+decimals]
+  if num_str[-1] == '.': num_str = num_str[:-1] ## remove trailing dot
   return num_str
 
 def get_event_str(event, event_type, inscription_id):
@@ -373,6 +376,7 @@ def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, amount, u
 
 def update_event_hashes(block_height):
   global block_events_str
+  if block_events_str[-1] == EVENT_SEPARATOR: block_events_str = block_events_str[:-1] ## remove last separator
   block_event_hash = get_sha256_hash(block_events_str)
   cumulative_event_hash = None
   cur.execute('''select cumulative_event_hash from brc20_cumulative_event_hashes where block_height = %s;''', (block_height - 1,))
@@ -588,13 +592,57 @@ event_types = {}
 for row in cur.fetchall():
   event_types[row[0]] = row[1]
 
+event_types_rev = {}
+for key in event_types:
+  event_types_rev[event_types[key]] = key
+
+
+def reindex_cumulative_hashes():
+  global event_types_rev, ticks
+  cur.execute('''delete from brc20_cumulative_event_hashes;''')
+  cur.execute('''select min(block_height), max(block_height) from brc20_block_hashes;''')
+  row = cur.fetchone()
+  min_block = row[0]
+  max_block = row[1]
+
+  sttm = time.time()
+  cur.execute('''select tick, remaining_supply, limit_per_mint, decimals from brc20_tickers;''')
+  ticks_ = cur.fetchall()
+  ticks = {}
+  for t in ticks_:
+    ticks[t[0]] = [t[1], t[2], t[3]]
+  print("Ticks refreshed in " + str(time.time() - sttm) + " seconds")
+
+  print("Reindexing cumulative hashes from " + str(min_block) + " to " + str(max_block))
+  for block_height in range(min_block, max_block + 1):
+    print("Reindexing block " + str(block_height))
+    block_events_str = ""
+    cur.execute('''select event, event_type, inscription_id from brc20_events where block_height = %s order by id asc;''', (block_height,))
+    rows = cur.fetchall()
+    for row in rows:
+      event = row[0]
+      event_type = event_types_rev[row[1]]
+      inscription_id = row[2]
+      block_events_str += get_event_str(event, event_type, inscription_id) + EVENT_SEPARATOR
+    update_event_hashes(block_height)
+
 cur.execute('select indexer_version from brc20_indexer_version;')
 if cur.rowcount == 0:
-  cur.execute('insert into brc20_indexer_version (indexer_version) values (%s);', (INDEXER_VERSION,))
+  cur.execute('insert into brc20_indexer_version (indexer_version, db_version) values (%s, %s);', (INDEXER_VERSION, DB_VERSION,))
 else:
-  if cur.fetchone()[0] != INDEXER_VERSION:
+  db_indexer_version = cur.fetchone()[0]
+  if db_indexer_version != INDEXER_VERSION:
     print("Indexer version mismatch!!")
-    exit(1)
+    if db_indexer_version not in CAN_BE_FIXED_INDEXER_VERSIONS:
+      print("This version (" + db_indexer_version + ") cannot be fixed, please reset tables and reindex.")
+      exit(1)
+    else:
+      print("This version (" + db_indexer_version + ") can be fixed, fixing in 5 secs...")
+      time.sleep(5)
+      reindex_cumulative_hashes()
+      cur.execute('alter table brc20_indexer_version add column if not exists db_version int4;') ## next versions will use DB_VERSION for DB check
+      cur.execute('update brc20_indexer_version set indexer_version = %s, db_version = %s;', (INDEXER_VERSION, DB_VERSION,))
+      print("Fixed.")
 
 check_if_there_is_residue_from_last_run()
 while True:

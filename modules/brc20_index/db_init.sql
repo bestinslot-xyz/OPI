@@ -119,5 +119,6 @@ INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('t
 CREATE TABLE public.brc20_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
+	db_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
