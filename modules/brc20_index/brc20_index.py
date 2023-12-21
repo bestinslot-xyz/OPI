@@ -713,7 +713,8 @@ while True:
     continue
   try:
     index_block(current_block, current_block_hash)
-    report_hashes(current_block)
+    if max_block_of_metaprotocol_db - current_block < 10: ## do not report if there are more than 10 blocks to index
+      report_hashes(current_block)
   except:
     traceback.print_exc()
     if in_commit: ## rollback commit if any
