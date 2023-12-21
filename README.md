@@ -20,7 +20,7 @@ In addition to indexing all events, it also calculates a block hash and cumulati
 ## Calculation starts at block 767430 which is the first inscription block
 
 EVENT_SEPARATOR = '|'
-## max_supply, limit_per_mint, amount decimal count is the same as ticker's decimals
+## max_supply, limit_per_mint, amount decimal count is the same as ticker's decimals (no trailing dot if decimals is 0)
 ## tickers are lowercase
 for event in block_events:
   if event is 'deploy-inscribe':
@@ -33,6 +33,7 @@ for event in block_events:
     ## if sent as fee, sent_pkscript is empty
     block_str += 'transfer-transfer;<inscr_id>;<source_pkscript>;<sent_pkscript>;<ticker>;<amount>' + EVENT_SEPARATOR
 
+if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
 block_hash = sha256_hex(block_str)
 ## for first block last_cumulative_hash is empty
 cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
