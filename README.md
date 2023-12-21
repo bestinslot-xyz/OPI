@@ -39,6 +39,8 @@ block_hash = sha256_hex(block_str)
 cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 ```
 
+There is an optional block event hash reporting system pointed at https://api.opi.network/report_block. If you want to exclude your node from this, just change `REPORT_TO_INDEXER` variable in `brc20_index/.env`.
+
 **BRC-20 API** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances.
 
 ## Bitmap Indexer / API

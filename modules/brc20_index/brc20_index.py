@@ -1,7 +1,7 @@
 # pip install python-dotenv
 # pip install psycopg2-binary
 
-import os, sys
+import os, sys, requests
 from dotenv import load_dotenv
 import traceback, time, codecs, json
 import psycopg2
@@ -36,6 +36,10 @@ db_metaprotocol_port = int(os.getenv("DB_METAPROTOCOL_PORT") or "5432")
 db_metaprotocol_database = os.getenv("DB_METAPROTOCOL_DATABASE") or "postgres"
 db_metaprotocol_password = os.getenv("DB_METAPROTOCOL_PASSWD")
 first_inscription_height = int(os.getenv("FIRST_INSCRIPTION_HEIGHT") or "767430")
+report_to_indexer = (os.getenv("REPORT_TO_INDEXER") or "true") == "true"
+report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
+report_retries = int(os.getenv("REPORT_RETRIES") or "10")
+report_name = os.getenv("REPORT_NAME") or "opi_brc20_indexer"
 
 ## connect to db
 conn = psycopg2.connect(
@@ -644,6 +648,45 @@ else:
       cur.execute('update brc20_indexer_version set indexer_version = %s, db_version = %s;', (INDEXER_VERSION, DB_VERSION,))
       print("Fixed.")
 
+def try_to_report_with_retries(to_send):
+  global report_url, report_retries
+  for _ in range(0, report_retries):
+    try:
+      r = requests.post(report_url, json=to_send)
+      if r.status_code == 200:
+        print("Reported hashes to metaprotocol indexer indexer.")
+        return
+      else:
+        print("Error while reporting hashes to metaprotocol indexer indexer, status code: " + str(r.status_code))
+    except:
+      print("Error while reporting hashes to metaprotocol indexer indexer, retrying...")
+    time.sleep(1)
+  print("Error while reporting hashes to metaprotocol indexer indexer, giving up.")
+
+def report_hashes(block_height):
+  global report_to_indexer
+  if not report_to_indexer:
+    print("Reporting to metaprotocol indexer is disabled.")
+    return
+  cur.execute('''select block_event_hash, cumulative_event_hash from brc20_cumulative_event_hashes where block_height = %s;''', (block_height,))
+  row = cur.fetchone()
+  block_event_hash = row[0]
+  cumulative_event_hash = row[1]
+  cur.execute('''select block_hash from brc20_block_hashes where block_height = %s;''', (block_height,))
+  block_hash = cur.fetchone()[0]
+  to_send = {
+    "name": report_name,
+    "type": "brc20",
+    "version": INDEXER_VERSION,
+    "db_version": DB_VERSION,
+    "block_height": block_height,
+    "block_hash": block_hash,
+    "block_event_hash": block_event_hash,
+    "cumulative_event_hash": cumulative_event_hash
+  }
+  print("Sending hashes to metaprotocol indexer indexer...")
+  try_to_report_with_retries(to_send)
+
 check_if_there_is_residue_from_last_run()
 while True:
   ## check if a new block is indexed
@@ -670,6 +713,7 @@ while True:
     continue
   try:
     index_block(current_block, current_block_hash)
+    report_hashes(current_block)
   except:
     traceback.print_exc()
     if in_commit: ## rollback commit if any
