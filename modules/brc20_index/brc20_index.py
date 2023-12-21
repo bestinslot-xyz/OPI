@@ -380,7 +380,7 @@ def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, amount, u
 
 def update_event_hashes(block_height):
   global block_events_str
-  if block_events_str[-1] == EVENT_SEPARATOR: block_events_str = block_events_str[:-1] ## remove last separator
+  if len(block_events_str) > 0 and block_events_str[-1] == EVENT_SEPARATOR: block_events_str = block_events_str[:-1] ## remove last separator
   block_event_hash = get_sha256_hash(block_events_str)
   cumulative_event_hash = None
   cur.execute('''select cumulative_event_hash from brc20_cumulative_event_hashes where block_height = %s;''', (block_height - 1,))
