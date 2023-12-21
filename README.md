@@ -124,3 +124,9 @@ cd modules/bitmap_index; python3 bitmap_index.py;
 ```bash
 cd modules/bitmap_api; node api.js;
 ```
+
+# Update
+
+- Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
+- Update the repo (`git pull`)
+- Re-run all indexers and apis
