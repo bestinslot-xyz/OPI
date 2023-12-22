@@ -83,7 +83,7 @@ async function main_index() {
 
     let current_directory = process.cwd()
     process.chdir(ord_folder);
-    let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + cookie_arg + (ord_end_block_height) + " index run"
+    let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " index run"
     try {
       execSync(ord_index_cmd,
         {stdio: 'inherit'})
