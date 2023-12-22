@@ -35,6 +35,7 @@ var chain_folder = process.env.BITCOIN_CHAIN_FOLDER || "~/.bitcoin/"
 var ord_binary = process.env.ORD_BINARY || "ord"
 var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
 var ord_datadir = process.env.ORD_DATADIR || "."
+var cookie_file = process.env.COOKIE_FILE || ""
 const first_inscription_height = parseInt(process.env.FIRST_INSCRIPTION_HEIGHT || "767430")
 
 function delay(sec) {
@@ -78,9 +79,11 @@ async function main_index() {
       ord_end_block_height = ord_last_block_height + 1000
     }
 
+    let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""
+
     let current_directory = process.cwd()
     process.chdir(ord_folder);
-    let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + (ord_end_block_height) + " index run"
+    let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + cookie_arg + (ord_end_block_height) + " index run"
     try {
       execSync(ord_index_cmd,
         {stdio: 'inherit'})
