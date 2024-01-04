@@ -1,9 +1,3 @@
--- public.brc20_block_hashes definition
-
--- Drop table
-
--- DROP TABLE public.brc20_block_hashes;
-
 CREATE TABLE public.brc20_block_hashes (
 	id bigserial NOT NULL,
 	block_height int4 NOT NULL,
@@ -11,13 +5,6 @@ CREATE TABLE public.brc20_block_hashes (
 	CONSTRAINT brc20_block_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_block_hashes_block_height_idx ON public.brc20_block_hashes USING btree (block_height);
-
-
--- public.brc20_historic_balances definition
-
--- Drop table
-
--- DROP TABLE public.brc20_historic_balances;
 
 CREATE TABLE public.brc20_historic_balances (
 	id bigserial NOT NULL,
@@ -37,13 +24,6 @@ CREATE INDEX brc20_historic_balances_pkscript_tick_block_height_idx ON public.br
 CREATE INDEX brc20_historic_balances_tick_idx ON public.brc20_historic_balances USING btree (tick);
 CREATE INDEX brc20_historic_balances_wallet_idx ON public.brc20_historic_balances USING btree (wallet);
 
-
--- public.brc20_events definition
-
--- Drop table
-
--- DROP TABLE public.brc20_events;
-
 CREATE TABLE public.brc20_events (
 	id bigserial NOT NULL,
 	event_type int4 NOT NULL,
@@ -57,13 +37,6 @@ CREATE INDEX brc20_events_block_height_idx ON public.brc20_events USING btree (b
 CREATE INDEX brc20_events_event_type_idx ON public.brc20_events USING btree (event_type);
 CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree (inscription_id);
 
-
--- public.brc20_tickers definition
-
--- Drop table
-
--- DROP TABLE public.brc20_tickers;
-
 CREATE TABLE public.brc20_tickers (
 	id bigserial NOT NULL,
 	tick varchar(4) NOT NULL,
@@ -76,13 +49,6 @@ CREATE TABLE public.brc20_tickers (
 );
 CREATE UNIQUE INDEX brc20_tickers_tick_idx ON public.brc20_tickers USING btree (tick);
 
-
--- public.brc20_cumulative_event_hashes definition
-
--- Drop table
-
--- DROP TABLE public.brc20_cumulative_event_hashes;
-
 CREATE TABLE public.brc20_cumulative_event_hashes (
 	id bigserial NOT NULL,
 	block_height int4 NOT NULL,
@@ -91,13 +57,6 @@ CREATE TABLE public.brc20_cumulative_event_hashes (
 	CONSTRAINT brc20_cumulative_event_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_cumulative_event_hashes_block_height_idx ON public.brc20_cumulative_event_hashes USING btree (block_height);
-
-
--- public.brc20_event_types definition
-
--- Drop table
-
--- DROP TABLE public.brc20_event_types;
 
 CREATE TABLE public.brc20_event_types (
 	id bigserial NOT NULL,
@@ -110,15 +69,10 @@ INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('m
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('transfer-inscribe', 2);
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('transfer-transfer', 3);
 
--- public.brc20_indexer_version definition
-
--- Drop table
-
--- DROP TABLE public.brc20_indexer_version;
-
 CREATE TABLE public.brc20_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
 	db_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version) VALUES ('opi-brc20-open-source v0.2.0', 2);

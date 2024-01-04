@@ -11,7 +11,7 @@ import hashlib
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-INDEXER_VERSION = "bis-bitmap-open-source v0.1.0"
+INDEXER_VERSION = "opi-bitmap-open-source v0.2.0"
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -104,7 +104,8 @@ def index_block(block_height, current_block_hash):
                               FROM ord_content oc
                               LEFT JOIN ord_number_to_id onti on oc.inscription_id = onti.inscription_id
                               WHERE oc.block_height = %s AND oc.text_content is not null AND
-                                    oc.content_type LIKE '746578742f706c61696e%%'
+                                    oc.content_type LIKE '746578742f706c61696e%%' AND
+                                    onti.inscription_number >= 0
                               ORDER BY onti.inscription_number asc;''', (block_height,))
   inscrs = cur_metaprotocol.fetchall()
   if len(inscrs) == 0:
@@ -195,10 +196,12 @@ def check_if_there_is_residue_from_last_run():
 
 cur.execute('select indexer_version from bitmap_indexer_version;')
 if cur.rowcount == 0:
-  cur.execute('insert into bitmap_indexer_version (indexer_version) values (%s);', (INDEXER_VERSION,))
+  print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")
+  exit(1)
 else:
-  if cur.fetchone()[0] != INDEXER_VERSION:
-    print("Indexer version mismatch!!")
+  db_indexer_version = cur.fetchone()[0]
+  if db_indexer_version != INDEXER_VERSION:
+    print("This version (" + db_indexer_version + ") cannot be fixed, please run reset_init.py")
     exit(1)
 
 check_if_there_is_residue_from_last_run()

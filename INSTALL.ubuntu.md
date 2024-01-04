@@ -3,7 +3,8 @@
 ## Installing & Running bitcoind
 
 ```bash
-apt install snapd
+sudo apt update
+sudo apt install snapd
 snap install bitcoin-core
 
 ## if you want to use a mounted media as chain folder:
@@ -74,15 +75,6 @@ max_connections = 2000
 sudo systemctl restart postgresql
 ```
 
-6) **Now since the db is ready to use, we can start initialising tables.**
-
-```bash
-sudo -u postgres psql
-```
-If you want to use different databases for modules, you can create databases using `CREATE DATABASE <database-name>;`. After that, you can change databases using `\c <database-name>`. Using the same database for all modules will also work correctly.
-
-Now, initialise all tables by running db_init.sql files inside psql console. You can just copy & paste the contents of the files. Be aware of the current connected database and change it if necessary using `\c <database-name>`.
-
 
 ## Installing NodeJS
 
@@ -107,6 +99,7 @@ These steps are following the guide at [here](https://doc.rust-lang.org/cargo/ge
 
 ```bash
 curl https://sh.rustup.rs -sSf | sh
+source "$HOME/.cargo/env"
 ```
 
 To update cargo & rust:
@@ -149,6 +142,7 @@ python3 -m pip install psycopg2-binary;
 ## Build ord:
 
 ```bash
+sudo apt install build-essential;
 cd ord; cargo build --release;
 ```
 
@@ -163,10 +157,14 @@ Copy `.env_sample` in main_index, brc20_index, brc20_api, bitmap_index and bitma
 - `BITCOIN_CHAIN_FOLDER` is the datadir folder that is set when starting bitcoind.
 - `ORD_BINARY` `ORD_FOLDER` and `ORD_DATADIR` can stay the same if you do not change the folder structure after `git clone`.
 
+## Initialise databases
+
+After setting .env files, you can run `reset_init.py` in each indexer folder to initialise databases and set other necessary files.
+
 # Run
 
 Postgres will auto run on system start. \
-Bitcoind needs to be run with -txindex flag before running main indexer. \
+Bitcoind needs to be run with `-txindex=1` flag before running main indexer. \
 **Do not run ord binary directly. Main indexer will run ord periodically**
 
 **Main Meta-Protocol Indexer**
@@ -204,4 +202,5 @@ cd modules/bitmap_api; node api.js;
 
 - Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
 - Update the repo (`git pull`)
+- Recompile ord (`cd ord; cargo build --release;`)
 - Re-run all indexers and apis

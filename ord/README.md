@@ -32,7 +32,7 @@ Ordinals is open-source and community funded. The current lead maintainer of
 entirely funded by donations. If you can, please consider donating!
 
 The donation address is
-[bc1q8kt9pyd6r27k2840l8g5d7zshz3cg9v6rfda0m248lva3ve5072q3sxelt](https://mempool.space/address/bc1q8kt9pyd6r27k2840l8g5d7zshz3cg9v6rfda0m248lva3ve5072q3sxelt).
+[bc1qguzk63exy7h5uygg8m2tcenca094a8t464jfyvrmr0s6wkt74wls3zr5m3](https://mempool.space/address/bc1qguzk63exy7h5uygg8m2tcenca094a8t464jfyvrmr0s6wkt74wls3zr5m3).
 
 This address is 2 of 4 multisig wallet with keys held by
 [raphjaph](https://twitter.com/raphjaph),
@@ -113,6 +113,23 @@ cargo build --release
 Once built, the `ord` binary can be found at `./target/release/ord`.
 
 `ord` requires `rustc` version 1.67.0 or later. Run `rustc --version` to ensure you have this version. Run `rustup update` to get the latest stable release.
+
+### Homebrew
+
+`ord` is available in [Homebrew](https://brew.sh/):
+
+```
+brew install ord
+```
+
+### Debian Package
+
+To build a `.deb` package:
+
+```
+cargo install cargo-deb
+cargo deb
+```
 
 Contributing
 ------------
@@ -234,7 +251,6 @@ Release x.y.z
 - Bump version: x.y.z → x.y.z
 - Update changelog
 - Update dependencies
-- Update database schema version
 ```
 
 Translations
@@ -242,7 +258,7 @@ Translations
 
 To translate [the docs](https://docs.ordinals.com) we use this
 [mdBook i18n helper](https://github.com/google/mdbook-i18n-helpers).
-So read through their [usage guide](https://github.com/google/mdbook-i18n-helpers/blob/main/USAGE.md)
+So read through their [usage guide](https://github.com/google/mdbook-i18n-helpers/blob/main/i18n-helpers/USAGE.md)
 to see the structure that translations should follow.
 
 There are some other things to watch out for but feel free to just start a
@@ -255,7 +271,7 @@ To align your translated version of the Handbook with reference to commit
 commands to assist you. It is assumed that your local environment is already
 well-configured with [Python](https://www.python.org/),
 [Mdbook](https://github.com/rust-lang/mdBook),
-[mdBook i18n helper](https://github.com/rust-lang/mdbb) and that you've clone
+[mdBook i18n helper](https://github.com/google/mdbook-i18n-helpers) and that you've clone
 this repo.
 
 
