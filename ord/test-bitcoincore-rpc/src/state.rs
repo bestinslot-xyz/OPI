@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) struct State {
   pub(crate) blocks: BTreeMap<BlockHash, Block>,
+  pub(crate) change_addresses: Vec<Address>,
   pub(crate) descriptors: Vec<String>,
   pub(crate) fail_lock_unspent: bool,
   pub(crate) hashes: Vec<BlockHash>,
@@ -29,6 +30,7 @@ impl State {
 
     Self {
       blocks,
+      change_addresses: Vec::new(),
       descriptors: Vec::new(),
       fail_lock_unspent,
       hashes,
@@ -45,9 +47,13 @@ impl State {
     }
   }
 
+  pub(crate) fn clear(&mut self) {
+    *self = Self::new(self.network, self.version, self.fail_lock_unspent);
+  }
+
   pub(crate) fn push_block(&mut self, subsidy: u64) -> Block {
     let coinbase = Transaction {
-      version: 0,
+      version: 2,
       lock_time: LockTime::ZERO,
       input: vec![TxIn {
         previous_output: OutPoint::null(),
@@ -104,13 +110,15 @@ impl State {
       }
 
       for (vout, txout) in tx.output.iter().enumerate() {
-        self.utxos.insert(
-          OutPoint {
-            txid: tx.txid(),
-            vout: vout.try_into().unwrap(),
-          },
-          Amount::from_sat(txout.value),
-        );
+        if !txout.script_pubkey.is_op_return() {
+          self.utxos.insert(
+            OutPoint {
+              txid: tx.txid(),
+              vout: vout.try_into().unwrap(),
+            },
+            Amount::from_sat(txout.value),
+          );
+        }
       }
     }
 
@@ -142,14 +150,21 @@ impl State {
       });
     }
 
-    let value_per_output = (total_value - template.fee) / template.outputs as u64;
-    assert_eq!(
-      value_per_output * template.outputs as u64 + template.fee,
-      total_value
-    );
+    let value_per_output = if template.outputs > 0 {
+      (total_value - template.fee) / template.outputs as u64
+    } else {
+      0
+    };
 
-    let tx = Transaction {
-      version: 0,
+    if template.outputs > 0 {
+      assert_eq!(
+        value_per_output * template.outputs as u64 + template.fee,
+        total_value
+      );
+    }
+
+    let mut tx = Transaction {
+      version: 2,
       lock_time: LockTime::ZERO,
       input,
       output: (0..template.outputs)
@@ -163,6 +178,17 @@ impl State {
         })
         .collect(),
     };
+
+    if let Some(script_pubkey) = template.op_return {
+      tx.output.insert(
+        template.op_return_index.unwrap_or(tx.output.len()),
+        TxOut {
+          value: 0,
+          script_pubkey,
+        },
+      );
+    }
+
     self.mempool.push(tx.clone());
 
     tx.txid()

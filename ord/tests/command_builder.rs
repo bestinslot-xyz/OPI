@@ -33,6 +33,7 @@ pub(crate) struct CommandBuilder {
   expected_exit_code: i32,
   expected_stderr: Expected,
   expected_stdout: Expected,
+  rpc_server_cookie_file: Option<PathBuf>,
   rpc_server_url: Option<String>,
   stdin: Vec<u8>,
   tempdir: TempDir,
@@ -45,6 +46,7 @@ impl CommandBuilder {
       expected_exit_code: 0,
       expected_stderr: Expected::String(String::new()),
       expected_stdout: Expected::String(String::new()),
+      rpc_server_cookie_file: None,
       rpc_server_url: None,
       stdin: Vec::new(),
       tempdir: TempDir::new().unwrap(),
@@ -59,6 +61,7 @@ impl CommandBuilder {
   pub(crate) fn rpc_server(self, rpc_server: &test_bitcoincore_rpc::Handle) -> Self {
     Self {
       rpc_server_url: Some(rpc_server.url()),
+      rpc_server_cookie_file: Some(rpc_server.cookie_file()),
       ..self
     }
   }
@@ -103,13 +106,16 @@ impl CommandBuilder {
     let mut command = Command::new(executable_path("ord"));
 
     if let Some(rpc_server_url) = &self.rpc_server_url {
-      let cookiefile = self.tempdir.path().join("cookie");
-      fs::write(&cookiefile, "username:password").unwrap();
       command.args([
         "--rpc-url",
         rpc_server_url,
         "--cookie-file",
-        cookiefile.to_str().unwrap(),
+        self
+          .rpc_server_cookie_file
+          .as_ref()
+          .unwrap()
+          .to_str()
+          .unwrap(),
       ]);
     }
 
@@ -126,6 +132,7 @@ impl CommandBuilder {
     command
   }
 
+  #[track_caller]
   fn run(self) -> (TempDir, String) {
     let child = self.command().spawn().unwrap();
 
@@ -158,10 +165,12 @@ impl CommandBuilder {
     fs::read_to_string(tempdir.path().join(path)).unwrap()
   }
 
+  #[track_caller]
   pub(crate) fn run_and_extract_stdout(self) -> String {
     self.run().1
   }
 
+  #[track_caller]
   pub(crate) fn run_and_deserialize_output<T: DeserializeOwned>(self) -> T {
     let stdout = self.stdout_regex(".*").run_and_extract_stdout();
     serde_json::from_str(&stdout)

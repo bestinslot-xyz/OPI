@@ -1,6 +1,5 @@
 pub(crate) use {
   super::*,
-  crate::inscription::TransactionInscription,
   bitcoin::{
     blockdata::{opcodes, script, script::PushBytesBuf},
     ScriptBuf, Witness,
@@ -112,21 +111,24 @@ pub(crate) fn tx_out(value: u64, address: Address) -> TxOut {
   }
 }
 
-pub(crate) fn inscription(content_type: &str, body: impl AsRef<[u8]>) -> Inscription {
-  Inscription::new(Some(content_type.into()), Some(body.as_ref().into()))
+#[derive(Default, Debug)]
+pub(crate) struct InscriptionTemplate {
+  pub(crate) parent: Option<InscriptionId>,
+  pub(crate) pointer: Option<u64>,
 }
 
-pub(crate) fn transaction_inscription(
-  content_type: &str,
-  body: impl AsRef<[u8]>,
-  tx_in_index: u32,
-  tx_in_offset: u32,
-) -> TransactionInscription {
-  TransactionInscription {
-    inscription: inscription(content_type, body),
-    tx_in_index,
-    tx_in_offset,
+impl From<InscriptionTemplate> for Inscription {
+  fn from(template: InscriptionTemplate) -> Self {
+    Self {
+      parent: template.parent.map(|id| id.value()),
+      pointer: template.pointer.map(Inscription::pointer_value),
+      ..Default::default()
+    }
   }
+}
+
+pub(crate) fn inscription(content_type: &str, body: impl AsRef<[u8]>) -> Inscription {
+  Inscription::new(Some(content_type.into()), Some(body.as_ref().into()))
 }
 
 pub(crate) fn inscription_id(n: u32) -> InscriptionId {

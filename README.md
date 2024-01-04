@@ -1,7 +1,7 @@
 # OPI - Open Protocol Indexer
 
 Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** for **meta-protocols** on Bitcoin.
-OPI uses a fork of **ord 0.9.0** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind. The main indexer indexes all text/json inscriptions and modules can extend it with different meta-protocols.
+OPI uses a fork of **ord 0.14.0** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind. The main indexer indexes all text/json inscriptions and modules can extend it with different meta-protocols.
 All modules in OPI have been built with **reorg protection**.
 
 Currently OPI has modules for **BRC-20** and **Bitmap**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
@@ -69,7 +69,7 @@ cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 For detailed installation guides:
 - Ubuntu: [installation guide](INSTALL.ubuntu.md)
 
-OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database). Run init_db.sql for each module on their respective database.
+OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database). Run reset_init.py in each indexer module after setting .env files, they'll initialise the DBs.
 
 **Build ord:**
 ```bash
@@ -133,4 +133,5 @@ cd modules/bitmap_api; node api.js;
 
 - Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
 - Update the repo (`git pull`)
+- Recompile ord (`cd ord; cargo build --release;`)
 - Re-run all indexers and apis

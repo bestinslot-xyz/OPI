@@ -14,7 +14,7 @@ const readline = require('readline');
 
 bitcoin.initEccLib(ecc)
 
-console.log("VERSION V0.1.0")
+console.log("VERSION V0.2.0")
 
 // for self-signed cert of postgres
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
@@ -37,6 +37,10 @@ var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
 var ord_datadir = process.env.ORD_DATADIR || "."
 var cookie_file = process.env.COOKIE_FILE || ""
 const first_inscription_height = parseInt(process.env.FIRST_INSCRIPTION_HEIGHT || "767430")
+
+const DB_VERSION = 2
+const INDEXER_VERSION = 'OPI V0.2.0'
+const ORD_VERSION = '0.14.0'
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
@@ -83,10 +87,18 @@ async function main_index() {
 
     let current_directory = process.cwd()
     process.chdir(ord_folder);
+
+    let ord_version_cmd = ord_binary + " --version"
     let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " index run"
+    
     try {
-      execSync(ord_index_cmd,
-        {stdio: 'inherit'})
+      let version_string = execSync(ord_version_cmd).toString()
+      console.log("ord version: " + version_string)
+      if (!version_string.includes(ORD_VERSION)) {
+        console.error("ord version mismatch, please recompile ord via 'cargo build --release'.")
+        process.exit(1)
+      }
+      execSync(ord_index_cmd, {stdio: 'inherit'})
     }
     catch (err) {
       console.error("ERROR ON ORD!!!")
@@ -218,10 +230,10 @@ async function main_index() {
 
     let ord_sql_st_tm = +(new Date())
 
-    let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, block_height) values ($1, $2, $3);`
+    let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, cursed_for_brc20, block_height) values ($1, $2, $3, $4);`
     let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee) values ($1, $2, $3, $4, $5, $6, $7, $8);`
-    let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, content_type, block_height) values ($1, $2, $3, $4);`
-    let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, content_type, block_height) values ($1, $2, $3, $4);`
+    let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
+    let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     
     let ord_sql_query_count = 0
     let new_inscription_count = 0
@@ -267,7 +279,7 @@ async function main_index() {
       else if (parts[2] == "insert") {
         if (parts[3] == "number_to_id") {
           if (block_height > current_height) {
-            running_promises.push(execute_on_db(sql_query_insert_ord_number_to_id, [parseInt(parts[4]), parts[5], block_height]))
+            running_promises.push(execute_on_db(sql_query_insert_ord_number_to_id, [parseInt(parts[4]), parts[5], parts[6] == "1", block_height]))
             new_inscription_count += 1
             ord_sql_query_count += 1
           }
@@ -305,21 +317,21 @@ async function main_index() {
         }
         else if (parts[3] == "content") {
           if (block_height > current_height) {
-            // get string after 6th semicolon
-            let content = parts.slice(7).join(';')
+            // get string after 7th semicolon
+            let content = parts.slice(8).join(';')
             if (parts[5] == 'true') { // JSON
               if (!content.includes('\\u0000')) {
-                running_promises.push(execute_on_db(sql_query_insert_content, [parts[4], content, parts[6], block_height]))
+                running_promises.push(execute_on_db(sql_query_insert_content, [parts[4], content, parts[6], parts[7], block_height]))
                 ord_sql_query_count += 1
               } else {
-                running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, parts[6], block_height]))
+                running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, parts[6], parts[7], block_height]))
                 ord_sql_query_count += 1
                 save_error_log("--------------------------------")
                 save_error_log("Error parsing JSON: " + content)
                 save_error_log("On inscription: " + parts[4])
               }
             } else {
-              running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, parts[6], block_height]))
+              running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, parts[6], parts[7], block_height]))
               ord_sql_query_count += 1
             }
           }
@@ -429,6 +441,19 @@ async function handle_reorg(block_height) {
 
 async function check_db() {
   console.log("checking db")
+
+  try {
+    let db_version_q = await db_pool.query(`SELECT db_version from ord_indexer_version;`)
+    let db_version = db_version_q.rows[0].db_version
+    if (db_version != DB_VERSION) {
+      console.error("db_version mismatch, db needs to be recreated from scratch, please run reset_init.py")
+      process.exit(1)
+    }
+  } catch (err) {
+    console.error(err)
+    console.error("db_version not found, db needs to be recreated from scratch, please run reset_init.py")
+    process.exit(1)
+  }
 
   let current_height_q = await db_pool.query(`SELECT coalesce(max(block_height), -1) as max_height from block_hashes;`)
   let current_height = current_height_q.rows[0].max_height

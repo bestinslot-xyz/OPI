@@ -12,9 +12,9 @@ ticks = {}
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-CAN_BE_FIXED_INDEXER_VERSIONS = [ "bis-brc20-open-source v0.1.0" ]
-INDEXER_VERSION = "bis-brc20-open-source v0.1.1"
-DB_VERSION = 1
+CAN_BE_FIXED_INDEXER_VERSIONS = [  ]
+INDEXER_VERSION = "opi-brc20-open-source v0.2.0"
+DB_VERSION = 2
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -399,7 +399,9 @@ def index_block(block_height, current_block_hash):
   cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type
                               FROM ord_transfers ot
                               LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
+                              LEFT JOIN ord_number_to_id onti ON ot.inscription_id = onti.inscription_id
                               WHERE ot.block_height = %s 
+                                 AND onti.cursed_for_brc20 = false
                                  AND oc."content" is not null AND oc."content"->>'p'='brc-20'
                               ORDER BY ot.id asc;''', (block_height,))
   transfers = cur_metaprotocol.fetchall()
@@ -632,13 +634,14 @@ def reindex_cumulative_hashes():
 
 cur.execute('select indexer_version from brc20_indexer_version;')
 if cur.rowcount == 0:
-  cur.execute('insert into brc20_indexer_version (indexer_version, db_version) values (%s, %s);', (INDEXER_VERSION, DB_VERSION,))
+  print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")
+  exit(1)
 else:
   db_indexer_version = cur.fetchone()[0]
   if db_indexer_version != INDEXER_VERSION:
     print("Indexer version mismatch!!")
     if db_indexer_version not in CAN_BE_FIXED_INDEXER_VERSIONS:
-      print("This version (" + db_indexer_version + ") cannot be fixed, please reset tables and reindex.")
+      print("This version (" + db_indexer_version + ") cannot be fixed, please run reset_init.py")
       exit(1)
     else:
       print("This version (" + db_indexer_version + ") can be fixed, fixing in 5 secs...")

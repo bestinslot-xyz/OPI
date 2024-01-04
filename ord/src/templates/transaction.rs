@@ -2,28 +2,12 @@ use super::*;
 
 #[derive(Boilerplate)]
 pub(crate) struct TransactionHtml {
-  blockhash: Option<BlockHash>,
-  chain: Chain,
-  inscription: Option<InscriptionId>,
-  transaction: Transaction,
-  txid: Txid,
-}
-
-impl TransactionHtml {
-  pub(crate) fn new(
-    transaction: Transaction,
-    blockhash: Option<BlockHash>,
-    inscription: Option<InscriptionId>,
-    chain: Chain,
-  ) -> Self {
-    Self {
-      txid: transaction.txid(),
-      blockhash,
-      chain,
-      inscription,
-      transaction,
-    }
-  }
+  pub(crate) blockhash: Option<BlockHash>,
+  pub(crate) chain: Chain,
+  pub(crate) etching: Option<SpacedRune>,
+  pub(crate) inscription_count: u32,
+  pub(crate) transaction: Transaction,
+  pub(crate) txid: Txid,
 }
 
 impl PageContent for TransactionHtml {
@@ -34,15 +18,12 @@ impl PageContent for TransactionHtml {
 
 #[cfg(test)]
 mod tests {
-  use {
-    super::*,
-    bitcoin::{blockdata::script, locktime::absolute::LockTime, TxOut},
-  };
+  use {super::*, bitcoin::blockdata::script};
 
   #[test]
   fn html() {
     let transaction = Transaction {
-      version: 0,
+      version: 2,
       lock_time: LockTime::ZERO,
       input: vec![TxIn {
         sequence: Default::default(),
@@ -65,10 +46,19 @@ mod tests {
     let txid = transaction.txid();
 
     pretty_assert_eq!(
-      TransactionHtml::new(transaction, None, None, Chain::Mainnet).to_string(),
+      TransactionHtml {
+        blockhash: None,
+        chain: Chain::Mainnet,
+        etching: None,
+        inscription_count: 0,
+        txid: transaction.txid(),
+        transaction,
+      }.to_string(),
       format!(
         "
         <h1>Transaction <span class=monospace>{txid}</span></h1>
+        <dl>
+        </dl>
         <h2>1 Input</h2>
         <ul>
           <li><a class=monospace href=/output/0000000000000000000000000000000000000000000000000000000000000000:4294967295>0000000000000000000000000000000000000000000000000000000000000000:4294967295</a></li>
@@ -103,7 +93,7 @@ mod tests {
   #[test]
   fn with_blockhash() {
     let transaction = Transaction {
-      version: 0,
+      version: 2,
       lock_time: LockTime::ZERO,
       input: Vec::new(),
       output: vec![
@@ -119,7 +109,15 @@ mod tests {
     };
 
     assert_regex_match!(
-      TransactionHtml::new(transaction, Some(blockhash(0)), None, Chain::Mainnet),
+      TransactionHtml {
+        blockhash: Some(blockhash(0)),
+        chain: Chain::Mainnet,
+        etching: None,
+        inscription_count: 0,
+        txid: transaction.txid(),
+        transaction,
+      }
+      .to_string(),
       "
         <h1>Transaction <span class=monospace>[[:xdigit:]]{64}</span></h1>
         <dl>

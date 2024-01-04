@@ -1,6 +1,7 @@
-truncate table brc20_block_hashes restart identity;
-truncate table brc20_historic_balances restart identity;
-truncate table brc20_events restart identity;
-truncate table brc20_tickers restart identity;
-truncate table brc20_cumulative_event_hashes restart identity;
-truncate table brc20_indexer_version restart identity;
+drop table if exists brc20_block_hashes;
+drop table if exists brc20_historic_balances;
+drop table if exists brc20_events;
+drop table if exists brc20_event_types;
+drop table if exists brc20_tickers;
+drop table if exists brc20_cumulative_event_hashes;
+drop table if exists brc20_indexer_version;

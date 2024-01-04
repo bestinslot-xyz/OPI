@@ -1,9 +1,3 @@
--- public.ord_transfers definition
-
--- Drop table
-
--- DROP TABLE public.ord_transfers;
-
 CREATE TABLE public.ord_transfers (
 	id bigserial NOT NULL,
 	inscription_id text NOT NULL,
@@ -18,17 +12,11 @@ CREATE TABLE public.ord_transfers (
 CREATE INDEX ord_transfers_block_height_idx ON public.ord_transfers USING btree (block_height);
 CREATE INDEX ord_transfers_inscription_id_idx ON public.ord_transfers USING btree (inscription_id);
 
-
--- public.ord_number_to_id definition
-
--- Drop table
-
--- DROP TABLE public.ord_number_to_id;
-
 CREATE TABLE public.ord_number_to_id (
 	id bigserial NOT NULL,
 	inscription_number int8 NOT NULL,
 	inscription_id text NOT NULL,
+	cursed_for_brc20 bool NOT NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT ord_number_to_id_pk PRIMARY KEY (id)
 );
@@ -36,31 +24,18 @@ CREATE INDEX ord_number_to_id_block_height_idx ON public.ord_number_to_id USING 
 CREATE UNIQUE INDEX ord_number_to_id_inscription_id_idx ON public.ord_number_to_id USING btree (inscription_id);
 CREATE UNIQUE INDEX ord_number_to_id_inscription_number_idx ON public.ord_number_to_id USING btree (inscription_number);
 
-
--- public.ord_content definition
-
--- Drop table
-
--- DROP TABLE public.ord_content;
-
 CREATE TABLE public.ord_content (
 	id bigserial NOT NULL,
 	inscription_id text NOT NULL,
 	"content" jsonb NULL,
 	text_content text NULL,
 	content_type text NOT NULL,
+	metaprotocol text NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT ord_content_pk PRIMARY KEY (id)
 );
 CREATE INDEX ord_content_block_height_idx ON public.ord_content USING btree (block_height);
 CREATE UNIQUE INDEX ord_content_inscription_id_idx ON public.ord_content USING btree (inscription_id);
-
-
--- public.block_hashes definition
-
--- Drop table
-
--- DROP TABLE public.block_hashes;
 
 CREATE TABLE public.block_hashes (
 	id bigserial NOT NULL,
@@ -70,13 +45,6 @@ CREATE TABLE public.block_hashes (
 );
 CREATE UNIQUE INDEX block_hashes_block_height_idx ON public.block_hashes USING btree (block_height);
 
-
--- public.ord_indexer_reorg_stats definition
-
--- Drop table
-
--- DROP TABLE public.ord_indexer_reorg_stats;
-
 CREATE TABLE public.ord_indexer_reorg_stats (
 	id bigserial NOT NULL,
 	reorg_tm int8 NOT NULL,
@@ -84,13 +52,6 @@ CREATE TABLE public.ord_indexer_reorg_stats (
 	new_block_height int4 NOT NULL,
 	CONSTRAINT ord_indexer_reorg_stats_pk PRIMARY KEY (id)
 );
-
-
--- public.ord_indexer_work_stats definition
-
--- Drop table
-
--- DROP TABLE public.ord_indexer_work_stats;
 
 CREATE TABLE public.ord_indexer_work_stats (
 	id bigserial NOT NULL,
@@ -106,3 +67,11 @@ CREATE TABLE public.ord_indexer_work_stats (
 	ts timestamptz NOT NULL DEFAULT now(),
 	CONSTRAINT ord_indexer_work_stats_pk PRIMARY KEY (id)
 );
+
+CREATE TABLE public.ord_indexer_version (
+	id bigserial NOT NULL,
+	indexer_version text NOT NULL,
+	db_version int4 NOT NULL,
+	CONSTRAINT ord_indexer_version_pk PRIMARY KEY (id)
+);
+INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.2.0', 2);

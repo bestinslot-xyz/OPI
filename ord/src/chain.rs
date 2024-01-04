@@ -38,12 +38,31 @@ impl Chain {
     }
   }
 
-  pub(crate) fn first_inscription_height(self) -> u64 {
+  pub(crate) fn first_inscription_height(self) -> u32 {
     match self {
       Self::Mainnet => 767430,
       Self::Regtest => 0,
       Self::Signet => 112402,
       Self::Testnet => 2413343,
+    }
+  }
+
+  pub(crate) fn first_rune_height(self) -> u32 {
+    SUBSIDY_HALVING_INTERVAL
+      * match self {
+        Self::Mainnet => 4,
+        Self::Regtest => 0,
+        Self::Signet => 0,
+        Self::Testnet => 12,
+      }
+  }
+
+  pub(crate) fn jubilee_height(self) -> u32 {
+    match self {
+      Self::Mainnet => 767430,
+      Self::Regtest => 110,
+      Self::Signet => 175392,
+      Self::Testnet => 2544192,
     }
   }
 

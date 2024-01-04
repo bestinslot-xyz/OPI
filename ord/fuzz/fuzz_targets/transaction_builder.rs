@@ -7,8 +7,8 @@ use {
     Amount, OutPoint,
   },
   libfuzzer_sys::fuzz_target,
-  ord::{FeeRate, SatPoint, TransactionBuilder},
-  std::collections::BTreeMap,
+  ord::{FeeRate, SatPoint, Target, TransactionBuilder},
+  std::collections::{BTreeMap, BTreeSet},
 };
 
 #[derive(Clone, Debug, Arbitrary)]
@@ -62,29 +62,38 @@ fuzz_target!(|input: Input| {
       .assume_checked(),
   ];
 
-  let Ok(fee_rate) = FeeRate::try_from(input.fee_rate) else { return; };
+  let Ok(fee_rate) = FeeRate::try_from(input.fee_rate) else {
+    return;
+  };
 
   match input.output_value {
     Some(output_value) => {
-      let _ = TransactionBuilder::build_transaction_with_value(
+      let _ = TransactionBuilder::new(
         satpoint,
         inscriptions,
         amounts,
+        BTreeSet::new(),
+        BTreeSet::new(),
         recipient,
         change,
         fee_rate,
-        Amount::from_sat(output_value),
-      );
+        Target::Value(Amount::from_sat(output_value)),
+      )
+      .build_transaction();
     }
     None => {
-      let _ = TransactionBuilder::build_transaction_with_postage(
+      let _ = TransactionBuilder::new(
         satpoint,
         inscriptions,
         amounts,
+        BTreeSet::new(),
+        BTreeSet::new(),
         recipient,
         change,
         fee_rate,
-      );
+        Target::Postage,
+      )
+      .build_transaction();
     }
   }
 });
