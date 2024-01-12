@@ -32,6 +32,9 @@ var db_pool = new Pool({
 })
 
 var chain_folder = process.env.BITCOIN_CHAIN_FOLDER || "~/.bitcoin/"
+var bitcoin_rpc_user = process.env.BITCOIN_RPC_USER || ""
+var bitcoin_rpc_password = process.env.BITCOIN_RPC_PASSWD || ""
+
 var ord_binary = process.env.ORD_BINARY || "ord"
 var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
 var ord_datadir = process.env.ORD_DATADIR || "."
@@ -85,7 +88,11 @@ async function main_index() {
     let current_directory = process.cwd()
     process.chdir(ord_folder);
     let ord_version_cmd = ord_binary + " --version"
-    let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + (ord_end_block_height) + " index run"
+    let rpc_argument = ""
+    if (bitcoin_rpc_user != "") {
+      rpc_argument = " --bitcoin-rpc-user " + bitcoin_rpc_user + " --bitcoin-rpc-pass " + bitcoin_rpc_password
+    }
+    let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
     try {
       let version_string = execSync(ord_version_cmd).toString()
       console.log("ord version: " + version_string)

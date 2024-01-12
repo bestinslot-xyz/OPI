@@ -680,6 +680,7 @@ def report_hashes(block_height):
   to_send = {
     "name": report_name,
     "type": "brc20",
+    "node_type": "full_node",
     "version": INDEXER_VERSION,
     "db_version": DB_VERSION,
     "block_height": block_height,
@@ -690,6 +691,7 @@ def report_hashes(block_height):
   print("Sending hashes to metaprotocol indexer indexer...")
   try_to_report_with_retries(to_send)
 
+last_report_height = 0
 check_if_there_is_residue_from_last_run()
 while True:
   ## check if a new block is indexed
@@ -716,8 +718,9 @@ while True:
     continue
   try:
     index_block(current_block, current_block_hash)
-    if max_block_of_metaprotocol_db - current_block < 10: ## do not report if there are more than 10 blocks to index
+    if max_block_of_metaprotocol_db - current_block < 10 or current_block - last_report_height > 100: ## do not report if there are more than 10 blocks to index
       report_hashes(current_block)
+      last_report_height = current_block
   except:
     traceback.print_exc()
     if in_commit: ## rollback commit if any
