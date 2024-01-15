@@ -22,7 +22,7 @@ if init_env:
   DB_METAPROTOCOL_USER="postgres"
   DB_METAPROTOCOL_HOST="localhost"
   DB_METAPROTOCOL_PORT="5432"
-  DB_METAPROTOCOL_DATABASE="postgres_metaprotocol"
+  DB_METAPROTOCOL_DATABASE="postgres"
   DB_METAPROTOCOL_PASSWD=""
   REPORT_TO_INDEXER="true"
   REPORT_URL="https://api.opi.network/report_block"
