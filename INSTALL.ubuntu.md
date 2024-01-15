@@ -108,6 +108,14 @@ To update cargo & rust:
 rustup update stable
 ```
 
+## Cloning the repository
+
+```bash
+git clone https://github.com/bestinslot-xyz/OPI.git
+```
+
+All next shell script groups assumes that you are in OPI folder cloned by above command.
+
 ## Installing node modules
 ```bash
 cd modules/main_index; npm install;
@@ -126,13 +134,21 @@ Otherwise, it cannot decode some addresses such as `512057cd4cfa03f27f7b18c2fe45
 
 ## Installing python libraries
 
-If you don't have pip installed, start by installing pip. [guide](https://pip.pypa.io/en/stable/installation/).
+1) If you don't have pip installed, start by installing pip. [guide](https://pip.pypa.io/en/stable/installation/).
 
 ```bash
 wget https://bootstrap.pypa.io/get-pip.py
 python3 get-pip.py
 rm get-pip.py
 ```
+
+or
+
+```sh
+sudo apt install python3-pip
+```
+
+2) Install dependencies
 
 ```bash
 python3 -m pip install python-dotenv;
@@ -148,18 +164,9 @@ cd ord; cargo build --release;
 
 **Do not run ord binary directly. Main indexer will run ord periodically**
 
-## Setup .env files
+## Initialise .env configuration and databases
 
-Copy `.env_sample` in main_index, brc20_index, brc20_api, bitmap_index and bitmap_api as `.env` and fill necessary information.
-
-- Do not change `FIRST_INSCRIPTION_HEIGHT` if you want to report hashes, since cumulative hash calculation will start from this height and it'll be faulty if you change this variable.
-- All scripts can use the same database. In sample env files, we used different `DB_DATABASE` but using postgres on all of them will also work correctly.
-- `BITCOIN_CHAIN_FOLDER` is the datadir folder that is set when starting bitcoind.
-- `ORD_BINARY` `ORD_FOLDER` and `ORD_DATADIR` can stay the same if you do not change the folder structure after `git clone`.
-
-## Initialise databases
-
-After setting .env files, you can run `reset_init.py` in each indexer folder to initialise databases and set other necessary files.
+Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
 
 # Run
 

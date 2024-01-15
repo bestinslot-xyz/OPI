@@ -4,7 +4,90 @@
 import os, psycopg2, pathlib
 from dotenv import load_dotenv
 
-res = input("Are you sure you want to reset the metaprotocol database? (y/n) ")
+init_env = True
+
+# does .env file exist?
+if os.path.isfile('.env'):
+  res = input("Do you want to re-initialise .env file? (y/n) ")
+  if res != 'y':
+    init_env = False
+
+if init_env:
+  DB_USER="postgres"
+  DB_HOST="localhost"
+  DB_PORT="5432"
+  DB_DATABASE="postgres"
+  DB_PASSWD=""
+  DB_SSL="true"
+  DB_MAX_CONNECTIONS="50"
+  BITCOIN_CHAIN_FOLDER="~/.bitcoin/"
+  BITCOIN_RPC_USER=""
+  BITCOIN_RPC_PASSWD=""
+  ORD_BINARY="./ord"
+  ORD_FOLDER="../../ord/target/release/"
+  ORD_DATADIR="."
+  FIRST_INSCRIPTION_HEIGHT="767430"
+  print("Initialising .env file")
+  print("leave blank to use default values")
+  res = input("Main Postgres DB username (Default: postgres): ")
+  if res != '':
+    DB_USER = res
+  res = input("Main Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
+  if res != '':
+    DB_HOST = res
+  res = input("Main Postgres DB port (Default: 5432): ")
+  if res != '':
+    DB_PORT = res
+  res = input("Main Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
+  if res != '':
+    DB_DATABASE = res
+  res = input("Main Postgres DB password: ")
+  DB_PASSWD = res
+  res = input("Main Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
+  if res != '':
+    DB_SSL = res
+  res = input("Main Postgres DB max connections (Default: 50): ")
+  if res != '':
+    DB_MAX_CONNECTIONS = res
+  res = input("Bitcoin datadir (Default: ~/.bitcoin/) use forward-slashes(/) even on Windows: ")
+  if res != '':
+    BITCOIN_CHAIN_FOLDER = res
+  res = input("Bitcoin RPC username (Default: (empty)) leave default to use .cookie file: ")
+  if res != '':
+    BITCOIN_RPC_USER = res
+  res = input("Bitcoin RPC password (Default: (empty)) leave default to use .cookie file: ")
+  if res != '':
+    BITCOIN_RPC_PASSWD = res
+  res = input("Ord binary command (Default: ./ord) change to ord.exe on Windows (without ./): ")
+  if res != '':
+    ORD_BINARY = res
+  res = input("Path to ord folder (Default: ../../ord/target/release/) leave default if repository folder structure hasn't been changed: ")
+  if res != '':
+    ORD_FOLDER = res
+  res = input("Ord datadir (relative to ord folder) (Default: .) leave default if repository folder structure hasn't been changed: ")
+  if res != '':
+    ORD_DATADIR = res
+  res = input("First inscription height (Default: 767430) leave default for correct indexing: ")
+  if res != '':
+    FIRST_INSCRIPTION_HEIGHT = res
+  f = open(".env", "w")
+  f.write("DB_USER=\"" + DB_USER + "\"\n")
+  f.write("DB_HOST=\"" + DB_HOST + "\"\n")
+  f.write("DB_PORT=\"" + DB_PORT + "\"\n")
+  f.write("DB_DATABASE=\"" + DB_DATABASE + "\"\n")
+  f.write("DB_PASSWD=\"" + DB_PASSWD + "\"\n")
+  f.write("DB_SSL=\"" + DB_SSL + "\"\n")
+  f.write("DB_MAX_CONNECTIONS=" + DB_MAX_CONNECTIONS + "\n")
+  f.write("BITCOIN_CHAIN_FOLDER=\"" + BITCOIN_CHAIN_FOLDER + "\"\n")
+  f.write("BITCOIN_RPC_USER=\"" + BITCOIN_RPC_USER + "\"\n")
+  f.write("BITCOIN_RPC_PASSWD=\"" + BITCOIN_RPC_PASSWD + "\"\n")
+  f.write("ORD_BINARY=\"" + ORD_BINARY + "\"\n")
+  f.write("ORD_FOLDER=\"" + ORD_FOLDER + "\"\n")
+  f.write("ORD_DATADIR=\"" + ORD_DATADIR + "\"\n")
+  f.write("FIRST_INSCRIPTION_HEIGHT=\"" + FIRST_INSCRIPTION_HEIGHT + "\"\n")
+  f.close()
+
+res = input("Are you sure you want to initialise/reset the main database? (y/n) ")
 if res != 'y':
   print('aborting')
   exit(1)
@@ -25,6 +108,21 @@ conn = psycopg2.connect(
   password=db_password)
 conn.autocommit = True
 cur = conn.cursor()
+
+db_exists = False
+try:
+  cur.execute('select count(*) from block_hashes;')
+  hash_cnt = cur.fetchone()[0]
+  if hash_cnt > 0:
+    db_exists = True
+except:
+  pass
+
+if db_exists:
+  res = input("It seems like you have entries on DB, are you sure to reset databases? This WILL RESET indexing progress. (y/n) ")
+  if res != 'y':
+    print('aborting')
+    exit(1)
 
 ## reset db
 sqls = open('db_reset.sql', 'r').read().split(';')

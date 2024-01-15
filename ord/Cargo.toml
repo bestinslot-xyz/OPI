@@ -1,5 +1,5 @@
 [package]
-name = "ord"
+name = "opi-ord"
 description = "◉ Ordinal wallet and block explorer"
 version = "0.14.0"
 license = "CC0-1.0"
