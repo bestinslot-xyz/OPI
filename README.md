@@ -69,7 +69,7 @@ cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 For detailed installation guides:
 - Ubuntu: [installation guide](INSTALL.ubuntu.md)
 
-OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database). Run reset_init.py in each indexer module after setting .env files, they'll initialise the DBs.
+OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
 
 **Build ord:**
 ```bash
@@ -98,9 +98,9 @@ pip3 install python-dotenv;
 pip3 install psycopg2-binary;
 ```
 
-**Setup .env files**
+**Setup .env files and DBs**
 
-Copy `.env_sample` in main_index, brc20_index, brc20_api, bitmap_index and bitmap_api as `.env` and fill necessary information.
+Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
 
 # Run
 

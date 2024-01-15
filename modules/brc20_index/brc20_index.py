@@ -7,6 +7,10 @@ import traceback, time, codecs, json
 import psycopg2
 import hashlib
 
+if not os.path.isfile('.env'):
+  print(".env file not found, please run \"python3 reset_init.py\" first")
+  sys.exit(1)
+
 ## global variables
 ticks = {}
 in_commit = False
@@ -40,6 +44,7 @@ report_to_indexer = (os.getenv("REPORT_TO_INDEXER") or "true") == "true"
 report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
 report_retries = int(os.getenv("REPORT_RETRIES") or "10")
 report_name = os.getenv("REPORT_NAME") or "opi_brc20_indexer"
+create_extra_tables = (os.getenv("CREATE_EXTRA_TABLES") or "false") == "true"
 
 ## connect to db
 conn = psycopg2.connect(
@@ -59,6 +64,25 @@ conn_metaprotocol = psycopg2.connect(
   password=db_metaprotocol_password)
 conn_metaprotocol.autocommit = True
 cur_metaprotocol = conn_metaprotocol.cursor()
+
+## create tables if not exists
+## does brc20_block_hashes table exist?
+cur.execute('''SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'brc20_block_hashes') AS table_existence;''')
+if cur.fetchone()[0] == False:
+  print("Initialising database...")
+  with open('db_init.sql', 'r') as f:
+    sql = f.read()
+    cur.execute(sql)
+  conn.commit()
+
+if create_extra_tables:
+  cur.execute('''SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'brc20_extras_block_hashes') AS table_existence;''')
+  if cur.fetchone()[0] == False:
+    print("Initialising extra tables...")
+    with open('db_init_extra.sql', 'r') as f:
+      sql = f.read()
+      cur.execute(sql)
+    conn.commit()
 
 ## helper functions
 
@@ -593,6 +617,27 @@ def check_if_there_is_residue_from_last_run():
     print("Rolled back to " + str(current_block - 1))
     return
 
+def check_if_there_is_residue_on_extra_tables_from_last_run():
+  cur.execute('''select max(block_height) from brc20_extras_block_hashes;''')
+  row = cur.fetchone()
+  current_block = None
+  if row[0] is None: current_block = first_inscription_height
+  else: current_block = row[0] + 1
+  residue_found = False
+  cur.execute('''select coalesce(max(block_height), -1) from brc20_unused_tx_inscrs;''')
+  if cur.rowcount != 0 and cur.fetchone()[0] >= current_block:
+    residue_found = True
+    print("residue on brc20_unused_tx_inscrs")
+  cur.execute('''select coalesce(max(block_height), -1) from brc20_current_balances;''')
+  if cur.rowcount != 0 and cur.fetchone()[0] >= current_block:
+    residue_found = True
+    print("residue on brc20_current_balances")
+  if residue_found:
+    print("There is residue on extra tables from last run, rolling back to " + str(current_block - 1))
+    reorg_on_extra_tables(current_block - 1)
+    print("Rolled back to " + str(current_block - 1))
+    return
+
 cur.execute('select event_type_name, event_type_id from brc20_event_types;')
 event_types = {}
 for row in cur.fetchall():
@@ -680,6 +725,7 @@ def report_hashes(block_height):
   to_send = {
     "name": report_name,
     "type": "brc20",
+    "node_type": "full_node",
     "version": INDEXER_VERSION,
     "db_version": DB_VERSION,
     "block_height": block_height,
@@ -690,8 +736,255 @@ def report_hashes(block_height):
   print("Sending hashes to metaprotocol indexer indexer...")
   try_to_report_with_retries(to_send)
 
+def reorg_on_extra_tables(reorg_height):
+  cur.execute('begin;')
+  cur.execute('delete from brc20_current_balances where block_height > %s RETURNING pkscript, tick;', (reorg_height,)) ## delete new balances
+  rows = cur.fetchall()
+  ## fetch balances of deleted rows for reverting balances
+  for r in rows:
+    pkscript = r[0]
+    tick = r[1]
+    cur.execute(''' select overall_balance, available_balance, wallet, block_height
+                    from brc20_historic_balances 
+                    where block_height <= %s and pkscript = %s and tick = %s
+                    order by id desc
+                    limit 1;''', (reorg_height, pkscript, tick))
+    if cur.rowcount != 0:
+      balance = cur.fetchone()
+      cur.execute('''insert into brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+                      values (%s, %s, %s, %s, %s, %s);''', (pkscript, balance[2], tick, balance[0], balance[1], balance[3]))
+  
+  cur.execute('truncate table brc20_unused_tx_inscrs restart identity;')
+  cur.execute('''with tempp as (
+                  select inscription_id, event, id, block_height
+                  from brc20_events
+                  where event_type = %s and block_height <= %s
+                ), tempp2 as (
+                  select inscription_id, event
+                  from brc20_events
+                  where event_type = %s and block_height <= %s
+                )
+                select t.event, t.id, t.block_height, t.inscription_id
+                from tempp t
+                left join tempp2 t2 on t.inscription_id = t2.inscription_id
+                where t2.inscription_id is null;''', (event_types['transfer-inscribe'], reorg_height, event_types['transfer-transfer'], reorg_height))
+  rows = cur.fetchall()
+  for row in rows:
+    new_event = row[0]
+    event_id = row[1]
+    block_height = row[2]
+    inscription_id = row[3]
+    cur.execute('''INSERT INTO brc20_unused_tx_inscrs (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)''', 
+                    (inscription_id, new_event["tick"], int(new_event["amount"]), new_event["source_pkScript"], new_event["source_wallet"], event_id, block_height))
+
+  cur.execute('delete from brc20_block_hashes_current_balances where block_height > %s;', (reorg_height,)) ## delete new block hashes
+  cur.execute("SELECT setval('brc20_block_hashes_current_balances_id_seq', max(id)) from brc20_block_hashes_current_balances;") ## reset id sequence
+  cur.execute('commit;')
+
+def initial_index_of_extra_tables():
+  cur.execute('begin;')
+  print("resetting brc20_unused_tx_inscrs")
+  cur.execute('truncate table brc20_unused_tx_inscrs restart identity;')
+  print("selecting unused txes")
+  cur.execute('''with tempp as (
+                  select inscription_id, event, id, block_height
+                  from brc20_events
+                  where event_type = %s
+                ), tempp2 as (
+                  select inscription_id, event
+                  from brc20_events
+                  where event_type = %s
+                )
+                select t.event, t.id, t.block_height, t.inscription_id
+                from tempp t
+                left join tempp2 t2 on t.inscription_id = t2.inscription_id
+                where t2.inscription_id is null;''', (event_types['transfer-inscribe'], event_types['transfer-transfer']))
+  rows = cur.fetchall()
+  print("inserting unused txes")
+  idx = 0
+  for row in rows:
+    idx += 1
+    if idx % 200 == 0: print(idx, '/', len(rows))
+    new_event = row[0]
+    event_id = row[1]
+    block_height = row[2]
+    inscription_id = row[3]
+    cur.execute('''INSERT INTO brc20_unused_tx_inscrs (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)''', 
+                    (inscription_id, new_event["tick"], int(new_event["amount"]), new_event["source_pkScript"], new_event["source_wallet"], event_id, block_height))
+  
+  print("resetting brc20_current_balances")
+  cur.execute('truncate table brc20_current_balances restart identity;')
+  print("selecting current balances")
+  cur.execute('''with tempp as (
+                    select max(id) as id
+                    from brc20_historic_balances
+                    group by pkscript, tick
+                  )
+                  select bhb.pkscript, bhb.tick, bhb.overall_balance, bhb.available_balance, bhb.wallet, bhb.block_height
+                  from tempp t
+                  left join brc20_historic_balances bhb on bhb.id = t.id
+                  order by bhb.pkscript asc, bhb.tick asc;''')
+  rows = cur.fetchall()
+  print("inserting current balances")
+  idx = 0
+  for r in rows:
+    idx += 1
+    if idx % 200 == 0: print(idx, '/', len(rows))
+    pkscript = r[0]
+    tick = r[1]
+    overall_balance = r[2]
+    available_balance = r[3]
+    wallet = r[4]
+    block_height = r[5]
+    cur.execute('''insert into brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+                   values (%s, %s, %s, %s, %s, %s);''', (pkscript, wallet, tick, overall_balance, available_balance, block_height))
+  
+  print("resetting brc20_extras_block_hashes")
+  cur.execute('truncate table brc20_extras_block_hashes restart identity;')
+  print("inserting brc20_extras_block_hashes")
+  cur.execute('''select block_height, block_hash from brc20_block_hashes order by block_height asc;''')
+  rows = cur.fetchall()
+  idx = 0
+  for row in rows:
+    idx += 1
+    if idx % 200 == 0: print(idx, '/', len(rows))
+    block_height = row[0]
+    block_hash = row[1]
+    cur.execute('''INSERT INTO brc20_extras_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, block_hash))
+
+  cur.execute('commit;')
+
+def index_extra_tables(block_height, block_hash):
+  ebh_current_height = 0
+  cur.execute('select max(block_height) as current_ebh_height from brc20_extras_block_hashes;')
+  if cur.rowcount > 0:
+    res = cur.fetchone()[0]
+    if res is not None:
+      ebh_current_height = res
+  if ebh_current_height >= block_height:
+    print("reorg detected on extra tables, rolling back to: " + str(block_height))
+    reorg_on_extra_tables(block_height - 1)
+  
+  print("updating extra tables for block: " + str(block_height))
+
+  cur.execute('''select pkscript, wallet, tick, overall_balance, available_balance 
+                 from brc20_historic_balances 
+                 where block_height = %s 
+                 order by id asc;''', (block_height,))
+  balance_changes = cur.fetchall()
+  if len(balance_changes) == 0:
+    print("No balance_changes found for block " + str(block_height))
+  else:
+    balance_changes_map = {}
+    for balance_change in balance_changes:
+      pkscript = balance_change[0]
+      tick = balance_change[2]
+      key = pkscript + '_' + tick
+      balance_changes_map[key] = balance_change
+    print("Balance_change count: ", len(balance_changes_map))
+    idx = 0
+    for key in balance_changes_map:
+      new_balance = balance_changes_map[key]
+      idx += 1
+      if idx % 200 == 0: print(idx, '/', len(balance_changes_map))
+      cur.execute('''INSERT INTO brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height) VALUES (%s, %s, %s, %s, %s, %s)
+                     ON CONFLICT (pkscript, tick) 
+                     DO UPDATE SET overall_balance = EXCLUDED.overall_balance
+                                , available_balance = EXCLUDED.available_balance
+                                , block_height = EXCLUDED.block_height;''', new_balance + (block_height,))
+    
+  cur.execute('''select event, id, event_type, inscription_id 
+                 from brc20_events where block_height = %s and (event_type = %s or event_type = %s) 
+                 order by id asc;''', (block_height, event_types['transfer-inscribe'], event_types['transfer-transfer'],))
+  events = cur.fetchall()
+  if len(events) == 0:
+    print("No events found for block " + str(block_height))
+  else:
+    print("Events count: ", len(events))
+    idx = 0
+    for row in events:
+      new_event = row[0]
+      event_id = row[1]
+      new_event["event_type"] = event_types_rev[row[2]]
+      new_event["inscription_id"] = row[3]
+      idx += 1
+      if idx % 200 == 0: print(idx, '/', len(events))
+      if new_event["event_type"] == 'transfer-inscribe':
+        cur.execute('''INSERT INTO brc20_unused_tx_inscrs (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (inscription_id) DO NOTHING''', 
+                        (new_event["inscription_id"], new_event["tick"], int(new_event["amount"]), new_event["source_pkScript"], new_event["source_wallet"], event_id, block_height))
+      elif new_event["event_type"] == 'transfer-transfer':
+        cur.execute('''DELETE FROM brc20_unused_tx_inscrs WHERE inscription_id = %s;''', (new_event["inscription_id"],))
+      else:
+        print("Unknown event type: " + new_event["event_type"])
+        sys.exit(1)
+
+  cur.execute('''INSERT INTO brc20_extras_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, block_hash))
+  return True
+
+def check_extra_tables():
+  global first_inscription_height
+  try:
+    cur.execute('''
+      select min(ebh.block_height) as ebh_tocheck_height
+      from brc20_extras_block_hashes ebh
+      left join brc20_block_hashes bh on bh.block_height = ebh.block_height
+      where bh.block_hash != ebh.block_hash
+    ''')
+    ebh_tocheck_height = 0
+    if cur.rowcount > 0:
+      res = cur.fetchone()[0]
+      if res is not None:
+        ebh_tocheck_height = res
+        print("hash diff found on block: " + str(ebh_tocheck_height))
+    if ebh_tocheck_height == 0:
+      cur.execute('select max(block_height) as current_ebh_height from brc20_extras_block_hashes;')
+      if cur.rowcount > 0:
+        res = cur.fetchone()[0]
+        if res is not None:
+          ebh_tocheck_height = res + 1
+    if ebh_tocheck_height == 0:
+      print("no extra table data found")
+      ebh_tocheck_height = first_inscription_height
+    cur.execute('''select max(block_height) from brc20_block_hashes;''')
+    main_block_height = first_inscription_height
+    if cur.rowcount > 0:
+      res = cur.fetchone()[0]
+      if res is not None:
+        main_block_height = res
+    if ebh_tocheck_height > main_block_height:
+      print("no new extra table data found")
+      return
+    while ebh_tocheck_height <= main_block_height:
+      if ebh_tocheck_height == first_inscription_height:
+        print("initial indexing of extra tables, may take a few minutes")
+        initial_index_of_extra_tables()
+        return
+      cur.execute('''select block_hash from brc20_block_hashes where block_height = %s;''', (ebh_tocheck_height,))
+      block_hash = cur.fetchone()[0]
+      if index_extra_tables(ebh_tocheck_height, block_hash):
+        print("extra table data indexed for block: " + str(ebh_tocheck_height))
+        ebh_tocheck_height += 1
+      else:
+        print("extra table data index failed for block: " + str(ebh_tocheck_height))
+        return
+  except:
+    traceback.print_exc()
+    return
+
 check_if_there_is_residue_from_last_run()
+if create_extra_tables:
+  check_if_there_is_residue_on_extra_tables_from_last_run()
+  print("checking extra tables")
+  check_extra_tables()
+
+last_report_height = 0
 while True:
+  check_if_there_is_residue_from_last_run()
+  if create_extra_tables:
+    check_if_there_is_residue_on_extra_tables_from_last_run()
   ## check if a new block is indexed
   cur_metaprotocol.execute('''SELECT coalesce(max(block_height), -1) as max_height from block_hashes;''')
   max_block_of_metaprotocol_db = cur_metaprotocol.fetchone()[0]
@@ -716,8 +1009,12 @@ while True:
     continue
   try:
     index_block(current_block, current_block_hash)
-    if max_block_of_metaprotocol_db - current_block < 10: ## do not report if there are more than 10 blocks to index
+    if create_extra_tables:
+      print("checking extra tables")
+      check_extra_tables()
+    if max_block_of_metaprotocol_db - current_block < 10 or current_block - last_report_height > 100: ## do not report if there are more than 10 blocks to index
       report_hashes(current_block)
+      last_report_height = current_block
   except:
     traceback.print_exc()
     if in_commit: ## rollback commit if any
