@@ -131,10 +131,11 @@ try:
 except:
   pass
 
-res = input("It seems like you have entries on DB, are you sure to reset databases? This WILL RESET indexing progress. (y/n) ")
-if res != 'y':
-  print('aborting')
-  exit(1)
+if db_exists:
+  res = input("It seems like you have entries on DB, are you sure to reset databases? This WILL RESET indexing progress. (y/n) ")
+  if res != 'y':
+    print('aborting')
+    exit(1)
 
 ## reset db
 sqls = open('db_reset.sql', 'r').read().split(';')
