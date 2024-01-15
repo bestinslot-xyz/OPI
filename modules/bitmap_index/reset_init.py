@@ -67,7 +67,7 @@ if init_env:
     DB_METAPROTOCOL_PORT = os.getenv("DB_PORT") or "5432"
     DB_METAPROTOCOL_DATABASE = os.getenv("DB_DATABASE") or "postgres"
     DB_METAPROTOCOL_PASSWD = os.getenv("DB_PASSWD")
-    DB_METAPROTOCOL_PASSWD = os.getenv("FIRST_INSCRIPTION_HEIGHT") or "767430"
+    FIRST_INSCRIPTION_HEIGHT = os.getenv("FIRST_INSCRIPTION_HEIGHT") or "767430"
   else:
     res = input("Main Postgres DB username (Default: postgres): ")
     if res != '':
