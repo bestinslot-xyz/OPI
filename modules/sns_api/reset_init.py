@@ -20,48 +20,48 @@ if init_env:
   DB_SSL="true"
   DB_MAX_CONNECTIONS=10
   API_HOST="127.0.0.1"
-  API_PORT="8001"
+  API_PORT="8002"
   API_TRUSTED_PROXY_CNT="0"
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
-  other_env_exists = os.path.isfile('../bitmap_index/.env')
+  other_env_exists = os.path.isfile('../sns_index/.env')
   if other_env_exists:
-    res = input(".env on bitmap_index already exists, do you want to use values from there? (y/n) ")
+    res = input(".env on sns_index already exists, do you want to use values from there? (y/n) ")
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    env = dotenv_values(dotenv_path='../bitmap_index/.env')
+    env = dotenv_values(dotenv_path='../sns_index/.env')
     DB_USER = env.get("DB_USER") or "postgres"
     DB_HOST = env.get("DB_HOST") or "localhost"
     DB_PORT = env.get("DB_PORT") or "5432"
     DB_DATABASE = env.get("DB_DATABASE") or "postgres"
     DB_PASSWD = env.get("DB_PASSWD")
   else:
-    res = input("Bitmap Postgres DB username (Default: postgres): ")
+    res = input("SNS Postgres DB username (Default: postgres): ")
     if res != '':
       DB_USER = res
-    res = input("Bitmap Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
+    res = input("SNS Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
     if res != '':
       DB_HOST = res
-    res = input("Bitmap Postgres DB port (Default: 5432): ")
+    res = input("SNS Postgres DB port (Default: 5432): ")
     if res != '':
       DB_PORT = res
-    res = input("Bitmap Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
+    res = input("SNS Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_DATABASE = res
-    res = input("Bitmap Postgres DB password: ")
+    res = input("SNS Postgres DB password: ")
     DB_PASSWD = res
-  res = input("Bitmap Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
+  res = input("SNS Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':
     DB_SSL = res
-  res = input("Bitmap Postgres DB max connections (Default: 10): ")
+  res = input("SNS Postgres DB max connections (Default: 10): ")
   if res != '':
     DB_MAX_CONNECTIONS = res
   res = input("API host (Default: 127.0.0.1): ")
   if res != '':
     API_HOST = res
-  res = input("API port (Default: 8001): ")
+  res = input("API port (Default: 8002): ")
   if res != '':
     API_PORT = res
   res = input("API trusted proxy count (Default: 0) if there are known proxies such as nginx in front of API, set this to the number of proxies: ")

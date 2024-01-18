@@ -75,4 +75,4 @@ CREATE TABLE public.brc20_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.brc20_indexer_version (indexer_version, db_version) VALUES ('opi-brc20-open-source v0.2.0', 2);
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version) VALUES ('opi-brc20-full-node v0.3.0', 3);

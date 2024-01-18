@@ -397,6 +397,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       self.update_inscription_location(
         Some(&tx),
         Some(&tx_out.script_pubkey),
+        Some(&tx_out.value),
         input_sat_ranges,
         flotsam,
         new_satpoint,
@@ -411,7 +412,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           offset: self.lost_sats + flotsam.offset - output_value,
         };
         let tx = flotsam.tx_option.clone().unwrap();
-        self.update_inscription_location(Some(&tx), None, input_sat_ranges, flotsam, new_satpoint, true)?;
+        self.update_inscription_location(Some(&tx), None, None, input_sat_ranges, flotsam, new_satpoint, true)?;
       }
       self.lost_sats += self.reward - output_value;
       Ok(())
@@ -504,6 +505,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     &mut self,
     tx_option: Option<&Transaction>,
     new_script_pubkey: Option<&ScriptBuf>,
+    new_output_value: Option<&u64>,
     input_sat_ranges: Option<&VecDeque<(u64, u64)>>,
     flotsam: Flotsam,
     new_satpoint: SatPoint,
@@ -536,9 +538,10 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           .unwrap();
         let is_json_or_text = entry.is_json_or_text;
         if is_json_or_text && txcnt_of_inscr <= INDEX_TX_LIMIT { // only track non-cursed and first two transactions
-          self.write_to_file(format!("cmd;{0};insert;transfer;{1};{old_satpoint};{new_satpoint};{send_to_coinbase};{2}", 
+          self.write_to_file(format!("cmd;{0};insert;transfer;{1};{old_satpoint};{new_satpoint};{send_to_coinbase};{2};{3}", 
                     self.height, flotsam.inscription_id, 
-                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes())), false)?;
+                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()), 
+                    new_output_value.unwrap_or(&0)), false)?;
         }
 
         (
@@ -703,9 +706,10 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         }
 
         if !unbound && is_json_or_text {
-          self.write_to_file(format!("cmd;{0};insert;transfer;{1};;{new_satpoint};{send_to_coinbase};{2}", 
+          self.write_to_file(format!("cmd;{0};insert;transfer;{1};;{new_satpoint};{send_to_coinbase};{2};{3}", 
                     self.height, flotsam.inscription_id, 
-                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes())), false)?;
+                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()), 
+                    new_output_value.unwrap_or(&0)), false)?;
         }
 
         (unbound, sequence_number)

@@ -29,6 +29,7 @@ CREATE UNIQUE INDEX bitmap_cumulative_event_hashes_block_height_idx ON public.bi
 CREATE TABLE public.bitmap_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
+	db_version int4 NOT NULL,
 	CONSTRAINT bitmap_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.bitmap_indexer_version (indexer_version) VALUES ('opi-bitmap-open-source v0.2.0');
+INSERT INTO public.bitmap_indexer_version (indexer_version, db_version) VALUES ('opi-bitmap-full-node v0.3.0', 3);

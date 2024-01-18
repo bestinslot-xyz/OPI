@@ -16,9 +16,9 @@ ticks = {}
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-CAN_BE_FIXED_INDEXER_VERSIONS = [  ]
-INDEXER_VERSION = "opi-brc20-open-source v0.2.0"
-DB_VERSION = 2
+INDEXER_VERSION = "opi-brc20-full-node v0.3.0"
+CAN_BE_FIXED_DB_VERSIONS = [  ]
+DB_VERSION = 3
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -677,19 +677,19 @@ def reindex_cumulative_hashes():
       block_events_str += get_event_str(event, event_type, inscription_id) + EVENT_SEPARATOR
     update_event_hashes(block_height)
 
-cur.execute('select indexer_version from brc20_indexer_version;')
+cur.execute('select db_version from brc20_indexer_version;')
 if cur.rowcount == 0:
   print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")
   exit(1)
 else:
-  db_indexer_version = cur.fetchone()[0]
-  if db_indexer_version != INDEXER_VERSION:
+  db_version = cur.fetchone()[0]
+  if db_version != DB_VERSION:
     print("Indexer version mismatch!!")
-    if db_indexer_version not in CAN_BE_FIXED_INDEXER_VERSIONS:
-      print("This version (" + db_indexer_version + ") cannot be fixed, please run reset_init.py")
+    if db_version not in CAN_BE_FIXED_DB_VERSIONS:
+      print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
       exit(1)
     else:
-      print("This version (" + db_indexer_version + ") can be fixed, fixing in 5 secs...")
+      print("This version (" + db_version + ") can be fixed, fixing in 5 secs...")
       time.sleep(5)
       reindex_cumulative_hashes()
       cur.execute('alter table brc20_indexer_version add column if not exists db_version int4;') ## next versions will use DB_VERSION for DB check
@@ -778,8 +778,8 @@ def reorg_on_extra_tables(reorg_height):
                     VALUES (%s, %s, %s, %s, %s, %s, %s)''', 
                     (inscription_id, new_event["tick"], int(new_event["amount"]), new_event["source_pkScript"], new_event["source_wallet"], event_id, block_height))
 
-  cur.execute('delete from brc20_block_hashes_current_balances where block_height > %s;', (reorg_height,)) ## delete new block hashes
-  cur.execute("SELECT setval('brc20_block_hashes_current_balances_id_seq', max(id)) from brc20_block_hashes_current_balances;") ## reset id sequence
+  cur.execute('delete from brc20_extras_block_hashes where block_height > %s;', (reorg_height,)) ## delete new block hashes
+  cur.execute("SELECT setval('brc20_extras_block_hashes_id_seq', max(id)) from brc20_extras_block_hashes;") ## reset id sequence
   cur.execute('commit;')
 
 def initial_index_of_extra_tables():

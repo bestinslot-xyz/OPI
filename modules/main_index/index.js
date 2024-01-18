@@ -14,7 +14,7 @@ const readline = require('readline');
 
 bitcoin.initEccLib(ecc)
 
-console.log("VERSION V0.2.0")
+console.log("VERSION V0.3.0")
 
 // for self-signed cert of postgres
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
@@ -40,9 +40,9 @@ var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
 var ord_datadir = process.env.ORD_DATADIR || "."
 const first_inscription_height = parseInt(process.env.FIRST_INSCRIPTION_HEIGHT || "767430")
 
-const DB_VERSION = 2
-const INDEXER_VERSION = 'OPI V0.2.0'
-const ORD_VERSION = '0.14.0'
+const DB_VERSION = 3
+const INDEXER_VERSION = 'OPI V0.3.0'
+const ORD_VERSION = 'opi-ord 0.14.0-1'
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
@@ -152,6 +152,7 @@ async function main_index() {
               (reorg_tm, old_block_height, new_block_height)
               values ($1, $2, $3);`, 
               [reorg_tm, current_height, block_height - 1])
+          current_height = Math.min(current_height, block_height - 1)
         }
       }
     }
@@ -233,7 +234,7 @@ async function main_index() {
     let ord_sql_st_tm = +(new Date())
 
     let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, cursed_for_brc20, block_height) values ($1, $2, $3, $4);`
-    let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee) values ($1, $2, $3, $4, $5, $6, $7, $8);`
+    let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee, new_output_value) values ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
     let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     
@@ -306,11 +307,11 @@ async function main_index() {
                 process.exit(1)
               }
               future_sent_as_fee_transfer_id[parts[4]][1] = true
-              running_promises.push(execute_on_db(sql_query_insert_transfer, [transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8]), parts[7] == "true" ? true : false]))
+              running_promises.push(execute_on_db(sql_query_insert_transfer, [transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8]), parts[7] == "true" ? true : false, parseInt(parts[9])]))
               transfer_count += 1
               ord_sql_query_count += 1
             } else {
-              running_promises.push(execute_on_db(sql_query_insert_transfer, [current_transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8]), parts[7] == "true" ? true : false]))
+              running_promises.push(execute_on_db(sql_query_insert_transfer, [current_transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8]), parts[7] == "true" ? true : false, parseInt(parts[9])]))
               current_transfer_id += 1
               transfer_count += 1
               ord_sql_query_count += 1
