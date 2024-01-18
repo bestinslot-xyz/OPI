@@ -159,6 +159,11 @@ if not download_only and restore_index_redb:
   if res != 0:
     print("tar is not installed, cannot restore index.redb, you may use download_only option and extract yourself")
     exit()
+  res = os.system('pbzip2 -V >/dev/null 2>&1')
+  if res != 0:
+    res = get_yn("pbzip2 is not installed, will use normal tar, may take around 40 mins with normal tar, it'll take around 5 mins with pbzip2. Do you want to continue?")
+    if not res:
+      exit()
 restore_main_db = get_yn("Do you want to restore main db?")
 restore_brc20_db = False
 if index_brc20: restore_brc20_db = get_yn("Do you want to restore brc20 db?")
