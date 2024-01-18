@@ -29,9 +29,9 @@ def get_yn(question):
     else:
       print("Invalid input")
 
-index_brc20 = get_yn("Do you want to index brc20")
-index_bitmap = get_yn("Do you want to index bitmap")
-index_sns = get_yn("Do you want to index sns")
+index_brc20 = get_yn("Will you index brc20")
+index_bitmap = get_yn("Will you index bitmap")
+index_sns = get_yn("Will you index sns")
 
 if not os.path.isfile('main_index/.env'):
   print("main_index/.env file not found, please run reset_init.py from main_index folder")
