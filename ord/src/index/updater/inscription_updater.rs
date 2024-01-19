@@ -472,19 +472,29 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     flush: bool,
   ) -> Result {
     lazy_static! {
-      static ref LOG_FILE: File = File::options().append(true).open("log_file.txt").unwrap();
+      static ref LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+    }
+    let mut log_file = LOG_FILE.lock().unwrap();
+    if log_file.as_ref().is_none() {
+      let chain_folder: String = match self.chain { 
+        Chain::Mainnet => String::from(""),
+        Chain::Testnet => String::from("testnet3/"),
+        Chain::Signet => String::from("signet/"),
+        Chain::Regtest => String::from("regtest/"),
+      };
+      *log_file = Some(File::options().append(true).open(format!("{chain_folder}log_file.txt")).unwrap());
     }
     if to_write != "" {
       if self.first_in_block {
         println!("cmd;{0};block_start", self.height,);
-        writeln!(&*LOG_FILE, "cmd;{0};block_start", self.height,)?;
+        writeln!(log_file.as_ref().unwrap(), "cmd;{0};block_start", self.height,)?;
       }
       self.first_in_block = false;
 
-      writeln!(&*LOG_FILE, "{}", to_write)?;
+      writeln!(log_file.as_ref().unwrap(), "{}", to_write)?;
     }
     if flush {
-      (&*LOG_FILE).flush()?;
+      (log_file.as_ref().unwrap()).flush()?;
     }
 
     Ok(())

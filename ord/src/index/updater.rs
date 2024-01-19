@@ -322,11 +322,21 @@ impl<'index> Updater<'_> {
     value_cache: &mut HashMap<OutPoint, u64>,
   ) -> Result<()> {
     lazy_static! {
-      static ref LOG_FILE: File = File::options().append(true).open("log_file_index.txt").unwrap();
+      static ref LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+    }
+    let mut log_file = LOG_FILE.lock().unwrap();
+    if log_file.as_ref().is_none() {
+      let chain_folder: String = match self.index.options.chain() { 
+        Chain::Mainnet => String::from(""),
+        Chain::Testnet => String::from("testnet3/"),
+        Chain::Signet => String::from("signet/"),
+        Chain::Regtest => String::from("regtest/"),
+      };
+      *log_file = Some(File::options().append(true).open(format!("{chain_folder}log_file_index.txt")).unwrap());
     }
     println!("cmd;{0};new_block;{1}", self.height, &block.header.block_hash());
-    writeln!(&*LOG_FILE, "cmd;{0};new_block;{1}", self.height, &block.header.block_hash())?;
-    (&*LOG_FILE).flush()?;
+    writeln!(log_file.as_ref().unwrap(), "cmd;{0};new_block;{1}", self.height, &block.header.block_hash())?;
+    (log_file.as_ref().unwrap()).flush()?;
     
     Reorg::detect_reorg(&block, self.height, self.index)?;
 

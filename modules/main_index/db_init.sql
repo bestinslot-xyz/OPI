@@ -69,10 +69,16 @@ CREATE TABLE public.ord_indexer_work_stats (
 	CONSTRAINT ord_indexer_work_stats_pk PRIMARY KEY (id)
 );
 
+CREATE TABLE public.ord_network_type (
+	id bigserial NOT NULL,
+	network_type text NOT NULL,
+	CONSTRAINT ord_network_type_pk PRIMARY KEY (id)
+);
+
 CREATE TABLE public.ord_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
 	db_version int4 NOT NULL,
 	CONSTRAINT ord_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.3.0', 3);
+INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.3.1', 4);

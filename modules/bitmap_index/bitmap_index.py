@@ -34,12 +34,24 @@ db_metaprotocol_host = os.getenv("DB_METAPROTOCOL_HOST") or "localhost"
 db_metaprotocol_port = int(os.getenv("DB_METAPROTOCOL_PORT") or "5432")
 db_metaprotocol_database = os.getenv("DB_METAPROTOCOL_DATABASE") or "postgres"
 db_metaprotocol_password = os.getenv("DB_METAPROTOCOL_PASSWD")
-first_inscription_height = int(os.getenv("FIRST_INSCRIPTION_HEIGHT") or "767430")
+network_type = os.getenv("NETWORK_TYPE") or "mainnet"
+
+first_inscription_heights = {
+  'mainnet': 767430,
+  'testnet': 2413343,
+  'signet': 112402,
+  'regtest': 0,
+}
+first_inscription_height = first_inscription_heights[network_type]
 
 report_to_indexer = (os.getenv("REPORT_TO_INDEXER") or "true") == "true"
 report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
 report_retries = int(os.getenv("REPORT_RETRIES") or "10")
 report_name = os.getenv("REPORT_NAME") or "opi_bitmap_indexer"
+
+if network_type == 'regtest':
+  report_to_indexer = False
+  print("Network type is regtest, reporting to indexer is disabled.")
 
 ## connect to db
 conn = psycopg2.connect(
@@ -59,6 +71,16 @@ conn_metaprotocol = psycopg2.connect(
   password=db_metaprotocol_password)
 conn_metaprotocol.autocommit = True
 cur_metaprotocol = conn_metaprotocol.cursor()
+
+cur_metaprotocol.execute('SELECT network_type from ord_network_type LIMIT 1;')
+if cur_metaprotocol.rowcount == 0:
+  print("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js or main_index")
+  sys.exit(1)
+
+network_type_db = cur_metaprotocol.fetchone()[0]
+if network_type_db != network_type:
+  print("network_type mismatch between main index and bitmap index")
+  sys.exit(1)
 
 ## helper functions
 def get_bitmap_number(content_hex):
@@ -245,6 +267,7 @@ def report_hashes(block_height):
     "name": report_name,
     "type": "bitmap",
     "node_type": "full_node",
+    "network_type": network_type,
     "version": INDEXER_VERSION,
     "db_version": DB_VERSION,
     "block_height": block_height,

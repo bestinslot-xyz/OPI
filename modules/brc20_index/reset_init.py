@@ -18,12 +18,12 @@ if init_env:
   DB_PORT="5432"
   DB_DATABASE="postgres"
   DB_PASSWD=""
-  FIRST_INSCRIPTION_HEIGHT="767430"
   DB_METAPROTOCOL_USER="postgres"
   DB_METAPROTOCOL_HOST="localhost"
   DB_METAPROTOCOL_PORT="5432"
   DB_METAPROTOCOL_DATABASE="postgres"
   DB_METAPROTOCOL_PASSWD=""
+  NETWORK_TYPE="mainnet"
   REPORT_TO_INDEXER="true"
   REPORT_URL="https://api.opi.network/report_block"
   REPORT_RETRIES="10"
@@ -72,7 +72,7 @@ if init_env:
     DB_METAPROTOCOL_PORT = env.get("DB_PORT") or "5432"
     DB_METAPROTOCOL_DATABASE = env.get("DB_DATABASE") or "postgres"
     DB_METAPROTOCOL_PASSWD = env.get("DB_PASSWD")
-    FIRST_INSCRIPTION_HEIGHT = env.get("FIRST_INSCRIPTION_HEIGHT") or "767430"
+    NETWORK_TYPE = env.get("NETWORK_TYPE") or "mainnet"
   else:
     res = input("Main Postgres DB username (Default: postgres): ")
     if res != '':
@@ -88,9 +88,9 @@ if init_env:
       DB_METAPROTOCOL_DATABASE = res
     res = input("Main Postgres DB password: ")
     DB_METAPROTOCOL_PASSWD = res
-    res = input("First inscription height (Default: 767430) leave default for correct hash reporting: ")
+    res = input("Network type (Default: mainnet) options: mainnet, testnet, signet, regtest: ")
     if res != '':
-      FIRST_INSCRIPTION_HEIGHT = res
+      NETWORK_TYPE = res
   res = input("Report to main indexer (Default: true): ")
   if res != '':
     REPORT_TO_INDEXER = res
@@ -117,12 +117,12 @@ if init_env:
   f.write('DB_PORT="' + DB_PORT + '"\n')
   f.write('DB_DATABASE="' + DB_DATABASE + '"\n')
   f.write('DB_PASSWD="' + DB_PASSWD + '"\n')
-  f.write('FIRST_INSCRIPTION_HEIGHT="' + FIRST_INSCRIPTION_HEIGHT + '"\n')
   f.write('DB_METAPROTOCOL_USER="' + DB_METAPROTOCOL_USER + '"\n')
   f.write('DB_METAPROTOCOL_HOST="' + DB_METAPROTOCOL_HOST + '"\n')
   f.write('DB_METAPROTOCOL_PORT="' + str(DB_METAPROTOCOL_PORT) + '"\n')
   f.write('DB_METAPROTOCOL_DATABASE="' + DB_METAPROTOCOL_DATABASE + '"\n')
   f.write('DB_METAPROTOCOL_PASSWD="' + DB_METAPROTOCOL_PASSWD + '"\n')
+  f.write('NETWORK_TYPE="' + NETWORK_TYPE + '"\n')
   f.write('REPORT_TO_INDEXER="' + REPORT_TO_INDEXER + '"\n')
   f.write('REPORT_URL="' + REPORT_URL + '"\n')
   f.write('REPORT_RETRIES="' + REPORT_RETRIES + '"\n')
