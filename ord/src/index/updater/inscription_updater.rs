@@ -18,11 +18,11 @@ enum Curse {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Flotsam {
+pub(super) struct Flotsam<'a> {
   inscription_id: InscriptionId,
   offset: u64,
   origin: Origin,
-  tx_option: Option<Transaction>,
+  tx_option: Option<&'a Transaction>,
 }
 
 // tracking first 2 transfers is enough for brc-20 metaprotocol
@@ -49,7 +49,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) blessed_inscription_count: u64,
   pub(super) chain: Chain,
   pub(super) cursed_inscription_count: u64,
-  pub(super) flotsam: Vec<Flotsam>,
+  pub(super) flotsam: Vec<Flotsam<'a>>,
   pub(super) height: u32,
   pub(super) home_inscription_count: u64,
   pub(super) home_inscriptions: &'a mut Table<'db, 'tx, u32, InscriptionIdValue>,
@@ -80,7 +80,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
 impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) fn index_envelopes(
     &mut self,
-    tx: &Transaction,
+    tx: &'a Transaction,
     txid: Txid,
     input_sat_ranges: Option<&VecDeque<(u64, u64)>>,
   ) -> Result {
@@ -112,7 +112,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           offset,
           inscription_id,
           origin: Origin::Old { old_satpoint },
-          tx_option: Some(tx.clone()),
+          tx_option: Some(&tx),
         });
 
         inscribed_offsets
@@ -264,7 +264,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
             pointer: inscription.payload.pointer(),
             unbound,
           },
-          tx_option: Some(tx.clone()),
+          tx_option: Some(&tx),
         });
 
         inscribed_offsets
