@@ -40,7 +40,6 @@ var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
 var ord_datadir = process.env.ORD_DATADIR || "."
 var cookie_file = process.env.COOKIE_FILE || ""
 
-const first_inscription_height = parseInt(process.env.FIRST_INSCRIPTION_HEIGHT || "767430")
 const network_type = process.env.NETWORK_TYPE || "mainnet"
 
 var network = null
