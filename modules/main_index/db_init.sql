@@ -7,6 +7,7 @@ CREATE TABLE public.ord_transfers (
 	new_pkscript text NOT NULL,
 	new_wallet text NULL,
 	sent_as_fee bool NOT NULL,
+	new_output_value int8 NOT NULL,
 	CONSTRAINT ord_transfers_pk PRIMARY KEY (id)
 );
 CREATE INDEX ord_transfers_block_height_idx ON public.ord_transfers USING btree (block_height);
@@ -68,10 +69,16 @@ CREATE TABLE public.ord_indexer_work_stats (
 	CONSTRAINT ord_indexer_work_stats_pk PRIMARY KEY (id)
 );
 
+CREATE TABLE public.ord_network_type (
+	id bigserial NOT NULL,
+	network_type text NOT NULL,
+	CONSTRAINT ord_network_type_pk PRIMARY KEY (id)
+);
+
 CREATE TABLE public.ord_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
 	db_version int4 NOT NULL,
 	CONSTRAINT ord_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.2.0', 2);
+INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.3.1', 4);

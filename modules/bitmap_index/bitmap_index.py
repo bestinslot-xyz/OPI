@@ -6,12 +6,14 @@ from dotenv import load_dotenv
 import traceback, time, codecs, json
 import psycopg2
 import hashlib
+import requests
 
 ## global variables
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-INDEXER_VERSION = "opi-bitmap-open-source v0.2.0"
+INDEXER_VERSION = "opi-bitmap-full-node v0.3.0"
+DB_VERSION = 3
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -32,7 +34,24 @@ db_metaprotocol_host = os.getenv("DB_METAPROTOCOL_HOST") or "localhost"
 db_metaprotocol_port = int(os.getenv("DB_METAPROTOCOL_PORT") or "5432")
 db_metaprotocol_database = os.getenv("DB_METAPROTOCOL_DATABASE") or "postgres"
 db_metaprotocol_password = os.getenv("DB_METAPROTOCOL_PASSWD")
-first_inscription_height = int(os.getenv("FIRST_INSCRIPTION_HEIGHT") or "767430")
+network_type = os.getenv("NETWORK_TYPE") or "mainnet"
+
+first_inscription_heights = {
+  'mainnet': 767430,
+  'testnet': 2413343,
+  'signet': 112402,
+  'regtest': 0,
+}
+first_inscription_height = first_inscription_heights[network_type]
+
+report_to_indexer = (os.getenv("REPORT_TO_INDEXER") or "true") == "true"
+report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
+report_retries = int(os.getenv("REPORT_RETRIES") or "10")
+report_name = os.getenv("REPORT_NAME") or "opi_bitmap_indexer"
+
+if network_type == 'regtest':
+  report_to_indexer = False
+  print("Network type is regtest, reporting to indexer is disabled.")
 
 ## connect to db
 conn = psycopg2.connect(
@@ -52,6 +71,16 @@ conn_metaprotocol = psycopg2.connect(
   password=db_metaprotocol_password)
 conn_metaprotocol.autocommit = True
 cur_metaprotocol = conn_metaprotocol.cursor()
+
+cur_metaprotocol.execute('SELECT network_type from ord_network_type LIMIT 1;')
+if cur_metaprotocol.rowcount == 0:
+  print("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js or main_index")
+  sys.exit(1)
+
+network_type_db = cur_metaprotocol.fetchone()[0]
+if network_type_db != network_type:
+  print("network_type mismatch between main index and bitmap index")
+  sys.exit(1)
 
 ## helper functions
 def get_bitmap_number(content_hex):
@@ -81,6 +110,7 @@ def get_sha256_hash(s):
 
 def update_event_hashes(block_height):
   global block_events_str
+  if len(block_events_str) > 0 and block_events_str[-1] == EVENT_SEPARATOR: block_events_str = block_events_str[:-1] ## remove last separator
   block_event_hash = get_sha256_hash(block_events_str)
   cumulative_event_hash = None
   cur.execute('''select cumulative_event_hash from bitmap_cumulative_event_hashes where block_height = %s;''', (block_height - 1,))
@@ -193,19 +223,65 @@ def check_if_there_is_residue_from_last_run():
     print("Rolled back to " + str(current_block - 1))
     return
 
-
-cur.execute('select indexer_version from bitmap_indexer_version;')
-if cur.rowcount == 0:
+try:
+  cur.execute('select db_version from bitmap_indexer_version;')
+  if cur.rowcount == 0:
+    print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")
+    exit(1)
+  else:
+    db_version = cur.fetchone()[0]
+    if db_version != DB_VERSION:
+      print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
+      exit(1)
+except:
   print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")
   exit(1)
-else:
-  db_indexer_version = cur.fetchone()[0]
-  if db_indexer_version != INDEXER_VERSION:
-    print("This version (" + db_indexer_version + ") cannot be fixed, please run reset_init.py")
-    exit(1)
 
+def try_to_report_with_retries(to_send):
+  global report_url, report_retries
+  for _ in range(0, report_retries):
+    try:
+      r = requests.post(report_url, json=to_send)
+      if r.status_code == 200:
+        print("Reported hashes to metaprotocol indexer indexer.")
+        return
+      else:
+        print("Error while reporting hashes to metaprotocol indexer indexer, status code: " + str(r.status_code))
+    except:
+      print("Error while reporting hashes to metaprotocol indexer indexer, retrying...")
+    time.sleep(1)
+  print("Error while reporting hashes to metaprotocol indexer indexer, giving up.")
+
+def report_hashes(block_height):
+  global report_to_indexer
+  if not report_to_indexer:
+    print("Reporting to metaprotocol indexer is disabled.")
+    return
+  cur.execute('''select block_event_hash, cumulative_event_hash from bitmap_cumulative_event_hashes where block_height = %s;''', (block_height,))
+  row = cur.fetchone()
+  block_event_hash = row[0]
+  cumulative_event_hash = row[1]
+  cur.execute('''select block_hash from bitmap_block_hashes where block_height = %s;''', (block_height,))
+  block_hash = cur.fetchone()[0]
+  to_send = {
+    "name": report_name,
+    "type": "bitmap",
+    "node_type": "full_node",
+    "network_type": network_type,
+    "version": INDEXER_VERSION,
+    "db_version": DB_VERSION,
+    "block_height": block_height,
+    "block_hash": block_hash,
+    "block_event_hash": block_event_hash,
+    "cumulative_event_hash": cumulative_event_hash
+  }
+  print("Sending hashes to metaprotocol indexer indexer...")
+  try_to_report_with_retries(to_send)
+
+last_report_height = 0
 check_if_there_is_residue_from_last_run()
 while True:
+  check_if_there_is_residue_from_last_run()
   ## check if a new block is indexed
   cur_metaprotocol.execute('''SELECT coalesce(max(block_height), -1) as max_height from block_hashes;''')
   max_block_of_metaprotocol_db = cur_metaprotocol.fetchone()[0]
@@ -230,6 +306,9 @@ while True:
     continue
   try:
     index_block(current_block, current_block_hash)
+    if max_block_of_metaprotocol_db - current_block < 10 or current_block - last_report_height > 100: ## do not report if there are more than 10 blocks to index
+      report_hashes(current_block)
+      last_report_height = current_block
   except:
     traceback.print_exc()
     if in_commit: ## rollback commit if any

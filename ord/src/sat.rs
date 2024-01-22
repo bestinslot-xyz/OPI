@@ -60,6 +60,7 @@ impl Sat {
   /// `Sat::rarity` is expensive and is called frequently when indexing.
   /// Sat::is_common only checks if self is `Rarity::Common` but is
   /// much faster.
+  #[allow(dead_code)]
   pub(crate) fn common(self) -> bool {
     let epoch = self.epoch();
     (self.0 - epoch.starting_sat().0) % epoch.subsidy() != 0

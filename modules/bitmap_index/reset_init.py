@@ -2,7 +2,7 @@
 # pip install psycopg2-binary
 
 import os, psycopg2
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 init_env = True
 
@@ -18,12 +18,16 @@ if init_env:
   DB_PORT="5432"
   DB_DATABASE="postgres"
   DB_PASSWD=""
-  FIRST_INSCRIPTION_HEIGHT="767430"
   DB_METAPROTOCOL_USER="postgres"
   DB_METAPROTOCOL_HOST="localhost"
   DB_METAPROTOCOL_PORT="5432"
   DB_METAPROTOCOL_DATABASE="postgres"
   DB_METAPROTOCOL_PASSWD=""
+  NETWORK_TYPE="mainnet"
+  REPORT_TO_INDEXER="true"
+  REPORT_URL="https://api.opi.network/report_block"
+  REPORT_RETRIES="10"
+  REPORT_NAME="opi_bitmap_index"
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
@@ -33,12 +37,12 @@ if init_env:
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    load_dotenv(dotenv_path='../bitmap_api/.env')
-    DB_USER = os.getenv("DB_USER") or "postgres"
-    DB_HOST = os.getenv("DB_HOST") or "localhost"
-    DB_PORT = os.getenv("DB_PORT") or "5432"
-    DB_DATABASE = os.getenv("DB_DATABASE") or "postgres"
-    DB_PASSWD = os.getenv("DB_PASSWD")
+    env = dotenv_values(dotenv_path='../bitmap_api/.env')
+    DB_USER = env.get("DB_USER") or "postgres"
+    DB_HOST = env.get("DB_HOST") or "localhost"
+    DB_PORT = env.get("DB_PORT") or "5432"
+    DB_DATABASE = env.get("DB_DATABASE") or "postgres"
+    DB_PASSWD = env.get("DB_PASSWD")
   else:
     res = input("Bitmap Postgres DB username (Default: postgres): ")
     if res != '':
@@ -61,13 +65,13 @@ if init_env:
     if res == 'y':
       use_main_env = True
   if use_main_env:
-    load_dotenv(dotenv_path='../main_index/.env')
-    DB_METAPROTOCOL_USER = os.getenv("DB_USER") or "postgres"
-    DB_METAPROTOCOL_HOST = os.getenv("DB_HOST") or "localhost"
-    DB_METAPROTOCOL_PORT = os.getenv("DB_PORT") or "5432"
-    DB_METAPROTOCOL_DATABASE = os.getenv("DB_DATABASE") or "postgres"
-    DB_METAPROTOCOL_PASSWD = os.getenv("DB_PASSWD")
-    FIRST_INSCRIPTION_HEIGHT = os.getenv("FIRST_INSCRIPTION_HEIGHT") or "767430"
+    env = dotenv_values(dotenv_path='../main_index/.env')
+    DB_METAPROTOCOL_USER = env.get("DB_USER") or "postgres"
+    DB_METAPROTOCOL_HOST = env.get("DB_HOST") or "localhost"
+    DB_METAPROTOCOL_PORT = env.get("DB_PORT") or "5432"
+    DB_METAPROTOCOL_DATABASE = env.get("DB_DATABASE") or "postgres"
+    DB_METAPROTOCOL_PASSWD = env.get("DB_PASSWD")
+    NETWORK_TYPE = env.get("NETWORK_TYPE") or "mainnet"
   else:
     res = input("Main Postgres DB username (Default: postgres): ")
     if res != '':
@@ -83,21 +87,42 @@ if init_env:
       DB_METAPROTOCOL_DATABASE = res
     res = input("Main Postgres DB password: ")
     DB_METAPROTOCOL_PASSWD = res
-    res = input("First inscription height (Default: 767430) leave default for correct hash reporting: ")
+    res = input("Network type (Default: mainnet) options: mainnet, testnet, signet, regtest: ")
     if res != '':
-      FIRST_INSCRIPTION_HEIGHT = res
+      NETWORK_TYPE = res
+  res = input("Report to main indexer (Default: true): ")
+  if res != '':
+    REPORT_TO_INDEXER = res
+  if REPORT_TO_INDEXER == 'true':
+    res = input("Report URL (Default: https://api.opi.network/report_block): ")
+    if res != '':
+      REPORT_URL = res
+    res = input("Report retries (Default: 10): ")
+    if res != '':
+      REPORT_RETRIES = res
+    while True:
+      res = input("Report name: ")
+      if res != '':
+        REPORT_NAME = res
+        break
+      else:
+        print('Report name cannot be empty')
   f = open('.env', 'w')
   f.write('DB_USER="' + DB_USER + '"\n')
   f.write('DB_HOST="' + DB_HOST + '"\n')
   f.write('DB_PORT="' + DB_PORT + '"\n')
   f.write('DB_DATABASE="' + DB_DATABASE + '"\n')
   f.write('DB_PASSWD="' + DB_PASSWD + '"\n')
-  f.write('FIRST_INSCRIPTION_HEIGHT="' + FIRST_INSCRIPTION_HEIGHT + '"\n')
   f.write('DB_METAPROTOCOL_USER="' + DB_METAPROTOCOL_USER + '"\n')
   f.write('DB_METAPROTOCOL_HOST="' + DB_METAPROTOCOL_HOST + '"\n')
   f.write('DB_METAPROTOCOL_PORT="' + str(DB_METAPROTOCOL_PORT) + '"\n')
   f.write('DB_METAPROTOCOL_DATABASE="' + DB_METAPROTOCOL_DATABASE + '"\n')
   f.write('DB_METAPROTOCOL_PASSWD="' + DB_METAPROTOCOL_PASSWD + '"\n')
+  f.write('NETWORK_TYPE="' + NETWORK_TYPE + '"\n')
+  f.write('REPORT_TO_INDEXER="' + REPORT_TO_INDEXER + '"\n')
+  f.write('REPORT_URL="' + REPORT_URL + '"\n')
+  f.write('REPORT_RETRIES="' + REPORT_RETRIES + '"\n')
+  f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
   f.close()
 
 res = input("Are you sure you want to initialise/reset the bitmaps database? (y/n) ")

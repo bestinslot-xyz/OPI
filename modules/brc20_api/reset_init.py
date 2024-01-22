@@ -1,7 +1,7 @@
 # pip install python-dotenv
 
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 init_env = True
 
@@ -32,13 +32,13 @@ if init_env:
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    load_dotenv(dotenv_path='../brc20_index/.env')
-    DB_USER = os.getenv("DB_USER") or "postgres"
-    DB_HOST = os.getenv("DB_HOST") or "localhost"
-    DB_PORT = os.getenv("DB_PORT") or "5432"
-    DB_DATABASE = os.getenv("DB_DATABASE") or "postgres"
-    DB_PASSWD = os.getenv("DB_PASSWD")
-    USE_EXTRA_TABLES = os.getenv("CREATE_EXTRA_TABLES") or "false"
+    env = dotenv_values(dotenv_path='../brc20_index/.env')
+    DB_USER = env.get("DB_USER") or "postgres"
+    DB_HOST = env.get("DB_HOST") or "localhost"
+    DB_PORT = env.get("DB_PORT") or "5432"
+    DB_DATABASE = env.get("DB_DATABASE") or "postgres"
+    DB_PASSWD = env.get("DB_PASSWD")
+    USE_EXTRA_TABLES = env.get("CREATE_EXTRA_TABLES") or "false"
   else:
     res = input("BRC20 Postgres DB username (Default: postgres): ")
     if res != '':
