@@ -1,0 +1,13 @@
+/*.redb
+/.idea/
+/.vagrant
+/docs/build
+/fuzz/artifacts
+/fuzz/corpus
+/fuzz/coverage
+/fuzz/target
+/ord.log
+/target
+/test-times.txt
+/tmp
+.DS_Store

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+which rg > /dev/null
+
+! rg \
+  --glob '!bin/forbid' \
+  --glob '!docs/src/bounty/frequency.tsv' \
+  --glob '!docs/po/*' \
+  --ignore-case \
+  'dbg!|fixme|todo|xxx' \
+  .
