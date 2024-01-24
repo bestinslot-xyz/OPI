@@ -1,7 +1,8 @@
 # pip install python-dotenv
 # pip install psycopg2-binary
+# pip install stdiomask
 
-import os, psycopg2, pathlib
+import os, psycopg2, pathlib, stdiomask
 from dotenv import load_dotenv
 
 init_env = True
@@ -41,7 +42,7 @@ if init_env:
   res = input("Main Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
   if res != '':
     DB_DATABASE = res
-  res = input("Main Postgres DB password: ")
+  res = stdiomask.getpass("Main Postgres DB password: ")
   DB_PASSWD = res
   res = input("Main Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':
@@ -55,7 +56,7 @@ if init_env:
   res = input("Bitcoin RPC username (Default: (empty)) leave default to use .cookie file: ")
   if res != '':
     BITCOIN_RPC_USER = res
-  res = input("Bitcoin RPC password (Default: (empty)) leave default to use .cookie file: ")
+  res = stdiomask.getpass("Bitcoin RPC password (Default: (empty)) leave default to use .cookie file: ")
   if res != '':
     BITCOIN_RPC_PASSWD = res
   res = input("Ord binary command (Default: ./ord) change to ord.exe on Windows (without ./): ")

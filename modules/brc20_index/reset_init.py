@@ -1,7 +1,8 @@
 # pip install python-dotenv
 # pip install psycopg2-binary
+# pip install stdiomask
 
-import os, psycopg2
+import os, psycopg2, stdiomask
 from dotenv import load_dotenv, dotenv_values
 
 init_env = True
@@ -57,7 +58,7 @@ if init_env:
     res = input("BRC20 Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_DATABASE = res
-    res = input("BRC20 Postgres DB password: ")
+    res = stdiomask.getpass("BRC20 Postgres DB password: ")
     DB_PASSWD = res
   use_main_env = False
   main_env_exists = os.path.isfile('../main_index/.env')
@@ -86,7 +87,7 @@ if init_env:
     res = input("Main Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_METAPROTOCOL_DATABASE = res
-    res = input("Main Postgres DB password: ")
+    res = stdiomask.getpass("Main Postgres DB password: ")
     DB_METAPROTOCOL_PASSWD = res
     res = input("Network type (Default: mainnet) options: mainnet, testnet, signet, regtest: ")
     if res != '':

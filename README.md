@@ -122,7 +122,7 @@ Otherwise, it cannot decode some addresses such as `512057cd4cfa03f27f7b18c2fe45
 ```bash
 pip3 install python-dotenv;
 pip3 install psycopg2-binary;
-python3 -m pip install json5;
+python3 -m pip install json5 stdiomask;
 ```
 
 **Setup .env files and DBs**
