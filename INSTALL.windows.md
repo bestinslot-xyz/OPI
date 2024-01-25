@@ -53,6 +53,7 @@ When output matches mempool.space, BTC Core synced.
 ```bash
 py -m pip install python-dotenv
 py -m pip install pyscopg2-binary
+py -m pip install json5
 py -m pip install requests
 ```
 
@@ -105,6 +106,13 @@ cd bitmap_api
 npm install
 ```
 
+Then install:
+```bash
+cd ..
+cd sns_api
+npm install
+```
+
 # Run
 
 **Main Meta-Protocol Indexer**
@@ -151,6 +159,24 @@ py bitmap_index.py
 ```bash
 cd ..
 cd bitmap_api
+node api.js
+```
+
+**SNS Indexer**
+```bash
+cd ..
+cd sns_index
+py reset_init.py
+```
+~ Complete prompts (if you did .env earlier, skip)
+```bash
+py sns_index.py
+```
+
+**SNS API**
+```bash
+cd ..
+cd sns_api
 node api.js
 ```
 

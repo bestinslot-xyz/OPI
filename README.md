@@ -94,6 +94,7 @@ cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 
 For detailed installation guides:
 - Ubuntu: [installation guide](INSTALL.ubuntu.md)
+- Windows: [installation guide](INSTALL.windows.md)
 
 OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
 
