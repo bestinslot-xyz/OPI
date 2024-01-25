@@ -70,7 +70,7 @@ Run `reset_init.py` in runes_index and runes_api to initialise .env file, databa
 **Runes Indexer**
 ```bash
 cd modules/runes_index;
-node index.js;
+node index_runes.js;
 ```
 
 **Runes API**
