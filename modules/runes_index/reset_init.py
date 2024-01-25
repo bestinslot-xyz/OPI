@@ -24,7 +24,7 @@ if init_env:
   BITCOIN_RPC_USER=""
   BITCOIN_RPC_PASSWD=""
   ORD_BINARY="./ord"
-  ORD_FOLDER="../../ord-runes/target/release/"
+  ORD_FOLDER="ord-runes/target/release/"
   ORD_DATADIR="."
   NETWORK_TYPE="signet"
   REPORT_TO_INDEXER="true"

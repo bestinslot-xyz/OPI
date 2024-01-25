@@ -165,7 +165,7 @@ app.get('/v1/runes/get_current_balance_of_wallet', async (request, response) => 
   }
 });
 
-app.get('/v1/runes/get_unspent_rune_outputs_of_wallet', async (request, response) => {
+app.get('/v1/runes/get_unspent_rune_outpoints_of_wallet', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
 

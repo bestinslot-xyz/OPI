@@ -34,7 +34,12 @@ var bitcoin_rpc_user = process.env.BITCOIN_RPC_USER || ""
 var bitcoin_rpc_password = process.env.BITCOIN_RPC_PASSWD || ""
 
 var ord_binary = process.env.ORD_BINARY || "ord"
-var ord_folder = process.env.ORD_FOLDER || "../../ord-runes/target/release/"
+var ord_folder = process.env.ORD_FOLDER || "ord-runes/target/release/"
+if (ord_folder.length == 0) {
+  console.error("ord_folder not set in .env, please run python3 reset_init.py")
+  process.exit(1)
+}
+if (ord_folder[ord_folder.length - 1] != '/') ord_folder += '/'
 var ord_datadir = process.env.ORD_DATADIR || "."
 
 var report_to_indexer = (process.env.REPORT_TO_INDEXER || "true") == "true"
@@ -609,7 +614,7 @@ async function update_cumulative_block_hashes(until_height, to_be_inserted_hashe
 
     let block_events_string = ""
     for (const row of events_q.rows) {
-      block_events_string += event_type_rev[row.event_type] + ";" + (row.outpoint || "") + ";" + row.pkscript + ";" + row.rune_id + ";" + row.amount + "|"
+      block_events_string += event_type_rev[row.event_type] + ";" + (row.outpoint || "") + ";" + (row.pkscript || "") + ";" + row.rune_id + ";" + row.amount + "|"
     }
     block_events_string = block_events_string.slice(0, -1) // remove last separator
     let block_event_hash = bitcoin.crypto.sha256(Buffer.from(block_events_string, 'utf8')).toString('hex')
