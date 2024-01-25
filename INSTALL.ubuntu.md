@@ -29,7 +29,7 @@ sudo systemctl start postgresql.service
 2) *(Optional)*, I'll usually mark postgres on hold since apt will try to auto update postgres which will restart its process and close all active connections.
 
 ```bash
-apt-mark hold postgresql postgresql-14 postgresql-client-14 postgresql-client-common postgresql-common postgresql-contrib
+sudo apt-mark hold postgresql postgresql-14 postgresql-client-14 postgresql-client-common postgresql-common postgresql-contrib
 ```
 
 3) Set a password for postgresql user.
