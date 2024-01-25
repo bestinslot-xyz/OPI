@@ -1,6 +1,7 @@
 # pip install python-dotenv
+# pip install stdiomask
 
-import os
+import os, stdiomask
 from dotenv import dotenv_values
 
 init_env = True
@@ -50,7 +51,7 @@ if init_env:
     res = input("SNS Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_DATABASE = res
-    res = input("SNS Postgres DB password: ")
+    res = stdiomask.getpass("SNS Postgres DB password: ")
     DB_PASSWD = res
   res = input("SNS Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':
