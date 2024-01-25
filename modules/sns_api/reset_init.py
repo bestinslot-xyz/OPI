@@ -1,9 +1,8 @@
 # pip install python-dotenv
 # pip install stdiomask
 
-import os
-from dotenv import load_dotenv, dotenv_values
-import stdiomask
+import os, stdiomask
+from dotenv import dotenv_values
 
 init_env = True
 
@@ -21,54 +20,49 @@ if init_env:
   DB_PASSWD=""
   DB_SSL="true"
   DB_MAX_CONNECTIONS=10
-  USE_EXTRA_TABLES="true"
   API_HOST="127.0.0.1"
-  API_PORT="8000"
+  API_PORT="8002"
   API_TRUSTED_PROXY_CNT="0"
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
-  other_env_exists = os.path.isfile('../brc20_index/.env')
+  other_env_exists = os.path.isfile('../sns_index/.env')
   if other_env_exists:
-    res = input(".env on brc20_index already exists, do you want to use values from there? (y/n) ")
+    res = input(".env on sns_index already exists, do you want to use values from there? (y/n) ")
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    env = dotenv_values(dotenv_path='../brc20_index/.env')
+    env = dotenv_values(dotenv_path='../sns_index/.env')
     DB_USER = env.get("DB_USER") or "postgres"
     DB_HOST = env.get("DB_HOST") or "localhost"
     DB_PORT = env.get("DB_PORT") or "5432"
     DB_DATABASE = env.get("DB_DATABASE") or "postgres"
     DB_PASSWD = env.get("DB_PASSWD")
-    USE_EXTRA_TABLES = env.get("CREATE_EXTRA_TABLES") or "false"
   else:
-    res = input("BRC20 Postgres DB username (Default: postgres): ")
+    res = input("SNS Postgres DB username (Default: postgres): ")
     if res != '':
       DB_USER = res
-    res = input("BRC20 Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
+    res = input("SNS Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
     if res != '':
       DB_HOST = res
-    res = input("BRC20 Postgres DB port (Default: 5432): ")
+    res = input("SNS Postgres DB port (Default: 5432): ")
     if res != '':
       DB_PORT = res
-    res = input("BRC20 Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
+    res = input("SNS Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_DATABASE = res
-    res = stdiomask.getpass("BRC20 Postgres DB password: ")
+    res = stdiomask.getpass("SNS Postgres DB password: ")
     DB_PASSWD = res
-    res = input("Use extra tables (Default: true): ")
-    if res != '':
-      USE_EXTRA_TABLES = res
-  res = input("BRC20 Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
+  res = input("SNS Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':
     DB_SSL = res
-  res = input("BRC20 Postgres DB max connections (Default: 10): ")
+  res = input("SNS Postgres DB max connections (Default: 10): ")
   if res != '':
     DB_MAX_CONNECTIONS = res
   res = input("API host (Default: 127.0.0.1): ")
   if res != '':
     API_HOST = res
-  res = input("API port (Default: 8000): ")
+  res = input("API port (Default: 8002): ")
   if res != '':
     API_PORT = res
   res = input("API trusted proxy count (Default: 0) if there are known proxies such as nginx in front of API, set this to the number of proxies: ")
@@ -82,7 +76,6 @@ if init_env:
   f.write("DB_PASSWD=\"" + DB_PASSWD + "\"\n")
   f.write("DB_SSL=\"" + DB_SSL + "\"\n")
   f.write("DB_MAX_CONNECTIONS=" + str(DB_MAX_CONNECTIONS) + "\n")
-  f.write("USE_EXTRA_TABLES=\"" + USE_EXTRA_TABLES + "\"\n")
   f.write("API_HOST=\"" + API_HOST + "\"\n")
   f.write("API_PORT=\"" + API_PORT + "\"\n")
   f.write("API_TRUSTED_PROXY_CNT=\"" + API_TRUSTED_PROXY_CNT + "\"\n")

@@ -14,7 +14,7 @@ const readline = require('readline');
 
 bitcoin.initEccLib(ecc)
 
-console.log("VERSION V0.2.0")
+console.log("VERSION V0.3.0")
 
 // for self-signed cert of postgres
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
@@ -38,11 +38,41 @@ var bitcoin_rpc_password = process.env.BITCOIN_RPC_PASSWD || ""
 var ord_binary = process.env.ORD_BINARY || "ord"
 var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
 var ord_datadir = process.env.ORD_DATADIR || "."
-const first_inscription_height = parseInt(process.env.FIRST_INSCRIPTION_HEIGHT || "767430")
 
-const DB_VERSION = 2
-const INDEXER_VERSION = 'OPI V0.2.0'
-const ORD_VERSION = '0.14.0'
+const network_type = process.env.NETWORK_TYPE || "mainnet"
+
+var network = null
+var network_folder = ""
+if (network_type == "mainnet") {
+  network = bitcoin.networks.bitcoin
+  network_folder = ""
+} else if (network_type == "testnet") {
+  network = bitcoin.networks.testnet
+  network_folder = "testnet3/"
+} else if (network_type == "signet") {
+  network = bitcoin.networks.signet
+  network_folder = "signet/"
+} else if (network_type == "regtest") {
+  network = bitcoin.networks.regtest
+  network_folder = "regtest/"
+} else {
+  console.error("Unknown network type: " + network_type)
+  process.exit(1)
+}
+const first_inscription_heights = {
+  'mainnet': 767430,
+  'testnet': 2413343,
+  'signet': 112402,
+  'regtest': 0,
+}
+const first_inscription_height = first_inscription_heights[network_type]
+const fast_index_below = first_inscription_height + 7000
+
+const DB_VERSION = 4
+const RECOVERABLE_DB_VERSIONS = [3]
+// eslint-disable-next-line no-unused-vars
+const INDEXER_VERSION = 'OPI V0.3.1'
+const ORD_VERSION = 'opi-ord 0.14.0-2'
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
@@ -64,13 +94,13 @@ async function main_index() {
 
     let start_tm = +(new Date())
 
-    if (!fs.existsSync(ord_folder + "log_file.txt")) {
+    if (!fs.existsSync(ord_folder + network_folder + "log_file.txt")) {
       console.error("log_file.txt not found, creating")
-      fs.writeFileSync(ord_folder + "log_file.txt", '')
+      fs.writeFileSync(ord_folder + network_folder + "log_file.txt", '')
     }
-    if (!fs.existsSync(ord_folder + "log_file_index.txt")) {
+    if (!fs.existsSync(ord_folder + network_folder + "log_file_index.txt")) {
       console.error("log_file_index.txt not found, creating")
-      fs.writeFileSync(ord_folder + "log_file_index.txt", '')
+      fs.writeFileSync(ord_folder + network_folder + "log_file_index.txt", '')
     }
 
     let ord_last_block_height_q = await db_pool.query(`SELECT coalesce(max(block_height), -1) as max_height from block_hashes;`)
@@ -81,7 +111,7 @@ async function main_index() {
 
     let ord_index_st_tm = +(new Date())
     let ord_end_block_height = ord_last_block_height + 500
-    if (ord_last_block_height < 774000) { // a random point where blocks start to get more inscription
+    if (ord_last_block_height < fast_index_below) { // a random point where blocks start to get more inscription
       ord_end_block_height = ord_last_block_height + 1000
     }
 
@@ -92,7 +122,15 @@ async function main_index() {
     if (bitcoin_rpc_user != "") {
       rpc_argument = " --bitcoin-rpc-user " + bitcoin_rpc_user + " --bitcoin-rpc-pass " + bitcoin_rpc_password
     }
-    let ord_index_cmd = ord_binary + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
+    let network_argument = ""
+    if (network == bitcoin.networks.signet) {
+      network_argument = " --signet"
+    } else if (network == bitcoin.networks.regtest) {
+      network_argument = " --regtest"
+    } else if (network == bitcoin.networks.testnet) {
+      network_argument = " --testnet"
+    }
+    let ord_index_cmd = ord_binary + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
     try {
       let version_string = execSync(ord_version_cmd).toString()
       console.log("ord version: " + version_string)
@@ -112,7 +150,7 @@ async function main_index() {
     process.chdir(current_directory);
     let ord_index_tm = +(new Date()) - ord_index_st_tm
     
-    const fileStream = fs.createReadStream(ord_folder + "log_file.txt", { encoding: 'UTF-8' });
+    const fileStream = fs.createReadStream(ord_folder + network_folder + "log_file.txt", { encoding: 'UTF-8' });
     const rl = readline.createInterface({
       input: fileStream,
       crlfDelay: Infinity
@@ -121,7 +159,7 @@ async function main_index() {
     for await (const line of rl) {
       lines.push(line)
     }
-    let lines_index = fs.readFileSync(ord_folder + "log_file_index.txt", "utf8").split('\n')
+    let lines_index = fs.readFileSync(ord_folder + network_folder + "log_file_index.txt", "utf8").split('\n')
     if (lines_index.length == 1) {
       console.log("Nothing new, waiting!!")
       continue
@@ -152,6 +190,7 @@ async function main_index() {
               (reorg_tm, old_block_height, new_block_height)
               values ($1, $2, $3);`, 
               [reorg_tm, current_height, block_height - 1])
+          current_height = Math.min(current_height, block_height - 1)
         }
       }
     }
@@ -233,7 +272,7 @@ async function main_index() {
     let ord_sql_st_tm = +(new Date())
 
     let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, cursed_for_brc20, block_height) values ($1, $2, $3, $4);`
-    let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee) values ($1, $2, $3, $4, $5, $6, $7, $8);`
+    let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee, new_output_value) values ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
     let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     
@@ -306,11 +345,11 @@ async function main_index() {
                 process.exit(1)
               }
               future_sent_as_fee_transfer_id[parts[4]][1] = true
-              running_promises.push(execute_on_db(sql_query_insert_transfer, [transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8]), parts[7] == "true" ? true : false]))
+              running_promises.push(execute_on_db(sql_query_insert_transfer, [transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8], network), parts[7] == "true" ? true : false, parseInt(parts[9])]))
               transfer_count += 1
               ord_sql_query_count += 1
             } else {
-              running_promises.push(execute_on_db(sql_query_insert_transfer, [current_transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8]), parts[7] == "true" ? true : false]))
+              running_promises.push(execute_on_db(sql_query_insert_transfer, [current_transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8], network), parts[7] == "true" ? true : false, parseInt(parts[9])]))
               current_transfer_id += 1
               transfer_count += 1
               ord_sql_query_count += 1
@@ -360,8 +399,8 @@ async function main_index() {
 
     console.log("Updating Log Files")
     let update_log_st_tm = +(new Date())
-    fs.writeFileSync(ord_folder + "log_file.txt", '')
-    fs.writeFileSync(ord_folder + "log_file_index.txt", '')
+    fs.writeFileSync(ord_folder + network_folder + "log_file.txt", '')
+    fs.writeFileSync(ord_folder + network_folder + "log_file_index.txt", '')
     let update_log_tm = +(new Date()) - update_log_st_tm
 
     ord_index_tm = Math.round(ord_index_tm)
@@ -404,23 +443,23 @@ o.w. it cannot decode 512057cd4cfa03f27f7b18c2fe45fe2c2e0f7b5ccb034af4dec098977c
 */
 function wallet_from_pkscript(pkscript) {
   try {
-    let address = bitcoin.payments.p2tr({ output: Buffer.from(pkscript, 'hex') })
+    let address = bitcoin.payments.p2tr({ output: Buffer.from(pkscript, 'hex'), network: network })
     return address.address
   } catch { /* try others */ }
   try {
-    let address = bitcoin.payments.p2wsh({ output: Buffer.from(pkscript, 'hex') })
+    let address = bitcoin.payments.p2wsh({ output: Buffer.from(pkscript, 'hex'), network: network })
     return address.address
   } catch { /* try others */ }
   try {
-    let address = bitcoin.payments.p2wpkh({ output: Buffer.from(pkscript, 'hex') })
+    let address = bitcoin.payments.p2wpkh({ output: Buffer.from(pkscript, 'hex'), network: network })
     return address.address
   } catch { /* try others */ }
   try {
-    let address = bitcoin.payments.p2sh({ output: Buffer.from(pkscript, 'hex') })
+    let address = bitcoin.payments.p2sh({ output: Buffer.from(pkscript, 'hex'), network: network })
     return address.address
   } catch { /* try others */ }
   try {
-    let address = bitcoin.payments.p2pkh({ output: Buffer.from(pkscript, 'hex') })
+    let address = bitcoin.payments.p2pkh({ output: Buffer.from(pkscript, 'hex'), network: network })
     return address.address
   } catch { /* end */ }
 
@@ -441,6 +480,20 @@ async function handle_reorg(block_height) {
   await db_pool.query(`SELECT setval('block_hashes_id_seq', max(id)) from block_hashes;`)
 }
 
+async function fix_db_from_version(db_version) {
+  if (db_version == 3) {
+    await db_pool.query(`CREATE TABLE public.ord_network_type (
+      id bigserial NOT NULL,
+      network_type text NOT NULL,
+      CONSTRAINT ord_network_type_pk PRIMARY KEY (id)
+    );`)
+    await db_pool.query(`INSERT INTO ord_network_type (network_type) VALUES ($1);`, ['mainnet']) // v3 only supported mainnet
+  } else {
+    console.error("Unknown db_version: " + db_version)
+    process.exit(1)
+  }
+}
+
 async function check_db() {
   console.log("checking db")
 
@@ -448,12 +501,29 @@ async function check_db() {
     let db_version_q = await db_pool.query(`SELECT db_version from ord_indexer_version;`)
     let db_version = db_version_q.rows[0].db_version
     if (db_version != DB_VERSION) {
-      console.error("db_version mismatch, db needs to be recreated from scratch, please run reset_init.py")
-      process.exit(1)
+      if (RECOVERABLE_DB_VERSIONS.includes(db_version)) {
+        console.error("db_version mismatch, will be automatically fixed")
+        await fix_db_from_version(db_version)
+        await db_pool.query(`UPDATE ord_indexer_version SET db_version = $1, indexer_version = $2;`, [DB_VERSION, INDEXER_VERSION])
+      } else {
+        console.error("db_version mismatch, db needs to be recreated from scratch, please run reset_init.py")
+        process.exit(1)
+      }
     }
   } catch (err) {
     console.error(err)
     console.error("db_version not found, db needs to be recreated from scratch, please run reset_init.py")
+    process.exit(1)
+  }
+
+  let res_q = await db_pool.query(`SELECT * from ord_network_type LIMIT 1;`)
+  if (res_q.rows.length == 0) {
+    console.error("ord_network_type not found, db needs to be recreated from scratch, please run reset_init.py")
+    process.exit(1)
+  }
+  let network_type_db = res_q.rows[0].network_type
+  if (network_type_db != network_type) {
+    console.error("network_type mismatch, db needs to be recreated from scratch, please run reset_init.py")
     process.exit(1)
   }
 

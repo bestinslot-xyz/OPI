@@ -16,9 +16,9 @@ ticks = {}
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-CAN_BE_FIXED_INDEXER_VERSIONS = [  ]
-INDEXER_VERSION = "opi-brc20-open-source v0.2.0"
-DB_VERSION = 2
+INDEXER_VERSION = "opi-brc20-full-node v0.3.0"
+CAN_BE_FIXED_DB_VERSIONS = [  ]
+DB_VERSION = 3
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -39,12 +39,24 @@ db_metaprotocol_host = os.getenv("DB_METAPROTOCOL_HOST") or "localhost"
 db_metaprotocol_port = int(os.getenv("DB_METAPROTOCOL_PORT") or "5432")
 db_metaprotocol_database = os.getenv("DB_METAPROTOCOL_DATABASE") or "postgres"
 db_metaprotocol_password = os.getenv("DB_METAPROTOCOL_PASSWD")
-first_inscription_height = int(os.getenv("FIRST_INSCRIPTION_HEIGHT") or "767430")
 report_to_indexer = (os.getenv("REPORT_TO_INDEXER") or "true") == "true"
 report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
 report_retries = int(os.getenv("REPORT_RETRIES") or "10")
 report_name = os.getenv("REPORT_NAME") or "opi_brc20_indexer"
 create_extra_tables = (os.getenv("CREATE_EXTRA_TABLES") or "false") == "true"
+network_type = os.getenv("NETWORK_TYPE") or "mainnet"
+
+first_inscription_heights = {
+  'mainnet': 767430,
+  'testnet': 2413343,
+  'signet': 112402,
+  'regtest': 0,
+}
+first_inscription_height = first_inscription_heights[network_type]
+
+if network_type == 'regtest':
+  report_to_indexer = False
+  print("Network type is regtest, reporting to indexer is disabled.")
 
 ## connect to db
 conn = psycopg2.connect(
@@ -83,6 +95,16 @@ if create_extra_tables:
       sql = f.read()
       cur.execute(sql)
     conn.commit()
+
+cur_metaprotocol.execute('SELECT network_type from ord_network_type LIMIT 1;')
+if cur_metaprotocol.rowcount == 0:
+  print("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js or main_index")
+  sys.exit(1)
+
+network_type_db = cur_metaprotocol.fetchone()[0]
+if network_type_db != network_type:
+  print("network_type mismatch between main index and brc20 index")
+  sys.exit(1)
 
 ## helper functions
 
@@ -677,19 +699,19 @@ def reindex_cumulative_hashes():
       block_events_str += get_event_str(event, event_type, inscription_id) + EVENT_SEPARATOR
     update_event_hashes(block_height)
 
-cur.execute('select indexer_version from brc20_indexer_version;')
+cur.execute('select db_version from brc20_indexer_version;')
 if cur.rowcount == 0:
   print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")
   exit(1)
 else:
-  db_indexer_version = cur.fetchone()[0]
-  if db_indexer_version != INDEXER_VERSION:
+  db_version = cur.fetchone()[0]
+  if db_version != DB_VERSION:
     print("Indexer version mismatch!!")
-    if db_indexer_version not in CAN_BE_FIXED_INDEXER_VERSIONS:
-      print("This version (" + db_indexer_version + ") cannot be fixed, please run reset_init.py")
+    if db_version not in CAN_BE_FIXED_DB_VERSIONS:
+      print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
       exit(1)
     else:
-      print("This version (" + db_indexer_version + ") can be fixed, fixing in 5 secs...")
+      print("This version (" + db_version + ") can be fixed, fixing in 5 secs...")
       time.sleep(5)
       reindex_cumulative_hashes()
       cur.execute('alter table brc20_indexer_version add column if not exists db_version int4;') ## next versions will use DB_VERSION for DB check
@@ -726,6 +748,7 @@ def report_hashes(block_height):
     "name": report_name,
     "type": "brc20",
     "node_type": "full_node",
+    "network_type": network_type,
     "version": INDEXER_VERSION,
     "db_version": DB_VERSION,
     "block_height": block_height,
@@ -778,8 +801,8 @@ def reorg_on_extra_tables(reorg_height):
                     VALUES (%s, %s, %s, %s, %s, %s, %s)''', 
                     (inscription_id, new_event["tick"], int(new_event["amount"]), new_event["source_pkScript"], new_event["source_wallet"], event_id, block_height))
 
-  cur.execute('delete from brc20_block_hashes_current_balances where block_height > %s;', (reorg_height,)) ## delete new block hashes
-  cur.execute("SELECT setval('brc20_block_hashes_current_balances_id_seq', max(id)) from brc20_block_hashes_current_balances;") ## reset id sequence
+  cur.execute('delete from brc20_extras_block_hashes where block_height > %s;', (reorg_height,)) ## delete new block hashes
+  cur.execute("SELECT setval('brc20_extras_block_hashes_id_seq', max(id)) from brc20_extras_block_hashes;") ## reset id sequence
   cur.execute('commit;')
 
 def initial_index_of_extra_tables():

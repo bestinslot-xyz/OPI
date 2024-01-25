@@ -1,7 +1,9 @@
 # pip install python-dotenv
+# pip install stdiomask
 
 import os
-from dotenv import load_dotenv
+from dotenv import dotenv_values
+import stdiomask
 
 init_env = True
 
@@ -31,12 +33,12 @@ if init_env:
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    load_dotenv(dotenv_path='../bitmap_index/.env')
-    DB_USER = os.getenv("DB_USER") or "postgres"
-    DB_HOST = os.getenv("DB_HOST") or "localhost"
-    DB_PORT = os.getenv("DB_PORT") or "5432"
-    DB_DATABASE = os.getenv("DB_DATABASE") or "postgres"
-    DB_PASSWD = os.getenv("DB_PASSWD")
+    env = dotenv_values(dotenv_path='../bitmap_index/.env')
+    DB_USER = env.get("DB_USER") or "postgres"
+    DB_HOST = env.get("DB_HOST") or "localhost"
+    DB_PORT = env.get("DB_PORT") or "5432"
+    DB_DATABASE = env.get("DB_DATABASE") or "postgres"
+    DB_PASSWD = env.get("DB_PASSWD")
   else:
     res = input("Bitmap Postgres DB username (Default: postgres): ")
     if res != '':
@@ -50,7 +52,7 @@ if init_env:
     res = input("Bitmap Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_DATABASE = res
-    res = input("Bitmap Postgres DB password: ")
+    res = stdiomask.getpass("Bitmap Postgres DB password: ")
     DB_PASSWD = res
   res = input("Bitmap Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':

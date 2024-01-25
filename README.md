@@ -4,7 +4,7 @@ Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** 
 OPI uses a fork of **ord 0.14.0** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind. The main indexer indexes all text/json inscriptions and modules can extend it with different meta-protocols.
 All modules in OPI have been built with **reorg protection**.
 
-Currently OPI has modules for **BRC-20** and **Bitmap**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
+Currently OPI has modules for **BRC-20**, **Bitmap** and **SNS**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
 
 ## Main Meta-Protocol Indexer
 
@@ -57,6 +57,7 @@ EVENT_SEPARATOR = '|'
 for bitmap in new_bitmaps_in_block:
   block_str += 'inscribe;<inscr_id>;<bitmap_number>' + EVENT_SEPARATOR
 
+if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
 block_hash = sha256_hex(block_str)
 ## for first block last_cumulative_hash is empty
 cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
@@ -64,10 +65,36 @@ cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 
 **Bitmap API** exposes block hash and cumulative hash at a given block, hash of all bitmaps and inscription_id of a given bitmap.
 
+## SNS Indexer / API
+
+**SNS Indexer** is the third module of OPI. It follows the official protocol rules hosted [here](https://docs.satsnames.org/sats-names/sns-spec/index-names). SNS Indexer saves all name, domain, inscription-id and namespace, inscription-id tuples.
+
+In addition to indexing all tuples, it also calculates a block hash and cumulative hash of all events for easier db comparison. Here's the pseudocode for hash calculation:
+
+```python
+## Calculation starts at block 767430 which is the first inscription block
+
+EVENT_SEPARATOR = '|'
+for event in new_events_in_block:
+  if event is 'name-registration':
+    ## name is the full name, domain is the part afler dot
+    block_str += 'register;<inscr_id>;<name>;<domain>' + EVENT_SEPARATOR
+  elif event is 'namespace-registration':
+    block_str += 'ns_register;<inscr_id>;<namespace>' + EVENT_SEPARATOR
+
+if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
+block_hash = sha256_hex(block_str)
+## for first block last_cumulative_hash is empty
+cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
+```
+
+**SNS API** exposes block hash and cumulative hash at a given block, hash of all registered names, id number and domain of a given name, id number and name tuples of a domain, and all registered namespaces endpoints.
+
 # Setup
 
 For detailed installation guides:
 - Ubuntu: [installation guide](INSTALL.ubuntu.md)
+- Windows: [installation guide](INSTALL.windows.md)
 
 OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
 
@@ -96,37 +123,76 @@ Otherwise, it cannot decode some addresses such as `512057cd4cfa03f27f7b18c2fe45
 ```bash
 pip3 install python-dotenv;
 pip3 install psycopg2-binary;
+python3 -m pip install json5 stdiomask;
 ```
 
 **Setup .env files and DBs**
 
 Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
 
+# (Optional) Restore from an online backup for faster initial sync
+
+1) Install dependencies: (pbzip2 is optional but greatly impoves decompress speed)
+
+```bash
+sudo apt update
+sudo apt install postgresql-client-common
+sudo apt install postgresql-client-14
+sudo apt install pbzip2
+
+python3 -m pip install boto3
+python3 -m pip install tqdm
+```
+
+2) Run `restore.py`
+
+```bash
+cd modules/;
+python3 restore.py;
+```
+
 # Run
 
 **Main Meta-Protocol Indexer**
 ```bash
-cd modules/main_index; node index.js;
+cd modules/main_index;
+node index.js;
 ```
 
 **BRC-20 Indexer**
 ```bash
-cd modules/brc20_index; python3 brc20_index.py;
+cd modules/brc20_index;
+python3 brc20_index.py;
 ```
 
 **BRC-20 API**
 ```bash
-cd modules/brc20_api; node api.js;
+cd modules/brc20_api;
+node api.js;
 ```
 
 **Bitmap Indexer**
 ```bash
-cd modules/bitmap_index; python3 bitmap_index.py;
+cd modules/bitmap_index;
+python3 bitmap_index.py;
 ```
 
 **Bitmap API**
 ```bash
-cd modules/bitmap_api; node api.js;
+cd modules/bitmap_api;
+node api.js;
+```
+
+**SNS Indexer**
+```bash
+cd modules/sns_index;
+python3 sns_index.py;
+```
+
+**SNS API**
+```bash
+cd modules/sns_api;
+node api.js;
 ```
 
 # Update
@@ -135,3 +201,4 @@ cd modules/bitmap_api; node api.js;
 - Update the repo (`git pull`)
 - Recompile ord (`cd ord; cargo build --release;`)
 - Re-run all indexers and apis
+- If rebuild is needed, you can run `restore.py` for faster initial sync

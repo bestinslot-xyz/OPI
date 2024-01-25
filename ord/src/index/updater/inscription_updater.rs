@@ -18,11 +18,11 @@ enum Curse {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Flotsam {
+pub(super) struct Flotsam<'a> {
   inscription_id: InscriptionId,
   offset: u64,
   origin: Origin,
-  tx_option: Option<Transaction>,
+  tx_option: Option<&'a Transaction>,
 }
 
 // tracking first 2 transfers is enough for brc-20 metaprotocol
@@ -49,7 +49,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) blessed_inscription_count: u64,
   pub(super) chain: Chain,
   pub(super) cursed_inscription_count: u64,
-  pub(super) flotsam: Vec<Flotsam>,
+  pub(super) flotsam: Vec<Flotsam<'a>>,
   pub(super) height: u32,
   pub(super) home_inscription_count: u64,
   pub(super) home_inscriptions: &'a mut Table<'db, 'tx, u32, InscriptionIdValue>,
@@ -80,7 +80,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
 impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) fn index_envelopes(
     &mut self,
-    tx: &Transaction,
+    tx: &'a Transaction,
     txid: Txid,
     input_sat_ranges: Option<&VecDeque<(u64, u64)>>,
   ) -> Result {
@@ -112,7 +112,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           offset,
           inscription_id,
           origin: Origin::Old { old_satpoint },
-          tx_option: Some(tx.clone()),
+          tx_option: Some(&tx),
         });
 
         inscribed_offsets
@@ -264,7 +264,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
             pointer: inscription.payload.pointer(),
             unbound,
           },
-          tx_option: Some(tx.clone()),
+          tx_option: Some(&tx),
         });
 
         inscribed_offsets
@@ -397,6 +397,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       self.update_inscription_location(
         Some(&tx),
         Some(&tx_out.script_pubkey),
+        Some(&tx_out.value),
         input_sat_ranges,
         flotsam,
         new_satpoint,
@@ -411,7 +412,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           offset: self.lost_sats + flotsam.offset - output_value,
         };
         let tx = flotsam.tx_option.clone().unwrap();
-        self.update_inscription_location(Some(&tx), None, input_sat_ranges, flotsam, new_satpoint, true)?;
+        self.update_inscription_location(Some(&tx), None, None, input_sat_ranges, flotsam, new_satpoint, true)?;
       }
       self.lost_sats += self.reward - output_value;
       Ok(())
@@ -471,19 +472,29 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     flush: bool,
   ) -> Result {
     lazy_static! {
-      static ref LOG_FILE: File = File::options().append(true).open("log_file.txt").unwrap();
+      static ref LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+    }
+    let mut log_file = LOG_FILE.lock().unwrap();
+    if log_file.as_ref().is_none() {
+      let chain_folder: String = match self.chain { 
+        Chain::Mainnet => String::from(""),
+        Chain::Testnet => String::from("testnet3/"),
+        Chain::Signet => String::from("signet/"),
+        Chain::Regtest => String::from("regtest/"),
+      };
+      *log_file = Some(File::options().append(true).open(format!("{chain_folder}log_file.txt")).unwrap());
     }
     if to_write != "" {
       if self.first_in_block {
         println!("cmd;{0};block_start", self.height,);
-        writeln!(&*LOG_FILE, "cmd;{0};block_start", self.height,)?;
+        writeln!(log_file.as_ref().unwrap(), "cmd;{0};block_start", self.height,)?;
       }
       self.first_in_block = false;
 
-      writeln!(&*LOG_FILE, "{}", to_write)?;
+      writeln!(log_file.as_ref().unwrap(), "{}", to_write)?;
     }
     if flush {
-      (&*LOG_FILE).flush()?;
+      (log_file.as_ref().unwrap()).flush()?;
     }
 
     Ok(())
@@ -504,6 +515,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     &mut self,
     tx_option: Option<&Transaction>,
     new_script_pubkey: Option<&ScriptBuf>,
+    new_output_value: Option<&u64>,
     input_sat_ranges: Option<&VecDeque<(u64, u64)>>,
     flotsam: Flotsam,
     new_satpoint: SatPoint,
@@ -536,9 +548,10 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
           .unwrap();
         let is_json_or_text = entry.is_json_or_text;
         if is_json_or_text && txcnt_of_inscr <= INDEX_TX_LIMIT { // only track non-cursed and first two transactions
-          self.write_to_file(format!("cmd;{0};insert;transfer;{1};{old_satpoint};{new_satpoint};{send_to_coinbase};{2}", 
+          self.write_to_file(format!("cmd;{0};insert;transfer;{1};{old_satpoint};{new_satpoint};{send_to_coinbase};{2};{3}", 
                     self.height, flotsam.inscription_id, 
-                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes())), false)?;
+                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()), 
+                    new_output_value.unwrap_or(&0)), false)?;
         }
 
         (
@@ -703,9 +716,10 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         }
 
         if !unbound && is_json_or_text {
-          self.write_to_file(format!("cmd;{0};insert;transfer;{1};;{new_satpoint};{send_to_coinbase};{2}", 
+          self.write_to_file(format!("cmd;{0};insert;transfer;{1};;{new_satpoint};{send_to_coinbase};{2};{3}", 
                     self.height, flotsam.inscription_id, 
-                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes())), false)?;
+                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()), 
+                    new_output_value.unwrap_or(&0)), false)?;
         }
 
         (unbound, sequence_number)

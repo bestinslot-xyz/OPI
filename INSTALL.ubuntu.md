@@ -153,6 +153,8 @@ sudo apt install python3-pip
 ```bash
 python3 -m pip install python-dotenv;
 python3 -m pip install psycopg2-binary;
+python3 -m pip install json5;
+python3 -m pip install requests;
 ```
 
 ## Build ord:
@@ -168,6 +170,27 @@ cd ord; cargo build --release;
 
 Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
 
+# (Optional) Restore from an online backup for faster initial sync
+
+1) Install dependencies: (pbzip2 is optional but greatly impoves decompress speed)
+
+```bash
+sudo apt update
+sudo apt install postgresql-client-common
+sudo apt install postgresql-client-14
+sudo apt install pbzip2
+
+python3 -m pip install boto3
+python3 -m pip install tqdm
+```
+
+2) Run `restore.py`
+
+```bash
+cd modules/;
+python3 restore.py;
+```
+
 # Run
 
 Postgres will auto run on system start. \
@@ -176,12 +199,14 @@ Bitcoind needs to be run with `-txindex=1` flag before running main indexer. \
 
 **Main Meta-Protocol Indexer**
 ```bash
-cd modules/main_index; node index.js;
+cd modules/main_index;
+node index.js;
 ```
 
 **BRC-20 Indexer**
 ```bash
-cd modules/brc20_index; python3 brc20_index.py;
+cd modules/brc20_index;
+python3 brc20_index.py;
 ```
 
 **BRC-20 API**
@@ -189,12 +214,14 @@ cd modules/brc20_index; python3 brc20_index.py;
 This is an optional API and doesn't need to be run.
 
 ```bash
-cd modules/brc20_api; node api.js;
+cd modules/brc20_api;
+node api.js;
 ```
 
 **Bitmap Indexer**
 ```bash
-cd modules/bitmap_index; python3 bitmap_index.py;
+cd modules/bitmap_index;
+python3 bitmap_index.py;
 ```
 
 **Bitmap API**
@@ -202,7 +229,23 @@ cd modules/bitmap_index; python3 bitmap_index.py;
 This is an optional API and doesn't need to be run.
 
 ```bash
-cd modules/bitmap_api; node api.js;
+cd modules/bitmap_api;
+node api.js;
+```
+
+**SNS Indexer**
+```bash
+cd modules/sns_index;
+python3 sns_index.py;
+```
+
+**SNS API**
+
+This is an optional API and doesn't need to be run.
+
+```bash
+cd modules/sns_api;
+node api.js;
 ```
 
 # Update
@@ -211,3 +254,4 @@ cd modules/bitmap_api; node api.js;
 - Update the repo (`git pull`)
 - Recompile ord (`cd ord; cargo build --release;`)
 - Re-run all indexers and apis
+- If rebuild is needed, you can run `restore.py` for faster initial sync
