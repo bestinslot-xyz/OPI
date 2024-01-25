@@ -154,6 +154,7 @@ sudo apt install python3-pip
 python3 -m pip install python-dotenv;
 python3 -m pip install psycopg2-binary;
 python3 -m pip install json5;
+python3 -m pip install requests;
 ```
 
 ## Build ord:
