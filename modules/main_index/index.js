@@ -38,6 +38,7 @@ var bitcoin_rpc_password = process.env.BITCOIN_RPC_PASSWD || ""
 var ord_binary = process.env.ORD_BINARY || "ord"
 var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
 var ord_datadir = process.env.ORD_DATADIR || "."
+var cookie_file = process.env.COOKIE_FILE || ""
 
 const network_type = process.env.NETWORK_TYPE || "mainnet"
 
@@ -115,13 +116,19 @@ async function main_index() {
       ord_end_block_height = ord_last_block_height + 1000
     }
 
+    let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""
+
     let current_directory = process.cwd()
     process.chdir(ord_folder);
+
     let ord_version_cmd = ord_binary + " --version"
+
     let rpc_argument = ""
+
     if (bitcoin_rpc_user != "") {
       rpc_argument = " --bitcoin-rpc-user " + bitcoin_rpc_user + " --bitcoin-rpc-pass " + bitcoin_rpc_password
     }
+
     let network_argument = ""
     if (network == bitcoin.networks.signet) {
       network_argument = " --signet"
@@ -130,7 +137,9 @@ async function main_index() {
     } else if (network == bitcoin.networks.testnet) {
       network_argument = " --testnet"
     }
-    let ord_index_cmd = ord_binary + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
+    
+    let ord_index_cmd = ord_binary + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
+
     try {
       let version_string = execSync(ord_version_cmd).toString()
       console.log("ord version: " + version_string)
