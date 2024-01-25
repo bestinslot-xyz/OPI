@@ -182,6 +182,9 @@ elif network_type == "signet":
 elif network_type == "regtest":
   network_path = "regtest"
 
+if not pathlib.Path(ord_folder, network_path).exists():
+  pathlib.Path(ord_folder, network_path).mkdir(parents=True)
+
 ord_index_redb_path = pathlib.Path(ord_datadir, network_path, "index.redb").absolute()
 ord_index_redb_path.unlink(missing_ok=True)
 
