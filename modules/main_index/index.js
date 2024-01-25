@@ -37,6 +37,11 @@ var bitcoin_rpc_password = process.env.BITCOIN_RPC_PASSWD || ""
 
 var ord_binary = process.env.ORD_BINARY || "ord"
 var ord_folder = process.env.ORD_FOLDER || "../../ord/target/release/"
+if (ord_folder.length == 0) {
+  console.error("ord_folder not set in .env, please run python3 reset_init.py")
+  process.exit(1)
+}
+if (ord_folder[ord_folder.length - 1] != '/') ord_folder += '/'
 var ord_datadir = process.env.ORD_DATADIR || "."
 var cookie_file = process.env.COOKIE_FILE || ""
 
