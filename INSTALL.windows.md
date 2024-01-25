@@ -54,6 +54,7 @@ When output matches mempool.space, BTC Core synced.
 py -m pip install python-dotenv
 py -m pip install pyscopg2-binary
 py -m pip install json5
+py -m pip install stdiomask
 py -m pip install requests
 ```
 
