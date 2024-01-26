@@ -32,6 +32,7 @@ var db_pool = new Pool({
 var chain_folder = process.env.BITCOIN_CHAIN_FOLDER || "~/.bitcoin/"
 var bitcoin_rpc_user = process.env.BITCOIN_RPC_USER || ""
 var bitcoin_rpc_password = process.env.BITCOIN_RPC_PASSWD || ""
+var bitcoin_rpc_url = process.env.BITCOIN_RPC_URL || ""
 
 var ord_binary = process.env.ORD_BINARY || "ord"
 var ord_folder = process.env.ORD_FOLDER || "ord-runes/target/release/"
@@ -41,6 +42,7 @@ if (ord_folder.length == 0) {
 }
 if (ord_folder[ord_folder.length - 1] != '/') ord_folder += '/'
 var ord_datadir = process.env.ORD_DATADIR || "."
+var cookie_file = process.env.COOKIE_FILE || ""
 
 var report_to_indexer = (process.env.REPORT_TO_INDEXER || "true") == "true"
 var report_url = process.env.REPORT_URL || "https://api.opi.network/report_block"
@@ -131,12 +133,18 @@ async function main_index() {
     let ord_index_st_tm = +(new Date())
     let ord_end_block_height = ord_last_block_height + 500
 
+    let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""
+
     let current_directory = process.cwd()
     process.chdir(ord_folder);
     let ord_version_cmd = ord_binary + " --version"
     let rpc_argument = ""
+    if (bitcoin_rpc_url != "") {
+      rpc_argument = " --rpc-url " + bitcoin_rpc_url
+    }
+
     if (bitcoin_rpc_user != "") {
-      rpc_argument = " --bitcoin-rpc-user " + bitcoin_rpc_user + " --bitcoin-rpc-pass " + bitcoin_rpc_password
+      rpc_argument += " --bitcoin-rpc-user " + bitcoin_rpc_user + " --bitcoin-rpc-pass " + bitcoin_rpc_password
     }
     let network_argument = ""
     if (network == bitcoin.networks.signet) {
@@ -146,7 +154,7 @@ async function main_index() {
     } else if (network == bitcoin.networks.testnet) {
       network_argument = " --testnet"
     }
-    let ord_index_cmd = ord_binary + " --no-index-inscriptions --index-runes" + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
+    let ord_index_cmd = ord_binary + " --no-index-inscriptions --index-runes" + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
     try {
       let version_string = execSync(ord_version_cmd).toString()
       console.log("ord version: " + version_string)
