@@ -22,6 +22,7 @@ if init_env:
   DB_SSL="true"
   DB_MAX_CONNECTIONS="50"
   BITCOIN_CHAIN_FOLDER="~/.bitcoin/"
+  BITCOIN_RPC_URL=""
   COOKIE_FILE=""
   BITCOIN_RPC_USER=""
   BITCOIN_RPC_PASSWD=""
@@ -54,6 +55,9 @@ if init_env:
   res = input("Bitcoin datadir (Default: ~/.bitcoin/) use forward-slashes(/) even on Windows: ")
   if res != '':
     BITCOIN_CHAIN_FOLDER = res
+  res = input("Bitcoin RPC URL (Default: (empty)) leave default to use default localhost bitcoin-rpc: ")
+  if res != '':
+    BITCOIN_RPC_URL = res
   res = input("Bitcoin RPC cookie file (Default: (empty)) leave default to use .cookie file in bitcoin datadir: ")
   if res != '':
     COOKIE_FILE = res
@@ -84,6 +88,7 @@ if init_env:
   f.write("DB_SSL=\"" + DB_SSL + "\"\n")
   f.write("DB_MAX_CONNECTIONS=" + DB_MAX_CONNECTIONS + "\n")
   f.write("BITCOIN_CHAIN_FOLDER=\"" + BITCOIN_CHAIN_FOLDER + "\"\n")
+  f.write("BITCOIN_RPC_URL=\"" + BITCOIN_RPC_URL + "\"\n")
   f.write("COOKIE_FILE=\"" + COOKIE_FILE + "\"\n")
   f.write("BITCOIN_RPC_USER=\"" + BITCOIN_RPC_USER + "\"\n")
   f.write("BITCOIN_RPC_PASSWD=\"" + BITCOIN_RPC_PASSWD + "\"\n")
