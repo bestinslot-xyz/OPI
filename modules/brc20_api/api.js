@@ -49,6 +49,27 @@ async function get_block_height_of_db() {
   }
 }
 
+async function get_extras_block_height_of_db() {
+  try {
+    let res = await query_db('SELECT max(block_height) as max_block_height FROM brc20_extras_block_hashes;')
+    return res.rows[0].max_block_height
+  } catch (err) {
+    console.log(err)
+    return -1
+  }
+}
+
+app.get('/v1/brc20/extras_block_height', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let block_height = await get_extras_block_height_of_db()
+    response.send(block_height + '')
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+})
+
 app.get('/v1/brc20/block_height', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
