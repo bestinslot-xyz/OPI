@@ -3,6 +3,7 @@ var express = require('express');
 const { Pool } = require('pg')
 var cors = require('cors')
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 
 // for self-signed cert of postgres
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -21,6 +22,10 @@ var db_pool = new Pool({
 const api_port = parseInt(process.env.API_PORT || "8001")
 const api_host = process.env.API_HOST || '127.0.0.1'
 
+const rate_limit_enabled = process.env.RATE_LIMIT_ENABLE || 'false'
+const rate_limit_window_ms = process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000
+const rate_limit_max = process.env.RATE_LIMIT_MAX || 100
+
 var app = express();
 app.set('trust proxy', parseInt(process.env.API_TRUSTED_PROXY_CNT || "0"))
 
@@ -29,6 +34,17 @@ var corsOptions = {
   optionsSuccessStatus: 200 // some legacy browsers (IE11, various SmartTVs) choke on 204
 }
 app.use([cors(corsOptions)])
+
+if (rate_limit_enabled === 'true') {
+  const limiter = rateLimit({
+    windowMs: rate_limit_window_ms,
+    max: rate_limit_max,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+  // Apply the delay middleware to all requests.
+  app.use(limiter);
+}
 
 app.get('/v1/bitmap/ip', (request, response) => response.send(request.ip))
 
