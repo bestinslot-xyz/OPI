@@ -186,32 +186,44 @@ async function main_index() {
     let current_height_q = await db_pool.query(`SELECT coalesce(max(block_height), -1) as max_height from block_hashes;`)
     let current_height = current_height_q.rows[0].max_height
 
-    console.log("Checking for possible reorg")
-    for (const l of lines_index) {
-      if (l.trim() == "") continue
-      let parts = l.split(';')
-      if (parts[2].trim() == "new_block") {
-        let block_height = parseInt(parts[1].trim())
-        if (block_height > current_height) continue
-        console.warn("Block repeating, possible reorg!!")
-        let blockhash = parts[3].trim()
-        let blockhash_db_q = await db_pool.query("select block_hash from block_hashes where block_height = $1;", [block_height])
-        if (blockhash_db_q.rows[0].block_hash != blockhash) {
-          let reorg_st_tm = +(new Date())
-          console.error("Reorg detected at block_height " + block_height)
-          await handle_reorg(block_height)
-          console.log("Reverted to block_height " + (block_height - 1))
-          let reorg_tm = +(new Date()) - reorg_st_tm
-          reorg_tm = Math.round(reorg_tm)
-          
-          await db_pool.query(`INSERT into ord_indexer_reorg_stats
-              (reorg_tm, old_block_height, new_block_height)
-              values ($1, $2, $3);`, 
-              [reorg_tm, current_height, block_height - 1])
-          current_height = Math.min(current_height, block_height - 1)
-        }
+   console.log("Checking for possible reorg");
+
+for (const l of lines_index) {
+  if (l.trim() === "") continue;
+
+  let parts = l.split(';');
+  if (parts[2].trim() === "new_block") {
+    let block_height = parseInt(parts[1].trim());
+    if (block_height > current_height) continue;
+
+    console.warn("Block repeating, possible reorg!!");
+    let blockhash = parts[3].trim();
+
+    let blockhash_db_q = await db_pool.query("select block_hash from block_hashes where block_height = $1;", [block_height]);
+
+    if (blockhash_db_q.rows.length > 0 && blockhash_db_q.rows[0] && blockhash_db_q.rows[0].block_hash != null) {
+      if (blockhash_db_q.rows[0].block_hash !== blockhash) {
+        let reorg_st_tm = +(new Date());
+        console.error("Reorg detected at block_height " + block_height);
+
+        await handle_reorg(block_height);
+
+        console.log("Reverted to block_height " + (block_height - 1));
+        let reorg_tm = +(new Date()) - reorg_st_tm;
+        reorg_tm = Math.round(reorg_tm);
+
+        await db_pool.query(`INSERT into ord_indexer_reorg_stats
+            (reorg_tm, old_block_height, new_block_height)
+            values ($1, $2, $3);`, [reorg_tm, current_height, block_height - 1]);
+
+        current_height = Math.min(current_height, block_height - 1);
       }
+    } else {
+      console.error("No rows or block hash not found in the database for block_height " + block_height);
     }
+  }
+}
+
 
     // some sanity checks and checks for possible early exit of ord
     let last_start_idx = null
