@@ -433,7 +433,7 @@ app.get('/v1/brc20/get_hash_of_all_current_balances', async (request, response) 
   }
 });
 
-// get all brc20 activity of a given block height
+// get all events with a specific inscription id
 app.get('/v1/brc20/event', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
