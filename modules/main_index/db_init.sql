@@ -89,4 +89,4 @@ CREATE TABLE public.ord_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT ord_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.3.1', 4);
+INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.3.2', 5);
