@@ -147,7 +147,7 @@ async function main_index() {
       network_argument = " --testnet"
     }
     
-    let ord_index_cmd = ord_binary + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
+    let ord_index_cmd = ord_binary + network_argument + " --bitcoin-data-dir \"" + chain_folder + "\" --data-dir \"" + ord_datadir + "\"" + cookie_arg + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
 
     try {
       let version_string = execSync(ord_version_cmd).toString()
