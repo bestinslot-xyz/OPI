@@ -98,6 +98,8 @@ async function check_db_max_transfer_cnts() {
   }
 
   if (Object.keys(max_transfer_cnts_db).length == 0) {
+    console.log("max_transfer_cnts not found in db, getting from ord")
+    
     let ord_max_transfer_cnts_cmd = ord_binary + " max-transfer-counts"
     let max_transfer_cnts_string = execSync(ord_max_transfer_cnts_cmd).toString()
     let max_transfer_cnts = JSON.parse(max_transfer_cnts_string)
