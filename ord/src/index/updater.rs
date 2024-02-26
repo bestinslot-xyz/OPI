@@ -1,5 +1,5 @@
 use {
-  self::{inscription_updater::InscriptionUpdater, rune_updater::RuneUpdater},
+  self::{inscription_updater::InscriptionUpdater, inscription_updater::TX_LIMITS, rune_updater::RuneUpdater},
   super::{fetcher::Fetcher, *},
   futures::future::try_join_all,
   std::sync::mpsc,
@@ -10,6 +10,14 @@ use std::fs::File;
 
 mod inscription_updater;
 mod rune_updater;
+
+pub fn get_tx_limits() -> HashMap<String, i16> {
+  let mut tx_limits = HashMap::new();
+  for (key, value) in TX_LIMITS.iter() {
+    tx_limits.insert(key.to_string(), *value);
+  }
+  tx_limits
+}
 
 pub(crate) struct BlockData {
   pub(crate) header: Header,

@@ -16,6 +16,8 @@ pub mod teleburn;
 pub mod traits;
 pub mod wallet;
 
+use crate::index::get_tx_limits;
+
 #[derive(Debug, Parser)]
 pub(crate) enum Subcommand {
   #[command(about = "List all rune balances")]
@@ -48,6 +50,14 @@ pub(crate) enum Subcommand {
   Traits(traits::Traits),
   #[command(about = "Wallet commands")]
   Wallet(wallet::Wallet),
+  #[command(about = "List max transfer counts")]
+  MaxTransferCounts,
+}
+
+fn max_transfer_counts() -> SubcommandResult {
+  // create a dictionary. set 'default' to 2 and 'brc20-approve-conditional' to 5
+  let max_transfer_counts = get_tx_limits();
+  Ok(Box::new(max_transfer_counts))
 }
 
 impl Subcommand {
@@ -73,6 +83,7 @@ impl Subcommand {
       Self::Teleburn(teleburn) => teleburn.run(),
       Self::Traits(traits) => traits.run(),
       Self::Wallet(wallet) => wallet.run(options),
+      Self::MaxTransferCounts => max_transfer_counts(),
     }
   }
 }

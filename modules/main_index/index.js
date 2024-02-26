@@ -75,11 +75,11 @@ const first_inscription_heights = {
 const first_inscription_height = first_inscription_heights[network_type]
 const fast_index_below = first_inscription_height + 7000
 
-const DB_VERSION = 4
-const RECOVERABLE_DB_VERSIONS = [3]
+const DB_VERSION = 5
+const RECOVERABLE_DB_VERSIONS = [3, 4]
 // eslint-disable-next-line no-unused-vars
-const INDEXER_VERSION = 'OPI V0.3.1'
-const ORD_VERSION = 'opi-ord 0.14.0-2'
+const INDEXER_VERSION = 'OPI V0.3.2'
+const ORD_VERSION = 'opi-ord 0.14.0-3'
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
@@ -90,8 +90,54 @@ function save_error_log(log) {
   fs.appendFileSync("log_file_error.txt", log + "\n")
 }
 
+var max_transfer_cnts_db = {}
+async function check_db_max_transfer_cnts() {
+  let max_transfer_cnts_db_q = await db_pool.query(`SELECT * from ord_transfer_counts;`)
+  for (const row of max_transfer_cnts_db_q.rows) {
+    max_transfer_cnts_db[row.event_type] = row.max_transfer_cnt
+  }
+
+  if (Object.keys(max_transfer_cnts_db).length == 0) {
+    let ord_max_transfer_cnts_cmd = ord_binary + " max-transfer-counts"
+    let max_transfer_cnts_string = execSync(ord_max_transfer_cnts_cmd).toString()
+    let max_transfer_cnts = JSON.parse(max_transfer_cnts_string)
+    if (Object.keys(max_transfer_cnts).length == 0) {
+      console.error("max_transfer_cnts not found in ord!! check ord code!!")
+      process.exit(1)
+    }
+
+    for (const [key, value] of Object.entries(max_transfer_cnts)) {
+      await db_pool.query(`INSERT INTO ord_transfer_counts (event_type, max_transfer_cnt) VALUES ($1, $2);`, [key, value])
+    }
+    max_transfer_cnts_db = max_transfer_cnts
+  }
+}
+async function check_max_transfer_cnts() {
+  let ord_max_transfer_cnts_cmd = ord_binary + " max-transfer-counts"
+  let max_transfer_cnts_string = execSync(ord_max_transfer_cnts_cmd).toString()
+  let max_transfer_cnts = JSON.parse(max_transfer_cnts_string)
+  // compare with max_transfer_cnts_db
+  let max_transfer_cnts_db_changed = false
+  for (const [key, value] of Object.entries(max_transfer_cnts)) {
+    if (key in max_transfer_cnts_db) {
+      if (max_transfer_cnts_db[key] != value) {
+        max_transfer_cnts_db_changed = true
+        break
+      }
+    } else {
+      max_transfer_cnts_db_changed = true
+      break
+    }
+  }
+  if (max_transfer_cnts_db_changed) {
+    console.error("max_transfer_cnts changed, db needs to be recreated from scratch, please run reset_init.py")
+    process.exit(1)
+  }
+}
+
 async function main_index() {
   await check_db()
+  await check_db_max_transfer_cnts()
 
   let first = true;
   // eslint-disable-next-line no-constant-condition
@@ -155,7 +201,8 @@ async function main_index() {
       if (!version_string.includes(ORD_VERSION)) {
         console.error("ord version mismatch, please recompile ord via 'cargo build --release'.")
         process.exit(1)
-      }
+      }    
+      await check_max_transfer_cnts()  
       execSync(ord_index_cmd, {stdio: 'inherit'})
     }
     catch (err) {
@@ -500,16 +547,28 @@ async function handle_reorg(block_height) {
 }
 
 async function fix_db_from_version(db_version) {
-  if (db_version == 3) {
+  if (db_version <= 2) {
+    console.error("Unknown db_version: " + db_version)
+    process.exit(1)
+  }
+  if (db_version <= 3) {
     await db_pool.query(`CREATE TABLE public.ord_network_type (
       id bigserial NOT NULL,
       network_type text NOT NULL,
       CONSTRAINT ord_network_type_pk PRIMARY KEY (id)
     );`)
     await db_pool.query(`INSERT INTO ord_network_type (network_type) VALUES ($1);`, ['mainnet']) // v3 only supported mainnet
-  } else {
-    console.error("Unknown db_version: " + db_version)
-    process.exit(1)
+  }
+  if (db_version <= 4) {
+    await db_pool.query(`CREATE TABLE public.ord_transfer_counts (
+      id bigserial NOT NULL,
+      event_type text NOT NULL,
+      max_transfer_cnt int4 NOT NULL,
+      CONSTRAINT ord_transfer_counts_pk PRIMARY KEY (id)
+    );`)
+    await db_pool.query(`CREATE UNIQUE INDEX ord_transfer_counts_event_type_idx ON public.ord_transfer_counts USING btree (event_type);`)
+    
+    await db_pool.query(`INSERT INTO ord_transfer_counts (event_type, max_transfer_cnt) VALUES ($1, $2);`, ['default', 2]) // v4 indexed 2 transfers for all events
   }
 }
 

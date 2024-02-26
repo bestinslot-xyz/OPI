@@ -6,3 +6,4 @@ drop table if exists ord_indexer_reorg_stats;
 drop table if exists ord_indexer_work_stats;
 drop table if exists ord_indexer_version;
 drop table if exists ord_network_type;
+drop table if exists ord_transfer_counts;

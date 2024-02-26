@@ -194,6 +194,7 @@ pub(crate) struct InscriptionEntry {
   pub(crate) timestamp: u32,
   pub(crate) is_json_or_text: bool,
   pub(crate) is_cursed_for_brc20: bool,
+  pub(crate) txcnt_limit: i16,
 }
 
 pub(crate) type InscriptionEntryValue = (
@@ -208,6 +209,7 @@ pub(crate) type InscriptionEntryValue = (
   u32,                // timestamp
   i8,                 // is_json_or_text
   i8,                 // is_cursed_for_brc20
+  i16,                // txcnt_limit
 );
 
 impl Entry for InscriptionEntry {
@@ -227,6 +229,7 @@ impl Entry for InscriptionEntry {
       timestamp,
       is_json_or_text,
       is_cursed_for_brc20,
+      txcnt_limit,
     ): InscriptionEntryValue,
   ) -> Self {
     Self {
@@ -241,6 +244,7 @@ impl Entry for InscriptionEntry {
       timestamp,
       is_json_or_text: is_json_or_text != 0,
       is_cursed_for_brc20: is_cursed_for_brc20 != 0,
+      txcnt_limit,
     }
   }
 
@@ -257,6 +261,7 @@ impl Entry for InscriptionEntry {
       self.timestamp,
       if self.is_json_or_text { 1 } else { 0 },
       if self.is_cursed_for_brc20 { 1 } else { 0 },
+      self.txcnt_limit,
     )
   }
 }
