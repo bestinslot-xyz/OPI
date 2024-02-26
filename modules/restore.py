@@ -318,7 +318,7 @@ if restore_main_db:
     cur_main.close()
     conn_main.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_main)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_main + " -Fc -c --if-exists -v -d " + db_database_main + " -h " + db_host_main + " -p " + str(db_port_main) + " postgres_metaprotocol.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_main + " -Fc -c --if-exists -v -d " + db_database_main + " -h " + db_host_main + " -p " + str(db_port_main) + " postgres_metaprotocol.dump")
     if res != 0:
       print("Error restoring main db")
       exit()
@@ -349,7 +349,7 @@ if restore_brc20_db:
     cur_brc20.close()
     conn_brc20.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_brc20)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_brc20 + " -Fc -c --if-exists -v -d " + db_database_brc20 + " -h " + db_host_brc20 + " -p " + str(db_port_brc20) + " postgres_brc20.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_brc20 + " -Fc -c --if-exists -v -d " + db_database_brc20 + " -h " + db_host_brc20 + " -p " + str(db_port_brc20) + " postgres_brc20.dump")
     if res != 0:
       print("Error restoring brc20 db")
       exit()
@@ -376,7 +376,7 @@ if restore_bitmap_db:
     cur_bitmap.close()
     conn_bitmap.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_bitmap)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_bitmap + " -Fc -c --if-exists -v -d " + db_database_bitmap + " -h " + db_host_bitmap + " -p " + str(db_port_bitmap) + " postgres_bitmap.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_bitmap + " -Fc -c --if-exists -v -d " + db_database_bitmap + " -h " + db_host_bitmap + " -p " + str(db_port_bitmap) + " postgres_bitmap.dump")
     if res != 0:
       print("Error restoring bitmap db")
       exit()
@@ -403,7 +403,7 @@ if restore_sns_db:
     cur_sns.close()
     conn_sns.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_sns)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_sns + " -Fc -c --if-exists -v -d " + db_database_sns + " -h " + db_host_sns + " -p " + str(db_port_sns) + " postgres_sns.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_sns + " -Fc -c --if-exists -v -d " + db_database_sns + " -h " + db_host_sns + " -p " + str(db_port_sns) + " postgres_sns.dump")
     if res != 0:
       print("Error restoring sns db")
       exit()
