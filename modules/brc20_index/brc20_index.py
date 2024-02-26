@@ -98,12 +98,28 @@ if create_extra_tables:
 
 cur_metaprotocol.execute('SELECT network_type from ord_network_type LIMIT 1;')
 if cur_metaprotocol.rowcount == 0:
-  print("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js or main_index")
+  print("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js in main_index")
   sys.exit(1)
 
 network_type_db = cur_metaprotocol.fetchone()[0]
 if network_type_db != network_type:
   print("network_type mismatch between main index and brc20 index")
+  sys.exit(1)
+
+cur_metaprotocol.execute('SELECT event_type, max_transfer_cnt from ord_transfer_counts;')
+if cur_metaprotocol.rowcount == 0:
+  print("ord_transfer_counts not found, please run index.js in main_index to fix db")
+  sys.exit(1)
+
+default_max_transfer_cnt = 0
+tx_limits = cur_metaprotocol.fetchall()
+for tx_limit in tx_limits:
+  if tx_limit[0] == 'default':
+    default_max_transfer_cnt = tx_limit[1]
+    break
+
+if default_max_transfer_cnt < 2:
+  print("default max_transfer_cnt is less than 2, brc20_indexer requires at least 2, please recreate db from scratch and rerun ord with default tx limit set to 2 or more")
   sys.exit(1)
 
 ## helper functions
