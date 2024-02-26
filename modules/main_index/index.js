@@ -99,6 +99,9 @@ async function check_db_max_transfer_cnts() {
 
   if (Object.keys(max_transfer_cnts_db).length == 0) {
     console.log("max_transfer_cnts not found in db, getting from ord")
+    
+    let current_directory = process.cwd()
+    process.chdir(ord_folder);
 
     let ord_max_transfer_cnts_cmd = ord_binary + " max-transfer-counts"
     let max_transfer_cnts_string = execSync(ord_max_transfer_cnts_cmd).toString()
@@ -107,6 +110,8 @@ async function check_db_max_transfer_cnts() {
       console.error("max_transfer_cnts not found in ord!! check ord code!!")
       process.exit(1)
     }
+
+    process.chdir(current_directory);
 
     for (const [key, value] of Object.entries(max_transfer_cnts)) {
       await db_pool.query(`INSERT INTO ord_transfer_counts (event_type, max_transfer_cnt) VALUES ($1, $2);`, [key, value])
