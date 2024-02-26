@@ -193,6 +193,7 @@ async function main_index() {
       if (parts[2].trim() == "new_block") {
         let block_height = parseInt(parts[1].trim())
         if (block_height > current_height) continue
+        if (block_height < first_inscription_height ) continue
         console.warn("Block repeating, possible reorg!!")
         let blockhash = parts[3].trim()
         let blockhash_db_q = await db_pool.query("select block_hash from block_hashes where block_height = $1;", [block_height])

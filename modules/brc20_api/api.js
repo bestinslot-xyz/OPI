@@ -449,4 +449,42 @@ app.get('/v1/brc20/get_hash_of_all_current_balances', async (request, response) 
   }
 });
 
+// get all events with a specific inscription id
+app.get('/v1/brc20/event', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+
+    let res1 = await query_db('select event_type_name, event_type_id from brc20_event_types;')
+    let event_type_id_to_name = {}
+    res1.rows.forEach((row) => {
+      event_type_id_to_name[row.event_type_id] = row.event_type_name
+    })
+
+    let inscription_id = request.query.inscription_id;
+    if(!inscription_id) {
+      response.status(400).send({ error: 'inscription_id is required', result: null })
+      return
+    }
+
+    let query =  `select event, event_type, inscription_id block_height
+                  from brc20_events
+                  where inscription_id = $1
+                  order by id asc;`
+    let res = await query_db(query, [inscription_id])
+    let result = []
+    for (const row of res.rows) {
+      let event = row.event
+      let event_type = event_type_id_to_name[row.event_type]
+      let inscription_id = row.inscription_id
+      event.event_type = event_type
+      event.inscription_id = inscription_id
+      result.push(event)
+    }
+    response.send({ error: null, result: result })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
 app.listen(api_port, api_host);
