@@ -555,7 +555,7 @@ def index_block(block_height, current_block_hash):
       if ticks[tick][1] is not None and amount > ticks[tick][1]: continue ## mint too much
       if amount > ticks[tick][0]: ## mint remaining tokens
         amount = ticks[tick][0]
-      mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, amount)
+      mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
     
     # handle transfer
     if js["op"] == 'transfer':
@@ -570,11 +570,11 @@ def index_block(block_height, current_block_hash):
       ## check if available balance is enough
       if old_satpoint == '':
         if not check_available_balance(new_pkScript, tick, amount): continue ## not enough available balance
-        transfer_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, amount)
+        transfer_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
       else:
         if is_used_or_invalid(inscr_id): continue ## already used or invalid
-        if sent_as_fee: transfer_transfer_spend_to_fee(block_height, inscr_id, tick, amount, tx_id)
-        else: transfer_transfer_normal(block_height, inscr_id, new_pkScript, new_addr, tick, amount, tx_id)
+        if sent_as_fee: transfer_transfer_spend_to_fee(block_height, inscr_id, tick, original_tick, amount, tx_id)
+        else: transfer_transfer_normal(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, tx_id)
   
   update_event_hashes(block_height)
   # end of block
