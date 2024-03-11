@@ -248,7 +248,7 @@ try:
   else:
     db_version = cur.fetchone()[0]
     if db_version != DB_VERSION:
-      print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
+      print("This version (" + str(db_version) + ") cannot be fixed, please run reset_init.py")
       exit(1)
 except:
   print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")

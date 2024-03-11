@@ -369,7 +369,7 @@ if cur.rowcount == 0:
 else:
   db_version = cur.fetchone()[0]
   if db_version != DB_VERSION:
-    print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
+    print("This version (" + str(db_version) + ") cannot be fixed, please run reset_init.py")
     exit(1)
 
 def try_to_report_with_retries(to_send):

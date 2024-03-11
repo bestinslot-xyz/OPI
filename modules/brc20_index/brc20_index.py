@@ -725,10 +725,10 @@ else:
   if db_version != DB_VERSION:
     print("Indexer version mismatch!!")
     if db_version not in RECOVERABLE_DB_VERSIONS:
-      print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
+      print("This version (" + str(db_version) + ") cannot be fixed, please run reset_init.py")
       exit(1)
     else:
-      print("This version (" + db_version + ") can be fixed, fixing in 5 secs...")
+      print("This version (" + str(db_version) + ") can be fixed, fixing in 5 secs...")
       time.sleep(5)
       reindex_cumulative_hashes()
       cur.execute('alter table brc20_indexer_version add column if not exists db_version int4;') ## next versions will use DB_VERSION for DB check
