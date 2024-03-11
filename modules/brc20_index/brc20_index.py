@@ -16,9 +16,9 @@ ticks = {}
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-INDEXER_VERSION = "opi-brc20-full-node v0.3.0"
-CAN_BE_FIXED_DB_VERSIONS = [  ]
-DB_VERSION = 3
+INDEXER_VERSION = "opi-brc20-full-node v0.4.0"
+RECOVERABLE_DB_VERSIONS = [  ]
+DB_VERSION = 4
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -291,7 +291,7 @@ def reset_caches():
   balance_cache = {}
   transfer_inscribe_event_cache = {}
 
-def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wallet, tick, max_supply, decimals, limit_per_mint):
+def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wallet, tick, original_tick, max_supply, decimals, limit_per_mint):
   global ticks, in_commit, block_events_str, event_types
   cur.execute("BEGIN;")
   in_commit = True
@@ -308,8 +308,8 @@ def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wa
   cur.execute('''insert into brc20_events (event_type, block_height, inscription_id, event)
     values (%s, %s, %s, %s);''', (event_types["deploy-inscribe"], block_height, inscription_id, json.dumps(event)))
   
-  cur.execute('''insert into brc20_tickers (tick, max_supply, decimals, limit_per_mint, remaining_supply, block_height)
-    values (%s, %s, %s, %s, %s, %s);''', (tick, max_supply, decimals, limit_per_mint, max_supply, block_height))
+  cur.execute('''insert into brc20_tickers (tick, original_tick, max_supply, decimals, limit_per_mint, remaining_supply, block_height)
+    values (%s, %s, %s, %s, %s, %s, %s);''', (tick, original_tick, max_supply, decimals, limit_per_mint, max_supply, block_height))
   
   cur.execute("COMMIT;")
   in_commit = False
@@ -502,9 +502,10 @@ def index_block(block_height, current_block_hash):
     if "tick" not in js: continue ## invalid inscription
     if "op" not in js: continue ## invalid inscription
     tick = js["tick"]
+    original_tick = tick
     try: tick = tick.lower()
     except: continue ## invalid tick
-    if utf8len(tick) != 4: continue ## invalid tick
+    if utf8len(original_tick) != 4: continue ## invalid tick
     
     # handle deploy
     if js["op"] == 'deploy' and old_satpoint == '':
@@ -529,7 +530,7 @@ def index_block(block_height, current_block_hash):
           limit_per_mint = get_number_extended_to_18_decimals(js["lim"], decimals)
           if limit_per_mint is None: continue ## invalid limit per mint
           if limit_per_mint > (2**64-1) * (10**18) or limit_per_mint <= 0: continue ## invalid limit per mint
-      deploy_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, max_supply, decimals, limit_per_mint)
+      deploy_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, max_supply, decimals, limit_per_mint)
     
     # handle mint
     if js["op"] == 'mint' and old_satpoint == '':
@@ -723,7 +724,7 @@ else:
   db_version = cur.fetchone()[0]
   if db_version != DB_VERSION:
     print("Indexer version mismatch!!")
-    if db_version not in CAN_BE_FIXED_DB_VERSIONS:
+    if db_version not in RECOVERABLE_DB_VERSIONS:
       print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
       exit(1)
     else:

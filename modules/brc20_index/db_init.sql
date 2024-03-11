@@ -10,7 +10,7 @@ CREATE TABLE public.brc20_historic_balances (
 	id bigserial NOT NULL,
 	pkscript text NOT NULL,
 	wallet text NULL,
-	tick varchar(4) NOT NULL,
+	tick text NOT NULL,
 	overall_balance numeric(40) NOT NULL,
 	available_balance numeric(40) NOT NULL,
 	block_height int4 NOT NULL,
@@ -39,7 +39,8 @@ CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree 
 
 CREATE TABLE public.brc20_tickers (
 	id bigserial NOT NULL,
-	tick varchar(4) NOT NULL,
+	tick_original varchar(4) NOT NULL,
+	tick text NOT NULL,
 	max_supply numeric(40) NOT NULL,
 	decimals int4 NOT NULL,
 	limit_per_mint numeric(40) NOT NULL,
@@ -47,6 +48,7 @@ CREATE TABLE public.brc20_tickers (
 	block_height int4 NOT NULL,
 	CONSTRAINT brc20_tickers_pk PRIMARY KEY (id)
 );
+CREATE UNIQUE INDEX brc20_tickers_tick_original_idx ON public.brc20_tickers USING btree (tick_original);
 CREATE UNIQUE INDEX brc20_tickers_tick_idx ON public.brc20_tickers USING btree (tick);
 
 CREATE TABLE public.brc20_cumulative_event_hashes (
@@ -75,4 +77,4 @@ CREATE TABLE public.brc20_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.brc20_indexer_version (indexer_version, db_version) VALUES ('opi-brc20-full-node v0.3.0', 3);
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version) VALUES ('opi-brc20-full-node v0.4.0', 4);

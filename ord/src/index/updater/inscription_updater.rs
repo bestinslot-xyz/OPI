@@ -612,7 +612,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         let is_json_or_text = is_json || is_text;
         
         let txcnt_limit = if !unbound && is_json_or_text {
-          self.write_to_file(format!("cmd;{0};insert;number_to_id;{1};{2};{3}", self.height, inscription_number, flotsam.inscription_id, if cursed_for_brc20 {"1"} else {"0"}), false)?;
+          self.write_to_file(format!("cmd;{0};insert;number_to_id;{1};{2};{3};{4}", self.height, inscription_number, flotsam.inscription_id, if cursed_for_brc20 {"1"} else {"0"}, parent.map(|p| p.to_string()).unwrap_or(String::from(""))), false)?;
           // write content as minified json
           if is_json {
             let inscription_content_json = serde_json::from_slice::<Value>(&(inscription_content.unwrap())).unwrap();
