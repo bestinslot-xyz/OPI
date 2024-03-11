@@ -39,7 +39,7 @@ CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree 
 
 CREATE TABLE public.brc20_tickers (
 	id bigserial NOT NULL,
-	tick_original varchar(4) NOT NULL,
+	original_tick varchar(4) NOT NULL,
 	tick text NOT NULL,
 	max_supply numeric(40) NOT NULL,
 	decimals int4 NOT NULL,
@@ -48,7 +48,7 @@ CREATE TABLE public.brc20_tickers (
 	block_height int4 NOT NULL,
 	CONSTRAINT brc20_tickers_pk PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX brc20_tickers_tick_original_idx ON public.brc20_tickers USING btree (tick_original);
+CREATE UNIQUE INDEX brc20_tickers_original_tick_idx ON public.brc20_tickers USING btree (original_tick);
 CREATE UNIQUE INDEX brc20_tickers_tick_idx ON public.brc20_tickers USING btree (tick);
 
 CREATE TABLE public.brc20_cumulative_event_hashes (
