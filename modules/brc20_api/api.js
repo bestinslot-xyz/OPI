@@ -55,6 +55,17 @@ async function query_db(query, params = []) {
   return await db_pool.query(query, params)
 }
 
+app.get('/v1/brc20/db_version', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let res = await query_db('SELECT db_version FROM brc20_indexer_version;')
+    response.send(res.db_version + '')
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+})
+
 async function get_block_height_of_db() {
   try {
     let res = await query_db('SELECT max(block_height) as max_block_height FROM brc20_block_hashes;')

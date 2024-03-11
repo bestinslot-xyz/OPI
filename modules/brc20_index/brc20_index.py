@@ -201,6 +201,7 @@ def get_event_str(event, event_type, inscription_id):
     res += inscription_id + ";"
     res += event["deployer_pkScript"] + ";"
     res += event["tick"] + ";"
+    res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["max_supply"], decimals_int) + ";"
     res += event["decimals"] + ";"
     res += fix_numstr_decimals(event["limit_per_mint"], decimals_int)
@@ -211,6 +212,7 @@ def get_event_str(event, event_type, inscription_id):
     res += inscription_id + ";"
     res += event["minted_pkScript"] + ";"
     res += event["tick"] + ";"
+    res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["amount"], decimals_int)
     return res
   elif event_type == "transfer-inscribe":
@@ -219,6 +221,7 @@ def get_event_str(event, event_type, inscription_id):
     res += inscription_id + ";"
     res += event["source_pkScript"] + ";"
     res += event["tick"] + ";"
+    res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["amount"], decimals_int)
     return res
   elif event_type == "transfer-transfer":
@@ -231,6 +234,7 @@ def get_event_str(event, event_type, inscription_id):
     else:
       res += ";"
     res += event["tick"] + ";"
+    res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["amount"], decimals_int)
     return res
   else:
@@ -300,6 +304,7 @@ def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wa
     "deployer_pkScript": deployer_pkScript,
     "deployer_wallet": deployer_wallet,
     "tick": tick,
+    "original_tick": original_tick,
     "max_supply": str(max_supply),
     "decimals": str(decimals),
     "limit_per_mint": str(limit_per_mint)
@@ -315,7 +320,7 @@ def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wa
   in_commit = False
   ticks[tick] = [max_supply, limit_per_mint, decimals]
 
-def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, tick, amount):
+def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, tick, original_tick, amount):
   global ticks, in_commit, block_events_str, event_types
   cur.execute("BEGIN;")
   in_commit = True
@@ -324,6 +329,7 @@ def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, 
     "minted_pkScript": minted_pkScript,
     "minted_wallet": minted_wallet,
     "tick": tick,
+    "original_tick": original_tick,
     "amount": str(amount)
   }
   block_events_str += get_event_str(event, "mint-inscribe", inscription_id) + EVENT_SEPARATOR
@@ -343,7 +349,7 @@ def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, 
   in_commit = False
   ticks[tick][0] -= amount
 
-def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wallet, tick, amount):
+def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wallet, tick, original_tick, amount):
   global in_commit, block_events_str, event_types
   cur.execute("BEGIN;")
   in_commit = True
@@ -352,6 +358,7 @@ def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wall
     "source_pkScript": source_pkScript,
     "source_wallet": source_wallet,
     "tick": tick,
+    "original_tick": original_tick,
     "amount": str(amount)
   }
   block_events_str += get_event_str(event, "transfer-inscribe", inscription_id) + EVENT_SEPARATOR
@@ -369,7 +376,7 @@ def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wall
   in_commit = False
   save_transfer_inscribe_event(inscription_id, event)
 
-def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent_wallet, tick, amount, using_tx_id):
+def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent_wallet, tick, original_tick, amount, using_tx_id):
   global in_commit, block_events_str, event_types
   cur.execute("BEGIN;")
   in_commit = True
@@ -383,6 +390,7 @@ def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent
     "spent_pkScript": spent_pkScript,
     "spent_wallet": spent_wallet,
     "tick": tick,
+    "original_tick": original_tick,
     "amount": str(amount),
     "using_tx_id": str(using_tx_id)
   }
@@ -408,7 +416,7 @@ def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent
   cur.execute("COMMIT;")
   in_commit = False
 
-def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, amount, using_tx_id):
+def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, original_tick, amount, using_tx_id):
   global in_commit, block_events_str, event_types
   cur.execute("BEGIN;")
   in_commit = True
@@ -422,6 +430,7 @@ def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, amount, u
     "spent_pkScript": None,
     "spent_wallet": None,
     "tick": tick,
+    "original_tick": original_tick,
     "amount": str(amount),
     "using_tx_id": str(using_tx_id)
   }
