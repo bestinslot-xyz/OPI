@@ -319,7 +319,7 @@ def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wa
     values (%s, %s, %s, %s);''', (event_types["deploy-inscribe"], block_height, inscription_id, json.dumps(event)))
   
   cur.execute('''insert into brc20_tickers (tick, original_tick, max_supply, decimals, limit_per_mint, remaining_supply, block_height, is_self_mint, deploy_inscription_id)
-    values (%s, %s, %s, %s, %s, %s, %s);''', (tick, original_tick, max_supply, decimals, limit_per_mint, max_supply, block_height, is_self_mint == "true", inscription_id))
+    values (%s, %s, %s, %s, %s, %s, %s, %s, %s);''', (tick, original_tick, max_supply, decimals, limit_per_mint, max_supply, block_height, is_self_mint == "true", inscription_id))
   
   cur.execute("COMMIT;")
   in_commit = False
