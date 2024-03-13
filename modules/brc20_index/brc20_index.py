@@ -19,6 +19,7 @@ EVENT_SEPARATOR = "|"
 INDEXER_VERSION = "opi-brc20-full-node v0.4.0"
 RECOVERABLE_DB_VERSIONS = [  ]
 DB_VERSION = 4
+EVENT_HASH_VERSION = 2
 
 SELF_MINT_ENABLE_HEIGHT = 837090
 
@@ -802,6 +803,7 @@ def report_hashes(block_height):
     "network_type": network_type,
     "version": INDEXER_VERSION,
     "db_version": DB_VERSION,
+    "event_hash_version": EVENT_HASH_VERSION,
     "block_height": block_height,
     "block_hash": block_hash,
     "block_event_hash": block_event_hash,
