@@ -70,7 +70,7 @@ app.get('/v1/brc20/event_hash_version', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
     let res = await query_db('SELECT event_hash_version FROM brc20_indexer_version;')
-    response.send(res.db_version + '')
+    response.send(res.event_hash_version + '')
   } catch (err) {
     console.log(err)
     response.status(500).send({ error: 'internal error', result: null })
