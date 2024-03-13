@@ -45,6 +45,8 @@ CREATE TABLE public.brc20_tickers (
 	decimals int4 NOT NULL,
 	limit_per_mint numeric(40) NOT NULL,
 	remaining_supply numeric(40) NOT NULL,
+	is_self_mint boolean NOT NULL,
+	deploy_inscription_id text NOT NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT brc20_tickers_pk PRIMARY KEY (id)
 );

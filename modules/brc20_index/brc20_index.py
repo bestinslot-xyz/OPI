@@ -20,6 +20,8 @@ INDEXER_VERSION = "opi-brc20-full-node v0.4.0"
 RECOVERABLE_DB_VERSIONS = [  ]
 DB_VERSION = 4
 
+SELF_MINT_ENABLE_HEIGHT = 837090
+
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
     psycopg2.extensions.DECIMAL.values,
@@ -204,7 +206,8 @@ def get_event_str(event, event_type, inscription_id):
     res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["max_supply"], decimals_int) + ";"
     res += event["decimals"] + ";"
-    res += fix_numstr_decimals(event["limit_per_mint"], decimals_int)
+    res += fix_numstr_decimals(event["limit_per_mint"], decimals_int) + ";"
+    res += event["is_self_mint"]
     return res
   elif event_type == "mint-inscribe":
     decimals_int = ticks[event["tick"]][2]
@@ -213,7 +216,8 @@ def get_event_str(event, event_type, inscription_id):
     res += event["minted_pkScript"] + ";"
     res += event["tick"] + ";"
     res += event["original_tick"] + ";"
-    res += fix_numstr_decimals(event["amount"], decimals_int)
+    res += fix_numstr_decimals(event["amount"], decimals_int) + ";"
+    res += event["parent_id"]
     return res
   elif event_type == "transfer-inscribe":
     decimals_int = ticks[event["tick"]][2]
@@ -295,7 +299,7 @@ def reset_caches():
   balance_cache = {}
   transfer_inscribe_event_cache = {}
 
-def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wallet, tick, original_tick, max_supply, decimals, limit_per_mint):
+def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wallet, tick, original_tick, max_supply, decimals, limit_per_mint, is_self_mint):
   global ticks, in_commit, block_events_str, event_types
   cur.execute("BEGIN;")
   in_commit = True
@@ -307,20 +311,21 @@ def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wa
     "original_tick": original_tick,
     "max_supply": str(max_supply),
     "decimals": str(decimals),
-    "limit_per_mint": str(limit_per_mint)
+    "limit_per_mint": str(limit_per_mint),
+    "is_self_mint": str(is_self_mint)
   }
   block_events_str += get_event_str(event, "deploy-inscribe", inscription_id) + EVENT_SEPARATOR
   cur.execute('''insert into brc20_events (event_type, block_height, inscription_id, event)
     values (%s, %s, %s, %s);''', (event_types["deploy-inscribe"], block_height, inscription_id, json.dumps(event)))
   
-  cur.execute('''insert into brc20_tickers (tick, original_tick, max_supply, decimals, limit_per_mint, remaining_supply, block_height)
-    values (%s, %s, %s, %s, %s, %s, %s);''', (tick, original_tick, max_supply, decimals, limit_per_mint, max_supply, block_height))
+  cur.execute('''insert into brc20_tickers (tick, original_tick, max_supply, decimals, limit_per_mint, remaining_supply, block_height, is_self_mint, deploy_inscription_id)
+    values (%s, %s, %s, %s, %s, %s, %s);''', (tick, original_tick, max_supply, decimals, limit_per_mint, max_supply, block_height, is_self_mint == "true", inscription_id))
   
   cur.execute("COMMIT;")
   in_commit = False
-  ticks[tick] = [max_supply, limit_per_mint, decimals]
+  ticks[tick] = [max_supply, limit_per_mint, decimals, is_self_mint == "true", inscription_id]
 
-def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, tick, original_tick, amount):
+def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, tick, original_tick, amount, parent_id):
   global ticks, in_commit, block_events_str, event_types
   cur.execute("BEGIN;")
   in_commit = True
@@ -330,7 +335,8 @@ def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, 
     "minted_wallet": minted_wallet,
     "tick": tick,
     "original_tick": original_tick,
-    "amount": str(amount)
+    "amount": str(amount),
+    "parent_id": parent_id
   }
   block_events_str += get_event_str(event, "mint-inscribe", inscription_id) + EVENT_SEPARATOR
   cur.execute('''insert into brc20_events (event_type, block_height, inscription_id, event)
@@ -467,7 +473,7 @@ def index_block(block_height, current_block_hash):
   print("Indexing block " + str(block_height))
   block_events_str = ""
   
-  cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type
+  cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type, onti.parent_id
                               FROM ord_transfers ot
                               LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
                               LEFT JOIN ord_number_to_id onti ON ot.inscription_id = onti.inscription_id
@@ -485,11 +491,11 @@ def index_block(block_height, current_block_hash):
 
   ## refresh ticks
   sttm = time.time()
-  cur.execute('''select tick, remaining_supply, limit_per_mint, decimals from brc20_tickers;''')
+  cur.execute('''select tick, remaining_supply, limit_per_mint, decimals, is_self_mint, deploy_inscription_id from brc20_tickers;''')
   ticks_ = cur.fetchall()
   ticks = {}
   for t in ticks_:
-    ticks[t[0]] = [t[1], t[2], t[3]]
+    ticks[t[0]] = [t[1], t[2], t[3], t[4], t[5]]
   print("Ticks refreshed in " + str(time.time() - sttm) + " seconds")
   
   idx = 0
@@ -498,7 +504,8 @@ def index_block(block_height, current_block_hash):
     if idx % 100 == 0:
       print(idx, '/', len(transfers))
     
-    tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, content_type = transfer
+    tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, content_type, parent_id = transfer
+    if parent_id is None: parent_id = ""
     
     if sent_as_fee and old_satpoint == '': continue ## inscribed as fee
 
@@ -514,7 +521,8 @@ def index_block(block_height, current_block_hash):
     original_tick = tick
     try: tick = tick.lower()
     except: continue ## invalid tick
-    if utf8len(original_tick) != 4: continue ## invalid tick
+    original_tick_len = utf8len(original_tick)
+    if original_tick_len != 4 and original_tick_len != 5: continue ## invalid tick
     
     # handle deploy
     if js["op"] == 'deploy' and old_satpoint == '':
@@ -531,7 +539,7 @@ def index_block(block_height, current_block_hash):
       else:
         max_supply = get_number_extended_to_18_decimals(max_supply, decimals)
         if max_supply is None: continue ## invalid max supply
-        if max_supply > (2**64-1) * (10**18) or max_supply <= 0: continue ## invalid max supply
+        if max_supply > (2**64-1) * (10**18) or max_supply < 0: continue ## invalid max supply
       limit_per_mint = max_supply
       if "lim" in js:
         if not is_positive_number_with_dot(js["lim"]): continue ## invalid limit per mint
@@ -539,7 +547,18 @@ def index_block(block_height, current_block_hash):
           limit_per_mint = get_number_extended_to_18_decimals(js["lim"], decimals)
           if limit_per_mint is None: continue ## invalid limit per mint
           if limit_per_mint > (2**64-1) * (10**18) or limit_per_mint <= 0: continue ## invalid limit per mint
-      deploy_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, max_supply, decimals, limit_per_mint)
+      is_self_mint = "false"
+      if original_tick_len == 5: ## this is a self-mint token
+        if block_height < SELF_MINT_ENABLE_HEIGHT: continue ## self-mint not enabled yet
+        if "self_mint" not in js: continue ## invalid inscription
+        if js["self_mint"] != "true": continue ## invalid inscription
+        is_self_mint = "true"
+        if max_supply == 0: 
+          max_supply = (2**64-1) * (10**18) ## infinite(ish) mint
+          if limit_per_mint == 0:
+            limit_per_mint = (2**64-1) * (10**18)
+      if max_supply == 0: continue ## invalid max supply
+      deploy_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, max_supply, decimals, limit_per_mint, is_self_mint)
     
     # handle mint
     if js["op"] == 'mint' and old_satpoint == '':
@@ -555,7 +574,10 @@ def index_block(block_height, current_block_hash):
       if ticks[tick][1] is not None and amount > ticks[tick][1]: continue ## mint too much
       if amount > ticks[tick][0]: ## mint remaining tokens
         amount = ticks[tick][0]
-      mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
+      if ticks[tick][3]: ## self-mint
+        ## check parent token
+        if ticks[tick][4] != parent_id: continue ## invalid parent token
+      mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, parent_id)
     
     # handle transfer
     if js["op"] == 'transfer':
@@ -705,11 +727,11 @@ def reindex_cumulative_hashes():
   max_block = row[1]
 
   sttm = time.time()
-  cur.execute('''select tick, remaining_supply, limit_per_mint, decimals from brc20_tickers;''')
+  cur.execute('''select tick, remaining_supply, limit_per_mint, decimals, is_self_mint, deploy_inscription_id from brc20_tickers;''')
   ticks_ = cur.fetchall()
   ticks = {}
   for t in ticks_:
-    ticks[t[0]] = [t[1], t[2], t[3]]
+    ticks[t[0]] = [t[1], t[2], t[3], t[4], t[5]]
   print("Ticks refreshed in " + str(time.time() - sttm) + " seconds")
 
   print("Reindexing cumulative hashes from " + str(min_block) + " to " + str(max_block))
