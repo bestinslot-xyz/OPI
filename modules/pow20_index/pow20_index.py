@@ -187,7 +187,9 @@ def get_event_str(event, event_type, inscription_id):
     res += event["tick"] + ";"
     res += fix_numstr_decimals(event["max_supply"], decimals_int) + ";"
     res += event["decimals"] + ";"
-    res += fix_numstr_decimals(event["limit_per_mint"], decimals_int)
+    res += fix_numstr_decimals(event["limit_per_mint"], decimals_int) + ";"
+    res += event["difficulty"] + ";"
+    res += event["starting_block_height"]
     return res
   elif event_type == "mint-inscribe":
     decimals_int = ticks[event["tick"]][2]
@@ -195,7 +197,8 @@ def get_event_str(event, event_type, inscription_id):
     res += inscription_id + ";"
     res += event["minted_pkScript"] + ";"
     res += event["tick"] + ";"
-    res += fix_numstr_decimals(event["amount"], decimals_int)
+    res += fix_numstr_decimals(event["amount"], decimals_int) + ";"
+    res += event["solution"]
     return res
   elif event_type == "transfer-inscribe":
     decimals_int = ticks[event["tick"]][2]
@@ -555,6 +558,7 @@ def index_block(block_height, current_block_hash):
       if amount > ticks[tick][0]: ## mint remaining tokens
         amount = ticks[tick][0]
 
+      if "solution" not in js: continue ## invalid inscription
       solution = js["solution"]
       solution_components = solution.split(':')
       if len(solution_components) != 4: continue
@@ -1071,9 +1075,9 @@ while True:
     if create_extra_tables:
       print("checking extra tables")
       check_extra_tables()
-    #if max_block_of_metaprotocol_db - current_block < 10 or current_block - last_report_height > 100: ## do not report if there are more than 10 blocks to index
-      #report_hashes(current_block)
-      #last_report_height = current_block
+    if max_block_of_metaprotocol_db - current_block < 10 or current_block - last_report_height > 100: ## do not report if there are more than 10 blocks to index
+      report_hashes(current_block)
+      last_report_height = current_block
   except:
     traceback.print_exc()
     if in_commit: ## rollback commit if any
