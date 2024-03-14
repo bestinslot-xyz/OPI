@@ -465,6 +465,7 @@ def index_block(block_height, current_block_hash):
                               LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
                               LEFT JOIN ord_number_to_id onti ON ot.inscription_id = onti.inscription_id
                               WHERE ot.block_height = %s 
+                                 AND onti.cursed_for_brc20 = false
                                  AND oc."content" is not null AND oc."content"->>'p'='pow-20'
                               ORDER BY ot.id asc;''', (block_height,))
   transfers = cur_metaprotocol.fetchall()
