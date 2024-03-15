@@ -180,12 +180,13 @@ if not download_only and (restore_main_db or restore_brc20_db or restore_bitmap_
     exit()
 
 
-OBJECT_STORAGE_REGION = 'sfo3'
 OBJECT_STORAGE_BUCKET = 'opi-backups'
 
 s3config = {
-    "region_name": OBJECT_STORAGE_REGION,
-    "endpoint_url": "https://{}.digitaloceanspaces.com".format(OBJECT_STORAGE_REGION) }
+  "endpoint_url": "http://s3.opi.network:9000",
+  "aws_session_token": None,
+  "verify": False
+}
 
 s3client = boto3.client('s3', **s3config, config=Config(signature_version=UNSIGNED))
 def get_backup_filenames():
@@ -195,7 +196,7 @@ def get_backup_filenames():
     res.append(key['Key'])
   return res
 
-S3_KEY_PREFIX = 'db_3/'
+S3_KEY_PREFIX = 'db_4/'
 def s3_download(s3_bucket, s3_object_key, local_file_name):
   s3_object_key = S3_KEY_PREFIX + s3_object_key
   meta_data = s3client.head_object(Bucket=s3_bucket, Key=s3_object_key)

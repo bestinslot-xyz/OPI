@@ -14,7 +14,7 @@ const readline = require('readline');
 
 bitcoin.initEccLib(ecc)
 
-console.log("VERSION V0.3.0")
+console.log("VERSION V0.3.2")
 
 // for self-signed cert of postgres
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
@@ -75,11 +75,11 @@ const first_inscription_heights = {
 const first_inscription_height = first_inscription_heights[network_type]
 const fast_index_below = first_inscription_height + 7000
 
-const DB_VERSION = 4
-const RECOVERABLE_DB_VERSIONS = [3]
+const DB_VERSION = 6
+const RECOVERABLE_DB_VERSIONS = []
 // eslint-disable-next-line no-unused-vars
-const INDEXER_VERSION = 'OPI V0.3.1'
-const ORD_VERSION = 'opi-ord 0.14.0-2'
+const INDEXER_VERSION = 'OPI V0.4.0'
+const ORD_VERSION = 'opi-ord 0.14.0-4'
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
@@ -90,8 +90,61 @@ function save_error_log(log) {
   fs.appendFileSync("log_file_error.txt", log + "\n")
 }
 
+var max_transfer_cnts_db = {}
+async function check_db_max_transfer_cnts() {
+  let max_transfer_cnts_db_q = await db_pool.query(`SELECT * from ord_transfer_counts;`)
+  for (const row of max_transfer_cnts_db_q.rows) {
+    max_transfer_cnts_db[row.event_type] = row.max_transfer_cnt
+  }
+
+  if (Object.keys(max_transfer_cnts_db).length == 0) {
+    console.log("max_transfer_cnts not found in db, getting from ord")
+    
+    let current_directory = process.cwd()
+    process.chdir(ord_folder);
+
+    let ord_max_transfer_cnts_cmd = ord_binary + " max-transfer-counts"
+    let max_transfer_cnts_string = execSync(ord_max_transfer_cnts_cmd).toString()
+    let max_transfer_cnts = JSON.parse(max_transfer_cnts_string)
+    if (Object.keys(max_transfer_cnts).length == 0) {
+      console.error("max_transfer_cnts not found in ord!! check ord code!!")
+      process.exit(1)
+    }
+
+    process.chdir(current_directory);
+
+    for (const [key, value] of Object.entries(max_transfer_cnts)) {
+      await db_pool.query(`INSERT INTO ord_transfer_counts (event_type, max_transfer_cnt) VALUES ($1, $2);`, [key, value])
+    }
+    max_transfer_cnts_db = max_transfer_cnts
+  }
+}
+async function check_max_transfer_cnts() {
+  let ord_max_transfer_cnts_cmd = ord_binary + " max-transfer-counts"
+  let max_transfer_cnts_string = execSync(ord_max_transfer_cnts_cmd).toString()
+  let max_transfer_cnts = JSON.parse(max_transfer_cnts_string)
+  // compare with max_transfer_cnts_db
+  let max_transfer_cnts_db_changed = false
+  for (const [key, value] of Object.entries(max_transfer_cnts)) {
+    if (key in max_transfer_cnts_db) {
+      if (max_transfer_cnts_db[key] != value) {
+        max_transfer_cnts_db_changed = true
+        break
+      }
+    } else {
+      max_transfer_cnts_db_changed = true
+      break
+    }
+  }
+  if (max_transfer_cnts_db_changed) {
+    console.error("max_transfer_cnts changed, db needs to be recreated from scratch, please run reset_init.py")
+    process.exit(1)
+  }
+}
+
 async function main_index() {
   await check_db()
+  await check_db_max_transfer_cnts()
 
   let first = true;
   // eslint-disable-next-line no-constant-condition
@@ -155,7 +208,8 @@ async function main_index() {
       if (!version_string.includes(ORD_VERSION)) {
         console.error("ord version mismatch, please recompile ord via 'cargo build --release'.")
         process.exit(1)
-      }
+      }    
+      await check_max_transfer_cnts()  
       execSync(ord_index_cmd, {stdio: 'inherit'})
     }
     catch (err) {
@@ -290,7 +344,7 @@ async function main_index() {
 
     let ord_sql_st_tm = +(new Date())
 
-    let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, cursed_for_brc20, block_height) values ($1, $2, $3, $4);`
+    let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, cursed_for_brc20, parent_id, block_height) values ($1, $2, $3, $4, $5);`
     let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee, new_output_value) values ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
     let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
@@ -339,7 +393,9 @@ async function main_index() {
       else if (parts[2] == "insert") {
         if (parts[3] == "number_to_id") {
           if (block_height > current_height) {
-            running_promises.push(execute_on_db(sql_query_insert_ord_number_to_id, [parseInt(parts[4]), parts[5], parts[6] == "1", block_height]))
+            let parent = parts[7]
+            if (parent == "") parent = null
+            running_promises.push(execute_on_db(sql_query_insert_ord_number_to_id, [parseInt(parts[4]), parts[5], parts[6] == "1", parent, block_height]))
             new_inscription_count += 1
             ord_sql_query_count += 1
           }
@@ -500,17 +556,8 @@ async function handle_reorg(block_height) {
 }
 
 async function fix_db_from_version(db_version) {
-  if (db_version == 3) {
-    await db_pool.query(`CREATE TABLE public.ord_network_type (
-      id bigserial NOT NULL,
-      network_type text NOT NULL,
-      CONSTRAINT ord_network_type_pk PRIMARY KEY (id)
-    );`)
-    await db_pool.query(`INSERT INTO ord_network_type (network_type) VALUES ($1);`, ['mainnet']) // v3 only supported mainnet
-  } else {
-    console.error("Unknown db_version: " + db_version)
-    process.exit(1)
-  }
+  console.error("Unknown db_version: " + db_version)
+  process.exit(1)
 }
 
 async function check_db() {
