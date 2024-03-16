@@ -516,7 +516,7 @@ NOTE: removed following from node_modules/bitcoinjs-lib/src/payments/p2tr.js
 //}
 o.w. it cannot decode 512057cd4cfa03f27f7b18c2fe45fe2c2e0f7b5ccb034af4dec098977c28562be7a2
 */
-function wallet_from_pkscript(pkscript) {
+function wallet_from_pkscript(pkscript, network) {
   try {
     let address = bitcoin.payments.p2tr({ output: Buffer.from(pkscript, 'hex'), network: network })
     return address.address
