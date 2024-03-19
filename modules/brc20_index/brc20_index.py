@@ -16,9 +16,9 @@ ticks = {}
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-INDEXER_VERSION = "opi-brc20-full-node v0.4.0"
-RECOVERABLE_DB_VERSIONS = [  ]
-DB_VERSION = 4
+INDEXER_VERSION = "opi-brc20-full-node v0.4.1"
+RECOVERABLE_DB_VERSIONS = [ 4 ]
+DB_VERSION = 5
 EVENT_HASH_VERSION = 2
 
 SELF_MINT_ENABLE_HEIGHT = 837090
@@ -814,6 +814,15 @@ def reindex_cumulative_hashes():
       block_events_str += get_event_str(event, event_type, inscription_id) + EVENT_SEPARATOR
     update_event_hashes(block_height)
 
+def fix_db_from_version(version):
+  if version == 4:
+    print("Fixing db from version 4")
+    ## change type of original_tick in brc20_tickers to text
+    cur.execute('''alter table brc20_tickers alter column original_tick type text;''')
+  else:
+    print("Unknown db version, cannot fix db.")
+    exit(1)
+
 cur.execute('select db_version from brc20_indexer_version;')
 if cur.rowcount == 0:
   print("Indexer version not found, db needs to be recreated from scratch, please run reset_init.py")
@@ -828,8 +837,7 @@ else:
     else:
       print("This version (" + str(db_version) + ") can be fixed, fixing in 5 secs...")
       time.sleep(5)
-      reindex_cumulative_hashes()
-      cur.execute('alter table brc20_indexer_version add column if not exists db_version int4;') ## next versions will use DB_VERSION for DB check
+      fix_db_from_version(db_version)
       cur.execute('update brc20_indexer_version set indexer_version = %s, db_version = %s;', (INDEXER_VERSION, DB_VERSION,))
       print("Fixed.")
 

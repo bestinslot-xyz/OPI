@@ -196,7 +196,7 @@ def get_backup_filenames():
     res.append(key['Key'])
   return res
 
-S3_KEY_PREFIX = 'db_4/'
+S3_KEY_PREFIX = 'db_5/'
 def s3_download(s3_bucket, s3_object_key, local_file_name):
   s3_object_key = S3_KEY_PREFIX + s3_object_key
   meta_data = s3client.head_object(Bucket=s3_bucket, Key=s3_object_key)
