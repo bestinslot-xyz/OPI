@@ -1,0 +1,16 @@
+{
+    "name": "opi-pow20-indexer-api",
+    "version": "0.1.0",
+    "description": "OPI pow20 Indexer API",
+    "license": "UNLICENSED",
+    "main": "index.js",
+    "dependencies": {
+        "pg": "^8.6.0",
+        "dotenv": "16.3.1",
+        "cors": "^2.8.5",
+        "express": "4.18.2"
+    },
+    "devDependencies": {
+        "eslint": "^8.55.0"
+    }
+}
