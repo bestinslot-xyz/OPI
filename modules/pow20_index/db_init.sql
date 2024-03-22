@@ -30,7 +30,7 @@ CREATE TABLE public.pow20_events (
 	block_height int4 NOT NULL,
 	inscription_id text NOT NULL,
 	"event" jsonb NOT NULL,
-	CONSTRAINT events_pk PRIMARY KEY (id)
+	CONSTRAINT pow20_events_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX pow20_events_event_type_inscription_id_idx ON public.pow20_events USING btree (event_type, inscription_id);
 CREATE INDEX pow20_events_block_height_idx ON public.pow20_events USING btree (block_height);
