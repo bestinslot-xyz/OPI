@@ -121,6 +121,8 @@ All next shell script groups assumes that you are in OPI folder cloned by above 
 cd modules/main_index; npm install;
 cd ../brc20_api; npm install;
 cd ../bitmap_api; npm install;
+cd ../pow20_api; npm install;
+cd ../sns_api; npm install;
 ```
 *(Optional):*
 Remove the following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
@@ -246,6 +248,21 @@ This is an optional API and doesn't need to be run.
 
 ```bash
 cd modules/sns_api;
+node api.js;
+```
+
+**POW20 Indexer**
+```bash
+cd modules/pow20_index;
+python3 pow20_index.py;
+```
+
+**POW20 API**
+
+This is an optional API and doesn't need to be run.
+
+```bash
+cd modules/pow20_api;
 node api.js;
 ```
 
