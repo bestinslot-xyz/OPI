@@ -11,7 +11,7 @@ snap install bitcoin-core
 snap connect bitcoin-core:removable-media
 
 ## create a folder for bitcoin chain
-mkdir /mnt/HC_Volume/bitcoin_chain
+mkdir -p /mnt/HC_Volume/bitcoin_chain
 ## run bitcoind using the new folder
 bitcoin-core.daemon -txindex=1 -datadir="/mnt/HC_Volume/bitcoin_chain" -rest
 ```
