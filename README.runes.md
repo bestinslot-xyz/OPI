@@ -12,12 +12,12 @@ In addition to indexing all events, it also calculates a block hash and cumulati
 ## input
 ## new_rune_allocation
 ## mint
-## transfer
+## output
 ## burn
 
 EVENT_SEPARATOR = '|'
 for event in block_events:
-  ## if event_type is burn, outpoint and pkscript is empty
+  ## if event_type is mint, burn or new_rune_allocation, outpoint and pkscript is empty
   block_str += '<event_type>;<outpoint>;<pkscript>;<rune_id>;<amount>' + EVENT_SEPARATOR
 
 if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
