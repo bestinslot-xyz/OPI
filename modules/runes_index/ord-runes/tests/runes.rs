@@ -2,12 +2,13 @@ use {super::*, ord::subcommand::runes::Output};
 
 #[test]
 fn flag_is_required() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
+
+  let ord = TestServer::spawn_with_server_args(&core, &["--regtest"], &[]);
 
   CommandBuilder::new("--regtest runes")
-    .rpc_server(&rpc_server)
+    .core(&core)
+    .ord(&ord)
     .expected_exit_code(1)
     .expected_stderr("error: `ord runes` requires index created with `--index-runes` flag\n")
     .run_and_extract_stdout();
@@ -15,13 +16,11 @@ fn flag_is_required() {
 
 #[test]
 fn no_runes() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
 
   assert_eq!(
     CommandBuilder::new("--index-runes --regtest runes")
-      .rpc_server(&rpc_server)
+      .core(&core)
       .run_and_deserialize_output::<Output>(),
     Output {
       runes: BTreeMap::new(),
@@ -31,41 +30,39 @@ fn no_runes() {
 
 #[test]
 fn one_rune() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
 
-  create_wallet(&rpc_server);
+  let ord = TestServer::spawn_with_server_args(&core, &["--regtest", "--index-runes"], &[]);
 
-  let etch = etch(&rpc_server, Rune(RUNE));
+  create_wallet(&core, &ord);
 
-  assert_eq!(
+  let etch = etch(&core, &ord, Rune(RUNE));
+
+  pretty_assert_eq!(
     CommandBuilder::new("--index-runes --regtest runes")
-      .rpc_server(&rpc_server)
+      .core(&core)
       .run_and_deserialize_output::<Output>(),
     Output {
       runes: vec![(
         Rune(RUNE),
         RuneInfo {
+          block: 8,
           burned: 0,
-          deadline: None,
           divisibility: 0,
-          end: None,
-          etching: etch.transaction,
-          height: 2,
-          id: RuneId {
-            height: 2,
-            index: 1
-          },
-          index: 1,
-          limit: None,
+          etching: etch.output.reveal,
+          id: RuneId { block: 8, tx: 1 },
+          terms: None,
           mints: 0,
           number: 0,
-          rune: Rune(RUNE),
-          spacers: 0,
+          premine: 1000,
+          rune: SpacedRune {
+            rune: Rune(RUNE),
+            spacers: 0
+          },
           supply: 1000,
           symbol: Some('¢'),
-          timestamp: ord::timestamp(2),
+          timestamp: ord::timestamp(8),
+          tx: 1,
         }
       )]
       .into_iter()
@@ -76,67 +73,63 @@ fn one_rune() {
 
 #[test]
 fn two_runes() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
 
-  create_wallet(&rpc_server);
+  let ord = TestServer::spawn_with_server_args(&core, &["--regtest", "--index-runes"], &[]);
 
-  let a = etch(&rpc_server, Rune(RUNE));
-  let b = etch(&rpc_server, Rune(RUNE + 1));
+  create_wallet(&core, &ord);
 
-  assert_eq!(
+  let a = etch(&core, &ord, Rune(RUNE));
+  let b = etch(&core, &ord, Rune(RUNE + 1));
+
+  pretty_assert_eq!(
     CommandBuilder::new("--index-runes --regtest runes")
-      .rpc_server(&rpc_server)
+      .core(&core)
       .run_and_deserialize_output::<Output>(),
     Output {
       runes: vec![
         (
           Rune(RUNE),
           RuneInfo {
+            block: 8,
             burned: 0,
-            deadline: None,
             divisibility: 0,
-            end: None,
-            etching: a.transaction,
-            height: 2,
-            id: RuneId {
-              height: 2,
-              index: 1
-            },
-            index: 1,
-            limit: None,
+            etching: a.output.reveal,
+            id: RuneId { block: 8, tx: 1 },
+            terms: None,
             mints: 0,
             number: 0,
-            rune: Rune(RUNE),
-            spacers: 0,
+            premine: 1000,
+            rune: SpacedRune {
+              rune: Rune(RUNE),
+              spacers: 0
+            },
             supply: 1000,
             symbol: Some('¢'),
-            timestamp: ord::timestamp(2),
+            timestamp: ord::timestamp(8),
+            tx: 1,
           }
         ),
         (
           Rune(RUNE + 1),
           RuneInfo {
+            block: 16,
             burned: 0,
-            deadline: None,
             divisibility: 0,
-            end: None,
-            etching: b.transaction,
-            height: 4,
-            id: RuneId {
-              height: 4,
-              index: 1
-            },
-            index: 1,
-            limit: None,
+            etching: b.output.reveal,
+            id: RuneId { block: 16, tx: 1 },
+            terms: None,
             mints: 0,
             number: 1,
-            rune: Rune(RUNE + 1),
-            spacers: 0,
+            premine: 1000,
+            rune: SpacedRune {
+              rune: Rune(RUNE + 1),
+              spacers: 0
+            },
             supply: 1000,
             symbol: Some('¢'),
-            timestamp: ord::timestamp(4),
+            timestamp: ord::timestamp(16),
+            tx: 1,
           }
         )
       ]

@@ -154,7 +154,7 @@ app.get('/v1/runes/get_current_balance_of_wallet', async (request, response) => 
                   left join runes_id_to_entry rite on rite.rune_id = u.rune_id
                   where ` + pkscript_selector + ` = $1 and spent = false
                   group by pkscript, wallet_addr, rite.rune_id, rite.rune_name;`
-    let params = [pkscript_selector_value, tick]
+    let params = [pkscript_selector_value]
 
     let res = await query_db(query, params)
 

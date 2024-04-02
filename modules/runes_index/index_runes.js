@@ -12,7 +12,7 @@ const readline = require('readline');
 
 bitcoin.initEccLib(ecc)
 
-console.log("VERSION V0.3.0")
+console.log("VERSION V0.4.0")
 
 // for self-signed cert of postgres
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
@@ -66,8 +66,6 @@ if (network_type == "mainnet") {
 } else if (network_type == "testnet") {
   network = bitcoin.networks.testnet
   network_folder = "testnet3/"
-  console.error("testnet not supported yet")
-  process.exit(1)
 } else if (network_type == "signet") {
   network = bitcoin.networks.signet
   network_folder = "signet/"
@@ -79,18 +77,18 @@ if (network_type == "mainnet") {
   process.exit(1)
 }
 const first_rune_heights = {
-  'mainnet': 173831, // TODO: set correctly!!
-  'testnet': 173831, // TODO: set correctly!!
+  'mainnet': 767430, // TODO: set correctly!!
+  'testnet': 2583205, // TODO: check!!
   'signet': 173831,
   'regtest': 0,
 }
 const first_rune_height = first_rune_heights[network_type]
 const fast_index_below = first_rune_height + 1000
 
-const DB_VERSION = 3
+const DB_VERSION = 4
 // eslint-disable-next-line no-unused-vars
-const INDEXER_VERSION = 'OPI-runes-alpha V0.3.0'
-const ORD_VERSION = 'opi-runes-ord 0.15.0'
+const INDEXER_VERSION = 'OPI-runes-alpha V0.4.0'
+const ORD_VERSION = 'opi-runes-ord 0.17.1'
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
@@ -295,19 +293,22 @@ async function main_index() {
 
     let ord_sql_st_tm = +(new Date())
 
-    let sql_query_id_to_entry_insert = `INSERT into runes_id_to_entry (rune_id, rune_id_int, burned, deadline, divisibility, etching
-                                                                      , mints, "number", rune_name, spacers, supply, "end", symbol
-                                                                      , "limit", "timestamp", genesis_height, last_updated_block_height) values ($1, $2, $3, $4, $5
-                                                                      , $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);`
-    let sql_query_outpoint_to_balances_insert = `INSERT into runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids_int, rune_ids, balances, block_height) values ($1, $2, $3, $4, $5, $6, $7);`
-    let sql_query_id_to_entry_changes_insert = `INSERT into runes_id_to_entry_changes (rune_id, burned, mints, supply, block_height) values ($1, $2, $3, $4, $5);`
+    let sql_query_id_to_entry_insert = `INSERT into runes_id_to_entry (rune_id, rune_block, burned, divisibility, etching
+                                                                      , terms_amount, terms_cap, terms_height_l, terms_height_h
+                                                                      , terms_offset_l, terms_offset_h
+                                                                      , mints, "number", premine, rune_name, spacers, symbol
+                                                                      , "timestamp", genesis_height, last_updated_block_height) values ($1, $2, $3, $4, $5
+                                                                      , $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20);`
+    let sql_query_outpoint_to_balances_insert = `INSERT into runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, balances, block_height) values ($1, $2, $3, $4, $5, $6);`
+    let sql_query_id_to_entry_changes_insert = `INSERT into runes_id_to_entry_changes (rune_id, burned, mints, block_height) values ($1, $2, $3, $4);`
     let sql_query_id_to_entry_update = `UPDATE runes_id_to_entry
-                                        SET burned = $1, mints = $2, supply = $3, last_updated_block_height = $4
-                                        WHERE rune_id = $5 AND last_updated_block_height < $6;`
+                                        SET burned = $1, mints = $2, last_updated_block_height = $3
+                                        WHERE rune_id = $4 AND last_updated_block_height < $5;`
     let sql_query_outpoint_to_balances_remove = `UPDATE runes_outpoint_to_balances SET spent = true, spent_block_height = $1 WHERE outpoint = $2;`
     let sql_query_runes_events_insert = `INSERT into runes_events (id, event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount, block_height) values ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
     // first run inserts, then updates
     // runes_id_to_entry updates must either be ordered or ran once by combining
+    // NOTE: runes_id_to_entry_changes must have only one entry per rune_id per block_height
 
     let current_runes_events_id_q = await db_pool.query(`SELECT coalesce(max(id), -1) as maxid from runes_events;`)
     let current_runes_events_id = parseInt(current_runes_events_id_q.rows[0].maxid) + 1
@@ -362,17 +363,15 @@ async function main_index() {
           current_outpoint_to_pkscript_wallet_map[outpoint] = [pkscript, wallet_addr]
 
           let balances_str = parts[5]
-          let rune_ids_int = []
           let rune_ids = []
           let balances = []
           for (let pair of balances_str.split(',')) {
             if (pair.trim() == '') continue
             let parts2 = pair.split('-')
-            rune_ids_int.push(parts2[0])
-            rune_ids.push(parts2[1])
-            balances.push(parts2[2])
+            rune_ids.push(parts2[0])
+            balances.push(parts2[1])
           }
-          running_promises.push(execute_on_db(sql_query_outpoint_to_balances_insert, [outpoint, pkscript, wallet_addr, rune_ids_int, rune_ids, balances, block_height]))
+          running_promises.push(execute_on_db(sql_query_outpoint_to_balances_insert, [outpoint, pkscript, wallet_addr, rune_ids, balances, block_height]))
           new_balances_count += 1
           ord_sql_query_count += 1
         }
@@ -380,32 +379,45 @@ async function main_index() {
       else if (parts[2] == "id_to_entry_insert") {
         if (block_height > current_height) {
           let rune_id = parts[3]
-          let rune_id_int = parts[4]
+          let rune_block = parts[4]
           let burned = parts[5]
-          let deadline = parts[6]
-          if (deadline == 'null') deadline = null
-          else {
-            deadline = parseInt(deadline)
-            deadline = new Date(deadline * 1000)
+          let divisibility = parts[6]
+          let etching = parts[7]
+          let terms_str = parts[8]
+          let terms_amount = null
+          let terms_cap = null
+          let terms_height_l = null
+          let terms_height_h = null
+          let terms_offset_l = null
+          let terms_offset_h = null
+          if (terms_str != '') {
+            let terms = terms_str.split('-')
+            terms_amount = terms[0]
+            if (terms_amount == 'null') terms_amount = null
+            terms_cap = terms[1]
+            if (terms_cap == 'null') terms_cap = null
+            terms_height_l = terms[2]
+            if (terms_height_l == 'null') terms_height_l = null
+            terms_height_h = terms[3]
+            if (terms_height_h == 'null') terms_height_h = null
+            terms_offset_l = terms[4]
+            if (terms_offset_l == 'null') terms_offset_l = null
+            terms_offset_h = terms[5]
+            if (terms_offset_h == 'null') terms_offset_h = null
           }
-          let divisibility = parts[7]
-          let etching = parts[8]
           let mints = parts[9]
           let number = parts[10]
-          let rune_name = parts[11]
-          let spacers = parseInt(parts[12])
-          let supply = parts[13]
-          let end = parts[14]
-          if (end == 'null') end = null
-          else end = parseInt(end)
-          let symbol = parts[15]
+          let premine = parts[11]
+          let rune_name = parts[12]
+          let spacers = parts[13]
+          let symbol = parts[14]
           if (symbol == 'null') symbol = null
-          let limit = parts[16]
-          if (limit == 'null') limit = null
-          let timestamp = parseInt(parts[17])
+          let timestamp = parseInt(parts[15])
           timestamp = new Date(timestamp * 1000)
-          running_promises.push(execute_on_db(sql_query_id_to_entry_insert, [rune_id, rune_id_int, burned, deadline, divisibility, etching
-            , mints, number, rune_name, spacers, supply, end, symbol, limit, timestamp, block_height, block_height]))
+
+          running_promises.push(execute_on_db(sql_query_id_to_entry_insert, [rune_id, rune_block, burned, divisibility, etching
+            , terms_amount, terms_cap, terms_height_l, terms_height_h, terms_offset_l, terms_offset_h
+            , mints, number, premine, rune_name, spacers, symbol, timestamp, block_height, block_height]))
           new_runes_count += 1
           ord_sql_query_count += 1
         }
@@ -421,16 +433,15 @@ async function main_index() {
           let rune_id = parts[3]
           let burned = parts[4]
           let mints = parts[5]
-          let supply = parts[6]
           for (let i = 0; i < delayed_queries.length; i++) {
             if (delayed_queries[i][0] == 1 && delayed_queries[i][2][4] == rune_id) {
               delayed_queries.splice(i, 1)
               i -= 1
             }
           }
-          delayed_queries.push([1, sql_query_id_to_entry_update, [burned, mints, supply, block_height, rune_id, block_height]])
+          delayed_queries.push([1, sql_query_id_to_entry_update, [burned, mints,  block_height, rune_id, block_height]])
 
-          running_promises.push(execute_on_db(sql_query_id_to_entry_changes_insert, [rune_id, burned, mints, supply, block_height]))
+          running_promises.push(execute_on_db(sql_query_id_to_entry_changes_insert, [rune_id, burned, mints, block_height]))
           added_entry_history_count += 1
           ord_sql_query_count += 1
         }
@@ -451,14 +462,10 @@ async function main_index() {
       else if (parts[2] == "tx_events_new_rune_allocation") {
         if (block_height > current_height) {
           let txid = parts[3]
-          let outpoint = parts[4]
-          let rune_id = parts[5]
-          let amount = parts[6]
-          let pkscript = parts[7]
-          let wallet_addr = wallet_from_pkscript(pkscript, network)
-          current_outpoint_to_pkscript_wallet_map[outpoint] = [pkscript, wallet_addr]
+          let rune_id = parts[4]
+          let amount = parts[5]
 
-          running_promises.push(execute_on_db(sql_query_runes_events_insert, [current_runes_events_id, 1, txid, outpoint, pkscript, wallet_addr, rune_id, amount, block_height]))
+          running_promises.push(execute_on_db(sql_query_runes_events_insert, [current_runes_events_id, 1, txid, null, null, null, rune_id, amount, block_height]))
           current_runes_events_id += 1
           added_event_count += 1
           ord_sql_query_count += 1
@@ -467,20 +474,16 @@ async function main_index() {
       else if (parts[2] == "tx_events_mint") {
         if (block_height > current_height) {
           let txid = parts[3]
-          let outpoint = parts[4]
-          let rune_id = parts[5]
-          let amount = parts[6]
-          let pkscript = parts[7]
-          let wallet_addr = wallet_from_pkscript(pkscript, network)
-          current_outpoint_to_pkscript_wallet_map[outpoint] = [pkscript, wallet_addr]
+          let rune_id = parts[4]
+          let amount = parts[5]
 
-          running_promises.push(execute_on_db(sql_query_runes_events_insert, [current_runes_events_id, 2, txid, outpoint, pkscript, wallet_addr, rune_id, amount, block_height]))
+          running_promises.push(execute_on_db(sql_query_runes_events_insert, [current_runes_events_id, 2, txid, null, null, null, rune_id, amount, block_height]))
           current_runes_events_id += 1
           added_event_count += 1
           ord_sql_query_count += 1
         }
       }
-      else if (parts[2] == "tx_events_transfer") {
+      else if (parts[2] == "tx_events_output") {
         if (block_height > current_height) {
           let txid = parts[3]
           let outpoint = parts[4]
@@ -612,7 +615,7 @@ async function update_cumulative_block_hashes(until_height, to_be_inserted_hashe
     0: "input",
     1: "new_rune_allocation",
     2: "mint",
-    3: "transfer",
+    3: "output",
     4: "burn",
   }
 
@@ -756,12 +759,11 @@ async function handle_reorg(block_height) {
   await db_pool.query(`DELETE from runes_id_to_entry_changes where block_height > $1;`, [last_correct_blockheight])
   let res = await db_pool.query(`SELECT rune_id from runes_id_to_entry where last_updated_block_height > $1;`, [last_correct_blockheight])
   for (const row of res.rows) {
-    let res_inner = await db_pool.query(`SELECT burned, mints, supply, block_height from runes_id_to_entry_changes WHERE rune_id = $1 AND block_height <= $2 ORDER BY block_height desc LIMIT 1;`, [row.rune_id, last_correct_blockheight])
+    let res_inner = await db_pool.query(`SELECT burned, mints, block_height from runes_id_to_entry_changes WHERE rune_id = $1 AND block_height <= $2 ORDER BY block_height desc LIMIT 1;`, [row.rune_id, last_correct_blockheight])
     let burned = res_inner.rows[0].burned
     let mints = res_inner.rows[0].mints
-    let supply = res_inner.rows[0].supply
     let block_height = res_inner.rows[0].block_height
-    await db_pool.query(`UPDATE runes_id_to_entry SET burned = $1, mints = $2, supply = $3, last_updated_block_height = $4 WHERE rune_id = $5;`, [burned, mints, supply, block_height, row.rune_id])
+    await db_pool.query(`UPDATE runes_id_to_entry SET burned = $1, mints = $2, last_updated_block_height = $3 WHERE rune_id = $4;`, [burned, mints, block_height, row.rune_id])
   }
 
   await db_pool.query(`DELETE from runes_cumulative_event_hashes where block_height > $1;`, [last_correct_blockheight])

@@ -73,7 +73,7 @@ if init_env:
   res = input("Ord binary command (Default: ./ord) change to ord.exe on Windows (without ./): ")
   if res != '':
     ORD_BINARY = res
-  res = input("Path to ord folder (Default: ../../ord-runes/target/release/) leave default if repository folder structure hasn't been changed: ")
+  res = input("Path to ord folder (Default: ord-runes/target/release/) leave default if repository folder structure hasn't been changed: ")
   if res != '':
     ORD_FOLDER = res
   res = input("Ord datadir (relative to ord folder) (Default: .) leave default if repository folder structure hasn't been changed: ")

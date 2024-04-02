@@ -2,12 +2,10 @@ use {super::*, ord::subcommand::balances::Output};
 
 #[test]
 fn flag_is_required() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
 
   CommandBuilder::new("--regtest balances")
-    .rpc_server(&rpc_server)
+    .core(&core)
     .expected_exit_code(1)
     .expected_stderr("error: `ord balances` requires index created with `--index-runes` flag\n")
     .run_and_extract_stdout();
@@ -15,12 +13,10 @@ fn flag_is_required() {
 
 #[test]
 fn no_runes() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
 
   let output = CommandBuilder::new("--regtest --index-runes balances")
-    .rpc_server(&rpc_server)
+    .core(&core)
     .run_and_deserialize_output::<Output>();
 
   assert_eq!(
@@ -33,17 +29,17 @@ fn no_runes() {
 
 #[test]
 fn with_runes() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
 
-  create_wallet(&rpc_server);
+  let ord = TestServer::spawn_with_server_args(&core, &["--regtest", "--index-runes"], &[]);
 
-  let a = etch(&rpc_server, Rune(RUNE));
-  let b = etch(&rpc_server, Rune(RUNE + 1));
+  create_wallet(&core, &ord);
+
+  let a = etch(&core, &ord, Rune(RUNE));
+  let b = etch(&core, &ord, Rune(RUNE + 1));
 
   let output = CommandBuilder::new("--regtest --index-runes balances")
-    .rpc_server(&rpc_server)
+    .core(&core)
     .run_and_deserialize_output::<Output>();
 
   assert_eq!(
@@ -51,25 +47,33 @@ fn with_runes() {
     Output {
       runes: vec![
         (
-          Rune(RUNE),
+          SpacedRune::new(Rune(RUNE), 0),
           vec![(
             OutPoint {
-              txid: a.transaction,
+              txid: a.output.reveal,
               vout: 1
             },
-            1000
+            Pile {
+              amount: 1000,
+              divisibility: 0,
+              symbol: Some('¢')
+            },
           )]
           .into_iter()
           .collect()
         ),
         (
-          Rune(RUNE + 1),
+          SpacedRune::new(Rune(RUNE + 1), 0),
           vec![(
             OutPoint {
-              txid: b.transaction,
+              txid: b.output.reveal,
               vout: 1
             },
-            1000
+            Pile {
+              amount: 1000,
+              divisibility: 0,
+              symbol: Some('¢')
+            },
           )]
           .into_iter()
           .collect()

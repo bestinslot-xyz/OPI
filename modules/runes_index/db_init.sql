@@ -1,19 +1,22 @@
 CREATE TABLE public.runes_id_to_entry (
 	id bigserial NOT NULL,
 	rune_id text NOT NULL,
-	rune_id_int numeric(40) NOT NULL,
+	rune_block int4 NOT NULL,
 	burned numeric(40) NOT NULL,
-	deadline timestamptz NULL,
 	divisibility int4 NOT NULL,
 	etching text NOT NULL,
+	terms_amount numeric(40) NULL,
+	terms_cap numeric(40) NULL,
+	terms_height_l int8 NULL,
+	terms_height_h int8 NULL,
+	terms_offset_l int8 NULL,
+	terms_offset_h int8 NULL,
 	mints numeric(40) NOT NULL,
 	"number" numeric(40) NOT NULL,
+	premine numeric(40) NOT NULL,
 	rune_name text NOT NULL,
 	spacers int8 NOT NULL,
-	supply numeric(40) NOT NULL,
-	"end" int8 NULL, -- block height
 	symbol text NULL,
-	"limit" numeric(40) NULL,
 	"timestamp" timestamptz NOT NULL,
 	genesis_height int4 NOT NULL,
 	last_updated_block_height int4 NOT NULL,
@@ -22,7 +25,6 @@ CREATE TABLE public.runes_id_to_entry (
 CREATE INDEX runes_id_to_entry_genesis_height_idx ON public.runes_id_to_entry USING btree (genesis_height);
 CREATE INDEX runes_id_to_entry_last_updated_block_height_idx ON public.runes_id_to_entry USING btree (last_updated_block_height);
 CREATE UNIQUE INDEX runes_id_to_entry_rune_id_idx ON public.runes_id_to_entry USING btree (rune_id);
-CREATE UNIQUE INDEX runes_id_to_entry_rune_id_int_idx ON public.runes_id_to_entry USING btree (rune_id_int);
 CREATE UNIQUE INDEX runes_id_to_entry_rune_name_idx ON public.runes_id_to_entry USING btree (rune_name);
 
 CREATE TABLE public.runes_id_to_entry_changes (
@@ -30,19 +32,17 @@ CREATE TABLE public.runes_id_to_entry_changes (
 	rune_id text NOT NULL,
 	burned numeric(40) NOT NULL,
 	mints numeric(40) NOT NULL,
-	supply numeric(40) NOT NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT runes_id_to_entry_changes_pk PRIMARY KEY (id)
 );
+CREATE UNIQUE INDEX runes_id_to_entry_changes_rune_id_block_height_idx ON public.runes_id_to_entry_changes USING btree (rune_id, block_height);
 CREATE INDEX runes_id_to_entry_changes_block_height_idx ON public.runes_id_to_entry_changes USING btree (block_height);
-CREATE INDEX runes_id_to_entry_changes_rune_id_idx ON public.runes_id_to_entry_changes USING btree (rune_id);
 
 CREATE TABLE public.runes_outpoint_to_balances (
 	id bigserial NOT NULL,
 	outpoint text NOT NULL,
 	pkscript text NOT NULL,
-	wallet_addr text NOT NULL,
-	rune_ids_int numeric(40)[] NOT NULL,
+	wallet_addr text NULL,
 	rune_ids text[] NOT NULL,
 	balances numeric(40)[] NOT NULL,
 	block_height int4 NOT NULL,
@@ -55,7 +55,6 @@ CREATE INDEX runes_outpoint_to_balances_pkscript_idx ON public.runes_outpoint_to
 CREATE INDEX runes_outpoint_to_balances_wallet_addr_idx ON public.runes_outpoint_to_balances USING btree (wallet_addr);
 CREATE INDEX runes_outpoint_to_balances_spent_idx ON public.runes_outpoint_to_balances USING btree (spent);
 CREATE UNIQUE INDEX runes_outpoint_to_balances_outpoint_idx ON public.runes_outpoint_to_balances USING btree (outpoint);
-CREATE INDEX runes_outpoint_to_balances_rune_ids_int_idx ON public.runes_outpoint_to_balances USING GIN (rune_ids_int);
 CREATE INDEX runes_outpoint_to_balances_rune_ids_idx ON public.runes_outpoint_to_balances USING GIN (rune_ids);
 
 CREATE TABLE public.runes_events (
@@ -87,7 +86,7 @@ CREATE TABLE public.runes_event_types (
 INSERT INTO public.runes_event_types (event_type_name, event_type_id) VALUES ('input', 0);
 INSERT INTO public.runes_event_types (event_type_name, event_type_id) VALUES ('new-allocation', 1);
 INSERT INTO public.runes_event_types (event_type_name, event_type_id) VALUES ('mint', 2);
-INSERT INTO public.runes_event_types (event_type_name, event_type_id) VALUES ('transfer', 3);
+INSERT INTO public.runes_event_types (event_type_name, event_type_id) VALUES ('output', 3);
 INSERT INTO public.runes_event_types (event_type_name, event_type_id) VALUES ('burn', 4);
 
 CREATE TABLE public.runes_cumulative_event_hashes (
@@ -140,4 +139,4 @@ CREATE TABLE public.runes_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT runes_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.runes_indexer_version (indexer_version, db_version) VALUES ('OPI-runes-alpha V0.3.0', 3);
+INSERT INTO public.runes_indexer_version (indexer_version, db_version) VALUES ('OPI-runes-alpha V0.4.0', 4);

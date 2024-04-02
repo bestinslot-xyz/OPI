@@ -1,25 +1,30 @@
-use {super::*, ord::subcommand::wallet::balance::Output};
+use super::*;
 
 #[test]
 fn wallet_balance() {
-  let rpc_server = test_bitcoincore_rpc::spawn();
-  create_wallet(&rpc_server);
+  let core = mockcore::spawn();
+
+  let ord = TestServer::spawn_with_server_args(&core, &[], &[]);
+
+  create_wallet(&core, &ord);
 
   assert_eq!(
     CommandBuilder::new("wallet balance")
-      .rpc_server(&rpc_server)
-      .run_and_deserialize_output::<Output>()
+      .core(&core)
+      .ord(&ord)
+      .run_and_deserialize_output::<Balance>()
       .cardinal,
     0
   );
 
-  rpc_server.mine_blocks(1);
+  core.mine_blocks(1);
 
   assert_eq!(
     CommandBuilder::new("wallet balance")
-      .rpc_server(&rpc_server)
-      .run_and_deserialize_output::<Output>(),
-    Output {
+      .core(&core)
+      .ord(&ord)
+      .run_and_deserialize_output::<Balance>(),
+    Balance {
       cardinal: 50 * COIN_VALUE,
       ordinal: 0,
       runic: None,
@@ -31,15 +36,18 @@ fn wallet_balance() {
 
 #[test]
 fn inscribed_utxos_are_deducted_from_cardinal() {
-  let rpc_server = test_bitcoincore_rpc::spawn();
+  let core = mockcore::spawn();
 
-  create_wallet(&rpc_server);
+  let ord = TestServer::spawn_with_server_args(&core, &[], &[]);
+
+  create_wallet(&core, &ord);
 
   assert_eq!(
     CommandBuilder::new("wallet balance")
-      .rpc_server(&rpc_server)
-      .run_and_deserialize_output::<Output>(),
-    Output {
+      .core(&core)
+      .ord(&ord)
+      .run_and_deserialize_output::<Balance>(),
+    Balance {
       cardinal: 0,
       ordinal: 0,
       runic: None,
@@ -48,13 +56,14 @@ fn inscribed_utxos_are_deducted_from_cardinal() {
     }
   );
 
-  inscribe(&rpc_server);
+  inscribe(&core, &ord);
 
   assert_eq!(
     CommandBuilder::new("wallet balance")
-      .rpc_server(&rpc_server)
-      .run_and_deserialize_output::<Output>(),
-    Output {
+      .core(&core)
+      .ord(&ord)
+      .run_and_deserialize_output::<Balance>(),
+    Balance {
       cardinal: 100 * COIN_VALUE - 10_000,
       ordinal: 10_000,
       runic: None,
@@ -66,17 +75,18 @@ fn inscribed_utxos_are_deducted_from_cardinal() {
 
 #[test]
 fn runic_utxos_are_deducted_from_cardinal() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Regtest)
-    .build();
+  let core = mockcore::builder().network(Network::Regtest).build();
 
-  create_wallet(&rpc_server);
+  let ord = TestServer::spawn_with_server_args(&core, &["--regtest", "--index-runes"], &[]);
 
-  assert_eq!(
+  create_wallet(&core, &ord);
+
+  pretty_assert_eq!(
     CommandBuilder::new("--regtest --index-runes wallet balance")
-      .rpc_server(&rpc_server)
-      .run_and_deserialize_output::<Output>(),
-    Output {
+      .core(&core)
+      .ord(&ord)
+      .run_and_deserialize_output::<Balance>(),
+    Balance {
       cardinal: 0,
       ordinal: 0,
       runic: Some(0),
@@ -85,18 +95,84 @@ fn runic_utxos_are_deducted_from_cardinal() {
     }
   );
 
-  etch(&rpc_server, Rune(RUNE));
+  let rune = Rune(RUNE);
 
-  assert_eq!(
+  batch(
+    &core,
+    &ord,
+    batch::File {
+      etching: Some(batch::Etching {
+        divisibility: 0,
+        premine: "1000".parse().unwrap(),
+        rune: SpacedRune { rune, spacers: 1 },
+        supply: "1000".parse().unwrap(),
+        symbol: '¢',
+        terms: None,
+      }),
+      inscriptions: vec![batch::Entry {
+        file: "inscription.jpeg".into(),
+        ..default()
+      }],
+      ..default()
+    },
+  );
+
+  pretty_assert_eq!(
     CommandBuilder::new("--regtest --index-runes wallet balance")
-      .rpc_server(&rpc_server)
-      .run_and_deserialize_output::<Output>(),
-    Output {
-      cardinal: 100 * COIN_VALUE - 10_000,
-      ordinal: 0,
+      .core(&core)
+      .ord(&ord)
+      .run_and_deserialize_output::<Balance>(),
+    Balance {
+      cardinal: 50 * COIN_VALUE * 8 - 20_000,
+      ordinal: 10000,
       runic: Some(10_000),
-      runes: Some(vec![(Rune(RUNE), 1000)].into_iter().collect()),
-      total: 100 * COIN_VALUE,
+      runes: Some(
+        vec![(SpacedRune { rune, spacers: 1 }, 1000)]
+          .into_iter()
+          .collect()
+      ),
+      total: 50 * COIN_VALUE * 8,
     }
   );
+}
+#[test]
+fn unsynced_wallet_fails_with_unindexed_output() {
+  let core = mockcore::spawn();
+  let ord = TestServer::spawn(&core);
+
+  core.mine_blocks(1);
+
+  create_wallet(&core, &ord);
+
+  assert_eq!(
+    CommandBuilder::new("wallet balance")
+      .ord(&ord)
+      .core(&core)
+      .run_and_deserialize_output::<Balance>(),
+    Balance {
+      cardinal: 50 * COIN_VALUE,
+      ordinal: 0,
+      runic: None,
+      runes: None,
+      total: 50 * COIN_VALUE,
+    }
+  );
+
+  let no_sync_ord = TestServer::spawn_with_server_args(&core, &[], &["--no-sync"]);
+
+  inscribe(&core, &ord);
+
+  CommandBuilder::new("wallet balance")
+    .ord(&no_sync_ord)
+    .core(&core)
+    .expected_exit_code(1)
+    .expected_stderr("error: wallet failed to synchronize with `ord server` after 20 attempts\n")
+    .run_and_extract_stdout();
+
+  CommandBuilder::new("wallet --no-sync balance")
+    .ord(&no_sync_ord)
+    .core(&core)
+    .expected_exit_code(1)
+    .stderr_regex(r"error: output in wallet but not in ord server: [[:xdigit:]]{64}:\d+.*")
+    .run_and_extract_stdout();
 }
