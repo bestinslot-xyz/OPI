@@ -21,17 +21,18 @@ In addition to indexing all events, it also calculates a block hash and cumulati
 
 EVENT_SEPARATOR = '|'
 ## max_supply, limit_per_mint, amount decimal count is the same as ticker's decimals (no trailing dot if decimals is 0)
-## tickers are lowercase
+## ticker_lowercase = lower(ticker)
+## ticker_original is the ticker on inscription
 for event in block_events:
   if event is 'deploy-inscribe':
-    block_str += 'deploy-inscribe;<inscr_id>;<deployer_pkscript>;<ticker>;<max_supply>;<decimals>;<limit_per_mint>' + EVENT_SEPARATOR
+    block_str += 'deploy-inscribe;<inscr_id>;<deployer_pkscript>;<ticker_lowercase>;<ticker_original>;<max_supply>;<decimals>;<limit_per_mint>;<is_self_mint("true" or "false")>' + EVENT_SEPARATOR
   if event is 'mint-inscribe':
-    block_str += 'mint-inscribe;<inscr_id>;<minter_pkscript>;<ticker>;<amount>' + EVENT_SEPARATOR
+    block_str += 'mint-inscribe;<inscr_id>;<minter_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>;<parent_id("" if null)>' + EVENT_SEPARATOR
   if event is 'transfer-inscribe':
-    block_str += 'transfer-inscribe;<inscr_id>;<source_pkscript>;<ticker>;<amount>' + EVENT_SEPARATOR
+    block_str += 'transfer-inscribe;<inscr_id>;<source_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
   if event is 'transfer-transfer':
     ## if sent as fee, sent_pkscript is empty
-    block_str += 'transfer-transfer;<inscr_id>;<source_pkscript>;<sent_pkscript>;<ticker>;<amount>' + EVENT_SEPARATOR
+    block_str += 'transfer-transfer;<inscr_id>;<source_pkscript>;<sent_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
 
 if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
 block_hash = sha256_hex(block_str)
@@ -94,6 +95,7 @@ cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 
 For detailed installation guides:
 - Ubuntu: [installation guide](INSTALL.ubuntu.md)
+- Windows: [installation guide](INSTALL.windows.md)
 
 OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
 
@@ -122,7 +124,7 @@ Otherwise, it cannot decode some addresses such as `512057cd4cfa03f27f7b18c2fe45
 ```bash
 pip3 install python-dotenv;
 pip3 install psycopg2-binary;
-python3 -m pip install json5;
+python3 -m pip install json5 stdiomask;
 ```
 
 **Setup .env files and DBs**

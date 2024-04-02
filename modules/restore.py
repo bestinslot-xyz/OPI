@@ -9,7 +9,7 @@
 ## apt install postgresql-client-14
 ## apt install pbzip2
 
-import os, psycopg2
+import os, psycopg2, sys
 from dotenv import dotenv_values
 import pathlib
 
@@ -19,19 +19,21 @@ from botocore.client import Config
 
 from tqdm import tqdm
 
-def get_yn(question):
-  while True:
-    res = input(question + " (y/n):")
-    if res == 'y':
-      return True
-    elif res == 'n':
-      return False
-    else:
-      print("Invalid input")
+def get_yn(question, default=None):
+    if not sys.stdin.isatty():
+        return default
+    while True:
+        res = input(question + " (y/n): ")
+        if res.lower() == 'y':
+            return True
+        elif res.lower() == 'n':
+            return False
+        else:
+            print("Invalid input")
 
-index_brc20 = get_yn("Will you index brc20")
-index_bitmap = get_yn("Will you index bitmap")
-index_sns = get_yn("Will you index sns")
+index_brc20 = get_yn("Will you index brc20", True)
+index_bitmap = get_yn("Will you index bitmap", True)
+index_sns = get_yn("Will you index sns", True)
 
 if not os.path.isfile('main_index/.env'):
   print("main_index/.env file not found, please run reset_init.py from main_index folder")
@@ -151,9 +153,9 @@ if index_sns:
     print("Error connecting to sns db, check sns_index/.env file")
     exit()
 
-download_only = not get_yn("Do you want to restore databases (y) or download backups only (n)?")
+download_only = not get_yn("Do you want to restore databases (y) or download backups only (n)?", True)
 
-restore_index_redb = get_yn("Do you want to restore index.redb?")
+restore_index_redb = get_yn("Do you want to restore index.redb?", True)
 if not download_only and restore_index_redb:
   res = os.system('tar --help >/dev/null 2>&1')
   if res != 0:
@@ -161,16 +163,16 @@ if not download_only and restore_index_redb:
     exit()
   res = os.system('pbzip2 -V >/dev/null 2>&1')
   if res != 0:
-    res = get_yn("pbzip2 is not installed, will use normal tar, may take around 40 mins with normal tar, it'll take around 5 mins with pbzip2. Do you want to continue?")
+    res = get_yn("pbzip2 is not installed, will use normal tar, may take around 40 mins with normal tar, it'll take around 5 mins with pbzip2. Do you want to continue?", False)
     if not res:
       exit()
-restore_main_db = get_yn("Do you want to restore main db?")
+restore_main_db = get_yn("Do you want to restore main db?", True)
 restore_brc20_db = False
-if index_brc20: restore_brc20_db = get_yn("Do you want to restore brc20 db?")
+if index_brc20: restore_brc20_db = get_yn("Do you want to restore brc20 db?", True)
 restore_bitmap_db = False
-if index_bitmap: restore_bitmap_db = get_yn("Do you want to restore bitmap db?")
+if index_bitmap: restore_bitmap_db = get_yn("Do you want to restore bitmap db?", True)
 restore_sns_db = False
-if index_sns: restore_sns_db = get_yn("Do you want to restore sns db?")
+if index_sns: restore_sns_db = get_yn("Do you want to restore sns db?", True)
 if not download_only and (restore_main_db or restore_brc20_db or restore_bitmap_db or restore_sns_db):
   res = os.system('pg_restore -V >/dev/null 2>&1')
   if res != 0:
@@ -178,12 +180,13 @@ if not download_only and (restore_main_db or restore_brc20_db or restore_bitmap_
     exit()
 
 
-OBJECT_STORAGE_REGION = 'sfo3'
 OBJECT_STORAGE_BUCKET = 'opi-backups'
 
 s3config = {
-    "region_name": OBJECT_STORAGE_REGION,
-    "endpoint_url": "https://{}.digitaloceanspaces.com".format(OBJECT_STORAGE_REGION) }
+  "endpoint_url": "http://s3.opi.network:9000",
+  "aws_session_token": None,
+  "verify": False
+}
 
 s3client = boto3.client('s3', **s3config, config=Config(signature_version=UNSIGNED))
 def get_backup_filenames():
@@ -193,7 +196,7 @@ def get_backup_filenames():
     res.append(key['Key'])
   return res
 
-S3_KEY_PREFIX = 'db_3/'
+S3_KEY_PREFIX = 'db_5/'
 def s3_download(s3_bucket, s3_object_key, local_file_name):
   s3_object_key = S3_KEY_PREFIX + s3_object_key
   meta_data = s3client.head_object(Bucket=s3_bucket, Key=s3_object_key)
@@ -316,7 +319,7 @@ if restore_main_db:
     cur_main.close()
     conn_main.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_main)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_main + " -Fc -c --if-exists -v -d " + db_database_main + " -h " + db_host_main + " -p " + str(db_port_main) + " postgres_metaprotocol.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_main + " -Fc -c --if-exists -v -d " + db_database_main + " -h " + db_host_main + " -p " + str(db_port_main) + " postgres_metaprotocol.dump")
     if res != 0:
       print("Error restoring main db")
       exit()
@@ -347,7 +350,7 @@ if restore_brc20_db:
     cur_brc20.close()
     conn_brc20.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_brc20)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_brc20 + " -Fc -c --if-exists -v -d " + db_database_brc20 + " -h " + db_host_brc20 + " -p " + str(db_port_brc20) + " postgres_brc20.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_brc20 + " -Fc -c --if-exists -v -d " + db_database_brc20 + " -h " + db_host_brc20 + " -p " + str(db_port_brc20) + " postgres_brc20.dump")
     if res != 0:
       print("Error restoring brc20 db")
       exit()
@@ -374,7 +377,7 @@ if restore_bitmap_db:
     cur_bitmap.close()
     conn_bitmap.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_bitmap)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_bitmap + " -Fc -c --if-exists -v -d " + db_database_bitmap + " -h " + db_host_bitmap + " -p " + str(db_port_bitmap) + " postgres_bitmap.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_bitmap + " -Fc -c --if-exists -v -d " + db_database_bitmap + " -h " + db_host_bitmap + " -p " + str(db_port_bitmap) + " postgres_bitmap.dump")
     if res != 0:
       print("Error restoring bitmap db")
       exit()
@@ -401,7 +404,7 @@ if restore_sns_db:
     cur_sns.close()
     conn_sns.close()
     os.environ["PGPASSWORD"]='{}'.format(db_password_sns)
-    res = os.system("pg_restore --jobs=4 -U " + db_user_sns + " -Fc -c --if-exists -v -d " + db_database_sns + " -h " + db_host_sns + " -p " + str(db_port_sns) + " postgres_sns.dump")
+    res = os.system("pg_restore --no-owner --jobs=4 -U " + db_user_sns + " -Fc -c --if-exists -v -d " + db_database_sns + " -h " + db_host_sns + " -p " + str(db_port_sns) + " postgres_sns.dump")
     if res != 0:
       print("Error restoring sns db")
       exit()

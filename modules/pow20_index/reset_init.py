@@ -28,36 +28,37 @@ if init_env:
   REPORT_TO_INDEXER="true"
   REPORT_URL="https://api.opi.network/report_block"
   REPORT_RETRIES="10"
-  REPORT_NAME="opi_sns_index"
+  REPORT_NAME="opi_pow20_index"
+  CREATE_EXTRA_TABLES="true"
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
-  other_env_exists = os.path.isfile('../sns_api/.env')
+  other_env_exists = os.path.isfile('../pow20_api/.env')
   if other_env_exists:
-    res = input(".env on sns_api already exists, do you want to use values from there? (y/n) ")
+    res = input(".env on pow20_api already exists, do you want to use values from there? (y/n) ")
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    env = dotenv_values(dotenv_path='../sns_api/.env')
+    env = dotenv_values(dotenv_path='../pow20_api/.env')
     DB_USER = env.get("DB_USER") or "postgres"
     DB_HOST = env.get("DB_HOST") or "localhost"
     DB_PORT = env.get("DB_PORT") or "5432"
     DB_DATABASE = env.get("DB_DATABASE") or "postgres"
     DB_PASSWD = env.get("DB_PASSWD")
   else:
-    res = input("SNS Postgres DB username (Default: postgres): ")
+    res = input("pow20 Postgres DB username (Default: postgres): ")
     if res != '':
       DB_USER = res
-    res = input("SNS Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
+    res = input("pow20 Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
     if res != '':
       DB_HOST = res
-    res = input("SNS Postgres DB port (Default: 5432): ")
+    res = input("pow20 Postgres DB port (Default: 5432): ")
     if res != '':
       DB_PORT = res
-    res = input("SNS Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
+    res = input("pow20 Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_DATABASE = res
-    res = stdiomask.getpass("SNS Postgres DB password: ")
+    res = stdiomask.getpass("pow20 Postgres DB password: ")
     DB_PASSWD = res
   use_main_env = False
   main_env_exists = os.path.isfile('../main_index/.env')
@@ -108,6 +109,9 @@ if init_env:
         break
       else:
         print('Report name cannot be empty')
+  res = input("Create extra tables for faster queries (Default: true) set to true for creating pow20_current_balances and pow20_unused_tx_inscrs tables: ")
+  if res != '':
+    CREATE_EXTRA_TABLES = res
   f = open('.env', 'w')
   f.write('DB_USER="' + DB_USER + '"\n')
   f.write('DB_HOST="' + DB_HOST + '"\n')
@@ -124,9 +128,10 @@ if init_env:
   f.write('REPORT_URL="' + REPORT_URL + '"\n')
   f.write('REPORT_RETRIES="' + REPORT_RETRIES + '"\n')
   f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
+  f.write('CREATE_EXTRA_TABLES="' + CREATE_EXTRA_TABLES + '"\n')
   f.close()
 
-res = input("Are you sure you want to initialise/reset the sns database? (y/n) ")
+res = input("Are you sure you want to initialise/reset the pow20 database? (y/n) ")
 if res != 'y':
   print('aborting')
   exit(1)
@@ -137,6 +142,8 @@ db_host = os.getenv("DB_HOST") or "localhost"
 db_port = int(os.getenv("DB_PORT") or "5432")
 db_database = os.getenv("DB_DATABASE") or "postgres"
 db_password = os.getenv("DB_PASSWD")
+
+create_extra_tables = (os.getenv("CREATE_EXTRA_TABLES") or "false") == "true"
 
 ## connect to db
 conn = psycopg2.connect(
@@ -150,7 +157,7 @@ cur = conn.cursor()
 
 db_exists = False
 try:
-  cur.execute('select count(*) from sns_block_hashes;')
+  cur.execute('select count(*) from pow20_block_hashes;')
   hash_cnt = cur.fetchone()[0]
   if hash_cnt > 0:
     db_exists = True
@@ -173,6 +180,16 @@ sqls = open('db_init.sql', 'r').read().split(';')
 for sql in sqls:
   if sql.strip() != '':
     cur.execute(sql)
+
+if create_extra_tables:
+  sqls = open('db_reset_extra.sql', 'r').read().split(';')
+  for sql in sqls:
+    if sql.strip() != '':
+      cur.execute(sql)
+  sqls = open('db_init_extra.sql', 'r').read().split(';')
+  for sql in sqls:
+    if sql.strip() != '':
+      cur.execute(sql)
 
 ## close db
 cur.close()

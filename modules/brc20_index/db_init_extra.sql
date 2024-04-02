@@ -2,7 +2,7 @@ CREATE TABLE public.brc20_current_balances (
 	id bigserial NOT NULL,
 	pkscript text NOT NULL,
 	wallet text NULL,
-	tick varchar(4) NOT NULL,
+	tick text NOT NULL,
 	overall_balance numeric(40) NOT NULL,
 	available_balance numeric(40) NOT NULL,
 	block_height int4 NOT NULL,
@@ -17,7 +17,7 @@ CREATE INDEX brc20_current_balances_wallet_idx ON public.brc20_current_balances 
 CREATE TABLE public.brc20_unused_tx_inscrs (
 	id bigserial NOT NULL,
 	inscription_id text NOT NULL,
-	tick varchar(4) NOT NULL,
+	tick text NOT NULL,
 	amount numeric(40) NOT NULL,
 	current_holder_pkscript text NOT NULL,
 	current_holder_wallet text NULL,

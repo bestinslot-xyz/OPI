@@ -29,7 +29,7 @@ sudo systemctl start postgresql.service
 2) *(Optional)*, I'll usually mark postgres on hold since apt will try to auto update postgres which will restart its process and close all active connections.
 
 ```bash
-apt-mark hold postgresql postgresql-14 postgresql-client-14 postgresql-client-common postgresql-common postgresql-contrib
+sudo apt-mark hold postgresql postgresql-14 postgresql-client-14 postgresql-client-common postgresql-common postgresql-contrib
 ```
 
 3) Set a password for postgresql user.
@@ -121,6 +121,8 @@ All next shell script groups assumes that you are in OPI folder cloned by above 
 cd modules/main_index; npm install;
 cd ../brc20_api; npm install;
 cd ../bitmap_api; npm install;
+cd ../pow20_api; npm install;
+cd ../sns_api; npm install;
 ```
 *(Optional):*
 Remove the following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
@@ -154,6 +156,8 @@ sudo apt install python3-pip
 python3 -m pip install python-dotenv;
 python3 -m pip install psycopg2-binary;
 python3 -m pip install json5;
+python3 -m pip install stdiomask;
+python3 -m pip install requests;
 ```
 
 ## Build ord:
@@ -244,6 +248,21 @@ This is an optional API and doesn't need to be run.
 
 ```bash
 cd modules/sns_api;
+node api.js;
+```
+
+**POW20 Indexer**
+```bash
+cd modules/pow20_index;
+python3 pow20_index.py;
+```
+
+**POW20 API**
+
+This is an optional API and doesn't need to be run.
+
+```bash
+cd modules/pow20_api;
 node api.js;
 ```
 

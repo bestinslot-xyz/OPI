@@ -1,7 +1,9 @@
 # pip install python-dotenv
+# pip install stdiomask
 
 import os
 from dotenv import dotenv_values
+import stdiomask
 
 init_env = True
 
@@ -50,7 +52,7 @@ if init_env:
     res = input("Bitmap Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
     if res != '':
       DB_DATABASE = res
-    res = input("Bitmap Postgres DB password: ")
+    res = stdiomask.getpass("Bitmap Postgres DB password: ")
     DB_PASSWD = res
   res = input("Bitmap Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':

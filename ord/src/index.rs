@@ -38,6 +38,8 @@ mod reorg;
 mod rtx;
 mod updater;
 
+pub use updater::get_tx_limits;
+
 #[cfg(test)]
 pub(crate) mod testing;
 

@@ -18,6 +18,7 @@ CREATE TABLE public.ord_number_to_id (
 	inscription_number int8 NOT NULL,
 	inscription_id text NOT NULL,
 	cursed_for_brc20 bool NOT NULL,
+	parent_id text NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT ord_number_to_id_pk PRIMARY KEY (id)
 );
@@ -75,10 +76,18 @@ CREATE TABLE public.ord_network_type (
 	CONSTRAINT ord_network_type_pk PRIMARY KEY (id)
 );
 
+CREATE TABLE public.ord_transfer_counts (
+	id bigserial NOT NULL,
+	event_type text NOT NULL,
+	max_transfer_cnt int4 NOT NULL,
+	CONSTRAINT ord_transfer_counts_pk PRIMARY KEY (id)
+);
+CREATE UNIQUE INDEX ord_transfer_counts_event_type_idx ON public.ord_transfer_counts USING btree (event_type);
+
 CREATE TABLE public.ord_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
 	db_version int4 NOT NULL,
 	CONSTRAINT ord_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.3.1', 4);
+INSERT INTO public.ord_indexer_version (indexer_version, db_version) VALUES ('OPI V0.4.0', 6);

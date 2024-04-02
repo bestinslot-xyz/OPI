@@ -1,7 +1,8 @@
 # pip install python-dotenv
 # pip install psycopg2-binary
+# pip install stdiomask
 
-import os, psycopg2, pathlib
+import os, psycopg2, pathlib, stdiomask
 from dotenv import load_dotenv
 
 init_env = True
@@ -21,6 +22,8 @@ if init_env:
   DB_SSL="true"
   DB_MAX_CONNECTIONS="50"
   BITCOIN_CHAIN_FOLDER="~/.bitcoin/"
+  BITCOIN_RPC_URL=""
+  COOKIE_FILE=""
   BITCOIN_RPC_USER=""
   BITCOIN_RPC_PASSWD=""
   ORD_BINARY="./ord"
@@ -41,7 +44,7 @@ if init_env:
   res = input("Main Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
   if res != '':
     DB_DATABASE = res
-  res = input("Main Postgres DB password: ")
+  res = stdiomask.getpass("Main Postgres DB password: ")
   DB_PASSWD = res
   res = input("Main Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':
@@ -52,10 +55,16 @@ if init_env:
   res = input("Bitcoin datadir (Default: ~/.bitcoin/) use forward-slashes(/) even on Windows: ")
   if res != '':
     BITCOIN_CHAIN_FOLDER = res
+  res = input("Bitcoin RPC URL (Default: (empty)) leave default to use default localhost bitcoin-rpc: ")
+  if res != '':
+    BITCOIN_RPC_URL = res
+  res = input("Bitcoin RPC cookie file (Default: (empty)) leave default to use .cookie file in bitcoin datadir: ")
+  if res != '':
+    COOKIE_FILE = res
   res = input("Bitcoin RPC username (Default: (empty)) leave default to use .cookie file: ")
   if res != '':
     BITCOIN_RPC_USER = res
-  res = input("Bitcoin RPC password (Default: (empty)) leave default to use .cookie file: ")
+  res = stdiomask.getpass("Bitcoin RPC password (Default: (empty)) leave default to use .cookie file: ")
   if res != '':
     BITCOIN_RPC_PASSWD = res
   res = input("Ord binary command (Default: ./ord) change to ord.exe on Windows (without ./): ")
@@ -79,6 +88,8 @@ if init_env:
   f.write("DB_SSL=\"" + DB_SSL + "\"\n")
   f.write("DB_MAX_CONNECTIONS=" + DB_MAX_CONNECTIONS + "\n")
   f.write("BITCOIN_CHAIN_FOLDER=\"" + BITCOIN_CHAIN_FOLDER + "\"\n")
+  f.write("BITCOIN_RPC_URL=\"" + BITCOIN_RPC_URL + "\"\n")
+  f.write("COOKIE_FILE=\"" + COOKIE_FILE + "\"\n")
   f.write("BITCOIN_RPC_USER=\"" + BITCOIN_RPC_USER + "\"\n")
   f.write("BITCOIN_RPC_PASSWD=\"" + BITCOIN_RPC_PASSWD + "\"\n")
   f.write("ORD_BINARY=\"" + ORD_BINARY + "\"\n")

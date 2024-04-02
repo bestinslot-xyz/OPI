@@ -84,6 +84,23 @@ if network_type_db != network_type:
   print("network_type mismatch between main index and bitmap index")
   sys.exit(1)
 
+cur_metaprotocol.execute('SELECT event_type, max_transfer_cnt from ord_transfer_counts;')
+if cur_metaprotocol.rowcount == 0:
+  print("ord_transfer_counts not found, please run index.js in main_index to fix db")
+  sys.exit(1)
+
+default_max_transfer_cnt = 0
+tx_limits = cur_metaprotocol.fetchall()
+for tx_limit in tx_limits:
+  if tx_limit[0] == 'default':
+    default_max_transfer_cnt = tx_limit[1]
+    break
+
+if default_max_transfer_cnt < 1:
+  print("default max_transfer_cnt is less than 1, sns_indexer requires at least 1, please recreate db from scratch and rerun ord with default tx limit set to 1 or more")
+  sys.exit(1)
+
+
 ## helper functions
 def utf8len(s):
   return len(s.encode('utf-8'))
@@ -352,7 +369,7 @@ if cur.rowcount == 0:
 else:
   db_version = cur.fetchone()[0]
   if db_version != DB_VERSION:
-    print("This version (" + db_version + ") cannot be fixed, please run reset_init.py")
+    print("This version (" + str(db_version) + ") cannot be fixed, please run reset_init.py")
     exit(1)
 
 def try_to_report_with_retries(to_send):
