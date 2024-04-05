@@ -209,6 +209,18 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     // cmd;<height>;tx_events_output;<txid>;<outpoint>;<id>;<amount>;<scriptpubkey>
 
 
+    for (outpoint, balances) in tx_inputs {
+      for (rune_id, amount) in balances {
+        self.write_to_file(format!("cmd;{0};tx_events_input;{1};{2};{3};{4}", self.height, txid, outpoint, rune_id, amount), false)?;
+      }
+    }
+    for (rune_id, amount) in new_rune_allocations {
+      self.write_to_file(format!("cmd;{0};tx_events_new_rune_allocation;{1};{2};{3}", self.height, txid, rune_id, amount), false)?;
+    }
+    for (rune_id, amount) in mints {
+      self.write_to_file(format!("cmd;{0};tx_events_mint;{1};{2};{3}", self.height, txid, rune_id, amount), false)?;
+    }
+
     // update outpoint balances
     let mut buffer: Vec<u8> = Vec::new();
     for (vout, balances) in allocated.into_iter().enumerate() {
@@ -253,18 +265,6 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       )?;
 
       self.write_to_file(format!("cmd;{0};outpoint_to_balances_insert;{1};{2};{3}", self.height, scriptpubkeyhex, outpoint, balances_str), false)?;
-    }
-
-    for (outpoint, balances) in tx_inputs {
-      for (rune_id, amount) in balances {
-        self.write_to_file(format!("cmd;{0};tx_events_input;{1};{2};{3};{4}", self.height, txid, outpoint, rune_id, amount), false)?;
-      }
-    }
-    for (rune_id, amount) in new_rune_allocations {
-      self.write_to_file(format!("cmd;{0};tx_events_new_rune_allocation;{1};{2};{3}", self.height, txid, rune_id, amount), false)?;
-    }
-    for (rune_id, amount) in mints {
-      self.write_to_file(format!("cmd;{0};tx_events_mint;{1};{2};{3}", self.height, txid, rune_id, amount), false)?;
     }
 
     // increment entries with burned runes

@@ -1,3 +1,4 @@
+// TODO: add seed rune on mainnet!!
 // to run: node --max-old-space-size=8192 .\index_runes.js
 
 require('dotenv').config();
@@ -11,8 +12,6 @@ const { execSync } = require("child_process");
 const readline = require('readline');
 
 bitcoin.initEccLib(ecc)
-
-console.log("VERSION V0.4.0")
 
 // for self-signed cert of postgres
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
@@ -85,10 +84,12 @@ const first_rune_heights = {
 const first_rune_height = first_rune_heights[network_type]
 const fast_index_below = first_rune_height + 1000
 
-const DB_VERSION = 4
+const DB_VERSION = 5
 // eslint-disable-next-line no-unused-vars
-const INDEXER_VERSION = 'OPI-runes-alpha V0.4.0'
-const ORD_VERSION = 'opi-runes-ord 0.17.1'
+const INDEXER_VERSION = 'OPI-runes-alpha V0.4.1'
+const ORD_VERSION = 'opi-runes-ord 0.17.1-2'
+
+console.log(INDEXER_VERSION)
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));

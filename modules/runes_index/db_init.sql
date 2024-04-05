@@ -139,4 +139,4 @@ CREATE TABLE public.runes_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT runes_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.runes_indexer_version (indexer_version, db_version) VALUES ('OPI-runes-alpha V0.4.0', 4);
+INSERT INTO public.runes_indexer_version (indexer_version, db_version) VALUES ('OPI-runes-alpha V0.4.1', 5);
