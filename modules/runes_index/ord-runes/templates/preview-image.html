@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang=en>
+  <head>
+    <meta charset=utf-8>
+    <meta name=format-detection content='telephone=no'>
+    <style>
+      html {
+        background-color: #131516;
+        height: 100%;
+      }
+
+      body {
+        background-image: url(/content/{{self.inscription_id}});
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: contain;
+        height: 100%;
+        image-rendering: {{ self.image_rendering }};
+        margin: 0;
+      }
+
+      img {
+        height: 100%;
+        opacity: 0;
+        width: 100%;
+      }
+    </style>
+    <script src=/static/preview-image.js type=module defer></script>
+  </head>
+  <body>
+    <img src=/content/{{self.inscription_id}}></img>
+  </body>
+</html>

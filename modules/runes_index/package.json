@@ -1,0 +1,17 @@
+{
+    "name": "opi-metaprotocol-indexer",
+    "version": "0.1.0",
+    "description": "OPI Metaprotocol Indexer",
+    "license": "UNLICENSED",
+    "main": "index.js",
+    "dependencies": {
+        "bitcoinjs-lib": "^6.1.0",
+        "dotenv": "16.3.1",
+        "fs": "0.0.1-security",
+        "pg": "^8.6.0",
+        "tiny-secp256k1": "^2.2.0"
+    },
+    "devDependencies": {
+        "eslint": "^8.55.0"
+    }
+}

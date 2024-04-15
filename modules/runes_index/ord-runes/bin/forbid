@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if ! which rg > /dev/null; then
+  echo "error: ripgrep (rg) not found"
+  exit 1
+fi
+
+! rg \
+  --glob '!bin/forbid' \
+  --glob '!docs/src/bounty/frequency.tsv' \
+  --glob '!docs/po/*' \
+  --ignore-case \
+  'dbg!|fixme|todo|xxx' \
+  .
