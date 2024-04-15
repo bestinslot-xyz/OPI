@@ -1,4 +1,3 @@
-// TODO: add seed rune on mainnet!!
 // to run: node --max-old-space-size=8192 .\index_runes.js
 
 require('dotenv').config();
@@ -60,8 +59,6 @@ var network_folder = ""
 if (network_type == "mainnet") {
   network = bitcoin.networks.bitcoin
   network_folder = ""
-  console.error("mainnet not supported yet")
-  process.exit(1)
 } else if (network_type == "testnet") {
   network = bitcoin.networks.testnet
   network_folder = "testnet3/"
@@ -76,18 +73,18 @@ if (network_type == "mainnet") {
   process.exit(1)
 }
 const first_rune_heights = {
-  'mainnet': 767430, // TODO: set correctly!!
-  'testnet': 2583205, // TODO: check!!
+  'mainnet': 840000,
+  'testnet': 2520000,
   'signet': 173831,
   'regtest': 0,
 }
 const first_rune_height = first_rune_heights[network_type]
 const fast_index_below = first_rune_height + 1000
 
-const DB_VERSION = 5
+const DB_VERSION = 6
 // eslint-disable-next-line no-unused-vars
-const INDEXER_VERSION = 'OPI-runes-alpha V0.4.1'
-const ORD_VERSION = 'opi-runes-ord 0.17.1-2'
+const INDEXER_VERSION = 'OPI-runes-alpha V0.4.2'
+const ORD_VERSION = 'opi-runes-ord 0.18.1'
 
 console.log(INDEXER_VERSION)
 
@@ -298,8 +295,8 @@ async function main_index() {
                                                                       , terms_amount, terms_cap, terms_height_l, terms_height_h
                                                                       , terms_offset_l, terms_offset_h
                                                                       , mints, "number", premine, rune_name, spacers, symbol
-                                                                      , "timestamp", genesis_height, last_updated_block_height) values ($1, $2, $3, $4, $5
-                                                                      , $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20);`
+                                                                      , "timestamp", turbo, genesis_height, last_updated_block_height) values ($1, $2, $3, $4, $5
+                                                                      , $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21);`
     let sql_query_outpoint_to_balances_insert = `INSERT into runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, balances, block_height) values ($1, $2, $3, $4, $5, $6);`
     let sql_query_id_to_entry_changes_insert = `INSERT into runes_id_to_entry_changes (rune_id, burned, mints, block_height) values ($1, $2, $3, $4);`
     let sql_query_id_to_entry_update = `UPDATE runes_id_to_entry
@@ -415,10 +412,11 @@ async function main_index() {
           if (symbol == 'null') symbol = null
           let timestamp = parseInt(parts[15])
           timestamp = new Date(timestamp * 1000)
+          let turbo = parts[16] == 'true'
 
           running_promises.push(execute_on_db(sql_query_id_to_entry_insert, [rune_id, rune_block, burned, divisibility, etching
             , terms_amount, terms_cap, terms_height_l, terms_height_h, terms_offset_l, terms_offset_h
-            , mints, number, premine, rune_name, spacers, symbol, timestamp, block_height, block_height]))
+            , mints, number, premine, rune_name, spacers, symbol, timestamp, turbo, block_height, block_height]))
           new_runes_count += 1
           ord_sql_query_count += 1
         }
@@ -761,10 +759,14 @@ async function handle_reorg(block_height) {
   let res = await db_pool.query(`SELECT rune_id from runes_id_to_entry where last_updated_block_height > $1;`, [last_correct_blockheight])
   for (const row of res.rows) {
     let res_inner = await db_pool.query(`SELECT burned, mints, block_height from runes_id_to_entry_changes WHERE rune_id = $1 AND block_height <= $2 ORDER BY block_height desc LIMIT 1;`, [row.rune_id, last_correct_blockheight])
-    let burned = res_inner.rows[0].burned
-    let mints = res_inner.rows[0].mints
-    let block_height = res_inner.rows[0].block_height
-    await db_pool.query(`UPDATE runes_id_to_entry SET burned = $1, mints = $2, last_updated_block_height = $3 WHERE rune_id = $4;`, [burned, mints, block_height, row.rune_id])
+    if (res_inner.rows.length == 0) {
+      await db_pool.query(`UPDATE runes_id_to_entry SET burned = $1, mints = $2, last_updated_block_height = genesis_height WHERE rune_id = $3;`, [0, 0, row.rune_id])
+    } else {
+      let burned = res_inner.rows[0].burned
+      let mints = res_inner.rows[0].mints
+      let block_height = res_inner.rows[0].block_height
+      await db_pool.query(`UPDATE runes_id_to_entry SET burned = $1, mints = $2, last_updated_block_height = $3 WHERE rune_id = $4;`, [burned, mints, block_height, row.rune_id])
+    }
   }
 
   await db_pool.query(`DELETE from runes_cumulative_event_hashes where block_height > $1;`, [last_correct_blockheight])
@@ -789,6 +791,17 @@ async function check_db() {
   } catch (err) {
     console.error(err)
     console.error("db_version not found, db needs to be recreated from scratch, please run reset_init.py")
+    process.exit(1)
+  }
+
+  let res_q = await db_pool.query(`SELECT * from runes_network_type LIMIT 1;`)
+  if (res_q.rows.length == 0) {
+    console.error("runes_network_type not found, db needs to be recreated from scratch, please run reset_init.py")
+    process.exit(1)
+  }
+  let network_type_db = res_q.rows[0].network_type
+  if (network_type_db != network_type) {
+    console.error("network_type mismatch, db needs to be recreated from scratch, please run reset_init.py")
     process.exit(1)
   }
 
@@ -824,6 +837,31 @@ async function check_db() {
   if (residue_found) {
     console.error("residue found, will be fixed by handle_reorg")
     handle_reorg(current_height + 1)
+  }
+
+  
+
+  // initialise mainnet with seed rune
+  if (network_type == "mainnet") {
+    let seed_rune_id = "1:0"
+
+    let seed_rune_q = await db_pool.query(`SELECT count(*) as count from runes_id_to_entry where rune_id = $1;`, [seed_rune_id])
+    let seed_rune_count = seed_rune_q.rows[0].count
+    if (seed_rune_count == 0) {
+      console.log("seed rune not found, initialising db with seed rune")
+
+      await db_pool.query(`INSERT into runes_id_to_entry (rune_id, rune_block, burned, divisibility, etching,
+                                                          terms_amount, terms_cap, terms_height_l, terms_height_h,
+                                                          terms_offset_l, terms_offset_h,
+                                                          mints, "number", premine, rune_name, spacers, symbol,
+                                                          "timestamp", turbo, genesis_height, last_updated_block_height) values ($1, $2, $3, $4, $5,
+                                                          $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+                                                          $19, $20, $21);`,
+                          [seed_rune_id, 1, 0, 0, "0000000000000000000000000000000000000000000000000000000000000000",
+                          1, "340282366920938463463374607431768211455", 840000, 1050000, null, null,
+                          0, 0, 0, "UNCOMMONGOODS", 128, "⧉",
+                          new Date(0), true, 1, 1])
+    }
   }
 }
 

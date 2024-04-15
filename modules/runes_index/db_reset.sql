@@ -8,3 +8,4 @@ drop table if exists runes_indexer_version;
 drop table if exists runes_events;
 drop table if exists runes_event_types;
 drop table if exists runes_cumulative_event_hashes;
+drop table if exists runes_network_type;

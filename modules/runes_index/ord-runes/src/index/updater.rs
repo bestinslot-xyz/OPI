@@ -73,7 +73,7 @@ impl<'index> Updater<'index> {
       Some(progress_bar)
     };
 
-    let rx = Self::fetch_blocks_from(self.index, self.height, self.index.index_sats)?;
+    let rx = self.fetch_blocks_from(self.index, self.height, self.index.index_sats)?;
 
     let (mut outpoint_sender, mut value_receiver) = Self::spawn_fetcher(&self.index.settings)?;
 
@@ -153,6 +153,7 @@ impl<'index> Updater<'index> {
   }
 
   fn fetch_blocks_from(
+    &self,
     index: &Index,
     mut height: u32,
     index_sats: bool,
@@ -163,7 +164,10 @@ impl<'index> Updater<'index> {
 
     let client = index.settings.bitcoin_rpc_client(None)?;
 
-    let first_inscription_height = index.first_inscription_height;
+    let mut first_inscription_height = index.first_inscription_height;
+    if !self.index.settings.index_inscriptions() && self.index.index_runes {
+      first_inscription_height = self.index.settings.first_rune_height();
+    }
 
     thread::spawn(move || loop {
       if let Some(height_limit) = height_limit {

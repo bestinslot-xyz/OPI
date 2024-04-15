@@ -172,6 +172,8 @@ for sql in sqls:
   if sql.strip() != '':
     cur.execute(sql)
 
+cur.execute('INSERT INTO runes_network_type (network_type) VALUES (%s);', (network_type,))
+
 ## close db
 cur.close()
 conn.close()

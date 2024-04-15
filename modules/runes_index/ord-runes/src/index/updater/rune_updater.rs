@@ -205,9 +205,8 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     // cmd;<height>;tx_events_input;<txid>;<outpoint>;<id>;<amount>
     // cmd;<height>;tx_events_new_rune_allocation;<txid>;<id>;<amount>
     // cmd;<height>;tx_events_mint;<txid>;<id>;<amount>
-    // cmd;<height>;tx_events_burn;<txid>;<id>;<amount>
     // cmd;<height>;tx_events_output;<txid>;<outpoint>;<id>;<amount>;<scriptpubkey>
-
+    // cmd;<height>;tx_events_burn;<txid>;<id>;<amount>
 
     for (outpoint, balances) in tx_inputs {
       for (rune_id, amount) in balances {
@@ -338,6 +337,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         spaced_rune: SpacedRune { rune, spacers: 0 },
         symbol: None,
         timestamp: self.block_time.into(),
+        turbo: false,
       },
       Artifact::Runestone(Runestone { etching, .. }) => {
         let Etching {
@@ -346,6 +346,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           premine,
           spacers,
           symbol,
+          turbo,
           ..
         } = etching.unwrap();
 
@@ -364,6 +365,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           },
           symbol,
           timestamp: self.block_time.into(),
+          turbo,
         }
       }
     };
@@ -383,10 +385,12 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       let offset_h = terms.offset.1.map_or("null".to_string(), |o| o.to_string());
       terms_str = format!("{0}-{1}-{2}-{3}-{4}-{5}", amount, cap, height_l, height_h, offset_l, offset_h);
     }
-    self.write_to_file(format!("cmd;{0};id_to_entry_insert;{1};{2};{3};{4};{5};{6};{7};{8};{9};{10};{11};{12};{13}", 
+    let turbo_str = if entry.turbo { "true" } else { "false" };
+    self.write_to_file(format!("cmd;{0};id_to_entry_insert;{1};{2};{3};{4};{5};{6};{7};{8};{9};{10};{11};{12};{13};{14}", 
             self.height, id, entry.block, entry.burned, entry.divisibility, 
             entry.etching, terms_str, entry.mints, entry.number, entry.premine, entry.spaced_rune.rune, entry.spaced_rune.spacers, 
-            entry.symbol.map_or(String::from("null"), |_| hex::encode(buff_for_symbol)), entry.timestamp), false)?;
+            entry.symbol.map_or(String::from("null"), |_| hex::encode(buff_for_symbol)), entry.timestamp, turbo_str), false)?;
+
 
     let inscription_id = InscriptionId { txid, index: 0 };
 
@@ -502,7 +506,10 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           .get_raw_transaction_info(&input.previous_output.txid, None)
           .into_option()?
         else {
-          panic!("input not in UTXO set: {}", input.previous_output);
+          panic!(
+            "can't get input transaction: {}",
+            input.previous_output.txid
+          );
         };
 
         let taproot = tx_info.vout[input.previous_output.vout.into_usize()]
@@ -510,12 +517,24 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
           .script()?
           .is_v1_p2tr();
 
-        let mature = tx_info
-          .confirmations
-          .map(|confirmations| confirmations >= Runestone::COMMIT_INTERVAL.into())
-          .unwrap_or_default();
+        if !taproot {
+          continue;
+        }
 
-        if taproot && mature {
+        let commit_tx_height = self
+          .client
+          .get_block_header_info(&tx_info.blockhash.unwrap())
+          .into_option()?
+          .unwrap()
+          .height;
+
+        let confirmations = self
+          .height
+          .checked_sub(commit_tx_height.try_into().unwrap())
+          .unwrap()
+          + 1;
+
+        if confirmations >= Runestone::COMMIT_CONFIRMATIONS.into() {
           return Ok(true);
         }
       }
@@ -550,7 +569,7 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         
         removed = true;
       }
-
+      
       if removed {
         self.write_to_file(format!("cmd;{0};outpoint_to_balances_remove;{1}", self.height, input.previous_output), false)?;
       }

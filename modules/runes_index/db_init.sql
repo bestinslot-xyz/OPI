@@ -18,6 +18,7 @@ CREATE TABLE public.runes_id_to_entry (
 	spacers int8 NOT NULL,
 	symbol text NULL,
 	"timestamp" timestamptz NOT NULL,
+	turbo bool NOT NULL,
 	genesis_height int4 NOT NULL,
 	last_updated_block_height int4 NOT NULL,
 	CONSTRAINT runes_id_to_entry_pk PRIMARY KEY (id)
@@ -133,10 +134,16 @@ CREATE TABLE public.runes_indexer_work_stats (
 	CONSTRAINT runes_indexer_work_stats_pk PRIMARY KEY (id)
 );
 
+CREATE TABLE public.runes_network_type (
+	id bigserial NOT NULL,
+	network_type text NOT NULL,
+	CONSTRAINT runes_network_type_pk PRIMARY KEY (id)
+);
+
 CREATE TABLE public.runes_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
 	db_version int4 NOT NULL,
 	CONSTRAINT runes_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.runes_indexer_version (indexer_version, db_version) VALUES ('OPI-runes-alpha V0.4.1', 5);
+INSERT INTO public.runes_indexer_version (indexer_version, db_version) VALUES ('OPI-runes-alpha V0.4.2', 6);
