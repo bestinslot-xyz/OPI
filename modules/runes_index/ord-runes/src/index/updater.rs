@@ -331,7 +331,7 @@ impl<'index> Updater<'index> {
       };
       *runes_output_blocks = Some(File::options().append(true).open(format!("{chain_folder}runes_output_blocks.txt")).unwrap());
     }
-    println!("cmd;{0};new_block;{1}", self.height, &block.header.block_hash());
+    println!("cmd;{0};new_block;{1};{2}", self.height, &block.header.block_hash(), &block.header.time);
     writeln!(runes_output_blocks.as_ref().unwrap(), "cmd;{0};new_block;{1}", self.height, &block.header.block_hash())?;
     (runes_output_blocks.as_ref().unwrap()).flush()?;
 

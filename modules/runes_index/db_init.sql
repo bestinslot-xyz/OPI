@@ -103,6 +103,7 @@ CREATE TABLE public.runes_block_hashes (
 	id bigserial NOT NULL,
 	block_height int4 NOT NULL,
 	block_hash text NOT NULL,
+	block_time timestamptz NOT NULL,
 	CONSTRAINT runes_block_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX runes_block_hashes_block_height_idx ON public.runes_block_hashes USING btree (block_height);

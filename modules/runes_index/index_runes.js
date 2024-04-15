@@ -543,15 +543,17 @@ async function main_index() {
       let block_height = parseInt(parts[1])
       if (block_height < first_rune_height) { continue }
       let blockhash = parts[3].trim()
-      to_be_inserted_hashes[block_height] = blockhash
+      let blocktime = parseInt(parts[4])
+      to_be_inserted_hashes[block_height] = [blockhash, blocktime]
     }
 
     await update_cumulative_block_hashes(max_height, to_be_inserted_hashes)
 
     for (const k of Object.keys(to_be_inserted_hashes)) {
       let block_height = parseInt(k)
-      let blockhash = to_be_inserted_hashes[k]
-      await db_pool.query(`INSERT into runes_block_hashes (block_height, block_hash) values ($1, $2) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash])
+      let blockhash = to_be_inserted_hashes[k][0]
+      let blocktime = to_be_inserted_hashes[k][1]
+      await db_pool.query(`INSERT into runes_block_hashes (block_height, block_hash, block_time) values ($1, $2, $3) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash, blocktime])
     }
     
     let ord_sql_tm = +(new Date()) - ord_sql_st_tm
