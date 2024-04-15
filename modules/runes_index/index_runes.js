@@ -544,6 +544,7 @@ async function main_index() {
       if (block_height < first_rune_height) { continue }
       let blockhash = parts[3].trim()
       let blocktime = parseInt(parts[4])
+      blocktime = new Date(blocktime * 1000)
       to_be_inserted_hashes[block_height] = [blockhash, blocktime]
     }
 
