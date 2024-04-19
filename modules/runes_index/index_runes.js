@@ -647,7 +647,7 @@ async function update_cumulative_block_hashes(until_height, to_be_inserted_hashe
       let event_hash_q = await db_pool.query(`select block_event_hash, cumulative_event_hash from runes_cumulative_event_hashes where block_height = $1;`, [height])
       let block_event_hash = event_hash_q.rows[0].block_event_hash
       let cumulative_event_hash = event_hash_q.rows[0].cumulative_event_hash
-      let block_hash = to_be_inserted_hashes[height]
+      let block_hash = to_be_inserted_hashes[height][0]
       if (!block_hash) {
         let block_hash_q = await db_pool.query(`select block_hash from runes_block_hashes where block_height = $1;`, [height])
         block_hash = block_hash_q.rows[0].block_hash
