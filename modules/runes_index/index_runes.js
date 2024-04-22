@@ -84,7 +84,7 @@ const fast_index_below = first_rune_height + 1000
 const DB_VERSION = 6
 // eslint-disable-next-line no-unused-vars
 const INDEXER_VERSION = 'OPI-runes-alpha V0.4.2'
-const ORD_VERSION = 'opi-runes-ord 0.18.1'
+const ORD_VERSION = 'opi-runes-ord 0.18.1-2'
 
 console.log(INDEXER_VERSION)
 

@@ -143,7 +143,7 @@ impl FromStr for Rune {
     let mut x = 0u128;
     for (i, c) in s.chars().enumerate() {
       if i > 0 {
-        x += 1;
+        x = x.checked_add(1).ok_or(Error::Range)?;
       }
       x = x.checked_mul(26).ok_or(Error::Range)?;
       match c {
