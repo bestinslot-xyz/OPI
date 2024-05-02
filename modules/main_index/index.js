@@ -57,7 +57,7 @@ if (network_type == "mainnet") {
   network = bitcoin.networks.testnet
   network_folder = "testnet3/"
 } else if (network_type == "signet") {
-  network = bitcoin.networks.signet
+  network = bitcoin.networks.testnet // signet is not supported by bitcoinjs-lib but wallet_addr calculation is the same as testnet
   network_folder = "signet/"
 } else if (network_type == "regtest") {
   network = bitcoin.networks.regtest
@@ -192,11 +192,11 @@ async function main_index() {
     }
 
     let network_argument = ""
-    if (network == bitcoin.networks.signet) {
+    if (network_type == 'signet') {
       network_argument = " --signet"
-    } else if (network == bitcoin.networks.regtest) {
+    } else if (network_type == 'regtest') {
       network_argument = " --regtest"
-    } else if (network == bitcoin.networks.testnet) {
+    } else if (network_type == 'testnet') {
       network_argument = " --testnet"
     }
     
