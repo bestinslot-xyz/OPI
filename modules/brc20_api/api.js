@@ -509,4 +509,28 @@ app.get('/v1/brc20/event', async (request, response) => {
   }
 });
 
+app.get('/v1/brc20/ticker_info', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let tick = request.query.ticker.toLowerCase() || ''
+
+    let query =  `select original_tick, tick, max_supply, decimals, limit_per_mint,
+    remaining_supply, remaining_supply, burned_supply, is_self_mint, deploy_inscription_id, block_height
+    from brc20_tickers
+    where tick = $1`
+
+    let res = await query_db(query, [tick])
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no tick found', result: null })
+      return
+    }
+
+    let tickerInfo = res.rows[0]
+    response.send({ error: null, result: tickerInfo })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
 app.listen(api_port, api_host);
