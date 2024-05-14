@@ -140,7 +140,7 @@ async function main_index() {
     }
 
     if (bitcoin_rpc_user != "") {
-      rpc_argument += " --bitcoin-rpc-user " + bitcoin_rpc_user + " --bitcoin-rpc-pass " + bitcoin_rpc_password
+      rpc_argument += " --bitcoin-rpc-username " + bitcoin_rpc_user + " --bitcoin-rpc-password " + bitcoin_rpc_password
     }
     let network_argument = ""
     if (network_type == 'signet') {
@@ -197,8 +197,8 @@ async function main_index() {
         if (block_height > current_height) continue
         console.warn("Block repeating, possible reorg!!")
         let blockhash = parts[3].trim()
-        let blockhash_db_q = await db_pool.query("select block_hash from runes_block_hashes where block_height = $1;", [block_height])
-        if (blockhash_db_q.rows[0].block_hash != blockhash) {
+        let blockhash_db_q = await db_pool.query("select block_hash from runes_block_hashes where block_height = $1;", [block_height]) 
+        if (blockhash_db_q.rows.length == 0 || blockhash_db_q.rows[0].block_hash != blockhash) {
           let reorg_st_tm = +(new Date())
           console.error("Reorg detected at block_height " + block_height)
           await handle_reorg(block_height)
@@ -296,9 +296,10 @@ async function main_index() {
                                                                       , terms_offset_l, terms_offset_h
                                                                       , mints, "number", premine, rune_name, spacers, symbol
                                                                       , "timestamp", turbo, genesis_height, last_updated_block_height) values ($1, $2, $3, $4, $5
-                                                                      , $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21);`
+                                                                      , $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                                                                      ON conflict(rune_id)  DO NOTHING;`
     let sql_query_outpoint_to_balances_insert = `INSERT into runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, balances, block_height) values ($1, $2, $3, $4, $5, $6);`
-    let sql_query_id_to_entry_changes_insert = `INSERT into runes_id_to_entry_changes (rune_id, burned, mints, block_height) values ($1, $2, $3, $4);`
+    let sql_query_id_to_entry_changes_insert = `INSERT into runes_id_to_entry_changes (rune_id, burned, mints, block_height) values ($1, $2, $3, $4) ON conflict(rune_id, block_height)  DO NOTHING;;`
     let sql_query_id_to_entry_update = `UPDATE runes_id_to_entry
                                         SET burned = $1, mints = $2, last_updated_block_height = $3
                                         WHERE rune_id = $4 AND last_updated_block_height < $5;`
@@ -639,7 +640,7 @@ async function update_cumulative_block_hashes(until_height, to_be_inserted_hashe
     } else {
       cumulative_event_hash = block_event_hash
     }
-    await db_pool.query(`INSERT into runes_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) values ($1, $2, $3);`, [height, block_event_hash, cumulative_event_hash])
+    await db_pool.query(`INSERT into runes_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) values ($1, $2, $3) ON conflict(block_height)  DO NOTHING;`, [height, block_event_hash, cumulative_event_hash])
   }
 
   if (report_to_indexer) {
