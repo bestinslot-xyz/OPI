@@ -525,8 +525,41 @@ app.get('/v1/brc20/ticker_info', async (request, response) => {
       return
     }
 
-    let tickerInfo = res.rows[0]
-    response.send({ error: null, result: tickerInfo })
+    let ticker_nfo = res.rows[0]
+    response.send({ error: null, result: ticker_info })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
+app.get('/v1/brc20/balance_summary_of_wallet', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let address = request.query.address || ''
+    let pkscript = request.query.pkscript || ''
+
+    let current_block_height = await get_block_height_of_db()
+    let balance_list = []
+
+    let query = ` select tick, overall_balance, available_balance
+                    from brc20_current_balances
+                    where pkscript = $1;`
+    let params = [pkscript]
+    if (address != '') {
+      query = query.replace('pkscript', 'wallet')
+      params = [address]
+    }
+
+    let res = await query_db(query, params)
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no balance found', result: null })
+      return
+    }
+    balance_list = res.rows
+
+    summary = { block_height: current_block_height, detail: balance_list }
+    response.send({ error: null, result: summary })
   } catch (err) {
     console.log(err)
     response.status(500).send({ error: 'internal error', result: null })
