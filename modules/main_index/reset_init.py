@@ -165,6 +165,8 @@ if network_type == "mainnet":
   network_path = ""
 elif network_type == "testnet":
   network_path = "testnet3"
+elif network_type == "testnet4":
+  network_path = "testnet4"
 elif network_type == "signet":
   network_path = "signet"
 elif network_type == "regtest":
