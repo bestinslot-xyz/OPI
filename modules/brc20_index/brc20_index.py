@@ -52,6 +52,7 @@ network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 first_inscription_heights = {
   'mainnet': 767430,
   'testnet': 2413343,
+  'testnet4': 0,
   'signet': 112402,
   'regtest': 0,
 }
@@ -60,6 +61,7 @@ first_inscription_height = first_inscription_heights[network_type]
 first_brc20_heights = {
   'mainnet': 779832,
   'testnet': 2413343,
+  'testnet4': 0,
   'signet': 112402,
   'regtest': 0,
 }
