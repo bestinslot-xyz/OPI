@@ -136,11 +136,11 @@ async function main_index() {
     let ord_version_cmd = ord_binary + " --version"
     let rpc_argument = ""
     if (bitcoin_rpc_url != "") {
-      rpc_argument = " --rpc-url " + bitcoin_rpc_url
+      rpc_argument = " --bitcoin-rpc-url " + bitcoin_rpc_url
     }
 
     if (bitcoin_rpc_user != "") {
-      rpc_argument += " --bitcoin-rpc-user " + bitcoin_rpc_user + " --bitcoin-rpc-pass " + bitcoin_rpc_password
+      rpc_argument += " --bitcoin-rpc-username " + bitcoin_rpc_user + " --bitcoin-rpc-password " + bitcoin_rpc_password
     }
     let network_argument = ""
     if (network_type == 'signet') {
