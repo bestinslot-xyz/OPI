@@ -490,6 +490,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       let chain_folder: String = match self.chain { 
         Chain::Mainnet => String::from(""),
         Chain::Testnet => String::from("testnet3/"),
+        Chain::Testnet4 => String::from("testnet4/"),
         Chain::Signet => String::from("signet/"),
         Chain::Regtest => String::from("regtest/"),
       };

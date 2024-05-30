@@ -326,6 +326,7 @@ impl<'index> Updater<'index> {
       let chain_folder: String = match self.index.settings.chain() { 
         Chain::Mainnet => String::from(""),
         Chain::Testnet => String::from("testnet3/"),
+        Chain::Testnet4 => String::from("testnet4/"),
         Chain::Signet => String::from("signet/"),
         Chain::Regtest => String::from("regtest/"),
       };
@@ -623,6 +624,7 @@ impl<'index> Updater<'index> {
         inscription_id_to_sequence_number: &mut inscription_id_to_sequence_number,
         minimum: Rune::minimum_at_height(
           self.index.settings.chain().network(),
+          self.index.settings.chain() == Chain::Testnet4,
           Height(self.height),
         ),
         outpoint_to_balances: &mut outpoint_to_rune_balances,

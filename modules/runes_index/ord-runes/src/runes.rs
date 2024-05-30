@@ -146,7 +146,8 @@ mod tests {
   #[test]
   fn runes_must_be_greater_than_or_equal_to_minimum_for_height() {
     let minimum = Rune::minimum_at_height(
-      Chain::Regtest.network(),
+      Chain::Regtest,
+      false,
       Height((Runestone::COMMIT_CONFIRMATIONS + 2).into()),
     )
     .0;
