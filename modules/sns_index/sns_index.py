@@ -41,6 +41,7 @@ network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 first_inscription_heights = {
   'mainnet': 767430,
   'testnet': 2413343,
+  'testnet4': 0,
   'signet': 112402,
   'regtest': 0,
 }

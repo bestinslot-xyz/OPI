@@ -88,7 +88,7 @@ if init_env:
       DB_METAPROTOCOL_DATABASE = res
     res = stdiomask.getpass("Main Postgres DB password: ")
     DB_METAPROTOCOL_PASSWD = res
-    res = input("Network type (Default: mainnet) options: mainnet, testnet, signet, regtest: ")
+    res = input("Network type (Default: mainnet) options: mainnet, testnet, testnet4, signet, regtest: ")
     if res != '':
       NETWORK_TYPE = res
   res = input("Report to main indexer (Default: true): ")
