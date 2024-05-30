@@ -43,23 +43,23 @@ impl Rune {
     self.0
   }
 
-  pub fn first_rune_height(network: Network) -> u32 {
+  pub fn first_rune_height(network: Network, is_testnet4: bool) -> u32 {
     SUBSIDY_HALVING_INTERVAL
       * match network {
         Network::Bitcoin => 4,
         Network::Regtest => 0,
         Network::Signet => 0,
-        Network::Testnet => 12,
+        Network::Testnet => if is_testnet4 { 0 } else { 12 },
         _ => 0,
       }
   }
 
-  pub fn minimum_at_height(chain: Network, height: Height) -> Self {
+  pub fn minimum_at_height(chain: Network, is_testnet4: bool, height: Height) -> Self {
     let offset = height.0.saturating_add(1);
 
     const INTERVAL: u32 = SUBSIDY_HALVING_INTERVAL / 12;
 
-    let start = Self::first_rune_height(chain);
+    let start = Self::first_rune_height(chain, is_testnet4);
 
     let end = start + SUBSIDY_HALVING_INTERVAL;
 
@@ -237,7 +237,7 @@ mod tests {
     #[track_caller]
     fn case(height: u32, minimum: &str) {
       assert_eq!(
-        Rune::minimum_at_height(Network::Bitcoin, Height(height)).to_string(),
+        Rune::minimum_at_height(Network::Bitcoin, false, Height(height)).to_string(),
         minimum,
       );
     }
@@ -320,7 +320,7 @@ mod tests {
     #[track_caller]
     fn case(network: Network, height: u32, minimum: &str) {
       assert_eq!(
-        Rune::minimum_at_height(network, Height(height)).to_string(),
+        Rune::minimum_at_height(network, false, Height(height)).to_string(),
         minimum,
       );
     }

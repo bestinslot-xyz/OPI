@@ -511,6 +511,7 @@ impl Index {
       lost_sats: statistic(Statistic::LostSats)?,
       minimum_rune_for_next_block: Rune::minimum_at_height(
         self.settings.chain().network(),
+        self.settings.chain() == Chain::Testnet4,
         Height(next_height),
       ),
       rune_index: statistic(Statistic::IndexRunes)? != 0,

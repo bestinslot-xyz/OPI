@@ -4,7 +4,7 @@ use {super::*, bitcoincore_rpc::Auth};
 #[command(group(
   ArgGroup::new("chains")
     .required(false)
-    .args(&["chain_argument", "signet", "regtest", "testnet"]),
+    .args(&["chain_argument", "signet", "regtest", "testnet", "testnet4"]),
 ))]
 pub struct Options {
   #[arg(long, help = "Load Bitcoin Core data dir from <BITCOIN_DATA_DIR>.")]
@@ -66,6 +66,8 @@ pub struct Options {
   pub(crate) signet: bool,
   #[arg(long, short, help = "Use testnet. Equivalent to `--chain testnet`.")]
   pub(crate) testnet: bool,
+  #[arg(long, short, help = "Use testnet4. Equivalent to `--chain testnet4`.")]
+  pub(crate) testnet4: bool,
 }
 
 impl Options {
@@ -76,6 +78,8 @@ impl Options {
       Chain::Regtest
     } else if self.testnet {
       Chain::Testnet
+    } else if self.testnet4 {
+      Chain::Testnet4
     } else {
       self.chain_argument
     }
@@ -234,6 +238,7 @@ impl Options {
     let rpc_chain = match client.get_blockchain_info()?.chain.as_str() {
       "main" => Chain::Mainnet,
       "test" => Chain::Testnet,
+      "testnet4" => Chain::Testnet4,
       "regtest" => Chain::Regtest,
       "signet" => Chain::Signet,
       other => bail!("Bitcoin RPC server on unknown chain: {other}"),

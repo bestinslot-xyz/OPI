@@ -62,6 +62,9 @@ if (network_type == "mainnet") {
 } else if (network_type == "testnet") {
   network = bitcoin.networks.testnet
   network_folder = "testnet3/"
+} else if (network_type == "testnet4") {
+  network = bitcoin.networks.testnet
+  network_folder = "testnet4/"
 } else if (network_type == "signet") {
   network = bitcoin.networks.testnet // signet is not supported by bitcoinjs-lib but wallet_addr calculation is the same as testnet
   network_folder = "signet/"
@@ -75,6 +78,7 @@ if (network_type == "mainnet") {
 const first_rune_heights = {
   'mainnet': 840000,
   'testnet': 2520000,
+  'testnet4': 0,
   'signet': 173831,
   'regtest': 0,
 }
@@ -92,6 +96,7 @@ function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
 }
 
+// eslint-disable-next-line no-unused-vars
 function save_error_log(log) {
   console.error(log)
   fs.appendFileSync("log_file_error.txt", log + "\n")
@@ -149,6 +154,8 @@ async function main_index() {
       network_argument = " --regtest"
     } else if (network_type == 'testnet') {
       network_argument = " --testnet"
+    } else if (network_type == 'testnet4') {
+      network_argument = " --testnet4"
     }
     let ord_index_cmd = ord_binary + " --no-index-inscriptions --index-runes" + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
     try {

@@ -8,6 +8,8 @@ pub enum Chain {
   Mainnet,
   #[value(alias("test"))]
   Testnet,
+  #[value(alias("testnet4"))]
+  Testnet4,
   Signet,
   Regtest,
 }
@@ -17,6 +19,7 @@ impl Chain {
     match self {
       Self::Mainnet => Network::Bitcoin,
       Self::Testnet => Network::Testnet,
+      Self::Testnet4 => Network::Testnet,
       Self::Signet => Network::Signet,
       Self::Regtest => Network::Regtest,
     }
@@ -28,13 +31,14 @@ impl Chain {
       Self::Regtest => 18443,
       Self::Signet => 38332,
       Self::Testnet => 18332,
+      Self::Testnet4 => 48332,
     }
   }
 
   pub(crate) fn inscription_content_size_limit(self) -> Option<usize> {
     match self {
       Self::Mainnet | Self::Regtest => None,
-      Self::Testnet | Self::Signet => Some(1024),
+      Self::Testnet | Self::Testnet4 | Self::Signet => Some(1024),
     }
   }
 
@@ -44,6 +48,7 @@ impl Chain {
       Self::Regtest => 0,
       Self::Signet => 112402,
       Self::Testnet => 2413343,
+      Self::Testnet4 => 0,
     }
   }
 
@@ -54,6 +59,7 @@ impl Chain {
         Self::Regtest => 0,
         Self::Signet => 0,
         Self::Testnet => 12,
+        Self::Testnet4 => 0,
       }
   }
 
@@ -63,6 +69,7 @@ impl Chain {
       Self::Regtest => 110,
       Self::Signet => 175392,
       Self::Testnet => 2544192,
+      Self::Testnet4 => 0,
     }
   }
 
@@ -81,6 +88,7 @@ impl Chain {
     match self {
       Self::Mainnet => data_dir.to_owned(),
       Self::Testnet => data_dir.join("testnet3"),
+      Self::Testnet4 => data_dir.join("testnet4"),
       Self::Signet => data_dir.join("signet"),
       Self::Regtest => data_dir.join("regtest"),
     }
@@ -97,6 +105,7 @@ impl Display for Chain {
         Self::Regtest => "regtest",
         Self::Signet => "signet",
         Self::Testnet => "testnet",
+        Self::Testnet4 => "testnet4",
       }
     )
   }
