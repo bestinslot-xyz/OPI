@@ -280,6 +280,53 @@ app.get('/v1/runes/get_hash_of_all_activity', async (request, response) => {
   }
 });
 
+// get all events with a specific transaction ID
+app.get('/v1/runes/event', async (request, response) => {
+  try {
+    console.log(
+      `${request.protocol}://${request.get('host')}${request.originalUrl}`
+    );
+    let res1 = await query_db(
+      'select event_type_name, event_type_id from runes_event_types;'
+    );
+    let event_type_id_to_name = {};
+
+    let transaction_id = request.query.transaction_id;
+    if (!transaction_id) {
+      response
+        .status(400)
+        .send({ error: 'transaction_id is required', result: null });
+      return
+    }
+
+    res1.rows.forEach((row) => {
+      event_type_id_to_name[row.event_type_id] = row.event_type_name;
+    });
+
+    let query = `select event_type, outpoint, pkscript, wallet_addr, rune_id, amount
+                  from runes_events re
+                  where txid = $1
+                  order by id asc;`;
+    let res = await query_db(query, [transaction_id]);
+    let result = [];
+    for (const row of res.rows) {
+      result.push({
+        event_type: event_type_id_to_name[row.event_type],
+        outpoint: row.outpoint,
+        pkscript: row.pkscript,
+        wallet_addr: row.wallet_addr,
+        rune_id: row.rune_id,
+        amount: row.amount,
+      });
+    }
+    response.send({ error: null, result: result });
+  } catch (err) {
+    console.log(err);
+    response.status(500).send({ error: 'internal error', result: null });
+  }
+});
+
+
 app.listen(api_port, api_host);
 
 console.log(`runes_api listening on ${api_host}:${api_port}`);
