@@ -12,6 +12,7 @@
 import os, psycopg2, sys
 from dotenv import dotenv_values
 import pathlib
+import time
 
 import boto3
 from botocore import UNSIGNED
@@ -197,13 +198,41 @@ def get_backup_filenames():
   return res
 
 S3_KEY_PREFIX = 'db_5/'
-def s3_download(s3_bucket, s3_object_key, local_file_name):
-  s3_object_key = S3_KEY_PREFIX + s3_object_key
-  meta_data = s3client.head_object(Bucket=s3_bucket, Key=s3_object_key)
-  total_length = int(meta_data.get('ContentLength', 0))
-  with tqdm(total=total_length,  desc=f'source: s3://{s3_bucket}/{s3_object_key}', bar_format="{percentage:.1f}%|{bar:25} | {rate_fmt} | {desc}",  unit='B', unit_scale=True, unit_divisor=1024) as pbar:
-    with open(local_file_name, 'wb') as f:
-      s3client.download_fileobj(s3_bucket, s3_object_key, f, Callback=pbar.update)
+def s3_download(s3_bucket, s3_object_key, local_file_name, retries=5, delay=5):
+    s3_object_key = S3_KEY_PREFIX + s3_object_key
+    meta_data = s3client.head_object(Bucket=s3_bucket, Key=s3_object_key)
+    total_length = int(meta_data.get('ContentLength', 0))
+    print(f"Starting download: s3://{s3_bucket}/{s3_object_key} to {local_file_name}")
+
+    if os.path.exists(local_file_name):
+        downloaded_size = os.path.getsize(local_file_name)
+    else:
+        downloaded_size = 0
+
+    with tqdm(total=total_length, initial=downloaded_size, desc=f"Downloading {s3_object_key}", unit='B', unit_scale=True, unit_divisor=1024) as pbar:
+        while downloaded_size < total_length and retries > 0:
+            try:
+                # Specify the starting byte for the range request
+                range_header = f"bytes={downloaded_size}-"
+                response = s3client.get_object(Bucket=s3_bucket, Key=s3_object_key, Range=range_header)
+                
+                # Write the response content directly to the file
+                with open(local_file_name, 'ab') as f:  # Use 'ab' to append to the file if it already exists
+                    for chunk in response['Body'].iter_chunks(chunk_size=1024):
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+
+                downloaded_size = total_length  # If successful, set downloaded_size to total_length to exit the loop
+            except Exception as e:
+                print(f"Error occurred: {e}, retrying in {delay} seconds...")
+                time.sleep(delay)
+                retries -= 1
+                downloaded_size = os.path.getsize(local_file_name)  # Update the downloaded size before retry
+
+    if downloaded_size < total_length:
+        print("Download failed after retries.")
+    else:
+        print("Download completed successfully.")
 
 backup_filenames = get_backup_filenames()
 index_backup_heights = []
