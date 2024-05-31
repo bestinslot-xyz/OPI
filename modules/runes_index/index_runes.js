@@ -136,7 +136,7 @@ async function main_index() {
     let ord_version_cmd = ord_binary + " --version"
     let rpc_argument = ""
     if (bitcoin_rpc_url != "") {
-      rpc_argument = " --rpc-url " + bitcoin_rpc_url
+      rpc_argument = " --bitcoin-rpc-url " + bitcoin_rpc_url
     }
 
     if (bitcoin_rpc_user != "") {
