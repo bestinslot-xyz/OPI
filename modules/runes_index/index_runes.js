@@ -757,6 +757,8 @@ async function handle_reorg(block_height) {
   await db_pool.query(`DELETE from runes_outpoint_to_balances where block_height > $1;`, [last_correct_blockheight])
   await db_pool.query(`UPDATE runes_outpoint_to_balances SET spent = false, spent_block_height = null WHERE spent_block_height > $1;`, [last_correct_blockheight])
 
+  await db_pool.query(`DELETE from runes_events where block_height > $1;`, [last_correct_blockheight])
+
   await db_pool.query(`DELETE from runes_id_to_entry where genesis_height > $1;`, [last_correct_blockheight])
   await db_pool.query(`DELETE from runes_id_to_entry_changes where block_height > $1;`, [last_correct_blockheight])
   let res = await db_pool.query(`SELECT rune_id from runes_id_to_entry where last_updated_block_height > $1;`, [last_correct_blockheight])
