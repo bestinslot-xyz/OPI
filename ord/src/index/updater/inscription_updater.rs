@@ -28,7 +28,7 @@ pub(super) struct Flotsam<'a> {
 lazy_static! {
   pub static ref TX_LIMITS: HashMap<String, i16> = {
       let mut m = HashMap::<String, i16>::new();
-      m.insert("default".into(), 2);
+      m.insert("default".into(), 10000);
       m
   };
 }
