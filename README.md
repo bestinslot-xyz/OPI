@@ -47,7 +47,7 @@ Also change `REPORT_NAME` to differentiate your node from others.
 
 ## Bitmap Indexer / API
 
-**Bitmap Indexer** is the second module of OPI. It follows the official protocol rules hosted [here](https://gitbook.bitmap.land/ruleset/district-ruleset). Bitmap Indexer saves all bitmap-number inscription-id pairs.
+**Bitmap Indexer** is the second module of OPI. It follows the official protocol rules hosted [here](https://gitbook.bitmap.land/bitmap-theory-whitepaper/theory). Bitmap Indexer saves all bitmap-number inscription-id pairs.
 
 In addition to indexing all pairs, it also calculates a block hash and cumulative hash of all events for easier db comparison. Here's the pseudocode for hash calculation:
 
