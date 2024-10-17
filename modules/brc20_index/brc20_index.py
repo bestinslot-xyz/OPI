@@ -544,8 +544,8 @@ def index_block(block_height, current_block_hash):
     except KeyboardInterrupt:
       raise KeyboardInterrupt
     except: pass
-    content_type = content_type.split(';')[0]
-    if content_type != 'application/json' and content_type != 'text/plain': continue ## invalid inscription
+    content_type_base = content_type.split(';')[0]
+    if content_type != 'application/json' and content_type_base != 'text/plain': continue ## invalid inscription
 
     if "tick" not in js: continue ## invalid inscription
     if "op" not in js: continue ## invalid inscription
@@ -672,6 +672,7 @@ def check_for_reorg():
   last_block = cur.fetchone()
 
   cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (last_block[0],))
+  if cur_metaprotocol.rowcount == 0: return None ## probably main indexer is fixing hashes for reorg, will correct itself in next run
   last_block_ord = cur_metaprotocol.fetchone()
   if last_block_ord[1] == last_block[1]: return None ## last block hashes are the same, no reorg
 
