@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bitmap-api.fullname" . }}
+  labels:
+    {{- include "bitmap-api.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "bitmap-api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "bitmap-api.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "bitmap-api.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: DB_USER
+            value: {{ .Values.db.user }}
+          - name: DB_HOST
+            value: {{ .Values.db.host }}
+          - name: DB_DATABASE
+            value: {{ .Values.db.database }}
+          - name: DB_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.db.secretName }}
+                key: {{ .Values.db.secretKey }}
+          - name: DB_PORT
+            value: {{ .Values.db.port }}
+          - name: DB_MAX_CONNECTIONS
+            value: "10"
+          - name: DB_SSL
+            value: {{ .Values.db.ssl }}
+          - name: API_PORT
+            value: {{ .Values.api.port }}
+          - name: API_HOST
+            value: {{ .Values.api.host }}
+          - name: RATE_LIMIT_ENABLE
+            value: "false"
+          - name: RATE_LIMIT_WINDOW_MS
+            value: "900000"
+          - name: RATE_LIMIT_MAX
+            value: "100"
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
