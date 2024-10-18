@@ -112,10 +112,11 @@ app.get('/v1/runes/activity_on_block', async (request, response) => {
       event_type_id_to_name[row.event_type_id] = row.event_type_name
     })
 
-    let query =  `select event_type, outpoint, pkscript, rune_id, amount
+    let query =  `select event_type, outpoint, pkscript, re.rune_id, rite.rune_name, amount
                   from runes_events re
+                  left join runes_id_to_entry rite on rite.rune_id = re.rune_id
                   where block_height = $1
-                  order by id asc;`
+                  order by re.id asc;`
     let res = await query_db(query, [block_height])
     let result = []
     for (const row of res.rows) {
@@ -124,6 +125,7 @@ app.get('/v1/runes/activity_on_block', async (request, response) => {
         outpoint: row.outpoint,
         pkscript: row.pkscript,
         rune_id: row.rune_id,
+        rune_name: row.rune_name,
         amount: row.amount
       })
     }
@@ -186,7 +188,41 @@ app.get('/v1/runes/get_unspent_rune_outpoints_of_wallet', async (request, respon
     let params = [pkscript_selector_value]
 
     let res = await query_db(query, params)
-    response.send({ error: null, result: res.rows, db_block_height: current_block_height })
+
+    let rune_ids = []
+    let rune_id_map = {}
+    for (const row of res.rows) {
+      for (const rune_id of row.rune_ids) {
+        if (rune_id_map[rune_id] == undefined) {
+          rune_id_map[rune_id] = rune_id
+          rune_ids.push(rune_id)
+        }
+      }
+    }
+
+    let rune_id_to_name = {}
+    if (rune_ids.length > 0) {
+      let query = ` select rune_id, rune_name from runes_id_to_entry where rune_id = ANY ($1);` 
+      let params = [rune_ids]
+      let res1 = await query_db(query, params)  
+      res1.rows.forEach((row) => {
+        rune_id_to_name[row.rune_id] = row.rune_name
+      })
+    }
+
+    let result = []
+    for (const row of res.rows) {
+      let outpoint = row
+      let rune_infos = []
+      for (const rune_id of row.rune_ids) {
+        let rune = {rune_id: rune_id, rune_name: rune_id_to_name[rune_id]}
+        rune_infos.push(rune)
+      }
+      outpoint.rune_infos = rune_infos
+      result.push(outpoint)
+    }
+
+    response.send({ error: null, result: result, db_block_height: current_block_height })
   } catch (err) {
     console.log(err)
     response.status(500).send({ error: 'internal error', result: null })
@@ -274,6 +310,51 @@ app.get('/v1/runes/get_hash_of_all_activity', async (request, response) => {
         block_height: block_height
       } 
     })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
+// get runes info of a given rune name
+app.get('/v1/runes/rune_info', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let rune_name = request.query.rune_name
+
+    let query =  `select
+    rune_name,
+    rune_id,
+    rune_block,
+    burned,
+    divisibility,
+    etching,
+    terms_amount,
+    terms_cap,
+    terms_height_l,
+    terms_height_h,
+    terms_offset_l,
+    terms_offset_h,
+    mints,
+    number,
+    premine,
+    spacers,
+    symbol,
+    timestamp,
+    turbo,
+    genesis_height,
+    last_updated_block_height
+    from runes_id_to_entry
+    where rune_name = $1`
+
+    let res = await query_db(query, [rune_name])
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no tick found', result: null })
+      return
+    }
+
+    let rune_info = res.rows[0]
+    response.send({ error: null, result: rune_info })
   } catch (err) {
     console.log(err)
     response.status(500).send({ error: 'internal error', result: null })
