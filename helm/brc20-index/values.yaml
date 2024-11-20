@@ -7,7 +7,7 @@ replicaCount: 1
 image:
   registry: registry.bestinslot.xyz
   repository: brc20-index
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
 

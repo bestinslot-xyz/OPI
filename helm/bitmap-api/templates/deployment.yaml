@@ -31,30 +31,35 @@ spec:
         - name: {{ .Chart.Name }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
           - name: DB_USER
-            value: {{ .Values.db.user }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.user
           - name: DB_HOST
-            value: {{ .Values.db.host }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.host
           - name: DB_DATABASE
-            value: {{ .Values.db.database }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.database
           - name: DB_PASSWD
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.db.secretName }}
-                key: {{ .Values.db.secretKey }}
+                name: metadb-app
+                key: password
           - name: DB_PORT
-            value: {{ .Values.db.port }}
+            value: "5432"
           - name: DB_MAX_CONNECTIONS
             value: "10"
           - name: DB_SSL
-            value: {{ .Values.db.ssl }}
-          - name: API_PORT
-            value: {{ .Values.api.port }}
-          - name: API_HOST
-            value: {{ .Values.api.host }}
+            value: "false"
           - name: RATE_LIMIT_ENABLE
             value: "false"
           - name: RATE_LIMIT_WINDOW_MS

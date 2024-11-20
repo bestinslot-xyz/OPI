@@ -36,6 +36,7 @@ Common labels
 {{- define "runes-index.labels" -}}
 helm.sh/chart: {{ include "runes-index.chart" . }}
 {{ include "runes-index.selectorLabels" . }}
+{{ include "runes-index.pvcLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -48,6 +49,10 @@ Selector labels
 {{- define "runes-index.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "runes-index.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{-  define "runes-index.pvcLabels" -}}
+pvc: "true"
 {{- end }}
 
 {{/*

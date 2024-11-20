@@ -35,45 +35,56 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
           - name: DB_USER
-            value: {{ .Values.db.user }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.user
           - name: DB_HOST
-            value: {{ .Values.db.host }}
-          - name: DB_PORT
-            value: {{ .Values.db.port }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.host
           - name: DB_DATABASE
-            value: {{ .Values.db.database }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.database
           - name: DB_PASSWD
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.db.secretName }}
-                key: {{ .Values.db.secretKey }}
+                name: metadb-app
+                key: password
           - name: DB_METAPROTOCOL_USER
-            value: {{ .Values.metaProtocolDb.user }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.user
           - name: DB_METAPROTOCOL_HOST
-            value: {{ .Values.metaProtocolDb.host }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.host
           - name: DB_METAPROTOCOL_PORT
-            value: {{ .Values.metaProtocolDb.port }}
+            value: "5432"
           - name: DB_METAPROTOCOL_DATABASE
-            value: {{ .Values.metaProtocolDb.database }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.database
           - name: DB_METAPROTOCOL_PASSWD
             valueFrom:
               secretKeyRef:
-                name: {{ .Values.metaProtocolDb.secretName }}
-                key: {{ .Values.metaProtocolDb.secretKey }}
+                name: metadb-app
+                key: password
           - name: NETWORK_TYPE
-            value: {{ .Values.networkType }}
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: networkType
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /
-              port: http
-          readinessProbe:
-            httpGet:
-              path: /
-              port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

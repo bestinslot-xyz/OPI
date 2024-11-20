@@ -1,5 +1,5 @@
 # Python tabanlı bir imaj kullan
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # Çalışma dizinini ayarla
 WORKDIR /app

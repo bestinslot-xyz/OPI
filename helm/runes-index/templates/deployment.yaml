@@ -25,28 +25,121 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "runes-index.serviceAccountName" . }}
+      nodeSelector:
+        role: cloud
+      podAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+            - key: pvc
+              operator: In
+              values:
+              - true
+          topologyKey: kubernetes.io/hostname
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+      - name: init-check-create-files
+        image: busybox
+        command: ['sh', '-c']
+        args:
+          - |
+            if [ ! -d "/runes-index/signet" ]; then
+              mkdir "/runes-index/signet"
+              echo "Created signet directory"
+            else
+              echo "signet directory already exists; skipping creation"
+            fi
+
+            if [ ! -d "/runes-index/testnet4" ]; then
+              mkdir "/runes-index/testnet4"
+              echo "Created testnet4 directory"
+            else
+              echo "testnet4 directory already exists; skipping creation"
+            fi
+        volumeMounts:
+          - name: opi-runes-index
+            mountPath: /runes-index
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{.Values.image.registry}}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: DB_USER
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: runesDb.user
+          - name: DB_HOST
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: runesDb.host
+          - name: DB_DATABASE
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: runesDb.database
+          - name: DB_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: runesdb-app
+                key: password
+          - name: DB_PORT
+            value: "5432"
+          - name: DB_MAX_CONNECTIONS
+            value: "10"
+          - name: DB_SSL
+            value: "false"
+          - name: BITCOIN_CHAIN_FOLDER
+            value: "~/.bitcoin/"
+          - name: BITCOIN_RPC_USER
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: rpc.user
+          - name: BITCOIN_RPC_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: rpc-credentials
+                key: password
+          - name: BITCOIN_RPC_URL
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: rpc.host
+          - name: ORD_BINARY
+            value: "ord"
+          - name: ORD_FOLDER
+            value: "/runes-index"
+          - name: ORD_DATADIR
+            value: "."
+          - name: COOKIE_FILE
+            value: ""
+          - name: REPORT_TO_INDEXER
+            value: "false"
+          - name: NETWORK_TYPE
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: networkType
+          - name: NODE_OPTIONS
+            value: "--max-old-space-size=8192"
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /
-              port: http
-          readinessProbe:
-            httpGet:
-              path: /
-              port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: opi-runes-index
+              mountPath: /runes-index
+      volumes:
+        - name: opi-runes-index
+          persistentVolumeClaim:
+            claimName: opi-runes-index-pvc
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

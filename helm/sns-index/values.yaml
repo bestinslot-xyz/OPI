@@ -5,12 +5,14 @@
 replicaCount: 1
 
 image:
-  repository: nginx
-  pullPolicy: IfNotPresent
+  registry: registry.bestinslot.xyz
+  repository: sns-index
+  pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
-imagePullSecrets: []
+imagePullSecrets:
+  - name: bispullsecret
 nameOverride: ""
 fullnameOverride: ""
 

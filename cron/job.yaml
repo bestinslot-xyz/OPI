@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ord-opi-main-backup-immediate
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      imagePullSecrets:
+        - name: bispullsecret
+      initContainers:
+        - name: init-check-create-files
+          image: busybox
+          command: ['sh', '-c']
+          args:
+            - |
+              # List of required files
+              required_files="log_file.txt log_file_index.txt log_file_reorg.txt";
+              
+              # Loop through each file and create it if not present
+              for file in $required_files; do
+                if [ ! -f "/main-index/$file" ]; then
+                  touch "/main-index/$file";
+                  echo "Created $file";
+                else
+                  echo "$file already exists";
+                fi
+              done;
+          volumeMounts:
+            - name: ord-opi-main
+              mountPath: /main-index
+      containers:
+      - name: redb-backup
+        image: registry.bestinslot.xyz/ord-opi-main:0.0.1
+        workingDir: /main-index
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            ord \
+            --bitcoin-data-dir ~/.bitcoin/ \
+            --data-dir . \
+            --rpc-url "$BITCOIN_RPC_URL" \
+            --bitcoin-rpc-user "$BITCOIN_RPC_USER" \
+            --bitcoin-rpc-pass "$BITCOIN_RPC_PASSWD" \
+            index run
+        env:
+        - name: BITCOIN_RPC_USER
+          valueFrom:
+            configMapKeyRef:
+              name: bis-config
+              key: rpc.user
+        - name: BITCOIN_RPC_PASSWD
+          valueFrom:
+            secretKeyRef:
+              name: rpc-credentials
+              key: password
+        - name: BITCOIN_RPC_URL
+          valueFrom:
+            configMapKeyRef:
+              name: bis-config
+              key: rpc.host
+        volumeMounts:
+        - name: ord-opi-main
+          mountPath: /main-index
+      restartPolicy: OnFailure
+      nodeSelector:
+        role: cloud2
+      volumes:
+      - name: ord-opi-main
+        persistentVolumeClaim:
+          claimName: ord-opi-main-backup-pvc

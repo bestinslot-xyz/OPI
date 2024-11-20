@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "main-index.fullname" . }}
+  {{- if .Values.namespace }}
+  namespace: {{ .Values.namespace }}
+  {{- end }}
+  labels:
+    {{- include "main-index.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "main-index.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "main-index.selectorLabels" . | nindent 8 }}
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                - key: role
+                  operator: NotIn
+                  values: ["dedicated"]
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "main-index.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+      - name: init-check-create-files
+        image: busybox
+        command: ['sh', '-c']
+        args:
+          - |
+            if [ ! -d "/main-index/signet" ]; then
+              mkdir "/main-index/signet"
+              echo "Created signet directory"
+            else
+              echo "signet directory already exists; skipping creation"
+            fi
+
+            if [ ! -d "/main-index/testnet4" ]; then
+              mkdir "/main-index/testnet4"
+              echo "Created testnet4 directory"
+            else
+              echo "testnet4 directory already exists; skipping creation"
+            fi
+        volumeMounts:
+          - name: opi-main-index
+            mountPath: /main-index
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: DB_USER
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.user
+          - name: DB_HOST
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.host
+          - name: DB_DATABASE
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.database
+          - name: DB_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: metadb-app
+                key: password
+          - name: DB_PORT
+            value: "5432"
+          - name: DB_MAX_CONNECTIONS
+            value: "50"
+          - name: DB_SSL
+            value: "false"
+          - name: BITCOIN_CHAIN_FOLDER
+            value: "~/.bitcoin/"
+          - name: BITCOIN_RPC_USER
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: rpc.user
+          - name: BITCOIN_RPC_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: rpc-credentials
+                key: password
+          - name: BITCOIN_RPC_URL
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: rpc.host
+          - name: ORD_BINARY
+            value: "ord"
+          - name: ORD_FOLDER
+            value: "/main-index"
+          - name: ORD_DATADIR
+            value: "."
+          - name: COOKIE_FILE
+            value: ""
+          - name: NETWORK_TYPE
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: networkType
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: opi-main-index
+              mountPath: /main-index
+      volumes:
+        - name: opi-main-index
+          persistentVolumeClaim:
+            claimName: opi-main-index
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
