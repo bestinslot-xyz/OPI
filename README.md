@@ -45,6 +45,15 @@ Also change `REPORT_NAME` to differentiate your node from others.
 
 **BRC-20 API** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances.
 
+# BRC-20 Swap Indexer
+
+**BRC-20 Swap Indexer** is the a module of OPI. BRC-20 Swap Indexer saves all historical balance changes and all BRC-20 events.
+
+**BRC-20 API** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances.
+
+The following diagram illustrates the architecture and data flow of the BRC-20 Swap Indexer
+<img src="https://github.com/brc20-devs/brc20-swap-indexer/assets/3053743/e48e394f-579f-41ac-a06a-4a77a40b811f" width="512">
+
 ## Bitmap Indexer / API
 
 **Bitmap Indexer** is the second module of OPI. It follows the official protocol rules hosted [here](https://gitbook.bitmap.land/ruleset/district-ruleset). Bitmap Indexer saves all bitmap-number inscription-id pairs.
@@ -170,6 +179,12 @@ python3 brc20_index.py;
 ```bash
 cd modules/brc20_api;
 node api.js;
+```
+
+**BRC-20 swap Indexer**
+```bash
+cd modules/brc20_swap_index;
+docker-compose up -d
 ```
 
 **Bitmap Indexer**

@@ -47,6 +47,7 @@ report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
 report_retries = int(os.getenv("REPORT_RETRIES") or "10")
 report_name = os.getenv("REPORT_NAME") or "opi_brc20_indexer"
 create_extra_tables = (os.getenv("CREATE_EXTRA_TABLES") or "false") == "true"
+enable_brc20_module = (os.getenv("ENABLE_BRC20_MODULE") or "false") == "true"
 network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 
 first_inscription_heights = {
@@ -250,6 +251,19 @@ def get_event_str(event, event_type, inscription_id):
     res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["amount"], decimals_int)
     return res
+  elif event_type == "withdraw-transfer":
+    decimals_int = ticks[event["tick"]][2]
+    res = "withdraw-transfer;"
+    res += inscription_id + ";"
+    res += event["source_pkScript"] + ";"
+    if event["spent_pkScript"] is not None:
+      res += event["spent_pkScript"] + ";"
+    else:
+      res += ";"
+    res += event["tick"] + ";"
+    res += event["original_tick"] + ";"
+    res += fix_numstr_decimals(event["amount"], decimals_int)
+    return res
   else:
     print("EVENT TYPE ERROR!!")
     exit(1)
@@ -258,7 +272,20 @@ def get_sha256_hash(s):
   return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
 
+def get_module_pkscript(module_id):
+  if len(module_id) != 66:
+    return None
+  if module_id[-2:] != "i0":
+    return None
+  if module_id != module_id.lower():
+    return None
 
+  try:
+    decoded_bytes = bytes.fromhex(module_id[:-2])
+    reversed_bytes = decoded_bytes[::-1]
+    return "6a" + reversed_bytes.hex()
+  except ValueError:
+    return None
 
 
 ## caches
@@ -330,6 +357,24 @@ def set_transfer_as_used(inscription_id):
 def set_transfer_as_valid(inscription_id):
   global transfer_validity_cache
   transfer_validity_cache[inscription_id] = 1
+
+
+withdraw_validity_cache = {}
+def load_withdraw_valid(block_height, block_hash):
+  global withdraw_validity_cache
+
+  withdraw_validity_cache = {}
+  cur.execute('''select inscription_id from brc20_module_withdrawals where block_height = %s;''', (block_height,))
+  match_block_hash = False
+  for row in cur.fetchall():
+    inscription_id = row[0]
+    if inscription_id == block_hash:
+      match_block_hash = True
+    else:
+      withdraw_validity_cache[inscription_id] = True
+
+  return match_block_hash
+
 
 def reset_caches():
   global balance_cache, transfer_inscribe_event_cache, ticks, transfer_validity_cache
@@ -479,6 +524,35 @@ def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, original_
   last_balance = get_last_balance(source_pkScript, tick)
   last_balance["available_balance"] += amount
   brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+def withdraw_transfer(block_height, inscription_id, source_pkScript, spent_pkScript, spent_wallet, tick, original_tick, amount, using_tx_id):
+  global in_commit, block_events_str, event_types
+  event = {
+    "source_pkScript": source_pkScript,
+    "source_wallet": None,
+    "spent_pkScript": spent_pkScript,
+    "spent_wallet": spent_wallet,
+    "tick": tick,
+    "original_tick": original_tick,
+    "amount": str(amount),
+    "using_tx_id": str(using_tx_id)
+  }
+  block_events_str += get_event_str(event, "withdraw-transfer", inscription_id) + EVENT_SEPARATOR
+  event_id = block_start_max_event_id + len(brc20_events_insert_cache) + 1
+  brc20_events_insert_cache.append((event_id, event_types["withdraw-transfer"], block_height, inscription_id, json.dumps(event)))
+
+  last_balance = get_last_balance(source_pkScript, tick)
+  last_balance["overall_balance"] -= amount
+  last_balance["available_balance"] -= amount
+  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+
+  if spent_pkScript != source_pkScript:
+    last_balance = get_last_balance(spent_pkScript, tick)
+  last_balance["overall_balance"] += amount
+  last_balance["available_balance"] += amount
+  brc20_historic_balances_insert_cache.append((spent_pkScript, spent_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id)) ## negated to make a unique event_id
+
+  if spent_pkScript == '6a':
+    brc20_tickers_burned_supply_update_cache[tick] = brc20_tickers_burned_supply_update_cache.get(tick, 0) + amount
 
 
 def update_event_hashes(block_height):
@@ -510,7 +584,7 @@ def index_block(block_height, current_block_hash):
                               LEFT JOIN ord_number_to_id onti ON ot.inscription_id = onti.inscription_id
                               WHERE ot.block_height = %s 
                                  AND onti.cursed_for_brc20 = false
-                                 AND oc."content" is not null AND oc."content"->>'p'='brc-20'
+                                 AND oc."content" is not null AND (oc."content"->>'p'='brc-20' OR oc."content"->>'p'='brc20-module' )
                               ORDER BY ot.id asc;''', (block_height,))
   transfers = cur_metaprotocol.fetchall()
   if len(transfers) == 0:
@@ -559,7 +633,7 @@ def index_block(block_height, current_block_hash):
     if original_tick_len != 4 and original_tick_len != 5: continue ## invalid tick
     
     # handle deploy
-    if js["op"] == 'deploy' and old_satpoint == '':
+    if js["p"] == 'brc-20' and js["op"] == 'deploy' and old_satpoint == '':
       if "max" not in js: continue ## invalid inscription
       if tick in ticks: continue ## already deployed
       decimals = 18
@@ -595,7 +669,7 @@ def index_block(block_height, current_block_hash):
       deploy_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, max_supply, decimals, limit_per_mint, is_self_mint)
     
     # handle mint
-    if js["op"] == 'mint' and old_satpoint == '':
+    if js["p"] == 'brc-20' and js["op"] == 'mint' and old_satpoint == '':
       if "amt" not in js: continue ## invalid inscription
       if tick not in ticks: continue ## not deployed
       amount = js["amt"]
@@ -614,7 +688,7 @@ def index_block(block_height, current_block_hash):
       mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, parent_id)
     
     # handle transfer
-    if js["op"] == 'transfer':
+    if js["p"] == 'brc-20' and js["op"] == 'transfer':
       if "amt" not in js: continue ## invalid inscription
       if tick not in ticks: continue ## not deployed
       amount = js["amt"]
@@ -625,6 +699,8 @@ def index_block(block_height, current_block_hash):
         if amount > (2**64-1) * (10**18) or amount <= 0: continue ## invalid amount
       ## check if available balance is enough
       if old_satpoint == '':
+        if enable_brc20_module and new_pkScript.startswith('6a'): continue # to OP_RETURN
+
         if not check_available_balance(new_pkScript, tick, amount): continue ## not enough available balance
         transfer_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
       else:
@@ -632,6 +708,29 @@ def index_block(block_height, current_block_hash):
         if sent_as_fee: transfer_transfer_spend_to_fee(block_height, inscr_id, tick, original_tick, amount, tx_id)
         else: transfer_transfer_normal(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, tx_id)
   
+    # handle withdraw
+    if js["p"] == 'brc20-module' and js["op"] == 'withdraw' and old_satpoint != '':
+      if not enable_brc20_module: continue
+
+      if "module" not in js: continue ## invalid inscription
+      if "amt" not in js: continue ## invalid inscription
+      if tick not in ticks: continue ## not deployed
+      amount = js["amt"]
+      if not is_positive_number_with_dot(amount): continue ## invalid amount
+      else:
+        amount = get_number_extended_to_18_decimals(amount, ticks[tick][2])
+        if amount is None: continue ## invalid amount
+        if amount > (2**64-1) * (10**18) or amount <= 0: continue ## invalid amount
+
+      module_pkScript = get_module_pkscript(js["module"])
+      if not module_pkScript: continue
+
+      ## check if available balance is enough
+      if not check_available_balance(module_pkScript, tick, amount): continue ## not enough available balance
+      if inscr_id not in withdraw_validity_cache: continue ## already used or invalid
+      del withdraw_validity_cache[inscr_id]
+
+      withdraw_transfer(block_height, inscr_id, module_pkScript, new_pkScript, new_addr, tick, original_tick, amount, tx_id)
   cur.execute("BEGIN;")
   in_commit = True
   print("inserting events...")
@@ -1151,6 +1250,19 @@ while True:
     time.sleep(5)
     continue
   
+  # withdraw data height
+  if enable_brc20_module:
+    cur.execute('''select max(block_height) from brc20_module_withdrawals;''')
+    row = cur.fetchone()
+    withdraw_block = None
+    if row[0] is None: withdraw_block = first_inscription_height
+    else: withdraw_block = row[0]
+
+    if current_block > withdraw_block:
+      print("Waiting for withdraw process...")
+      time.sleep(5)
+      continue
+
   print("Processing block %s" % current_block)
   cur_metaprotocol.execute('select block_hash from block_hashes where block_height = %s;', (current_block,))
   current_block_hash = cur_metaprotocol.fetchone()[0]
@@ -1160,6 +1272,13 @@ while True:
     reorg_fix(reorg_height)
     print("Rolled back to " + str(reorg_height))
     continue
+
+  if enable_brc20_module:
+    if not load_withdraw_valid(current_block, current_block_hash):
+      print("Waiting for withdraw reorg...")
+      time.sleep(5)
+      continue
+
   try:
     index_block(current_block, current_block_hash)
     if create_extra_tables and max_block_of_metaprotocol_db - current_block < 10: ## only update extra tables at the end of sync

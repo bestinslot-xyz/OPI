@@ -8,10 +8,13 @@ CREATE TABLE public.ord_transfers (
 	new_wallet text NULL,
 	sent_as_fee bool NOT NULL,
 	new_output_value int8 NOT NULL,
+	sent_as_fee_txid text,
+	txcnt int4 NOT NULL,
 	CONSTRAINT ord_transfers_pk PRIMARY KEY (id)
 );
 CREATE INDEX ord_transfers_block_height_idx ON public.ord_transfers USING btree (block_height);
 CREATE INDEX ord_transfers_inscription_id_idx ON public.ord_transfers USING btree (inscription_id);
+CREATE INDEX ord_transfers_sent_as_fee_txid_idx ON public.ord_transfers USING btree (sent_as_fee_txid);
 
 CREATE TABLE public.ord_number_to_id (
 	id bigserial NOT NULL,
@@ -43,6 +46,7 @@ CREATE TABLE public.block_hashes (
 	id bigserial NOT NULL,
 	block_height int4 NOT NULL,
 	block_hash text NOT NULL,
+	block_time int4 NOT NULL,
 	CONSTRAINT block_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX block_hashes_block_height_idx ON public.block_hashes USING btree (block_height);

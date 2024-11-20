@@ -73,6 +73,7 @@ INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('d
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('mint-inscribe', 1);
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('transfer-inscribe', 2);
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('transfer-transfer', 3);
+INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('withdraw-transfer', 4);
 
 CREATE TABLE public.brc20_indexer_version (
 	id bigserial NOT NULL,
@@ -82,3 +83,11 @@ CREATE TABLE public.brc20_indexer_version (
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
 INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-full-node v0.4.1', 5, 2);
+
+
+CREATE TABLE public.brc20_module_withdrawals (
+	id bigserial NOT NULL,
+	block_height int4 NOT NULL,
+	inscription_id text NOT NULL, -- withdraw id or block id
+);
+CREATE INDEX brc20_module_withdrawals_block_height_idx ON public.brc20_module_withdrawals USING btree (block_height);

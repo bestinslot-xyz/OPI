@@ -4,6 +4,7 @@ const { Pool } = require('pg')
 var cors = require('cors')
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
+const { pkscript_from_address, address_from_pkscript } = require("./utils");
 
 // for self-signed cert of postgres
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -366,7 +367,7 @@ app.get('/v1/brc20/get_hash_of_all_activity', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
     let block_height = request.query.block_height
-  
+
     let current_block_height = await get_block_height_of_db()
     if (block_height > current_block_height) {
       response.status(400).send({ error: 'block not indexed yet', result: null })
@@ -379,16 +380,16 @@ app.get('/v1/brc20/get_hash_of_all_activity', async (request, response) => {
     let res = await query_db(query, [block_height])
     let cumulative_event_hash = res.rows[0].cumulative_event_hash
     let block_event_hash = res.rows[0].block_event_hash
-  
+
     let res2 = await query_db('select indexer_version from brc20_indexer_version;')
     let indexer_version = res2.rows[0].indexer_version
-  
+
     response.send({ error: null, result: {
         cumulative_event_hash: cumulative_event_hash,
         block_event_hash: block_event_hash,
         indexer_version: indexer_version,
         block_height: block_height
-      } 
+      }
     })
   } catch (err) {
     console.log(err)
@@ -529,5 +530,258 @@ app.get('/v1/brc20/event', async (request, response) => {
     response.status(500).send({ error: 'internal error', result: null })
   }
 });
+
+app.get('/v1/brc20_swap/get_current_balance_of_wallet', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+
+    let { address, pkscript, ticker, module_id } = request.query
+    if (!pkscript) {
+      pkscript = pkscript_from_address(address)
+    }
+    let tick = ticker.toLowerCase()
+    let current_block_height = await get_block_height_of_db()
+    let balance = null
+    let query = ` select swap_balance, available_balance, approveable_balance,
+                  cond_approveable_balance, withdrawable_balance
+                  from brc20_swap_user_balance where pkscript = decode($1, 'hex') and tick = $2 and module_id = $3
+                  order by id
+                  limit 1;`
+    let params = [pkscript, tick, module_id]
+
+    let res = await query_db(query, params)
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no balance found', result: null })
+      return
+    }
+    balance = res.rows[0]
+
+    balance.block_height = current_block_height
+    response.send({ error: null, result: balance })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+})
+
+let history_type_id_to_name;
+app.get('/v1/brc20_swap/history', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`);
+    let { module_id, start_height, end_height, cursor, size } = request.query;
+    start_height = parseInt(start_height);
+    end_height = parseInt(end_height);
+    cursor = parseInt(cursor) || 0;
+    size = parseInt(size) || 10;
+
+    if (!history_type_id_to_name) {
+      history_type_id_to_name = {}
+      let res0 = await query_db('select history_type_name, history_type_id from brc20_history_types;');
+
+      res0.rows.forEach((row) => {
+        history_type_id_to_name[row.history_type_id] = row.history_type_name;
+      });
+    }
+
+    let query = `
+              select id, block_height, module_id, history_type, valid, encode(txid, 'hex') as txid,
+              idx, vout, output_value, output_offset, encode(pkscript_from, 'hex') as pkscript_from,
+              encode(pkscript_to, 'hex') as pkscript_to, fee, txidx, block_time, inscription_number,
+              inscription_id, encode(inscription_content, 'hex') as inscription_content, encode(extra_data, 'hex') as extra_data
+              from brc20_swap_history
+              where module_id = $1 and block_height between $2 and $3
+              order by id
+              limit $4 offset $5;
+    `;
+    let res1 = await query_db(query, [module_id, start_height, end_height, size, cursor]);
+    if (res1.rows.length == 0) {
+      response.status(400).send({ error: 'no history found', result: null });
+      return;
+    }
+    res1.rows.forEach((row) => {
+      row.history_type = history_type_id_to_name[row.history_type];
+      row.address_from = row.pkscript_from ? address_from_pkscript(row.pkscript_from) : "";
+      row.address_to = row.pkscript_to ? address_from_pkscript(row.pkscript_to) : "";
+
+    });
+
+    let query_count = `
+                      select count(*)
+                      from brc20_swap_history
+                      where module_id = $1 and block_height between $2 and $3
+                      `;
+    let res2 = await query_db(query_count, [module_id, start_height, end_height]);
+    let result = {
+      total: parseInt(res2.rows[0].count),
+      list: res1.rows
+    }
+
+    response.send({ error: null, result});
+  } catch (err) {
+    console.log(err);
+    response.status(500).send({ error: 'internal error', result: null });
+  }
+});
+
+app.get('/v1/brc20/tick_holders', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+
+    let { tick, cursor, size } = request.query;
+    cursor = parseInt(cursor) || 0;
+    size = parseInt(size) || 10;
+
+    let query = `
+                with max_height_data as (
+                    select tick, pkscript, max(block_height) as max_height
+                    from public.brc20_user_balance
+                    where tick = $1
+                    group by tick, pkscript
+                ),
+                filtered_data as (
+                    select
+                        encode(b.pkscript, 'hex') as pkscript,
+                        b.available_balance,
+                        b.transferable_balance
+                    from public.brc20_user_balance b
+                    join max_height_data m on b.tick = m.tick and b.pkscript = m.pkscript and b.block_height = m.max_height
+                    where b.available_balance + b.transferable_balance > 0
+                )
+                select
+                    *,
+                    count(*) over() as total_count
+                from filtered_data
+                limit $2
+                offset $3;
+              `;
+
+    let params = [tick, size, cursor];
+
+    let res = await query_db(query, params)
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no tick info found', result: null })
+      return
+    }
+    let total = parseInt(res.rows[0].total_count);
+    res.rows.forEach((row) => {
+      row.address = address_from_pkscript(row.pkscript);
+      delete row.total_count
+    })
+    let ret = {
+      total,
+      list: res.rows
+    }
+    response.send({ error: null, result: ret })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+})
+
+app.get('/v1/brc20/status', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+
+    let { cursor, size } = request.query;
+    cursor = parseInt(cursor) || 0;
+    size = parseInt(size) || 10;
+
+    let query = `
+                  with latest_data as (
+                      select *
+                      from public.brc20_user_balance
+                      where (pkscript, tick, block_height) in (
+                          select pkscript, tick, max(block_height)
+                          from public.brc20_user_balance
+                          group by pkscript, tick
+                      )
+                  ), holders_data as (
+                      select tick, count(*) as holders
+                      from latest_data
+                      where available_balance + transferable_balance > 0
+                      group by tick
+                  ), total_count as (
+                      select count(*) as total
+                      from (
+                          select tick, max(block_height)
+                          from public.brc20_ticker_info
+                          group by tick
+                      ) as filtered_ticker_info
+                  ), max_height as (
+                      select max(block_height) as max_block_height
+                      from public.brc20_ticker_info
+                  ), latest_ticker_info as (
+                      select *
+                      from public.brc20_ticker_info
+                      where (tick, block_height) in (
+                          select tick, max(block_height)
+                          from public.brc20_ticker_info
+                          group by tick
+                      )
+                  )
+                  select t.block_height, t.tick, t.max_supply, t.decimals, t.limit_per_mint, t.remaining_supply, encode(t.pkscript_deployer, 'hex') as pkscript_deployer, COALESCE(h.holders, 0) as holders, tc.total, mh.max_block_height
+                  from latest_ticker_info t
+                  left join holders_data h on t.tick = h.tick
+                  cross join total_count tc
+                  cross join max_height mh
+                  limit $1 offset $2;
+              `;
+
+    let params = [size, cursor]
+
+    let res = await query_db(query, params)
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no tick info found', result: null })
+      return
+    }
+    let total = res.rows[0].total;
+    let height = res.rows[0].max_block_height;
+    let list = res.rows.map((row) => {
+      delete row.total
+      delete row.max_block_height;
+      row.deployer = address_from_pkscript(row.pkscript_deployer);
+      return row;
+    })
+    let ret = {
+      total,
+      height,
+      list
+    }
+    response.send({ error: null, result: ret })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+})
+
+app.get('/v1/brc20/get_current_balance_of_wallet_2', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+
+    let { pkscript, tick, address } = request.query;
+    if (!pkscript) {
+      pkscript = pkscript_from_address(address);
+    }
+    let query = `
+                select available_balance, transferable_balance
+                from public.brc20_user_balance
+                where pkscript = decode($1, 'hex') and tick = $2 and block_height = (
+                    select max(block_height)
+                    from public.brc20_user_balance
+                    where pkscript = decode($1, 'hex') and tick = $2
+                );
+                `;
+    let res = await query_db(query, [pkscript, tick]);
+
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no balance found', result: null })
+      return
+    }
+    response.send({ error: null, result: res.rows[0] })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+})
 
 app.listen(api_port, api_host);
