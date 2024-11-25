@@ -129,10 +129,19 @@ func main() {
 
 	// brc20 swap
 	go func() {
-		endHeight, _ := strconv.Atoi(endHeightBRC20Process)
-		startHeight, _ := strconv.Atoi(startHeightBRC20Process)
-		brc20.ProcessUpdateLatestBRC20SwapInit(ctx, startHeight, endHeight)
-		brc20SwapReady = true
+		for {
+			endHeight, _ := strconv.Atoi(endHeightBRC20Process)
+			startHeight, _ := strconv.Atoi(startHeightBRC20Process)
+			brc20.ProcessUpdateLatestBRC20SwapInit(ctx, startHeight, endHeight)
+			brc20SwapReady = true
+
+			if startHeight == endHeight && endHeight == 0 {
+				time.Sleep(time.Second * 10)
+				// continue process
+			} else {
+				break
+			}
+		}
 	}()
 
 	logger.Log.Info("LISTEN:",

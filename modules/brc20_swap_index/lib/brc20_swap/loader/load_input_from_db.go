@@ -15,17 +15,11 @@ import (
 	"go.uber.org/zap"
 )
 
-func LoadBRC20InputDataFromDB(ctx context.Context, brc20Datas chan *model.InscriptionBRC20Data, startHeight int, endHeight int) error {
-	logger.Log.Info("LoadBRC20InputDataFromDB", zap.Int("startHeight", startHeight), zap.Int("endHeight", endHeight))
-
-	row := MetaDB.QueryRow(`select block_height from block_hashes order by block_height desc limit 1;`)
-	var metaMaxHeight int
-	if err := row.Scan(&metaMaxHeight); err != nil {
-		return err
-	}
-	if endHeight <= 0 || metaMaxHeight < endHeight {
-		endHeight = metaMaxHeight
-	}
+func LoadBRC20InputDataFromDB(ctx context.Context, brc20Datas chan *model.InscriptionBRC20Data, startHeight, endHeight int) error {
+	logger.Log.Info("LoadBRC20InputDataFromDB",
+		zap.Int("startHeight", startHeight),
+		zap.Int("endHeight", endHeight),
+	)
 
 	for height := startHeight; height < endHeight; height++ {
 		batchLimit := 10240

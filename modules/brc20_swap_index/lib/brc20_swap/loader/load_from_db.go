@@ -59,6 +59,18 @@ func GetBrc20LatestHeightFromDB() (int, error) {
 	return height, nil
 }
 
+func GetOrdinalsLatestHeightFromDB() (int, error) {
+	row := MetaDB.QueryRow(`SELECT block_height FROM block_hashes ORDER BY block_height DESC LIMIT 1;`)
+	height := 0
+	if err := row.Scan(&height); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return height, nil
+}
+
 func LoadFromDbTickerInfoMap() (map[string]*model.BRC20TokenInfo, error) {
 	rows, err := SwapDB.Query(`
 SELECT t1.block_height, t1.tick, t1.max_supply, t1.decimals, t1.limit_per_mint, t1.minted, t1.pkscript_deployer, t1.self_mint

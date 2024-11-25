@@ -24,6 +24,8 @@ func mustGetEnv(key string) string {
 }
 
 var (
+	DUMP_RESULTS = os.Getenv("DUMP_RESULTS")
+
 	// brc20-swap module indexer database
 	DB_CONF_USER     = mustGetEnv("DB_USER")
 	DB_CONF_HOST     = mustGetEnv("DB_HOST")
@@ -70,6 +72,22 @@ func ProcessUpdateLatestBRC20SwapInit(ctx context.Context, startHeight, endHeigh
 			startHeight = int(dbHeight) + 1
 		}
 
+		metaMaxHeight, err := brc20swapLoader.GetOrdinalsLatestHeightFromDB()
+		if err != nil {
+			log.Panicf("get input db height error: %v", err)
+		}
+
+		span := 10 // leave 10 blocks to avoid reorg
+		metaMaxHeight -= span
+
+		if endHeight <= 0 || metaMaxHeight < endHeight {
+			endHeight = metaMaxHeight
+		}
+
+		if startHeight >= endHeight {
+			return
+		}
+
 		go func() {
 			if err := brc20swapLoader.LoadBRC20InputDataFromDB(ctx, brc20DatasLoad, startHeight, endHeight); err != nil {
 				log.Panicf("load input data from db error: %v", err)
@@ -78,22 +96,29 @@ func ProcessUpdateLatestBRC20SwapInit(ctx context.Context, startHeight, endHeigh
 		}()
 	}
 
-	go func() {
-		for data := range brc20DatasLoad {
-			brc20DatasParse <- data
-			brc20DatasDump <- data
-		}
+	if DUMP_RESULTS == "true" {
+		go func() {
+			for data := range brc20DatasLoad {
+				brc20DatasParse <- data
+				brc20DatasDump <- data
+			}
 
-		// finish
+			// finish
+			brc20DatasParse <- &brc20swapModel.InscriptionBRC20Data{}
+
+			close(brc20DatasParse)
+			close(brc20DatasDump)
+		}()
+
+		go func() {
+			brc20swapLoader.DumpBRC20InputData("./data/brc20.input.txt", brc20DatasDump, true)
+		}()
+	} else {
+		brc20DatasParse = brc20DatasLoad
 		brc20DatasParse <- &brc20swapModel.InscriptionBRC20Data{}
 
 		close(brc20DatasParse)
-		close(brc20DatasDump)
-	}()
-
-	go func() {
-		brc20swapLoader.DumpBRC20InputData("./data/brc20.input.txt", brc20DatasDump, true)
-	}()
+	}
 
 	g := &brc20swapIndexer.BRC20ModuleIndexer{}
 	g.Init()
@@ -145,18 +170,20 @@ func ProcessUpdateLatestBRC20SwapInit(ctx context.Context, startHeight, endHeigh
 
 	model.GSwap = g
 
-	log.Printf("dumping output...")
-	brc20swapLoader.DumpTickerInfoMap("./data/brc20.output.txt",
-		g.HistoryData,
-		g.InscriptionsTickerInfoMap,
-		g.UserTokensBalanceData,
-		g.TokenUsersBalanceData,
-	)
+	if DUMP_RESULTS == "true" {
+		log.Printf("dumping output...")
+		brc20swapLoader.DumpTickerInfoMap("./data/brc20.output.txt",
+			g.HistoryData,
+			g.InscriptionsTickerInfoMap,
+			g.UserTokensBalanceData,
+			g.TokenUsersBalanceData,
+		)
 
-	brc20swapLoader.DumpModuleInfoMap("./data/brc20-module.output.txt",
-		g.ModulesInfoMap,
-	)
-	log.Printf("dump output ok")
+		brc20swapLoader.DumpModuleInfoMap("./data/brc20-module.output.txt",
+			g.ModulesInfoMap,
+		)
+		log.Printf("dump output ok")
+	}
 }
 
 // SELECT relname, n_live_tup AS row_count FROM pg_stat_user_tables ORDER BY relname DESC;

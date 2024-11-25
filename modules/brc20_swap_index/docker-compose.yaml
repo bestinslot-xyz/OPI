@@ -3,7 +3,7 @@ services:
 
   brc20query:
     build: .
-    image: brc20query:v1.0
+    image: brc20query:v1.1
     volumes:
       - ./data:/data/data
     ports:
