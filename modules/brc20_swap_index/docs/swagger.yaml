@@ -1,0 +1,1273 @@
+definitions:
+  model.BRC20ModuleHistoryInfo:
+    properties:
+      blockhash:
+        type: string
+      blocktime:
+        type: integer
+      contentBody:
+        type: string
+      contentType:
+        type: string
+      data:
+        type: any
+      from:
+        type: string
+      height:
+        type: integer
+      idx:
+        description: inscription index
+        type: integer
+      inscriptionId:
+        type: string
+      inscriptionNumber:
+        type: integer
+      offset:
+        type: integer
+      satoshi:
+        type: integer
+      to:
+        type: string
+      txid:
+        type: string
+      txidx:
+        description: txidx in block
+        type: integer
+      type:
+        description: inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive
+        type: string
+      valid:
+        type: boolean
+      vout:
+        type: integer
+    type: object
+  model.BRC20ModuleHistoryResp:
+    properties:
+      cursor:
+        type: integer
+      detail:
+        items:
+          $ref: '#/definitions/model.BRC20ModuleHistoryInfo'
+        type: array
+      height:
+        description: synced block height
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.BRC20ModuleTickerStatusInfoOfAddressResp:
+    properties:
+      approveableBalance:
+        type: string
+      availableBalance:
+        type: string
+      condApproveableBalance:
+        type: string
+      historyCount:
+        type: integer
+      moduleAccountBalance:
+        type: string
+      swapAccountBalance:
+        type: string
+      ticker:
+        type: string
+      withdrawableBalance:
+        type: string
+    type: object
+  model.BRC20ModuleVerifySwapCommitReq:
+    properties:
+      commits:
+        items:
+          type: string
+        type: array
+      results:
+        items:
+          $ref: '#/definitions/model.SwapFunctionResultCheckState'
+        type: array
+    type: object
+  model.BRC20ModuleVerifySwapCommitResp:
+    properties:
+      critical:
+        type: boolean
+      id:
+        type: string
+      index:
+        description: point out if invalid
+        type: integer
+      message:
+        description: ok, or reason of invalid
+        type: string
+      valid:
+        type: boolean
+    type: object
+  model.BRC20TickerBestHeightResp:
+    properties:
+      blockid:
+        type: string
+      height:
+        description: synced block height
+        type: integer
+      timestamp:
+        description: block time
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.BRC20TickerHistoryInfo:
+    properties:
+      amount:
+        type: string
+      availableBalance:
+        type: string
+      blockhash:
+        type: string
+      blocktime:
+        type: integer
+      fee:
+        type: integer
+      from:
+        type: string
+      height:
+        type: integer
+      idx:
+        description: inscription index
+        type: integer
+      inscriptionId:
+        type: string
+      inscriptionNumber:
+        type: integer
+      offset:
+        type: integer
+      overallBalance:
+        type: string
+      satoshi:
+        type: integer
+      ticker:
+        type: string
+      to:
+        type: string
+      transferBalance:
+        type: string
+      txid:
+        type: string
+      txidx:
+        description: txidx in block
+        type: integer
+      type:
+        description: inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive
+        type: string
+      valid:
+        type: boolean
+      vout:
+        type: integer
+    type: object
+  model.BRC20TickerHistoryResp:
+    properties:
+      detail:
+        items:
+          $ref: '#/definitions/model.BRC20TickerHistoryInfo'
+        type: array
+      height:
+        description: synced block height
+        type: integer
+      start:
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.BRC20TickerHoldersInfo:
+    properties:
+      address:
+        type: string
+      availableBalance:
+        type: string
+      availableBalanceSafe:
+        type: string
+      availableBalanceUnSafe:
+        type: string
+      overallBalance:
+        type: string
+      transferableBalance:
+        type: string
+    type: object
+  model.BRC20TickerHoldersResp:
+    properties:
+      detail:
+        items:
+          $ref: '#/definitions/model.BRC20TickerHoldersInfo'
+        type: array
+      height:
+        description: synced block height
+        type: integer
+      start:
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.BRC20TickerInscriptionsResp:
+    properties:
+      detail:
+        items:
+          $ref: '#/definitions/model.InscriptionBRC20TickInfoResp'
+        type: array
+      height:
+        description: synced block height
+        type: integer
+      start:
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.BRC20TickerListResp:
+    properties:
+      detail:
+        items:
+          type: string
+        type: array
+      height:
+        description: synced block height
+        type: integer
+      start:
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.BRC20TickerStatusInfo:
+    properties:
+      completeBlocktime:
+        type: integer
+      completeHeight:
+        type: integer
+      confirmedMinted:
+        type: string
+      confirmedMinted1h:
+        type: string
+      confirmedMinted24h:
+        type: string
+      creator:
+        type: string
+      decimal:
+        type: integer
+      deployBlocktime:
+        type: integer
+      deployHeight:
+        type: integer
+      historyCount:
+        type: integer
+      holdersCount:
+        type: integer
+      inscriptionId:
+        type: string
+      inscriptionNumber:
+        type: integer
+      inscriptionNumberEnd:
+        type: integer
+      inscriptionNumberStart:
+        type: integer
+      limit:
+        type: string
+      max:
+        type: string
+      mintTimes:
+        type: integer
+      minted:
+        type: string
+      ticker:
+        type: string
+      totalMinted:
+        type: string
+      txid:
+        type: string
+    type: object
+  model.BRC20TickerStatusInfoOfAddressResp:
+    properties:
+      availableBalance:
+        type: string
+      availableBalanceSafe:
+        type: string
+      availableBalanceUnSafe:
+        type: string
+      historyCount:
+        type: integer
+      historyInscriptions:
+        items:
+          $ref: '#/definitions/model.InscriptionBRC20TickInfoResp'
+        type: array
+      overallBalance:
+        type: string
+      ticker:
+        type: string
+      transferableBalance:
+        type: string
+      transferableCount:
+        type: integer
+      transferableInscriptions:
+        items:
+          $ref: '#/definitions/model.InscriptionBRC20TickInfoResp'
+        type: array
+    type: object
+  model.BRC20TickerStatusResp:
+    properties:
+      detail:
+        items:
+          $ref: '#/definitions/model.BRC20TickerStatusInfo'
+        type: array
+      height:
+        description: synced block height
+        type: integer
+      start:
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.BRC20TokenSummaryInfo:
+    properties:
+      availableBalance:
+        type: string
+      availableBalanceSafe:
+        type: string
+      availableBalanceUnSafe:
+        type: string
+      decimal:
+        type: integer
+      overallBalance:
+        type: string
+      ticker:
+        type: string
+      transferableBalance:
+        type: string
+    type: object
+  model.BRC20TokenSummaryResp:
+    properties:
+      detail:
+        items:
+          $ref: '#/definitions/model.BRC20TokenSummaryInfo'
+        type: array
+      height:
+        description: synced block height
+        type: integer
+      start:
+        type: integer
+      total:
+        type: integer
+    type: object
+  model.InscriptionBRC20InfoResp:
+    properties:
+      amt:
+        type: string
+      decimal:
+        type: string
+      lim:
+        type: string
+      max:
+        type: string
+      minted:
+        type: string
+      op:
+        type: string
+      tick:
+        type: string
+    type: object
+  model.InscriptionBRC20ModuleSwapCommitContent:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/model.SwapFunctionData'
+        type: array
+      gas_price:
+        type: string
+      module:
+        type: string
+      op:
+        type: string
+      p:
+        type: string
+      parent:
+        type: string
+      quit:
+        type: string
+    type: object
+  model.InscriptionBRC20TickInfoResp:
+    properties:
+      confirmations:
+        type: integer
+      data:
+        $ref: '#/definitions/model.InscriptionBRC20InfoResp'
+        type: object
+      inscriptionId:
+        type: string
+      inscriptionNumber:
+        type: integer
+      satoshi:
+        type: integer
+    type: object
+  model.InscriptionContentForCheckResp:
+    properties:
+      inscriptionId:
+        type: string
+      inscriptionName:
+        type: string
+      inscriptionNameHex:
+        type: string
+      inscriptionNumber:
+        type: integer
+      inscriptionType:
+        type: string
+      timestamp:
+        type: integer
+    type: object
+  model.InscriptionResp:
+    properties:
+      address:
+        description: Address of the current output
+        type: string
+      brc20:
+        $ref: '#/definitions/model.InscriptionBRC20InfoResp'
+        description: BRC20 information, included only for valid transfers
+        type: object
+      contentBody:
+        type: string
+      contentLength:
+        type: integer
+      contentType:
+        type: string
+      detail:
+        $ref: '#/definitions/model.InscriptionContentForCheckResp'
+        type: object
+      height:
+        description: Height at which the inscription was packed
+        type: integer
+      inSatoshi:
+        description: Total input amount in the GenesisTx
+        type: integer
+      inscriptionId:
+        description: Current inscription ID
+        type: string
+      inscriptionIndex:
+        description: Current inscription index, indicating the sequence of repetition,
+          0 for first occurrence
+        type: integer
+      inscriptionNumber:
+        description: Current inscription number
+        type: integer
+      offset:
+        description: Satoshi offset in utxo
+        type: integer
+      outSatoshi:
+        description: Total output amount in the GenesisTx
+        type: integer
+      timestamp:
+        description: Block timestamp
+        type: integer
+      utxo:
+        $ref: '#/definitions/model.TxStandardOutResp'
+        description: UTXO results
+        type: object
+    type: object
+  model.NFTData:
+    properties:
+      inscriptionId:
+        description: Current inscription ID
+        type: string
+      inscriptionNumber:
+        description: Current inscription number
+        type: integer
+      isBRC20:
+        description: Indicates if the NFT is BRC20
+        type: boolean
+      moved:
+        description: Indicates if the NFT has been moved after creation
+        type: boolean
+      offset:
+        description: Satoshi offset in utxo
+        type: integer
+      sequence:
+        description: If sequence > 0, the NFT has been moved after creation
+        type: integer
+    type: object
+  model.Response:
+    properties:
+      code:
+        type: integer
+      data:
+        type: object
+      msg:
+        type: string
+    type: object
+  model.SwapFunctionData:
+    properties:
+      addr:
+        type: string
+      func:
+        type: string
+      params:
+        items:
+          type: string
+        type: array
+      sig:
+        type: string
+      ts:
+        type: integer
+    type: object
+  model.SwapFunctionResultCheckState:
+    properties:
+      commit:
+        type: string
+      function:
+        type: integer
+      pools:
+        items:
+          $ref: '#/definitions/model.SwapFunctionResultCheckStateForPool'
+        type: array
+      users:
+        items:
+          $ref: '#/definitions/model.SwapFunctionResultCheckStateForUser'
+        type: array
+    type: object
+  model.SwapFunctionResultCheckStateForPool:
+    properties:
+      lp:
+        type: string
+      pair:
+        type: string
+      reserve0:
+        type: string
+      reserve1:
+        type: string
+    type: object
+  model.SwapFunctionResultCheckStateForUser:
+    properties:
+      address:
+        type: string
+      balance:
+        type: string
+      tick:
+        type: string
+    type: object
+  model.TxStandardOutResp:
+    properties:
+      address:
+        description: Address of the current output
+        type: string
+      codeType:
+        description: 'Script type of the current output: 0: None, 1: FT, 2: Unique,
+          3: NFT, 4: CodeType_P2PK, 5: CodeType_P2PKH, 6: CodeType_P2SH, 7: CodeType_P2WPKH,
+          8: CodeType_P2WSH, 9: CodeType_P2TR'
+        type: integer
+      height:
+        description: Block height where the transaction is packed
+        type: integer
+      idx:
+        description: Sequence number in the block of the spent txid
+        type: integer
+      inscriptions:
+        description: Positions of all inscriptions on the utxo
+        items:
+          $ref: '#/definitions/model.NFTData'
+        type: array
+      isOpInRBF:
+        description: Indicates if the current transaction is an RBF (Replace-By-Fee)
+          transaction
+        type: boolean
+      isSpent:
+        description: Indicates if the current transaction has been spent in the mempool
+        type: boolean
+      satoshi:
+        description: Satoshi of the current output
+        type: integer
+      scriptPk:
+        description: Lock script of the current output
+        type: string
+      scriptType:
+        description: Script type of the current output
+        type: string
+      txid:
+        description: Current txid
+        type: string
+      vout:
+        description: Current output sequence number
+        type: integer
+    type: object
+info:
+  contact:
+    email: jiedohh@gmail.com
+    name: brc20query
+    url: https://github.com/unisat/brc20query
+  description: API definition for BRC20Query  APIs
+  license:
+    name: MIT License
+    url: https://opensource.org/licenses/MIT
+  title: BRC20 Query Spec
+  version: "2.0"
+paths:
+  /address/{address}/brc20/{ticker}/history:
+    get:
+      parameters:
+      - default: ""
+        description: history type(inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive)
+        in: query
+        name: type
+        type: string
+      - default: 17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ
+        description: Address
+        in: path
+        name: address
+        required: true
+        type: string
+      - default: ordi
+        description: token ticker
+        in: path
+        name: ticker
+        required: true
+        type: string
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        required: true
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerHistoryResp'
+              type: object
+      security:
+      - BearerAuth: []
+      tags:
+      - BRC20
+  /address/{address}/brc20/{ticker}/info:
+    get:
+      parameters:
+      - default: 17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ
+        description: Address
+        in: path
+        name: address
+        required: true
+        type: string
+      - default: ordi
+        description: token ticker
+        in: path
+        name: ticker
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerStatusInfoOfAddressResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Retrieve the BRC20 token by address, including available balance, transferable
+        balance, number of transferable Inscriptions, and the first few Inscriptions,
+        etc.
+      tags:
+      - BRC20
+  /address/{address}/brc20/{ticker}/transferable-inscriptions:
+    get:
+      parameters:
+      - default: 17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ
+        description: Address
+        in: path
+        name: address
+        required: true
+        type: string
+      - default: ordi
+        description: token ticker
+        in: path
+        name: ticker
+        required: true
+        type: string
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        type: integer
+      - default: "false"
+        description: number of nft
+        in: query
+        name: invalid
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerInscriptionsResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Retrieve BRC20 Inscriptions list by address
+      tags:
+      - BRC20
+  /address/{address}/brc20/history:
+    get:
+      parameters:
+      - default: 17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ
+        description: Address
+        in: path
+        name: address
+        required: true
+        type: string
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        required: true
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerHistoryResp'
+              type: object
+      security:
+      - BearerAuth: []
+      tags:
+      - BRC20
+  /address/{address}/brc20/summary:
+    get:
+      parameters:
+      - default: 17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ
+        description: Address
+        in: path
+        name: address
+        required: true
+        type: string
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        required: true
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TokenSummaryResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain the BRC20 holding list by address, including information such
+        as ticker, balance, etc.
+      tags:
+      - BRC20
+  /address/{address}/brc20/summary-by-height/{height}:
+    get:
+      parameters:
+      - default: 17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ
+        description: Address
+        in: path
+        name: address
+        required: true
+        type: string
+      - default: 0
+        description: Block Height
+        in: path
+        name: height
+        required: true
+        type: integer
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        required: true
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TokenSummaryResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain the BRC20 holding list by address, including information such
+        as ticker, balance, etc.
+      tags:
+      - BRC20
+  /brc20-module/{module}/address/{address}/brc20/{ticker}/info:
+    get:
+      parameters:
+      - default: 17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ
+        description: Address
+        in: path
+        name: address
+        required: true
+        type: string
+      - default: ordi
+        description: token ticker
+        in: path
+        name: ticker
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20ModuleTickerStatusInfoOfAddressResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Retrieve the token inside the BRC20 Module by address, including available
+        balance, transferable balance, number of transferable Inscriptions, and the
+        first few Inscriptions, etc.
+      tags:
+      - BRC20Module
+  /brc20-module/{module}/history:
+    get:
+      parameters:
+      - default: ""
+        description: history type(inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive)
+        in: query
+        name: type
+        type: string
+      - default: '""'
+        description: module id
+        in: path
+        name: module
+        required: true
+        type: string
+      - default: 0
+        description: Start Block Height
+        in: query
+        name: start
+        type: integer
+      - default: 0
+        description: End Block Height
+        in: query
+        name: end
+        type: integer
+      - default: 0
+        description: 起始游标
+        in: query
+        name: cursor
+        type: integer
+      - default: 16
+        description: 返回记录数量
+        in: query
+        name: size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20ModuleHistoryResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Retrieve the transaction history of BRC20 by module, including information
+        such as address, balance, and minting.
+      tags:
+      - BRC20
+  /brc20-module/inscription/info/{inscriptionId}:
+    get:
+      parameters:
+      - default: '""'
+        description: InscriptionID
+        in: path
+        name: inscriptionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.InscriptionResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain details through the Inscription ID and return the legal status
+        of the inscription in the swap module.
+      tags:
+      - Inscription
+  /brc20-module/verify-commit:
+    post:
+      parameters:
+      - description: commit and results
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/model.BRC20ModuleVerifySwapCommitReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20ModuleVerifySwapCommitResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Verify the legitimacy of commit inscription
+      tags:
+      - Swap
+  /brc20/{ticker}/history:
+    get:
+      parameters:
+      - default: ""
+        description: history type(inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive)
+        in: query
+        name: type
+        type: string
+      - default: ordi
+        description: token ticker
+        in: path
+        name: ticker
+        required: true
+        type: string
+      - default: 0
+        description: start offset
+        in: query
+        name: height
+        type: integer
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerHistoryResp'
+              type: object
+      security:
+      - BearerAuth: []
+      tags:
+      - BRC20
+  /brc20/{ticker}/holders:
+    get:
+      parameters:
+      - default: ordi
+        description: token ticker
+        in: path
+        name: ticker
+        required: true
+        type: string
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        required: true
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerHoldersResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Retrieve the list of BRC20 holders by ticker, including information
+        such as address, balance, etc.
+      tags:
+      - BRC20
+  /brc20/{ticker}/info:
+    get:
+      parameters:
+      - default: ordi
+        description: token ticker
+        in: path
+        name: ticker
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerStatusInfo'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain BRC20 token information, including the number of holders, total
+        circulation, and other information.
+      tags:
+      - BRC20
+  /brc20/bestheight:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerBestHeightResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain the latest block height of BRC20
+      tags:
+      - BRC20
+  /brc20/history-by-height/{height}:
+    get:
+      parameters:
+      - default: 0
+        description: Block Height
+        in: path
+        name: height
+        required: true
+        type: integer
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        type: integer
+      - default: 10
+        description: size of result
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerHistoryResp'
+              type: object
+      security:
+      - BearerAuth: []
+      tags:
+      - BRC20
+  /brc20/list:
+    get:
+      parameters:
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        required: true
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerListResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain the token list of BRC20
+      tags:
+      - BRC20
+  /brc20/status:
+    get:
+      parameters:
+      - default: ""
+        description: search brc20 ticker
+        in: query
+        name: ticker
+        type: string
+      - default: ""
+        description: complete type(yes/no)
+        in: query
+        name: complete
+        type: string
+      - default: holders
+        description: sort by (holders/deploy/minted/transactions)
+        in: query
+        name: sort
+        type: string
+      - default: 0
+        description: start offset
+        in: query
+        name: start
+        required: true
+        type: integer
+      - default: 10
+        description: number of nft
+        in: query
+        name: limit
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": {}, "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BRC20TickerStatusResp'
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain the BRC20 token list, including information such as the number
+        of holders, total issuance, etc.
+      tags:
+      - BRC20
+  /brc20/tickers-info:
+    get:
+      parameters:
+      - description: token tickers
+        in: body
+        name: body
+        required: true
+        schema:
+          items:
+            type: string
+          type: array
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{"code": 0, "data": [{}], "msg": "ok"}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/model.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/model.BRC20TickerStatusInfo'
+                  type: array
+              type: object
+      security:
+      - BearerAuth: []
+      summary: Obtain BRC20 token information in batches, including the number of
+        holders, total issuance, and other information.
+      tags:
+      - BRC20
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

@@ -345,7 +345,8 @@ async function main_index() {
     let ord_sql_st_tm = +(new Date())
 
     let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, cursed_for_brc20, parent_id, block_height) values ($1, $2, $3, $4, $5);`
-    let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee, new_output_value) values ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
+    let sql_query_insert_sent_as_fee_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee, new_output_value, sent_as_fee_txid, txcnt) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);`
+    let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee, new_output_value, txcnt) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`
     let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
     
@@ -402,7 +403,7 @@ async function main_index() {
         }
         else if (parts[3] == "early_transfer_sent_as_fee") {
           if (block_height > current_height) {
-            future_sent_as_fee_transfer_id[parts[4]] = [current_transfer_id, false, block_height]
+            future_sent_as_fee_transfer_id[parts[4]] = [current_transfer_id, false, block_height, parts[5]]
             current_transfer_id += 1
           }
         }
@@ -411,6 +412,7 @@ async function main_index() {
             if ((parts[4] in future_sent_as_fee_transfer_id) && (future_sent_as_fee_transfer_id[parts[4]][2] == block_height)) {
               let pair = future_sent_as_fee_transfer_id[parts[4]]
               let transfer_id = pair[0]
+              let send_as_fee_txid = pair[3]
               if (pair[1]) {
                 save_error_log("--------------------------------")
                 save_error_log("ERROR: early transfer sent as fee already used")
@@ -420,11 +422,11 @@ async function main_index() {
                 process.exit(1)
               }
               future_sent_as_fee_transfer_id[parts[4]][1] = true
-              running_promises.push(execute_on_db(sql_query_insert_transfer, [transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8], network), parts[7] == "true" ? true : false, parseInt(parts[9])]))
+              running_promises.push(execute_on_db(sql_query_insert_sent_as_fee_transfer, [transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8], network), parts[7] == "true" ? true : false, parseInt(parts[9]), send_as_fee_txid, parts[10]]))
               transfer_count += 1
               ord_sql_query_count += 1
             } else {
-              running_promises.push(execute_on_db(sql_query_insert_transfer, [current_transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8], network), parts[7] == "true" ? true : false, parseInt(parts[9])]))
+              running_promises.push(execute_on_db(sql_query_insert_transfer, [current_transfer_id, parts[4], block_height, parts[5], parts[6], parts[8], wallet_from_pkscript(parts[8], network), parts[7] == "true" ? true : false, parseInt(parts[9]), parts[10]]))
               current_transfer_id += 1
               transfer_count += 1
               ord_sql_query_count += 1
@@ -467,7 +469,8 @@ async function main_index() {
       let block_height = parseInt(parts[1])
       if (block_height < first_inscription_height) { continue }
       let blockhash = parts[3].trim()
-      await db_pool.query(`INSERT into block_hashes (block_height, block_hash) values ($1, $2) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash])
+      let blocktime = parseInt(parts[4])
+      await db_pool.query(`INSERT into block_hashes (block_height, block_hash, block_time) values ($1, $2, $3) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash, blocktime])
     }
     
     let ord_sql_tm = +(new Date()) - ord_sql_st_tm

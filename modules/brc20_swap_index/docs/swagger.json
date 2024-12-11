@@ -1,0 +1,1979 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "API definition for BRC20Query  APIs",
+        "title": "BRC20 Query Spec",
+        "contact": {
+            "name": "brc20query",
+            "url": "https://github.com/unisat/brc20query",
+            "email": "jiedohh@gmail.com"
+        },
+        "license": {
+            "name": "MIT License",
+            "url": "https://opensource.org/licenses/MIT"
+        },
+        "version": "2.0"
+    },
+    "paths": {
+        "/address/{address}/brc20/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ",
+                        "description": "Address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerHistoryResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/address/{address}/brc20/summary": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Obtain the BRC20 holding list by address, including information such as ticker, balance, etc.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ",
+                        "description": "Address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TokenSummaryResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/address/{address}/brc20/summary-by-height/{height}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Obtain the BRC20 holding list by address, including information such as ticker, balance, etc.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ",
+                        "description": "Address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Block Height",
+                        "name": "height",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TokenSummaryResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/address/{address}/brc20/{ticker}/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "",
+                        "description": "history type(inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive)",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "default": "17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ",
+                        "description": "Address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "default": "ordi",
+                        "description": "token ticker",
+                        "name": "ticker",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerHistoryResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/address/{address}/brc20/{ticker}/info": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Retrieve the BRC20 token by address, including available balance, transferable balance, number of transferable Inscriptions, and the first few Inscriptions, etc.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ",
+                        "description": "Address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "default": "ordi",
+                        "description": "token ticker",
+                        "name": "ticker",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerStatusInfoOfAddressResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/address/{address}/brc20/{ticker}/transferable-inscriptions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Retrieve BRC20 Inscriptions list by address",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ",
+                        "description": "Address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "default": "ordi",
+                        "description": "token ticker",
+                        "name": "ticker",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "default": "false",
+                        "description": "number of nft",
+                        "name": "invalid",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerInscriptionsResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20-module/inscription/info/{inscriptionId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Inscription"
+                ],
+                "summary": "Obtain details through the Inscription ID and return the legal status of the inscription in the swap module.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "\"\"",
+                        "description": "InscriptionID",
+                        "name": "inscriptionId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.InscriptionResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20-module/verify-commit": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Swap"
+                ],
+                "summary": "Verify the legitimacy of commit inscription",
+                "parameters": [
+                    {
+                        "description": "commit and results",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/model.BRC20ModuleVerifySwapCommitReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20ModuleVerifySwapCommitResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20-module/{module}/address/{address}/brc20/{ticker}/info": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20Module"
+                ],
+                "summary": "Retrieve the token inside the BRC20 Module by address, including available balance, transferable balance, number of transferable Inscriptions, and the first few Inscriptions, etc.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "17SkEw2md5avVNyYgj6RiXuQKNwkXaxFyQ",
+                        "description": "Address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "default": "ordi",
+                        "description": "token ticker",
+                        "name": "ticker",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20ModuleTickerStatusInfoOfAddressResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20-module/{module}/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Retrieve the transaction history of BRC20 by module, including information such as address, balance, and minting.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "",
+                        "description": "history type(inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive)",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "default": "\"\"",
+                        "description": "module id",
+                        "name": "module",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Start Block Height",
+                        "name": "start",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "End Block Height",
+                        "name": "end",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "起始游标",
+                        "name": "cursor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 16,
+                        "description": "返回记录数量",
+                        "name": "size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20ModuleHistoryResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/bestheight": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Obtain the latest block height of BRC20",
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerBestHeightResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/history-by-height/{height}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Block Height",
+                        "name": "height",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "size of result",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerHistoryResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/list": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Obtain the token list of BRC20",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerListResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Obtain the BRC20 token list, including information such as the number of holders, total issuance, etc.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "",
+                        "description": "search brc20 ticker",
+                        "name": "ticker",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "default": "",
+                        "description": "complete type(yes/no)",
+                        "name": "complete",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "default": "holders",
+                        "description": "sort by (holders/deploy/minted/transactions)",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerStatusResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/tickers-info": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Obtain BRC20 token information in batches, including the number of holders, total issuance, and other information.",
+                "parameters": [
+                    {
+                        "description": "token tickers",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": [{}], \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/model.BRC20TickerStatusInfo"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/{ticker}/history": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "",
+                        "description": "history type(inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive)",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "default": "ordi",
+                        "description": "token ticker",
+                        "name": "ticker",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "height",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerHistoryResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/{ticker}/holders": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Retrieve the list of BRC20 holders by ticker, including information such as address, balance, etc.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "ordi",
+                        "description": "token ticker",
+                        "name": "ticker",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "start offset",
+                        "name": "start",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "number of nft",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerHoldersResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/brc20/{ticker}/info": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "BRC20"
+                ],
+                "summary": "Obtain BRC20 token information, including the number of holders, total circulation, and other information.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "ordi",
+                        "description": "token ticker",
+                        "name": "ticker",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\"code\": 0, \"data\": {}, \"msg\": \"ok\"}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/model.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/model.BRC20TickerStatusInfo"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "model.BRC20ModuleHistoryInfo": {
+            "type": "object",
+            "properties": {
+                "blockhash": {
+                    "type": "string"
+                },
+                "blocktime": {
+                    "type": "integer"
+                },
+                "contentBody": {
+                    "type": "string"
+                },
+                "contentType": {
+                    "type": "string"
+                },
+                "data": {
+                    "type": "any"
+                },
+                "from": {
+                    "type": "string"
+                },
+                "height": {
+                    "type": "integer"
+                },
+                "idx": {
+                    "description": "inscription index",
+                    "type": "integer"
+                },
+                "inscriptionId": {
+                    "type": "string"
+                },
+                "inscriptionNumber": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "satoshi": {
+                    "type": "integer"
+                },
+                "to": {
+                    "type": "string"
+                },
+                "txid": {
+                    "type": "string"
+                },
+                "txidx": {
+                    "description": "txidx in block",
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive",
+                    "type": "string"
+                },
+                "valid": {
+                    "type": "boolean"
+                },
+                "vout": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20ModuleHistoryResp": {
+            "type": "object",
+            "properties": {
+                "cursor": {
+                    "type": "integer"
+                },
+                "detail": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.BRC20ModuleHistoryInfo"
+                    }
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20ModuleTickerStatusInfoOfAddressResp": {
+            "type": "object",
+            "properties": {
+                "approveableBalance": {
+                    "type": "string"
+                },
+                "availableBalance": {
+                    "type": "string"
+                },
+                "condApproveableBalance": {
+                    "type": "string"
+                },
+                "historyCount": {
+                    "type": "integer"
+                },
+                "moduleAccountBalance": {
+                    "type": "string"
+                },
+                "swapAccountBalance": {
+                    "type": "string"
+                },
+                "ticker": {
+                    "type": "string"
+                },
+                "withdrawableBalance": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.BRC20ModuleVerifySwapCommitReq": {
+            "type": "object",
+            "properties": {
+                "commits": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SwapFunctionResultCheckState"
+                    }
+                }
+            }
+        },
+        "model.BRC20ModuleVerifySwapCommitResp": {
+            "type": "object",
+            "properties": {
+                "critical": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "index": {
+                    "description": "point out if invalid",
+                    "type": "integer"
+                },
+                "message": {
+                    "description": "ok, or reason of invalid",
+                    "type": "string"
+                },
+                "valid": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "model.BRC20TickerBestHeightResp": {
+            "type": "object",
+            "properties": {
+                "blockid": {
+                    "type": "string"
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "timestamp": {
+                    "description": "block time",
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20TickerHistoryInfo": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "string"
+                },
+                "availableBalance": {
+                    "type": "string"
+                },
+                "blockhash": {
+                    "type": "string"
+                },
+                "blocktime": {
+                    "type": "integer"
+                },
+                "fee": {
+                    "type": "integer"
+                },
+                "from": {
+                    "type": "string"
+                },
+                "height": {
+                    "type": "integer"
+                },
+                "idx": {
+                    "description": "inscription index",
+                    "type": "integer"
+                },
+                "inscriptionId": {
+                    "type": "string"
+                },
+                "inscriptionNumber": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "overallBalance": {
+                    "type": "string"
+                },
+                "satoshi": {
+                    "type": "integer"
+                },
+                "ticker": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "string"
+                },
+                "transferBalance": {
+                    "type": "string"
+                },
+                "txid": {
+                    "type": "string"
+                },
+                "txidx": {
+                    "description": "txidx in block",
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "inscribe-deploy/inscribe-mint/inscribe-transfer/transfer/send/receive",
+                    "type": "string"
+                },
+                "valid": {
+                    "type": "boolean"
+                },
+                "vout": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20TickerHistoryResp": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.BRC20TickerHistoryInfo"
+                    }
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "start": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20TickerHoldersInfo": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "availableBalance": {
+                    "type": "string"
+                },
+                "availableBalanceSafe": {
+                    "type": "string"
+                },
+                "availableBalanceUnSafe": {
+                    "type": "string"
+                },
+                "overallBalance": {
+                    "type": "string"
+                },
+                "transferableBalance": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.BRC20TickerHoldersResp": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.BRC20TickerHoldersInfo"
+                    }
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "start": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20TickerInscriptionsResp": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.InscriptionBRC20TickInfoResp"
+                    }
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "start": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20TickerListResp": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "start": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20TickerStatusInfo": {
+            "type": "object",
+            "properties": {
+                "completeBlocktime": {
+                    "type": "integer"
+                },
+                "completeHeight": {
+                    "type": "integer"
+                },
+                "confirmedMinted": {
+                    "type": "string"
+                },
+                "confirmedMinted1h": {
+                    "type": "string"
+                },
+                "confirmedMinted24h": {
+                    "type": "string"
+                },
+                "creator": {
+                    "type": "string"
+                },
+                "decimal": {
+                    "type": "integer"
+                },
+                "deployBlocktime": {
+                    "type": "integer"
+                },
+                "deployHeight": {
+                    "type": "integer"
+                },
+                "historyCount": {
+                    "type": "integer"
+                },
+                "holdersCount": {
+                    "type": "integer"
+                },
+                "inscriptionId": {
+                    "type": "string"
+                },
+                "inscriptionNumber": {
+                    "type": "integer"
+                },
+                "inscriptionNumberEnd": {
+                    "type": "integer"
+                },
+                "inscriptionNumberStart": {
+                    "type": "integer"
+                },
+                "limit": {
+                    "type": "string"
+                },
+                "max": {
+                    "type": "string"
+                },
+                "mintTimes": {
+                    "type": "integer"
+                },
+                "minted": {
+                    "type": "string"
+                },
+                "ticker": {
+                    "type": "string"
+                },
+                "totalMinted": {
+                    "type": "string"
+                },
+                "txid": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.BRC20TickerStatusInfoOfAddressResp": {
+            "type": "object",
+            "properties": {
+                "availableBalance": {
+                    "type": "string"
+                },
+                "availableBalanceSafe": {
+                    "type": "string"
+                },
+                "availableBalanceUnSafe": {
+                    "type": "string"
+                },
+                "historyCount": {
+                    "type": "integer"
+                },
+                "historyInscriptions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.InscriptionBRC20TickInfoResp"
+                    }
+                },
+                "overallBalance": {
+                    "type": "string"
+                },
+                "ticker": {
+                    "type": "string"
+                },
+                "transferableBalance": {
+                    "type": "string"
+                },
+                "transferableCount": {
+                    "type": "integer"
+                },
+                "transferableInscriptions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.InscriptionBRC20TickInfoResp"
+                    }
+                }
+            }
+        },
+        "model.BRC20TickerStatusResp": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.BRC20TickerStatusInfo"
+                    }
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "start": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.BRC20TokenSummaryInfo": {
+            "type": "object",
+            "properties": {
+                "availableBalance": {
+                    "type": "string"
+                },
+                "availableBalanceSafe": {
+                    "type": "string"
+                },
+                "availableBalanceUnSafe": {
+                    "type": "string"
+                },
+                "decimal": {
+                    "type": "integer"
+                },
+                "overallBalance": {
+                    "type": "string"
+                },
+                "ticker": {
+                    "type": "string"
+                },
+                "transferableBalance": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.BRC20TokenSummaryResp": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.BRC20TokenSummaryInfo"
+                    }
+                },
+                "height": {
+                    "description": "synced block height",
+                    "type": "integer"
+                },
+                "start": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.InscriptionBRC20InfoResp": {
+            "type": "object",
+            "properties": {
+                "amt": {
+                    "type": "string"
+                },
+                "decimal": {
+                    "type": "string"
+                },
+                "lim": {
+                    "type": "string"
+                },
+                "max": {
+                    "type": "string"
+                },
+                "minted": {
+                    "type": "string"
+                },
+                "op": {
+                    "type": "string"
+                },
+                "tick": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.InscriptionBRC20ModuleSwapCommitContent": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SwapFunctionData"
+                    }
+                },
+                "gas_price": {
+                    "type": "string"
+                },
+                "module": {
+                    "type": "string"
+                },
+                "op": {
+                    "type": "string"
+                },
+                "p": {
+                    "type": "string"
+                },
+                "parent": {
+                    "type": "string"
+                },
+                "quit": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.InscriptionBRC20TickInfoResp": {
+            "type": "object",
+            "properties": {
+                "confirmations": {
+                    "type": "integer"
+                },
+                "data": {
+                    "type": "object",
+                    "$ref": "#/definitions/model.InscriptionBRC20InfoResp"
+                },
+                "inscriptionId": {
+                    "type": "string"
+                },
+                "inscriptionNumber": {
+                    "type": "integer"
+                },
+                "satoshi": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.InscriptionContentForCheckResp": {
+            "type": "object",
+            "properties": {
+                "inscriptionId": {
+                    "type": "string"
+                },
+                "inscriptionName": {
+                    "type": "string"
+                },
+                "inscriptionNameHex": {
+                    "type": "string"
+                },
+                "inscriptionNumber": {
+                    "type": "integer"
+                },
+                "inscriptionType": {
+                    "type": "string"
+                },
+                "timestamp": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.InscriptionResp": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "description": "Address of the current output",
+                    "type": "string"
+                },
+                "brc20": {
+                    "description": "BRC20 information, included only for valid transfers",
+                    "type": "object",
+                    "$ref": "#/definitions/model.InscriptionBRC20InfoResp"
+                },
+                "contentBody": {
+                    "type": "string"
+                },
+                "contentLength": {
+                    "type": "integer"
+                },
+                "contentType": {
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "object",
+                    "$ref": "#/definitions/model.InscriptionContentForCheckResp"
+                },
+                "height": {
+                    "description": "Height at which the inscription was packed",
+                    "type": "integer"
+                },
+                "inSatoshi": {
+                    "description": "Total input amount in the GenesisTx",
+                    "type": "integer"
+                },
+                "inscriptionId": {
+                    "description": "Current inscription ID",
+                    "type": "string"
+                },
+                "inscriptionIndex": {
+                    "description": "Current inscription index, indicating the sequence of repetition, 0 for first occurrence",
+                    "type": "integer"
+                },
+                "inscriptionNumber": {
+                    "description": "Current inscription number",
+                    "type": "integer"
+                },
+                "offset": {
+                    "description": "Satoshi offset in utxo",
+                    "type": "integer"
+                },
+                "outSatoshi": {
+                    "description": "Total output amount in the GenesisTx",
+                    "type": "integer"
+                },
+                "timestamp": {
+                    "description": "Block timestamp",
+                    "type": "integer"
+                },
+                "utxo": {
+                    "description": "UTXO results",
+                    "type": "object",
+                    "$ref": "#/definitions/model.TxStandardOutResp"
+                }
+            }
+        },
+        "model.NFTData": {
+            "type": "object",
+            "properties": {
+                "inscriptionId": {
+                    "description": "Current inscription ID",
+                    "type": "string"
+                },
+                "inscriptionNumber": {
+                    "description": "Current inscription number",
+                    "type": "integer"
+                },
+                "isBRC20": {
+                    "description": "Indicates if the NFT is BRC20",
+                    "type": "boolean"
+                },
+                "moved": {
+                    "description": "Indicates if the NFT has been moved after creation",
+                    "type": "boolean"
+                },
+                "offset": {
+                    "description": "Satoshi offset in utxo",
+                    "type": "integer"
+                },
+                "sequence": {
+                    "description": "If sequence \u003e 0, the NFT has been moved after creation",
+                    "type": "integer"
+                }
+            }
+        },
+        "model.Response": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "integer"
+                },
+                "data": {
+                    "type": "object"
+                },
+                "msg": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.SwapFunctionData": {
+            "type": "object",
+            "properties": {
+                "addr": {
+                    "type": "string"
+                },
+                "func": {
+                    "type": "string"
+                },
+                "params": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "sig": {
+                    "type": "string"
+                },
+                "ts": {
+                    "type": "integer"
+                }
+            }
+        },
+        "model.SwapFunctionResultCheckState": {
+            "type": "object",
+            "properties": {
+                "commit": {
+                    "type": "string"
+                },
+                "function": {
+                    "type": "integer"
+                },
+                "pools": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SwapFunctionResultCheckStateForPool"
+                    }
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SwapFunctionResultCheckStateForUser"
+                    }
+                }
+            }
+        },
+        "model.SwapFunctionResultCheckStateForPool": {
+            "type": "object",
+            "properties": {
+                "lp": {
+                    "type": "string"
+                },
+                "pair": {
+                    "type": "string"
+                },
+                "reserve0": {
+                    "type": "string"
+                },
+                "reserve1": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.SwapFunctionResultCheckStateForUser": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "balance": {
+                    "type": "string"
+                },
+                "tick": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.TxStandardOutResp": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "description": "Address of the current output",
+                    "type": "string"
+                },
+                "codeType": {
+                    "description": "Script type of the current output: 0: None, 1: FT, 2: Unique, 3: NFT, 4: CodeType_P2PK, 5: CodeType_P2PKH, 6: CodeType_P2SH, 7: CodeType_P2WPKH, 8: CodeType_P2WSH, 9: CodeType_P2TR",
+                    "type": "integer"
+                },
+                "height": {
+                    "description": "Block height where the transaction is packed",
+                    "type": "integer"
+                },
+                "idx": {
+                    "description": "Sequence number in the block of the spent txid",
+                    "type": "integer"
+                },
+                "inscriptions": {
+                    "description": "Positions of all inscriptions on the utxo",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.NFTData"
+                    }
+                },
+                "isOpInRBF": {
+                    "description": "Indicates if the current transaction is an RBF (Replace-By-Fee) transaction",
+                    "type": "boolean"
+                },
+                "isSpent": {
+                    "description": "Indicates if the current transaction has been spent in the mempool",
+                    "type": "boolean"
+                },
+                "satoshi": {
+                    "description": "Satoshi of the current output",
+                    "type": "integer"
+                },
+                "scriptPk": {
+                    "description": "Lock script of the current output",
+                    "type": "string"
+                },
+                "scriptType": {
+                    "description": "Script type of the current output",
+                    "type": "string"
+                },
+                "txid": {
+                    "description": "Current txid",
+                    "type": "string"
+                },
+                "vout": {
+                    "description": "Current output sequence number",
+                    "type": "integer"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

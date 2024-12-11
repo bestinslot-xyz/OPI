@@ -5,3 +5,4 @@ drop table if exists brc20_event_types;
 drop table if exists brc20_tickers;
 drop table if exists brc20_cumulative_event_hashes;
 drop table if exists brc20_indexer_version;
+drop table if exists brc20_module_withdrawals;
