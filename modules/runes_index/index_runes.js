@@ -421,6 +421,19 @@ async function main_index() {
           timestamp = new Date(timestamp * 1000)
           let turbo = parts[16] == 'true'
 
+          if (terms_offset_l != null && parseInt(terms_offset_l) >= (2**53)) {
+            terms_offset_l = 2**53 - 1
+          }
+          if (terms_offset_h != null && parseInt(terms_offset_h) >= (2**53)) {
+            terms_offset_h = 2**53 - 1
+          }
+          if (terms_height_l != null && parseInt(terms_height_l) >= (2**53)) {
+            terms_height_l = 2**53 - 1
+          }
+          if (terms_height_h != null && parseInt(terms_height_h) >= (2**53)) {
+            terms_height_h = 2**53 - 1
+          }
+
           running_promises.push(execute_on_db(sql_query_id_to_entry_insert, [rune_id, rune_block, burned, divisibility, etching
             , terms_amount, terms_cap, terms_height_l, terms_height_h, terms_offset_l, terms_offset_h
             , mints, number, premine, rune_name, spacers, symbol, timestamp, turbo, block_height, block_height]))
