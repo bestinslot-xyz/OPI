@@ -545,7 +545,7 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
   set_transfer_as_used(inscription_id)
 
   if event["spent_pkScript"] != "6a09425243323050524f47":
-    print("Invalid spent_pkScript for call transfer")
+    print("Invalid spent_pkScript for deploy transfer")
     return
 
   result = brc20_prog_client.add_tx_to_block(
