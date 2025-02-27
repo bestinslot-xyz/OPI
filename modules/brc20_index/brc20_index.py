@@ -699,12 +699,14 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
       if js["op"] == 'deploy' and old_satpoint == '':
         brc20_prog_deploy_inscribe(block_height, inscr_id, new_pkScript)
       elif js["op"] == 'deploy' and old_satpoint != '':
+        if is_used_or_invalid(inscr_id): continue
         tx_result = brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, brc20_tx_idx)
         if tx_result is not None:
           brc20_tx_idx += 1
       elif js["op"] == 'call' and old_satpoint == '':
         brc20_prog_call_inscribe(block_height, inscr_id, new_pkScript)
       elif js["op"] == 'call' and old_satpoint != '':
+        if is_used_or_invalid(inscr_id): continue
         tx_result = brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, brc20_tx_idx)
         if tx_result is not None:
           brc20_tx_idx += 1
