@@ -45,7 +45,7 @@ def add_tx_to_block(
     timestamp: int,
     block_hash: str,
     tx_idx: int,
-) -> str | bool | None:
+) -> str | None:
     print("Adding transaction to BRC20PROG")
 
     if contract_address is None:
@@ -73,7 +73,7 @@ def add_tx_to_block(
         )
     if "error" in tx_result:
         print(tx_result["error"])
-        return False
+        return None
     return tx_result["result"]["contractAddress"]
 
 
