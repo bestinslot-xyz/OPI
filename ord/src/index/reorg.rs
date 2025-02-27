@@ -20,8 +20,8 @@ impl fmt::Display for ReorgError {
 impl std::error::Error for ReorgError {}
 
 const MAX_SAVEPOINTS: u32 = 2;
-const SAVEPOINT_INTERVAL: u32 = 10;
-const CHAIN_TIP_DISTANCE: u32 = 21;
+const SAVEPOINT_INTERVAL: u32 = 25;
+const CHAIN_TIP_DISTANCE: u32 = 51;
 
 pub(crate) struct Reorg {}
 

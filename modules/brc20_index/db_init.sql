@@ -74,6 +74,12 @@ INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('m
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('transfer-inscribe', 2);
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('transfer-transfer', 3);
 
+INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-deploy-inscribe', 4);
+INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-deploy-transfer', 5);
+
+INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-call-inscribe', 6);
+INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-call-transfer', 7);
+
 CREATE TABLE public.brc20_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,

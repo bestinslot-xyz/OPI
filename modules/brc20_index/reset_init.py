@@ -30,6 +30,10 @@ if init_env:
   REPORT_RETRIES="10"
   REPORT_NAME="opi_brc20_index"
   CREATE_EXTRA_TABLES="true"
+  BRC20_PROG_ENABLED="true"
+  BRC20_PROG_RPC_URL="http://localhost:18545"
+  BRC20_PROG_BALANCE_SERVER_URL="http://localhost:18546"
+
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
@@ -112,6 +116,18 @@ if init_env:
   res = input("Create extra tables for faster queries (Default: true) set to true for creating brc20_current_balances and brc20_unused_tx_inscrs tables: ")
   if res != '':
     CREATE_EXTRA_TABLES = res
+
+  res = input("Enable BRC20 programmable module (Default: false): ")
+  if res != '':
+    BRC20_PROG_ENABLED = res
+  if BRC20_PROG_ENABLED == 'true':
+    res = input("BRC20 programmable module RPC URL (Default: http://localhost:18545): ")
+    if res != '':
+      BRC20_PROG_RPC_URL = res
+    res = input("BRC20 programmable module balance server URL (Default: http://localhost:18546): ")
+    if res != '':
+      BRC20_PROG_BALANCE_SERVER_URL = res
+
   f = open('.env', 'w')
   f.write('DB_USER="' + DB_USER + '"\n')
   f.write('DB_HOST="' + DB_HOST + '"\n')
@@ -129,6 +145,9 @@ if init_env:
   f.write('REPORT_RETRIES="' + REPORT_RETRIES + '"\n')
   f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
   f.write('CREATE_EXTRA_TABLES="' + CREATE_EXTRA_TABLES + '"\n')
+  f.write('BRC20_PROG_ENABLED="' + BRC20_PROG_ENABLED + '"\n')
+  f.write('BRC20_PROG_RPC_URL="' + BRC20_PROG_RPC_URL + '"\n')
+  f.write('BRC20_PROG_BALANCE_SERVER_URL="' + BRC20_PROG_BALANCE_SERVER_URL + '"\n')
   f.close()
 
 res = input("Are you sure you want to initialise/reset the brc20 database? (y/n) ")
@@ -190,6 +209,17 @@ if create_extra_tables:
   for sql in sqls:
     if sql.strip() != '':
       cur.execute(sql)
+
+if BRC20_PROG_ENABLED:
+  sqls = open('brc20_prog/db_reset_prog.sql', 'r').read().split(';')
+  for sql in sqls:
+    if sql.strip() != '':
+      cur.execute(sql)
+  sqls = open('brc20_prog/db_init_prog.sql', 'r').read().split(';')
+  for sql in sqls:
+    if sql.strip() != '':
+      cur.execute(sql)
+
 
 ## close db
 cur.close()

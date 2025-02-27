@@ -66,7 +66,7 @@ pub struct Options {
   pub(crate) signet: bool,
   #[arg(long, short, help = "Use testnet. Equivalent to `--chain testnet`.")]
   pub(crate) testnet: bool,
-  #[arg(long, short, help = "Use testnet4. Equivalent to `--chain testnet4`.")]
+  #[arg(long, help = "Use testnet4. Equivalent to `--chain testnet4`.")]
   pub(crate) testnet4: bool,
 }
 

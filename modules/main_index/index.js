@@ -79,11 +79,11 @@ const first_inscription_heights = {
 const first_inscription_height = first_inscription_heights[network_type]
 const fast_index_below = first_inscription_height + 7000
 
-const DB_VERSION = 6
+const DB_VERSION = 7
 const RECOVERABLE_DB_VERSIONS = []
 // eslint-disable-next-line no-unused-vars
 const INDEXER_VERSION = 'OPI V0.4.0'
-const ORD_VERSION = 'opi-ord 0.14.0-4'
+const ORD_VERSION = 'opi-ord 0.14.0-5'
 
 function delay(sec) {
   return new Promise(resolve => setTimeout(resolve, sec * 1000));
@@ -178,6 +178,10 @@ async function main_index() {
     if (ord_last_block_height < fast_index_below) { // a random point where blocks start to get more inscription
       ord_end_block_height = ord_last_block_height + 1000
     }
+    if (ord_end_block_height > 59700) {
+      ord_end_block_height = ord_last_block_height + 10
+    }
+    ord_end_block_height = Math.ceil(ord_end_block_height / 10.0) * 10
 
     let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""
 
@@ -473,7 +477,8 @@ async function main_index() {
       let block_height = parseInt(parts[1])
       if (block_height < first_inscription_height) { continue }
       let blockhash = parts[3].trim()
-      await db_pool.query(`INSERT into block_hashes (block_height, block_hash) values ($1, $2) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash])
+      let block_timestamp = new Date(parseInt(parts[4]) * 1000)
+      await db_pool.query(`INSERT into block_hashes (block_height, block_hash, block_timestamp) values ($1, $2, $3) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash, block_timestamp])
     }
     
     let ord_sql_tm = +(new Date()) - ord_sql_st_tm
