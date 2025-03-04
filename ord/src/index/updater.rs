@@ -775,6 +775,10 @@ impl<'index> Updater<'_> {
     Index::increment_statistic(&wtx, Statistic::Commits, 1)?;
     wtx.commit()?;
 
+    // Commit twice since due to a bug redb will only reuse pages freed in the
+    // transaction before last.
+    self.index.begin_write()?.commit()?;
+
     Reorg::update_savepoints(self.index, self.height)?;
 
     Ok(())
