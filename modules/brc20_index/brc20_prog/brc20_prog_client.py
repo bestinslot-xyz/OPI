@@ -35,7 +35,66 @@ def initialise(
         },
     )
 
-    return "error" not in result
+    if "error" in result:
+        raise Exception(result["error"])
+
+    commit_to_database()
+
+
+def deposit(
+    to_pkscript: str,
+    ticker: str,
+    timestamp: int,
+    block_hash: str,
+    tx_idx: int,
+    amount: int,
+) -> bool:
+    print("Depositing to BRC20PROG")
+
+    result = jsonrpc_call(
+        "brc20_deposit",
+        params={
+            "to_pkscript": to_pkscript,
+            "ticker": ticker,
+            "timestamp": timestamp,
+            "hash": block_hash,
+            "tx_idx": tx_idx,
+            "amount": str(amount),
+        },
+    )
+
+    if "error" in result:
+        raise Exception(result["error"])
+    return bool(result["result"])
+
+
+def withdraw(
+    from_pkscript: str,
+    ticker: str,
+    timestamp: int,
+    block_hash: str,
+    tx_idx: int,
+    amount: int,
+) -> bool:
+    print("Withdrawing from BRC20PROG")
+
+    result = jsonrpc_call(
+        "brc20_withdraw",
+        params={
+            "from_pkscript": from_pkscript,
+            "ticker": ticker,
+            "timestamp": timestamp,
+            "hash": block_hash,
+            "tx_idx": tx_idx,
+            "amount": str(amount),
+        },
+    )
+
+    print(result)
+
+    if "error" in result:
+        raise Exception(result["error"])
+    return bool(result["result"])
 
 
 def add_tx_to_block(
@@ -72,9 +131,10 @@ def add_tx_to_block(
             },
         )
     if "error" in tx_result:
-        print(tx_result["error"])
-        return None
-    return tx_result["result"]["contractAddress"]
+        raise Exception(tx_result["error"])
+    if tx_result["result"]["contractAddress"] is None:
+        return tx_result["result"]["status"] == "0x1"
+    tx_result["result"]["contractAddress"]
 
 
 def finalise_block(block_hash: str, timestamp: int, block_tx_count: int):
@@ -89,7 +149,8 @@ def finalise_block(block_hash: str, timestamp: int, block_tx_count: int):
         },
     )
 
-    return "error" not in result
+    if "error" in result:
+        raise Exception(result["error"])
 
 
 def get_block_height():
@@ -98,17 +159,20 @@ def get_block_height():
 
 def reorg(block_height):
     result = jsonrpc_call("brc20_reorg", {"latest_valid_block_number": block_height})
-    return "error" not in result
+    if "error" in result:
+        raise Exception(result["error"])
 
 
 def clear_caches():
     result = jsonrpc_call("brc20_clearCaches", {})
-    return "error" not in result
+    if "error" in result:
+        raise Exception(result["error"])
 
 
 def commit_to_database():
     result = jsonrpc_call("brc20_commitToDatabase", {})
-    return "error" not in result
+    if "error" in result:
+        raise Exception(result["error"])
 
 
 if __name__ == "__main__":

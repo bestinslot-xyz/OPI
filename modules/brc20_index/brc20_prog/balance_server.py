@@ -3,7 +3,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 import os
 import threading
-import json
 
 brc20_prog_balance_url = os.getenv("BRC20_PROG_BALANCE_URL") or "http://localhost:18546"
 
@@ -25,14 +24,8 @@ class BalanceHandler(BaseHTTPRequestHandler):
         self.end_headers()
         params = parse_qs(urlparse(self.path).query)
         self.wfile.write(
-            json.dumps(
-                {
-                    "address": params["address"][0],
-                    "ticker": params["ticker"][0],
-                    "balance": self.brc20_balance_function(
-                        params["address"][0], params["ticker"][0]
-                    ),
-                }
+            str(
+                self.brc20_balance_function(params["address"][0], params["ticker"][0])
             ).encode("utf-8")
         )
 
@@ -66,6 +59,6 @@ def stop_server():
 
 
 if __name__ == "__main__":
-    start_server(lambda address, ticker: 0)
+    start_server(lambda address, ticker: abs(hash(address + ticker)) % 100)
     input("Press enter to stop server\n")
     stop_server()

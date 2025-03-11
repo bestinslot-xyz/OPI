@@ -22,6 +22,7 @@ INDEXER_VERSION = "opi-brc20-full-node v0.4.1"
 RECOVERABLE_DB_VERSIONS = [ 4 ]
 DB_VERSION = 5
 EVENT_HASH_VERSION = 2
+BRC20_PROG_OP_RETURN_PKSCRIPT = "6a09425243323050524f47" # OP_RETURN 0x4252323050524f47 "BRC20PROG"
 
 SELF_MINT_ENABLE_HEIGHT = 837090
 
@@ -460,7 +461,7 @@ def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wall
   
   save_event(inscription_id, event, "transfer-inscribe")
 
-def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent_wallet, tick, original_tick, amount, using_tx_id):
+def transfer_transfer_normal(block_height, block_hash, inscription_id, spent_pkScript, spent_wallet, tick, original_tick, amount, block_timestamp, using_tx_id, brc20_prog_tx_idx):
   global in_commit, block_events_str, event_types
 
   inscribe_event = get_event(inscription_id, "transfer-inscribe")
@@ -491,8 +492,20 @@ def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent
   last_balance["available_balance"] += amount
   brc20_historic_balances_insert_cache.append((spent_pkScript, spent_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id)) ## negated to make a unique event_id
   
+  if spent_pkScript == BRC20_PROG_OP_RETURN_PKSCRIPT:
+    brc20_prog_client.deposit(
+      to_pkscript=source_pkScript,
+      ticker=tick,
+      timestamp=block_timestamp,
+      block_hash=block_hash,
+      tx_idx=brc20_prog_tx_idx,
+      amount=amount
+    )
+    return True
   if spent_pkScript == '6a':
     brc20_tickers_burned_supply_update_cache[tick] = brc20_tickers_burned_supply_update_cache.get(tick, 0) + amount
+  return False
+
 
 def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, original_tick, amount, using_tx_id):
   global in_commit, block_events_str, event_types
@@ -544,7 +557,7 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
   brc20_events_insert_cache.append((event_id, event_types["brc20prog-deploy-transfer"], block_height, inscription_id, json.dumps(event)))
   set_transfer_as_used(inscription_id)
 
-  if event["spent_pkScript"] != "6a09425243323050524f47":
+  if event["spent_pkScript"] != BRC20_PROG_OP_RETURN_PKSCRIPT:
     print("Invalid spent_pkScript for deploy transfer")
     return
 
@@ -587,7 +600,7 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
   brc20_events_insert_cache.append((event_id, event_types["brc20prog-call-transfer"], block_height, inscription_id, json.dumps(event)))
   set_transfer_as_used(inscription_id)
 
-  if event["spent_pkScript"] != "6a09425243323050524f47":
+  if event["spent_pkScript"] != BRC20_PROG_OP_RETURN_PKSCRIPT:
     print("Invalid spent_pkScript for call transfer")
     return
 
@@ -613,7 +626,6 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
 
   if result is not None:
     return True
-
 
 
 def update_event_hashes(block_height):
@@ -670,7 +682,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
   brc20_historic_balances_insert_cache = []
   
   idx = 0
-  brc20_tx_idx = 0
+  brc20_prog_tx_idx = 0
   for transfer in transfers:
     idx += 1
     if idx % 100 == 0:
@@ -678,7 +690,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
 
     tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, content_type, parent_id = transfer
     if parent_id is None: parent_id = ""
-    
+
     if sent_as_fee and old_satpoint == '': continue ## inscribed as fee
 
     if content_type is None: continue ## invalid inscription
@@ -700,16 +712,16 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
         brc20_prog_deploy_inscribe(block_height, inscr_id, new_pkScript)
       elif js["op"] == 'deploy' and old_satpoint != '':
         if is_used_or_invalid(inscr_id): continue
-        tx_result = brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, brc20_tx_idx)
+        tx_result = brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, brc20_prog_tx_idx)
         if tx_result is not None:
-          brc20_tx_idx += 1
+          brc20_prog_tx_idx += 1
       elif js["op"] == 'call' and old_satpoint == '':
         brc20_prog_call_inscribe(block_height, inscr_id, new_pkScript)
       elif js["op"] == 'call' and old_satpoint != '':
         if is_used_or_invalid(inscr_id): continue
-        tx_result = brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, brc20_tx_idx)
+        tx_result = brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, brc20_prog_tx_idx)
         if tx_result is not None:
-          brc20_tx_idx += 1
+          brc20_prog_tx_idx += 1
       continue
 
     if "tick" not in js: continue ## invalid inscription
@@ -795,11 +807,15 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
       else:
         if is_used_or_invalid(inscr_id): continue ## already used or invalid
         if sent_as_fee: transfer_transfer_spend_to_fee(block_height, inscr_id, tick, original_tick, amount, tx_id)
-        else: transfer_transfer_normal(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, tx_id)
+        else: 
+          brc20_prog_deposit_executed = transfer_transfer_normal(block_height, current_block_hash, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, block_timestamp, tx_id, brc20_prog_tx_idx)
+          if brc20_prog_deposit_executed:
+            brc20_prog_tx_idx += 1
+
 
   if block_height != 0:
-    brc20_prog_client.finalise_block(current_block_hash, block_timestamp, brc20_tx_idx)
-
+    brc20_prog_client.finalise_block(current_block_hash, block_timestamp, brc20_prog_tx_idx)
+  
   brc20_prog_client.commit_to_database()
 
   cur.execute("BEGIN;")
@@ -842,7 +858,7 @@ def check_for_reorg():
   last_block = cur.fetchone()
   if last_block is None:
     if brc20_prog_block_height > 0:
-      print("BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!!")
+      print("BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!! - brc20_prog_block_height: " + str(brc20_prog_block_height) + " - last_block: None")
       return 0
     return None ## database is empty
 
@@ -852,7 +868,7 @@ def check_for_reorg():
   if last_block_ord[1] == last_block[1] and brc20_prog_block_height == last_block[0]: return None ## last block hashes are the same, no reorg and heights match
 
   if brc20_prog_block_height != last_block[0]:
-    print("BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!!")
+    print("BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!! - brc20_prog_block_height: " + str(brc20_prog_block_height) + " - last_block: " + str(last_block[0]))
     return min(brc20_prog_block_height, last_block[0])
 
   print("REORG DETECTED!!")
@@ -1309,6 +1325,7 @@ def check_extra_tables():
     traceback.print_exc()
     return
 
+brc20_prog_client.clear_caches()
 check_if_there_is_residue_from_last_run()
 if create_extra_tables:
   check_if_there_is_residue_on_extra_tables_from_last_run()
