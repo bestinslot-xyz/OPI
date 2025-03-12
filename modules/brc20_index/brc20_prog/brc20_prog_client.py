@@ -91,7 +91,7 @@ class BRC20ProgClient:
             raise Exception(result["error"])
 
         self.current_block_tx_idx += 1
-        return bool(result["result"])
+        return bool(result["result"]["status"] == "0x1")
 
     def withdraw(
         self,
@@ -122,7 +122,7 @@ class BRC20ProgClient:
             raise Exception(result["error"])
 
         self.current_block_tx_idx += 1
-        return bool(result["result"])
+        return bool(result["result"]["status"] == "0x1")
 
     def add_tx_to_block(
         self,
