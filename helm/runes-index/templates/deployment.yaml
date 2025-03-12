@@ -139,7 +139,7 @@ spec:
       volumes:
         - name: opi-runes-index
           persistentVolumeClaim:
-            claimName: opi-runes-index-pvc
+            claimName: opi-runes-index
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
