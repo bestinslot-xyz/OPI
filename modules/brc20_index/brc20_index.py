@@ -8,6 +8,7 @@ import psycopg2
 import hashlib
 
 from brc20_prog.brc20_prog_client import BRC20ProgClient
+from brc20_prog.balance_server import start_server, stop_server
 
 if not os.path.isfile('.env'):
   print(".env file not found, please run \"python3 reset_init.py\" first")
@@ -1410,6 +1411,7 @@ if brc20_prog_enabled:
   cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = 0;''')
   current_block_hash, block_timestamp = cur.fetchone()
   brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()))
+  start_server(get_last_overall_balance)
   reorg_height = check_for_reorg()
   if reorg_height is not None:
     print("Rolling back to ", reorg_height)
@@ -1452,6 +1454,7 @@ while True:
       last_report_height = current_block
   except KeyboardInterrupt:
     brc20_prog_client.clear_caches()
+    stop_server()
     traceback.print_exc()
     if in_commit: ## rollback commit if any
       print("rolling back")
