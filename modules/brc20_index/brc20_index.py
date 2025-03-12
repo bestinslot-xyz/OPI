@@ -1408,7 +1408,8 @@ last_report_height = 0
 # initialise genesis on brc20_prog
 if brc20_prog_enabled:
   cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = 0;''')
-  current_block_hash, block_timestamp = cur.fetchone()  brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()))
+  current_block_hash, block_timestamp = cur.fetchone()
+  brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()))
   reorg_height = check_for_reorg()
   if reorg_height is not None:
     print("Rolling back to ", reorg_height)
