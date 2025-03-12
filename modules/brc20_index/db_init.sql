@@ -80,6 +80,9 @@ INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('b
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-call-inscribe', 6);
 INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-call-transfer', 7);
 
+INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-withdraw-inscribe', 8);
+INSERT INTO public.brc20_event_types (event_type_name, event_type_id) VALUES ('brc20prog-withdraw-transfer', 9);
+
 CREATE TABLE public.brc20_indexer_version (
 	id bigserial NOT NULL,
 	indexer_version text NOT NULL,
