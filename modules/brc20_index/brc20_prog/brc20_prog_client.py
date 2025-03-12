@@ -3,7 +3,9 @@
 import os
 import requests
 from typing import Dict
+from dotenv import load_dotenv
 
+load_dotenv()
 brc20_prog_enabled = (os.getenv("BRC20_PROG_ENABLED") or "false") == "true"
 brc20_prog_rpc_url = os.getenv("BRC20_PROG_RPC_URL") or "http://localhost:18545"
 
