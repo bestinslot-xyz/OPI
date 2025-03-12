@@ -651,6 +651,8 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
     cur.execute('''INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, current_block_hash))
     return
   
+  brc20_prog_client.clear_caches() # Clearing caches helps reduce memory usage and clears residue from previous blocks
+
   cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type, onti.parent_id
                               FROM ord_transfers ot
                               LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
@@ -1338,7 +1340,11 @@ last_report_height = 0
 cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = 0;''')
 current_block_hash, block_timestamp = cur.fetchone()
 brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()))
-# reorg_fix(71715);
+reorg_height = check_for_reorg()
+if reorg_height is not None:
+  print("Rolling back to ", reorg_height)
+  reorg_fix(reorg_height)
+  print("Rolled back to " + str(reorg_height))
 
 while True:
   check_if_there_is_residue_from_last_run()
