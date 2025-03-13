@@ -30,7 +30,7 @@ if init_env:
   REPORT_RETRIES="10"
   REPORT_NAME="opi_brc20_index"
   CREATE_EXTRA_TABLES="true"
-  BRC20_PROG_ENABLED="true"
+  BRC20_PROG_ENABLED="false"
   BRC20_PROG_RPC_URL="http://localhost:18545"
   BRC20_PROG_BALANCE_SERVER_URL="http://localhost:18546"
 
