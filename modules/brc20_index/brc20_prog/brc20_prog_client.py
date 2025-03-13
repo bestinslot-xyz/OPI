@@ -3,9 +3,7 @@
 import os
 import requests
 from typing import Dict
-from dotenv import load_dotenv
 
-load_dotenv()
 brc20_prog_enabled = (os.getenv("BRC20_PROG_ENABLED") or "false") == "true"
 brc20_prog_rpc_url = os.getenv("BRC20_PROG_RPC_URL") or "http://localhost:18545"
 
@@ -163,7 +161,6 @@ class BRC20ProgClient:
 
         if "error" in tx_result:
             raise Exception(tx_result["error"])
-        
 
         self.current_block_tx_idx += 1
         if tx_result["result"]["contractAddress"] is None:
@@ -187,9 +184,17 @@ class BRC20ProgClient:
 
         if "error" in result:
             raise Exception(result["error"])
-        
+
         self.reset_current_block()
 
+    def get_block_hash(self, block_height: int):
+        if not brc20_prog_enabled:
+            return ""
+        result = jsonrpc_call("eth_getBlockByNumber", {"block": str(block_height)})
+        if "error" in result:
+            return None
+
+        return result["result"]["hash"]
 
     def get_block_height(self):
         if not brc20_prog_enabled:
@@ -198,13 +203,13 @@ class BRC20ProgClient:
 
     def reorg(self, block_height):
         if not brc20_prog_enabled:
-            return 
+            return
         result = jsonrpc_call(
             "brc20_reorg", {"latest_valid_block_number": block_height}
         )
         if "error" in result:
             raise Exception(result["error"])
-        
+
         self.reset_current_block()
 
     def clear_caches(self):
@@ -216,19 +221,17 @@ class BRC20ProgClient:
 
         self.reset_current_block()
 
-
     def commit_to_database(self):
         if not brc20_prog_enabled:
             return
         result = jsonrpc_call("brc20_commitToDatabase", {})
         if "error" in result:
             raise Exception(result["error"])
-        
+
     def reset_current_block(self):
         self.current_block_hash = ""
         self.current_block_timestamp = 0
         self.current_block_tx_idx = 0
-
 
 
 if __name__ == "__main__":

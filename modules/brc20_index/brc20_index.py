@@ -1,8 +1,11 @@
 # pip install python-dotenv
 # pip install psycopg2-binary
 
-import os, sys, requests
+## load env variables
 from dotenv import load_dotenv
+load_dotenv()
+
+import os, sys, requests
 import traceback, time, codecs, json
 import psycopg2
 import hashlib
@@ -35,8 +38,6 @@ DEC2LONG = psycopg2.extensions.new_type(
     lambda value, curs: int(value) if value is not None else None)
 psycopg2.extensions.register_type(DEC2LONG)
 
-## load env variables
-load_dotenv()
 db_user = os.getenv("DB_USER") or "postgres"
 db_host = os.getenv("DB_HOST") or "localhost"
 db_port = int(os.getenv("DB_PORT") or "5432")
@@ -309,9 +310,6 @@ def get_event_str(event, event_type, inscription_id):
 
 def get_sha256_hash(s):
   return hashlib.sha256(s.encode('utf-8')).hexdigest()
-
-
-
 
 
 ## caches
@@ -684,7 +682,6 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
     brc20_historic_balances_insert_cache.append((event["spent_pkScript"], None, ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id))
 
 
-
 def update_event_hashes(block_height):
   global block_events_str
   if len(block_events_str) > 0 and block_events_str[-1] == EVENT_SEPARATOR: block_events_str = block_events_str[:-1] ## remove last separator
@@ -726,8 +723,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
     cur.execute('''INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, current_block_hash))
     if block_height != 0:
       brc20_prog_client.finalise_block(current_block_hash, block_timestamp)
-      if block_height % 1000 == 0: # commit every 1000 blocks to increase performance
-        brc20_prog_client.commit_to_database()
+      brc20_prog_client.commit_to_database()
     return
   print("Transfer count: ", len(transfers))
 
@@ -923,38 +919,60 @@ def execute_batch_insert(sql_start, cache, batch_size):
 
 
 def check_for_reorg():
-  brc20_prog_block_height = brc20_prog_client.get_block_height()
-  cur.execute('select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;')
-  if cur.rowcount == 0 and brc20_prog_block_height == 0: return None ## nothing indexed yet
-  last_block = cur.fetchone()
-  if last_block is None:
-    if brc20_prog_block_height > 0:
-      print("BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!! - brc20_prog_block_height: " + str(brc20_prog_block_height) + " - last_block: None")
-      return 0
-    return None ## database is empty
+    global brc20_prog_enabled
 
-  cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (last_block[0],))
-  if cur_metaprotocol.rowcount == 0: return None ## probably main indexer is fixing hashes for reorg, will correct itself in next run
-  last_block_ord = cur_metaprotocol.fetchone()
-  if last_block_ord[1] == last_block[1] and brc20_prog_block_height == last_block[0]: return None ## last block hashes are the same, no reorg and heights match
+    brc20_prog_block_height = brc20_prog_client.get_block_height()
+    brc20_prog_block_hash = brc20_prog_client.get_block_hash(brc20_prog_block_height)
 
-  if brc20_prog_block_height != last_block[0]:
-    print("BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!! - brc20_prog_block_height: " + str(brc20_prog_block_height) + " - last_block: " + str(last_block[0]))
-    return min(brc20_prog_block_height, last_block[0])
-
-  print("REORG DETECTED!!")
-  cur.execute('select block_height, block_hash from brc20_block_hashes order by block_height desc limit 10;')
-  hashes = cur.fetchall() ## get last 10 hashes
-  for h in hashes:
-    cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (h[0],))
-    block = cur_metaprotocol.fetchone()
-    if block[1] == h[1]: ## found reorg height by a matching hash
-      print("REORG HEIGHT FOUND: " + str(h[0]))
-      return h[0]
+    cur.execute(
+        "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
+    )
+    if cur.rowcount == 0 and brc20_prog_block_height == 0:
+        return None  ## nothing indexed yet
+    last_block = cur.fetchone()
+    if last_block is None:
+        if brc20_prog_enabled and brc20_prog_block_height > 0:
+            print(
+                "BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!! - brc20_prog_block_height: "
+                + str(brc20_prog_block_height)
+                + " - last_block: None"
+            )
+            return 0
+        return None  ## database is empty
   
-  ## bigger than 10 block reorg is not supported by ord
-  print("CRITICAL ERROR!!")
-  sys.exit(1)
+    cur_metaprotocol.execute(
+        "select block_height, block_hash from block_hashes where block_height = %s;",
+        (last_block[0],),
+    )
+    if cur_metaprotocol.rowcount == 0:
+        return None  ## probably main indexer is fixing hashes for reorg, will correct itself in next run
+    last_block_ord = cur_metaprotocol.fetchone()
+    if last_block_ord[1] == last_block[1] and (
+        not brc20_prog_enabled or brc20_prog_client.get_block_hash(last_block[0])[2:] == last_block[1]
+    ):
+        return None  ## last block hashes are the same, no reorg and heights match
+
+    print("REORG DETECTED!!")
+    cur.execute(
+        "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 10;"
+    )
+    hashes = cur.fetchall()  ## get last 10 hashes
+    for h in hashes:
+        cur_metaprotocol.execute(
+            "select block_height, block_hash from block_hashes where block_height = %s;",
+            (h[0],),
+        )
+        block = cur_metaprotocol.fetchone()
+        brc20_prog_block_hash = brc20_prog_client.get_block_hash(h[0])
+        if block[1] == h[1] and (
+            not brc20_prog_enabled or brc20_prog_block_hash == h[1]
+        ):  ## found reorg height by a matching hash
+            print("REORG HEIGHT FOUND: " + str(h[0]))
+            return h[0]
+
+    ## bigger than 10 block reorg is not supported by ord
+    print("CRITICAL ERROR!! REORG LARGER THAN 10 BLOCKS DETECTED!!")
+    sys.exit(1)
 
 def reorg_fix(reorg_height):
   global event_types
