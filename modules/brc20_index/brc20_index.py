@@ -1426,6 +1426,17 @@ last_report_height = 0
 
 # initialise genesis on brc20_prog
 if brc20_prog_enabled:
+  # print latest block hash and height
+  cur.execute(
+      "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
+  )
+  if cur.rowcount == 0:
+    print("Latest block height: 0")
+  else:
+    row = cur.fetchone()
+    print("Latest block height: " + str(row[0]))
+    print("Latest block hash: " + row[1])
+
   cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = 0;''')
   current_block_hash, block_timestamp = cur.fetchone()
   brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()))
