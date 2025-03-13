@@ -963,7 +963,7 @@ def check_for_reorg():
             (h[0],),
         )
         block = cur_metaprotocol.fetchone()
-        brc20_prog_block_hash = brc20_prog_client.get_block_hash(h[0])
+        brc20_prog_block_hash = brc20_prog_client.get_block_hash(h[0])[2:]
         if block[1] == h[1] and (
             not brc20_prog_enabled or brc20_prog_block_hash == h[1]
         ):  ## found reorg height by a matching hash
