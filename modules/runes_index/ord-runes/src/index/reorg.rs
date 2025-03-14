@@ -42,7 +42,7 @@ pub(crate) struct Reorg {}
 impl Reorg {
   pub(crate) fn detect_reorg(block: &BlockData, height: u32, index: &Index) -> Result {
     let bitcoind_prev_blockhash = block.header.prev_blockhash;
-    let chain: &str = match index.options.chain() {
+    let chain: &str = match index.settings.chain() {
       Chain::Mainnet => "mainnet",
       Chain::Testnet4 => "testnet4",
       Chain::Regtest => "regtest",
@@ -105,7 +105,7 @@ impl Reorg {
       return Ok(());
     }
 
-    let chain: &str = match index.options.chain() {
+    let chain: &str = match index.settings.chain() {
       Chain::Mainnet => "mainnet",
       Chain::Testnet4 => "testnet4",
       Chain::Regtest => "regtest",
@@ -115,7 +115,7 @@ impl Reorg {
     let savepoint_interval: u32 = *SAVEPOINT_INTERVALS_BY_CHAIN.get(chain).unwrap();
     let chain_tip_distance: u32 = *CHAIN_TIP_DISTANCES_BY_CHAIN.get(chain).unwrap();
 
-    if (height < savepoint_interval || height % SAVEPOINT_INTERVAL == 0)
+    if (height < savepoint_interval || height % savepoint_interval == 0)
       && u32::try_from(
         index
           .settings
