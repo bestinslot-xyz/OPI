@@ -1,4 +1,5 @@
 use {super::*, updater::BlockData};
+use phf::phf_map;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ReorgError {
@@ -20,20 +21,42 @@ impl fmt::Display for ReorgError {
 impl std::error::Error for ReorgError {}
 
 const MAX_SAVEPOINTS: u32 = 2;
-const SAVEPOINT_INTERVAL: u32 = 10;
-const CHAIN_TIP_DISTANCE: u32 = 21;
+
+const SAVEPOINT_INTERVALS_BY_CHAIN: phf::Map<&'static str, u32> = phf_map! {
+  "mainnet" => 10,
+  "testnet4" => 50,
+  "testnet" => 50,
+  "regtest" => 10,
+  "signet" => 10,
+};
+
+const CHAIN_TIP_DISTANCES_BY_CHAIN: phf::Map<&'static str, u32> = phf_map! {
+  "mainnet" => 21,
+  "testnet4" => 101,
+  "testnet" => 101,
+  "regtest" => 21,
+  "signet" => 21,
+};
 
 pub(crate) struct Reorg {}
 
 impl Reorg {
   pub(crate) fn detect_reorg(block: &BlockData, height: u32, index: &Index) -> Result {
     let bitcoind_prev_blockhash = block.header.prev_blockhash;
+    let chain: &str = match index.options.chain() {
+      Chain::Mainnet => "mainnet",
+      Chain::Testnet4 => "testnet4",
+      Chain::Regtest => "regtest",
+      Chain::Signet => "signet",
+      Chain::Testnet => "testnet",
+    };
+    let savepoint_interval: u32 = *SAVEPOINT_INTERVALS_BY_CHAIN.get(chain).unwrap();
 
     match index.block_hash(height.checked_sub(1))? {
       Some(index_prev_blockhash) if index_prev_blockhash == bitcoind_prev_blockhash => Ok(()),
       Some(index_prev_blockhash) if index_prev_blockhash != bitcoind_prev_blockhash => {
         let max_recoverable_reorg_depth =
-          (MAX_SAVEPOINTS - 1) * SAVEPOINT_INTERVAL + height % SAVEPOINT_INTERVAL;
+          (MAX_SAVEPOINTS - 1) * savepoint_interval + height % savepoint_interval;
 
         for depth in 1..max_recoverable_reorg_depth {
           let index_block_hash = index.block_hash(height.checked_sub(depth))?;
@@ -83,7 +106,17 @@ impl Reorg {
       return Ok(());
     }
 
-    if (height < SAVEPOINT_INTERVAL || height % SAVEPOINT_INTERVAL == 0)
+    let chain: &str = match index.options.chain() {
+      Chain::Mainnet => "mainnet",
+      Chain::Testnet4 => "testnet4",
+      Chain::Regtest => "regtest",
+      Chain::Signet => "signet",
+      Chain::Testnet => "testnet",
+    };
+    let savepoint_interval: u32 = *SAVEPOINT_INTERVALS_BY_CHAIN.get(chain).unwrap();
+    let chain_tip_distance: u32 = *CHAIN_TIP_DISTANCES_BY_CHAIN.get(chain).unwrap();
+
+    if (height < savepoint_interval || height % savepoint_interval == 0)
       && u32::try_from(
         index
           .options
@@ -93,7 +126,7 @@ impl Reorg {
       )
       .unwrap()
       .saturating_sub(height)
-        <= CHAIN_TIP_DISTANCE
+        <= chain_tip_distance
     {
       let wtx = index.begin_write()?;
 
