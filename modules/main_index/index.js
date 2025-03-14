@@ -215,8 +215,13 @@ async function main_index() {
         console.error("ord version mismatch, please recompile ord via 'cargo build --release'.")
         process.exit(1)
       }    
-      await check_max_transfer_cnts()  
-      execSync(ord_index_cmd, {stdio: 'inherit'})
+      await check_max_transfer_cnts()
+      if(process.env.DEBUG){
+        execSync(`RUST_BACKTRACE=full RUST_LOG=trace ${ord_index_cmd}`, {stdio: 'inherit'})
+      }else {
+        execSync(`RUST_BACKTRACE=full ${ord_index_cmd}`, {stdio: 'inherit'})
+      }
+      
     }
     catch (err) {
       console.error("ERROR ON ORD!!!")

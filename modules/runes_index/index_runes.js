@@ -165,7 +165,11 @@ async function main_index() {
         console.error("ord-runes version mismatch, please recompile ord-runes via 'cargo build --release' in ord-runes folder.")
         process.exit(1)
       }
-      execSync(ord_index_cmd, {stdio: 'inherit'})
+      if(process.env.DEBUG){
+        execSync(`RUST_BACKTRACE=full RUST_LOG=trace ${ord_index_cmd}`, {stdio: 'inherit'})
+      }else {
+        execSync(`RUST_BACKTRACE=full ${ord_index_cmd}`, {stdio: 'inherit'})
+      }
     }
     catch (err) {
       console.error("ERROR ON ORD!!!")
