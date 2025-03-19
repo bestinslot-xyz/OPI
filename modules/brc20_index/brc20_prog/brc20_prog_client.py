@@ -41,6 +41,7 @@ class BRC20ProgClient:
         self,
         genesis_hash: str,
         genesis_timestamp: int,
+        genesis_height: int,
     ):
         if not brc20_prog_enabled:
             return
@@ -51,6 +52,7 @@ class BRC20ProgClient:
             params={
                 "genesis_hash": genesis_hash,
                 "genesis_timestamp": genesis_timestamp,
+                "genesis_height": genesis_height,
             },
         )
 
@@ -166,6 +168,15 @@ class BRC20ProgClient:
         if tx_result["result"]["contractAddress"] is None:
             return tx_result["result"]["status"] == "0x1"
         tx_result["result"]["contractAddress"]
+
+    def mine_blocks(self, block_height: int):
+        if not brc20_prog_enabled:
+            return
+        result = jsonrpc_call("brc20_mine", {"block_cnt": block_height, "timestamp": 0})
+        if "error" in result:
+            raise Exception(result["error"])
+
+        self.reset_current_block()
 
     def finalise_block(self, block_hash: str, timestamp: int):
         if not brc20_prog_enabled:

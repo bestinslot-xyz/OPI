@@ -1437,9 +1437,12 @@ if brc20_prog_enabled:
     print("Latest block height: " + str(row[0]))
     print("Latest block hash: " + row[1])
 
-  cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = 0;''')
+  if brc20_prog_client.get_block_height() == 0:
+    brc20_prog_client.mine_blocks(first_inscription_height - 1)
+
+  cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = %s;''', (first_inscription_height,))
   current_block_hash, block_timestamp = cur.fetchone()
-  brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()))
+  brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()), first_inscription_height)
   start_server(get_last_overall_balance)
   reorg_height = check_for_reorg()
   if reorg_height is not None:
