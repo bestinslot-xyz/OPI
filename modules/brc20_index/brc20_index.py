@@ -927,18 +927,15 @@ def check_for_reorg():
     cur.execute(
         "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
     )
-    if cur.rowcount == 0 and brc20_prog_block_height == 0:
+    if cur.rowcount == 0:
+      if not brc20_prog_enabled:
+        return None ## nothing indexed yet
+      if brc20_prog_block_height == first_inscription_height:
         return None  ## nothing indexed yet
+      else:
+        return first_inscription_height  ## brc20_prog is ahead of us
+
     last_block = cur.fetchone()
-    if last_block is None:
-        if brc20_prog_enabled and brc20_prog_block_height > 0:
-            print(
-                "BRC20_PROG BLOCK HEIGHT MISMATCH DETECTED!! - brc20_prog_block_height: "
-                + str(brc20_prog_block_height)
-                + " - last_block: None"
-            )
-            return 0
-        return None  ## database is empty
   
     cur_metaprotocol.execute(
         "select block_height, block_hash from block_hashes where block_height = %s;",
@@ -1438,11 +1435,13 @@ if brc20_prog_enabled:
     print("Latest block hash: " + row[1])
 
   if brc20_prog_client.get_block_height() == 0:
-    brc20_prog_client.mine_blocks(first_inscription_height - 1)
+    # Initial blocks are not indexed, so we need to mine the first blocks in brc20_prog
+    brc20_prog_client.mine_blocks(first_inscription_height)
 
   cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = %s;''', (first_inscription_height,))
   current_block_hash, block_timestamp = cur.fetchone()
   brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()), first_inscription_height)
+
   start_server(get_last_overall_balance)
   reorg_height = check_for_reorg()
   if reorg_height is not None:
