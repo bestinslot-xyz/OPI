@@ -980,6 +980,7 @@ def check_for_reorg():
     if brc20_prog_enabled:
       print("BRC20 PROG BLOCK HEIGHT: " + str(brc20_prog_last_block_height))
       print("BRC20 PROG BLOCK HASH: " + str(brc20_prog_last_block_hash))
+      stop_server()
     sys.exit(1)
 
 def reorg_fix(reorg_height):
