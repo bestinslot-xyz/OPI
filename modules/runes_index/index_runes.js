@@ -82,6 +82,15 @@ const first_rune_heights = {
   'signet': 173831,
   'regtest': 0,
 }
+
+const save_point_intervals = {
+  "mainnet": 10,
+  "testnet4": 50,
+  "testnet": 50,
+  "regtest": 10,
+  "signet": 10,
+}
+
 const first_rune_height = first_rune_heights[network_type]
 const fast_index_below = first_rune_height + 1000
 
@@ -133,6 +142,8 @@ async function main_index() {
 
     let ord_index_st_tm = +(new Date())
     let ord_end_block_height = ord_last_block_height + 500
+    const save_point_interval = save_point_intervals[network_type]
+    ord_end_block_height = Math.ceil(ord_end_block_height / save_point_interval) * save_point_interval
 
     let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""
 
