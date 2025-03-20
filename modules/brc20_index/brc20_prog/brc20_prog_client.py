@@ -169,10 +169,10 @@ class BRC20ProgClient:
             return tx_result["result"]["status"] == "0x1"
         tx_result["result"]["contractAddress"]
 
-    def mine_blocks(self, block_height: int):
+    def mine_blocks(self, block_count: int):
         if not brc20_prog_enabled:
             return
-        result = jsonrpc_call("brc20_mine", {"block_cnt": block_height, "timestamp": 0})
+        result = jsonrpc_call("brc20_mine", {"block_count": block_count, "timestamp": 0})
         if "error" in result:
             raise Exception(result["error"])
 
@@ -189,7 +189,7 @@ class BRC20ProgClient:
             params={
                 "hash": block_hash,
                 "timestamp": timestamp,
-                "block_tx_cnt": self.current_block_tx_idx,
+                "block_tx_count": self.current_block_tx_idx,
             },
         )
 
