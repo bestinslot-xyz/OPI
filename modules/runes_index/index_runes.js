@@ -141,8 +141,12 @@ async function main_index() {
     }
 
     let ord_index_st_tm = +(new Date())
-    let ord_end_block_height = ord_last_block_height + 500
     const save_point_interval = save_point_intervals[network_type]
+    let ord_end_block_height = ord_last_block_height + 500
+    if (ord_end_block_height > 74000){
+      ord_end_block_height = ord_last_block_height + save_point_interval
+    }
+
     ord_end_block_height = Math.ceil(ord_end_block_height / save_point_interval) * save_point_interval
 
     let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""
@@ -589,7 +593,7 @@ async function main_index() {
       let block_height = parseInt(k)
       let blockhash = to_be_inserted_hashes[k][0]
       let blocktime = to_be_inserted_hashes[k][1]
-      await db_pool.query(`INSERT into runes_block_hashes (block_height, block_hash, block_time) values ($1, $2, $3) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash, blocktime])
+      await db_pool.query(`INSERT into runes_block_hashes (block_height, block_hash, block_time) values ($1, $2, $3) ON CONFLICT (block_height) DO UPDATE SET block_hash = excluded.block_hash;`, [block_height, blockhash, blocktime])
     }
     
     let ord_sql_tm = +(new Date()) - ord_sql_st_tm

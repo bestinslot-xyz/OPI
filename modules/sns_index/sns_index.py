@@ -325,7 +325,7 @@ def check_for_reorg():
   if last_block_ord[1] == last_block[1]: return None ## last block hashes are the same, no reorg
 
   print("REORG DETECTED!!")
-  cur.execute('select block_height, block_hash from sns_block_hashes order by block_height desc limit %s;', (save_point_interval,))
+  cur.execute('select block_height, block_hash from sns_block_hashes order by block_height desc limit %s;', (2*save_point_interval,))
   hashes = cur.fetchall() ## get last 10 hashes
   for h in hashes:
     cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (h[0],))

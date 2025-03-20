@@ -186,6 +186,10 @@ async function main_index() {
     if (ord_last_block_height < fast_index_below) { // a random point where blocks start to get more inscription
       ord_end_block_height = ord_last_block_height + 1000
     }
+    if (ord_end_block_height > 74000){
+      ord_end_block_height = ord_last_block_height + save_point_interval
+    }
+
     const save_point_interval = save_point_intervals[network_type]
     ord_end_block_height = Math.ceil(ord_end_block_height / save_point_interval) * save_point_interval
 
@@ -488,7 +492,7 @@ async function main_index() {
       let block_height = parseInt(parts[1])
       if (block_height < first_inscription_height) { continue }
       let blockhash = parts[3].trim()
-      await db_pool.query(`INSERT into block_hashes (block_height, block_hash) values ($1, $2) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash])
+      await db_pool.query(`INSERT into block_hashes (block_height, block_hash) values ($1, $2) ON CONFLICT (block_height) DO UPDATE SET block_hash = excluded.block_hash;`, [block_height, blockhash])
     }
     
     let ord_sql_tm = +(new Date()) - ord_sql_st_tm
