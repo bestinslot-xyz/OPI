@@ -921,8 +921,8 @@ def execute_batch_insert(sql_start, cache, batch_size):
 def check_for_reorg():
     global brc20_prog_enabled
 
-    brc20_prog_block_height = brc20_prog_client.get_block_height()
-    brc20_prog_block_hash = brc20_prog_client.get_block_hash(brc20_prog_block_height)
+    brc20_prog_last_block_height = brc20_prog_client.get_block_height()
+    brc20_prog_last_block_hash = brc20_prog_client.get_block_hash(brc20_prog_last_block_height)
 
     cur.execute(
         "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
@@ -930,14 +930,14 @@ def check_for_reorg():
     if cur.rowcount == 0:
       if not brc20_prog_enabled:
         return None ## nothing indexed yet
-      if brc20_prog_block_height == first_inscription_height:
+      if brc20_prog_last_block_height == first_inscription_height:
         return None  ## nothing indexed yet
       else:
         return first_inscription_height  ## brc20_prog is ahead of us
 
     last_block = cur.fetchone()
 
-    if brc20_prog_enabled and brc20_prog_block_height > last_block[0]:
+    if brc20_prog_enabled and brc20_prog_last_block_height > last_block[0]:
       return last_block[0]  ## brc20_prog is ahead of us
   
     cur_metaprotocol.execute(
@@ -964,15 +964,22 @@ def check_for_reorg():
             (h[0],),
         )
         block = cur_metaprotocol.fetchone()
-        brc20_prog_block_hash = brc20_prog_client.get_block_hash(h[0])[2:]
+        brc20_prog_block_hash = brc20_prog_client.get_block_hash(h[0])
         if block[1] == h[1] and (
-            not brc20_prog_enabled or brc20_prog_block_hash == h[1]
+            not brc20_prog_enabled or (brc20_prog_block_hash is not None and brc20_prog_block_hash[2:] == h[1])
         ):  ## found reorg height by a matching hash
             print("REORG HEIGHT FOUND: " + str(h[0]))
             return h[0]
 
     ## bigger than 10 block reorg is not supported by ord
     print("CRITICAL ERROR!! REORG LARGER THAN 10 BLOCKS DETECTED!!")
+    print("LAST BRC20 BLOCK HEIGHT: " + str(last_block[0]))
+    print("LAST BRC20 BLOCK HASH: " + str(last_block[1]))
+    print("LAST ORD BLOCK HEIGHT: " + str(last_block_ord[0]))
+    print("LAST ORD BLOCK HASH: " + str(last_block_ord[1]))
+    if brc20_prog_enabled:
+      print("BRC20 PROG BLOCK HEIGHT: " + str(brc20_prog_last_block_height))
+      print("BRC20 PROG BLOCK HASH: " + str(brc20_prog_last_block_hash))
     sys.exit(1)
 
 def reorg_fix(reorg_height):

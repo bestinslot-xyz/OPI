@@ -203,7 +203,7 @@ class BRC20ProgClient:
             return ""
         result = jsonrpc_call("eth_getBlockByNumber", {"block": str(block_height)})
         if "error" in result:
-            raise Exception(result["error"])
+            return None
 
         return result["result"]["hash"]
 
