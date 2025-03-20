@@ -936,6 +936,9 @@ def check_for_reorg():
         return first_inscription_height  ## brc20_prog is ahead of us
 
     last_block = cur.fetchone()
+
+    if brc20_prog_enabled and brc20_prog_block_height > last_block[0]:
+      return last_block[0]  ## brc20_prog is ahead of us
   
     cur_metaprotocol.execute(
         "select block_height, block_hash from block_hashes where block_height = %s;",
@@ -944,8 +947,9 @@ def check_for_reorg():
     if cur_metaprotocol.rowcount == 0:
         return None  ## probably main indexer is fixing hashes for reorg, will correct itself in next run
     last_block_ord = cur_metaprotocol.fetchone()
+    last_block_brc20_prog = brc20_prog_client.get_block_hash(last_block[0])
     if last_block_ord[1] == last_block[1] and (
-        not brc20_prog_enabled or brc20_prog_client.get_block_hash(last_block[0])[2:] == last_block[1]
+        not brc20_prog_enabled or (last_block_brc20_prog is not None and last_block_brc20_prog[2:] == last_block[1])
     ):
         return None  ## last block hashes are the same, no reorg and heights match
 
