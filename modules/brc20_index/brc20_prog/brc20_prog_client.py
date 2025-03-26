@@ -68,6 +68,7 @@ class BRC20ProgClient:
         timestamp: int,
         block_hash: str,
         amount: int,
+        inscription_id: str,
     ) -> bool:
         if not brc20_prog_enabled:
             return False
@@ -84,6 +85,7 @@ class BRC20ProgClient:
                 "hash": block_hash,
                 "tx_idx": self.current_block_tx_idx,
                 "amount": str(amount),
+                "inscription_id": inscription_id,
             },
         )
 
@@ -100,6 +102,7 @@ class BRC20ProgClient:
         timestamp: int,
         block_hash: str,
         amount: int,
+        inscription_id: str,
     ) -> bool:
         if not brc20_prog_enabled:
             return False
@@ -115,6 +118,7 @@ class BRC20ProgClient:
                 "hash": block_hash,
                 "tx_idx": self.current_block_tx_idx,
                 "amount": str(amount),
+                "inscription_id": inscription_id,
             },
         )
 
@@ -131,6 +135,7 @@ class BRC20ProgClient:
         data: str,
         timestamp: int,
         block_hash: str,
+        inscription_id: str,
     ) -> str | bool:
         if not brc20_prog_enabled:
             return
@@ -146,6 +151,7 @@ class BRC20ProgClient:
                     "timestamp": timestamp,
                     "hash": block_hash,
                     "tx_idx": self.current_block_tx_idx,
+                    "inscription_id": inscription_id,
                 },
             )
         else:
@@ -158,6 +164,7 @@ class BRC20ProgClient:
                     "timestamp": timestamp,
                     "hash": block_hash,
                     "tx_idx": self.current_block_tx_idx,
+                    "inscription_id": inscription_id,
                 },
             )
 

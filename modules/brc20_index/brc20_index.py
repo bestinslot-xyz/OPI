@@ -519,7 +519,8 @@ def transfer_transfer_normal(block_height, block_hash, inscription_id, spent_pkS
       ticker=tick,
       timestamp=block_timestamp,
       block_hash=block_hash,
-      amount=amount
+      amount=amount,
+      inscription_id=inscription_id
     )
   if spent_pkScript == '6a':
     brc20_tickers_burned_supply_update_cache[tick] = brc20_tickers_burned_supply_update_cache.get(tick, 0) + amount
@@ -585,6 +586,7 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
     data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
+    inscription_id=inscription_id
   )
 
   if result is not None:
@@ -673,6 +675,7 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
     amount=amount,
     timestamp=block_timestamp,
     block_hash=block_hash,
+    inscription_id=inscription_id
   )
 
   if is_withdraw_successful:
