@@ -56,7 +56,6 @@ report_to_indexer = (os.getenv("REPORT_TO_INDEXER") or "true") == "true"
 report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
 report_retries = int(os.getenv("REPORT_RETRIES") or "10")
 report_name = os.getenv("REPORT_NAME") or "opi_brc20_indexer"
-create_extra_tables = (os.getenv("CREATE_EXTRA_TABLES") or "false") == "true"
 network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 
 first_inscription_heights = {
@@ -121,14 +120,13 @@ if cur.fetchone()[0] == False:
     cur.execute(sql)
   conn.commit()
 
-if create_extra_tables:
-  cur.execute('''SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'brc20_extras_block_hashes') AS table_existence;''')
-  if cur.fetchone()[0] == False:
-    print("Initialising extra tables...")
-    with open('db_init_extra.sql', 'r') as f:
-      sql = f.read()
-      cur.execute(sql)
-    conn.commit()
+cur.execute('''SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'brc20_extras_block_hashes') AS table_existence;''')
+if cur.fetchone()[0] == False:
+  print("Initialising extra tables...")
+  with open('db_init_extra.sql', 'r') as f:
+    sql = f.read()
+    cur.execute(sql)
+  conn.commit()
 
 cur_metaprotocol.execute('SELECT network_type from ord_network_type LIMIT 1;')
 if cur_metaprotocol.rowcount == 0:
@@ -1434,10 +1432,9 @@ def check_extra_tables():
 
 brc20_prog_client.clear_caches()
 check_if_there_is_residue_from_last_run()
-if create_extra_tables:
-  check_if_there_is_residue_on_extra_tables_from_last_run()
-  print("checking extra tables")
-  check_extra_tables()
+check_if_there_is_residue_on_extra_tables_from_last_run()
+print("checking extra tables")
+check_extra_tables()
 
 last_report_height = 0
 
@@ -1477,8 +1474,7 @@ if brc20_prog_client.is_enabled():
 
 while True:
   check_if_there_is_residue_from_last_run()
-  if create_extra_tables:
-    check_if_there_is_residue_on_extra_tables_from_last_run()
+  check_if_there_is_residue_on_extra_tables_from_last_run()
   ## check if a new block is indexed
   cur_metaprotocol.execute('''SELECT coalesce(max(block_height), -1) as max_height from block_hashes;''')
   max_block_of_metaprotocol_db = cur_metaprotocol.fetchone()[0]
@@ -1503,7 +1499,7 @@ while True:
     continue
   try:
     index_block(current_block, current_block_hash, int(block_timestamp.timestamp()))
-    if create_extra_tables and max_block_of_metaprotocol_db - current_block < 10: ## only update extra tables at the end of sync
+    if max_block_of_metaprotocol_db - current_block < 10: ## only update extra tables at the end of sync
       print("checking extra tables")
       check_extra_tables()
     if max_block_of_metaprotocol_db - current_block < 10 or current_block - last_report_height > 100: ## do not report if there are more than 10 blocks to index

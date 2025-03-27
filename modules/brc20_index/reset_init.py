@@ -29,7 +29,6 @@ if init_env:
   REPORT_URL="https://api.opi.network/report_block"
   REPORT_RETRIES="10"
   REPORT_NAME="opi_brc20_index"
-  CREATE_EXTRA_TABLES="true"
   BRC20_PROG_ENABLED="false"
   BRC20_PROG_RPC_URL="http://localhost:18545"
   BRC20_PROG_BALANCE_SERVER_URL="http://localhost:18546"
@@ -113,10 +112,6 @@ if init_env:
         break
       else:
         print('Report name cannot be empty')
-  res = input("Create extra tables for faster queries (Default: true) set to true for creating brc20_current_balances and brc20_unused_tx_inscrs tables: ")
-  if res != '':
-    CREATE_EXTRA_TABLES = res
-
   res = input("Enable BRC20 programmable module (Default: false): ")
   if res != '':
     BRC20_PROG_ENABLED = res
@@ -144,7 +139,6 @@ if init_env:
   f.write('REPORT_URL="' + REPORT_URL + '"\n')
   f.write('REPORT_RETRIES="' + REPORT_RETRIES + '"\n')
   f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
-  f.write('CREATE_EXTRA_TABLES="' + CREATE_EXTRA_TABLES + '"\n')
   f.write('BRC20_PROG_ENABLED="' + BRC20_PROG_ENABLED + '"\n')
   f.write('BRC20_PROG_RPC_URL="' + BRC20_PROG_RPC_URL + '"\n')
   f.write('BRC20_PROG_BALANCE_SERVER_URL="' + BRC20_PROG_BALANCE_SERVER_URL + '"\n')
@@ -161,8 +155,6 @@ db_host = os.getenv("DB_HOST") or "localhost"
 db_port = int(os.getenv("DB_PORT") or "5432")
 db_database = os.getenv("DB_DATABASE") or "postgres"
 db_password = os.getenv("DB_PASSWD")
-
-create_extra_tables = (os.getenv("CREATE_EXTRA_TABLES") or "false") == "true"
 
 ## connect to db
 conn = psycopg2.connect(
@@ -200,15 +192,14 @@ for sql in sqls:
   if sql.strip() != '':
     cur.execute(sql)
 
-if create_extra_tables:
-  sqls = open('db_reset_extra.sql', 'r').read().split(';')
-  for sql in sqls:
-    if sql.strip() != '':
-      cur.execute(sql)
-  sqls = open('db_init_extra.sql', 'r').read().split(';')
-  for sql in sqls:
-    if sql.strip() != '':
-      cur.execute(sql)
+sqls = open('db_reset_extra.sql', 'r').read().split(';')
+for sql in sqls:
+  if sql.strip() != '':
+    cur.execute(sql)
+sqls = open('db_init_extra.sql', 'r').read().split(';')
+for sql in sqls:
+  if sql.strip() != '':
+    cur.execute(sql)
 
 if BRC20_PROG_ENABLED:
   sqls = open('brc20_prog/db_reset_prog.sql', 'r').read().split(';')
