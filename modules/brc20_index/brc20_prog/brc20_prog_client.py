@@ -64,9 +64,6 @@ class BRC20ProgClient:
             raise Exception("Block hash mismatch")
         elif self.current_block_timestamp != timestamp:
             raise Exception("Block timestamp mismatch")
-        
-    def is_enabled():
-        return check_brc20_prog_enabled()
 
     def initialise(
         self,
@@ -91,6 +88,9 @@ class BRC20ProgClient:
             raise Exception(result["error"])
 
         self.commit_to_database()
+
+    def is_enabled(self):
+        return check_brc20_prog_enabled()
 
     def deposit(
         self,
