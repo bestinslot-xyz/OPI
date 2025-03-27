@@ -75,6 +75,9 @@ class BRC20ProgClient:
             return
         print("Initialising BRC20PROG")
 
+        if not genesis_hash.startswith("0x"):
+            genesis_hash = "0x" + genesis_hash
+
         result = jsonrpc_call(
             "brc20_initialise",
             params={
@@ -106,6 +109,9 @@ class BRC20ProgClient:
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
 
         print("Depositing to BRC20PROG")
+
+        if not block_hash.startswith("0x"):
+            block_hash = "0x" + block_hash
 
         result = jsonrpc_call(
             "brc20_deposit",
@@ -140,6 +146,9 @@ class BRC20ProgClient:
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Withdrawing from BRC20PROG")
 
+        if not block_hash.startswith("0x"):
+            block_hash = "0x" + block_hash
+
         result = jsonrpc_call(
             "brc20_withdraw",
             params={
@@ -172,6 +181,9 @@ class BRC20ProgClient:
             return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Adding transaction to BRC20PROG")
+
+        if not block_hash.startswith("0x"):
+            block_hash = "0x" + block_hash
 
         if contract_address is None:
             tx_result = jsonrpc_call(
@@ -221,6 +233,9 @@ class BRC20ProgClient:
             return
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Finalising block on BRC20PROG")
+
+        if not block_hash.startswith("0x"):
+            block_hash = "0x" + block_hash
 
         result = jsonrpc_call(
             "brc20_finaliseBlock",
