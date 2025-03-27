@@ -12,6 +12,11 @@ const process = require('process');
 const { execSync } = require("child_process");
 const readline = require('readline');
 
+var sigint_received = false;
+process.on('SIGINT', function() {
+  sigint_received = true;
+});
+
 bitcoin.initEccLib(ecc)
 
 console.log("VERSION V0.3.2")
@@ -150,11 +155,9 @@ async function main_index() {
   await check_db()
   await check_db_max_transfer_cnts()
 
-  let first = true;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    if (first) first = false
-    else await delay(2)
+    if (sigint_received) break;
 
     let start_tm = +(new Date())
 
