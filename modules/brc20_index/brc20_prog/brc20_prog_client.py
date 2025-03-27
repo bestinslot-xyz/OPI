@@ -6,6 +6,36 @@ from typing import Dict
 
 brc20_prog_enabled = (os.getenv("BRC20_PROG_ENABLED") or "false") == "true"
 brc20_prog_rpc_url = os.getenv("BRC20_PROG_RPC_URL") or "http://localhost:18545"
+network_type = os.getenv("NETWORK_TYPE") or "mainnet"
+
+"""
+  The first block height where BRC20 Prog inscriptions can be added to the blockchain
+  This affects add_tx_to_block and deposit/withdraw
+  If the block height is less than this value, the BRC20 Prog client will not add transactions
+  This is to prevent inscriptions from being added to the blockchain before the BRC20 Prog module is initialised
+
+  TODO: Update this value to the correct block height before launching on a network
+"""
+brc20_prog_first_inscription_heights = {
+    "mainnet": 767430,  # TODO: Update this value to the correct block height before launching on mainnet
+    "testnet": 2413343,  # TODO: Update this value to the correct block height before launching on testnet
+    "testnet4": 0,  # TODO: Update this value to the correct block height before launching on testnet4
+    "signet": 112402,  # TODO: Update this value to the correct block height before launching on signet
+    "regtest": 0,  # TODO: Update this value to the correct block height before launching on regtest
+}
+
+
+def check_brc20_prog_enabled():
+    global brc20_prog_enabled
+    return brc20_prog_enabled
+
+
+def check_brc20_prog_inscriptions_enabled(current_block_height):
+    global brc20_prog_enabled, network_type, brc20_prog_first_inscription_heights
+    return (
+        brc20_prog_enabled
+        and current_block_height >= brc20_prog_first_inscription_heights[network_type]
+    )
 
 
 def jsonrpc_call(method: str, params: Dict):
@@ -23,9 +53,7 @@ def jsonrpc_call(method: str, params: Dict):
 
 class BRC20ProgClient:
     def __init__(self):
-        self.current_block_hash = ""
-        self.current_block_timestamp = 0
-        self.current_block_tx_idx = 0
+        self.reset_current_block()
 
     def verify_block_hash_and_timestamp(self, block_hash: str, timestamp: int):
         if self.current_block_hash == "" and self.current_block_timestamp == 0:
@@ -36,6 +64,9 @@ class BRC20ProgClient:
             raise Exception("Block hash mismatch")
         elif self.current_block_timestamp != timestamp:
             raise Exception("Block timestamp mismatch")
+        
+    def is_enabled():
+        return check_brc20_prog_enabled()
 
     def initialise(
         self,
@@ -43,7 +74,7 @@ class BRC20ProgClient:
         genesis_timestamp: int,
         genesis_height: int,
     ):
-        if not brc20_prog_enabled:
+        if not check_brc20_prog_enabled():
             return
         print("Initialising BRC20PROG")
 
@@ -69,9 +100,9 @@ class BRC20ProgClient:
         block_hash: str,
         amount: int,
         inscription_id: str,
-    ) -> bool:
-        if not brc20_prog_enabled:
-            return False
+    ): # Returns TxReceipt value
+        if not check_brc20_prog_inscriptions_enabled()(self.current_block_height):
+            return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
 
         print("Depositing to BRC20PROG")
@@ -93,7 +124,7 @@ class BRC20ProgClient:
             raise Exception(result["error"])
 
         self.current_block_tx_idx += 1
-        return bool(result["result"]["status"] == "0x1")
+        return result["result"]
 
     def withdraw(
         self,
@@ -103,9 +134,9 @@ class BRC20ProgClient:
         block_hash: str,
         amount: int,
         inscription_id: str,
-    ) -> bool:
-        if not brc20_prog_enabled:
-            return False
+    ): # Returns TxReceipt value
+        if not check_brc20_prog_inscriptions_enabled()(self.current_block_height):
+            return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Withdrawing from BRC20PROG")
 
@@ -126,7 +157,7 @@ class BRC20ProgClient:
             raise Exception(result["error"])
 
         self.current_block_tx_idx += 1
-        return bool(result["result"]["status"] == "0x1")
+        return result["result"]
 
     def add_tx_to_block(
         self,
@@ -136,9 +167,9 @@ class BRC20ProgClient:
         timestamp: int,
         block_hash: str,
         inscription_id: str,
-    ) -> str | bool:
-        if not brc20_prog_enabled:
-            return
+    ): # Returns TxReceipt value
+        if not check_brc20_prog_inscriptions_enabled()(self.current_block_height):
+            return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Adding transaction to BRC20PROG")
 
@@ -172,21 +203,21 @@ class BRC20ProgClient:
             raise Exception(tx_result["error"])
 
         self.current_block_tx_idx += 1
-        if tx_result["result"]["contractAddress"] is None:
-            return tx_result["result"]["status"] == "0x1"
-        return tx_result["result"]["contractAddress"]
+        return tx_result["result"]
 
     def mine_blocks(self, block_count: int):
-        if not brc20_prog_enabled:
+        if not check_brc20_prog_enabled():
             return
-        result = jsonrpc_call("brc20_mine", {"block_count": block_count, "timestamp": 0})
+        result = jsonrpc_call(
+            "brc20_mine", {"block_count": block_count, "timestamp": 0}
+        )
         if "error" in result:
             raise Exception(result["error"])
 
         self.reset_current_block()
 
     def finalise_block(self, block_hash: str, timestamp: int):
-        if not brc20_prog_enabled:
+        if not check_brc20_prog_enabled():
             return
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Finalising block on BRC20PROG")
@@ -206,8 +237,8 @@ class BRC20ProgClient:
         self.reset_current_block()
 
     def get_block_hash(self, block_height: int):
-        if not brc20_prog_enabled:
-            return ""
+        if not check_brc20_prog_enabled():
+            return None
         result = jsonrpc_call("eth_getBlockByNumber", {"block": str(block_height)})
         if "error" in result:
             return None
@@ -215,12 +246,12 @@ class BRC20ProgClient:
         return result["result"]["hash"]
 
     def get_block_height(self):
-        if not brc20_prog_enabled:
+        if not check_brc20_prog_enabled():
             return 0
         return int(jsonrpc_call("eth_blockNumber", {})["result"], 0)
 
     def reorg(self, block_height):
-        if not brc20_prog_enabled:
+        if not check_brc20_prog_enabled():
             return
         result = jsonrpc_call(
             "brc20_reorg", {"latest_valid_block_number": block_height}
@@ -231,7 +262,7 @@ class BRC20ProgClient:
         self.reset_current_block()
 
     def clear_caches(self):
-        if not brc20_prog_enabled:
+        if not check_brc20_prog_enabled():
             return
         result = jsonrpc_call("brc20_clearCaches", {})
         if "error" in result:
@@ -240,7 +271,7 @@ class BRC20ProgClient:
         self.reset_current_block()
 
     def commit_to_database(self):
-        if not brc20_prog_enabled:
+        if not check_brc20_prog_enabled():
             return
         result = jsonrpc_call("brc20_commitToDatabase", {})
         if "error" in result:
@@ -250,6 +281,7 @@ class BRC20ProgClient:
         self.current_block_hash = ""
         self.current_block_timestamp = 0
         self.current_block_tx_idx = 0
+        self.current_block_height = self.get_block_height()
 
 
 if __name__ == "__main__":

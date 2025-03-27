@@ -29,36 +29,40 @@ class BalanceHandler(BaseHTTPRequestHandler):
             ).encode("utf-8")
         )
 
+class BRC20BalanceServer:
+    def __init__(self, brc20_balance_function: Callable[[str, str], int]):
+        self.brc20_balance_function = brc20_balance_function
+        self.server = None
+        self.server_thread = None
 
-server: HTTPServer = None
-server_thread: threading.Thread = None
+    def start(self):
+        global server, server_thread
+        server_address = urlparse(brc20_prog_balance_url)
+        server = HTTPServer(
+            (server_address.hostname, server_address.port),
+            lambda address, handler, server: BalanceHandler(
+                self.brc20_balance_function, address, handler, server
+            ),
+        )
 
+        server_thread = threading.Thread(target=server.serve_forever)
+        server_thread.start()
+        print("BRC20 balance server started.")
 
-def start_server(brc20_balance_function: Callable[[str, str], int]):
-    global server, server_thread
-    server_address = urlparse(brc20_prog_balance_url)
-    server = HTTPServer(
-        (server_address.hostname, server_address.port),
-        lambda address, handler, server: BalanceHandler(
-            brc20_balance_function, address, handler, server
-        ),
-    )
-
-    server_thread = threading.Thread(target=server.serve_forever)
-    server_thread.start()
-    print("BRC20 balance server started.")
-
-
-def stop_server():
-    global server, server_thread
-
-    server.shutdown()
-    server.server_close()
-    server_thread.join()
-    print("BRC20 balance server stopped.")
+    def stop(self):
+        if self.server is None:
+            return
+        self.server.shutdown()
+        self.server.server_close()
+        self.server_thread.join()
+        self.server = None
+        self.server_thread = None
+        print("BRC20 balance server stopped.")
 
 
 if __name__ == "__main__":
-    start_server(lambda address, ticker: abs(hash(address + ticker)) % 100)
+    balance_server = BRC20BalanceServer(lambda address, ticker: abs(hash(address + ticker)) % 100)
+    balance_server.start()
     input("Press enter to stop server\n")
-    stop_server()
+    balance_server.stop()
+

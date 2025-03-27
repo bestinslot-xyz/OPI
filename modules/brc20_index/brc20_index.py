@@ -11,14 +11,17 @@ import psycopg2
 import hashlib
 
 from brc20_prog.brc20_prog_client import BRC20ProgClient
-from brc20_prog.balance_server import start_server, stop_server
+from brc20_prog.balance_server import BRC20BalanceServer
 
 if not os.path.isfile('.env'):
   print(".env file not found, please run \"python3 reset_init.py\" first")
   sys.exit(1)
 
+# BRC20 Prog globals
+brc20_prog_client: BRC20ProgClient = BRC20ProgClient()
+brc20_balance_server: BRC20BalanceServer = None
+
 ## global variables
-brc20_prog_client = BRC20ProgClient()
 ticks = {}
 in_commit = False
 block_events_str = ""
@@ -54,7 +57,6 @@ report_retries = int(os.getenv("REPORT_RETRIES") or "10")
 report_name = os.getenv("REPORT_NAME") or "opi_brc20_indexer"
 create_extra_tables = (os.getenv("CREATE_EXTRA_TABLES") or "false") == "true"
 network_type = os.getenv("NETWORK_TYPE") or "mainnet"
-brc20_prog_enabled = (os.getenv("BRC20_PROG_ENABLED") or "false") == "true"
 
 first_inscription_heights = {
   'mainnet': 767430,
@@ -402,8 +404,7 @@ def reset_caches():
   for t in ticks_:
     ticks[t[0]] = [t[1], t[2], t[3], t[4], t[5]]
   print("Ticks refreshed in " + str(time.time() - sttm) + " seconds")
-  if brc20_prog_enabled:
-    brc20_prog_client.clear_caches()
+  brc20_prog_client.clear_caches()
 
 block_start_max_event_id = None
 brc20_events_insert_sql = '''insert into brc20_events (id, event_type, block_height, inscription_id, event) values '''
@@ -589,8 +590,11 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
     inscription_id=inscription_id
   )
 
-  if result is not None:
-    cur_metaprotocol.execute('''INSERT INTO brc20_prog_contracts (inscription_id, contract_address, block_height) VALUES (%s, %s, %s);''', (inscription_id, result, block_height))
+  if result["contractAddress"] is not None:
+      cur_metaprotocol.execute(
+          """INSERT INTO brc20_prog_contracts (inscription_id, contract_address, block_height) VALUES (%s, %s, %s);""",
+          (inscription_id, result["contractAddress"], block_height),
+      )
 
 
 def brc20_prog_call_inscribe(block_height, inscription_id, new_pkScript):
@@ -639,6 +643,7 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
+    inscription_id=inscription_id
   )
 
 
@@ -669,7 +674,7 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
   brc20_events_insert_cache.append((event_id, event_types["brc20prog-withdraw-transfer"], block_height, inscription_id, json.dumps(event)))
   set_transfer_as_used(inscription_id)
 
-  is_withdraw_successful = brc20_prog_client.withdraw(
+  withdraw_result = brc20_prog_client.withdraw(
     from_pkscript=inscribe_event["source_pkScript"],
     ticker=ticker,
     amount=amount,
@@ -678,7 +683,7 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
     inscription_id=inscription_id
   )
 
-  if is_withdraw_successful:
+  if withdraw_result["status"] == "0x1":
     last_balance = get_last_balance(event["spent_pkScript"], ticker)
     last_balance["overall_balance"] += amount
     last_balance["available_balance"] += amount
@@ -761,7 +766,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
     if js["p"] != 'brc-20' and js["p"] != 'brc20-prog' and js["p"] != 'brc20-module': continue ## invalid inscription
 
     if js["p"] == 'brc20-module':
-      if not brc20_prog_enabled: continue
+      if not brc20_prog_client.is_enabled(): continue
       if "module" not in js: continue
       if js["module"] != 'BRC20PROG': continue
       if "op" not in js: continue
@@ -781,7 +786,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
 
     # Handle brc20-prog deploy and call inscriptions
     if js["p"] == 'brc20-prog':
-      if not brc20_prog_enabled: continue
+      if not brc20_prog_client.is_enabled(): continue
       if "op" not in js: continue ## invalid inscription
       if "d" not in js: continue ## invalid inscription
       if js["op"] == 'deploy' and old_satpoint == '':
@@ -922,8 +927,6 @@ def execute_batch_insert(sql_start, cache, batch_size):
 
 
 def check_for_reorg():
-    global brc20_prog_enabled
-
     brc20_prog_last_block_height = brc20_prog_client.get_block_height()
     brc20_prog_last_block_hash = brc20_prog_client.get_block_hash(brc20_prog_last_block_height)
 
@@ -931,7 +934,7 @@ def check_for_reorg():
         "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
     )
     if cur.rowcount == 0:
-      if not brc20_prog_enabled:
+      if not brc20_prog_client.is_enabled():
         return None ## nothing indexed yet
       if brc20_prog_last_block_height == first_inscription_height:
         return None  ## nothing indexed yet
@@ -940,7 +943,7 @@ def check_for_reorg():
 
     last_block = cur.fetchone()
 
-    if brc20_prog_enabled and brc20_prog_last_block_height > last_block[0]:
+    if brc20_prog_client.is_enabled() and brc20_prog_last_block_height > last_block[0]:
       return last_block[0]  ## brc20_prog is ahead of us
   
     cur_metaprotocol.execute(
@@ -952,7 +955,7 @@ def check_for_reorg():
     last_block_ord = cur_metaprotocol.fetchone()
     last_block_brc20_prog = brc20_prog_client.get_block_hash(last_block[0])
     if last_block_ord[1] == last_block[1] and (
-        not brc20_prog_enabled or (last_block_brc20_prog is not None and last_block_brc20_prog[2:] == last_block[1])
+        not brc20_prog_client.is_enabled() or (last_block_brc20_prog is not None and last_block_brc20_prog[2:] == last_block[1])
     ):
         return None  ## last block hashes are the same, no reorg and heights match
 
@@ -969,7 +972,7 @@ def check_for_reorg():
         block = cur_metaprotocol.fetchone()
         brc20_prog_block_hash = brc20_prog_client.get_block_hash(h[0])
         if block[1] == h[1] and (
-            not brc20_prog_enabled or (brc20_prog_block_hash is not None and brc20_prog_block_hash[2:] == h[1])
+            not brc20_prog_client.is_enabled() or (brc20_prog_block_hash is not None and brc20_prog_block_hash[2:] == h[1])
         ):  ## found reorg height by a matching hash
             print("REORG HEIGHT FOUND: " + str(h[0]))
             return h[0]
@@ -980,10 +983,10 @@ def check_for_reorg():
     print("LAST BRC20 BLOCK HASH: " + str(last_block[1]))
     print("LAST ORD BLOCK HEIGHT: " + str(last_block_ord[0]))
     print("LAST ORD BLOCK HASH: " + str(last_block_ord[1]))
-    if brc20_prog_enabled:
+    if brc20_prog_client.is_enabled():
       print("BRC20 PROG BLOCK HEIGHT: " + str(brc20_prog_last_block_height))
       print("BRC20 PROG BLOCK HASH: " + str(brc20_prog_last_block_hash))
-      stop_server()
+      stop_brc20_balance_server()
     sys.exit(1)
 
 def reorg_fix(reorg_height):
@@ -1015,7 +1018,7 @@ def reorg_fix(reorg_height):
   cur.execute("SELECT setval('brc20_block_hashes_id_seq', max(id)) from brc20_block_hashes;") ## reset id sequence
   cur.execute('commit;')
 
-  if brc20_prog_enabled:
+  if brc20_prog_client.is_enabled():
     brc20_prog_client.reorg(reorg_height)
   reset_caches()
 
@@ -1437,7 +1440,7 @@ if create_extra_tables:
 last_report_height = 0
 
 # initialise genesis on brc20_prog
-if brc20_prog_enabled:
+if brc20_prog_client.is_enabled():
   # print latest block hash and height
   cur.execute(
       "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
@@ -1457,7 +1460,9 @@ if brc20_prog_enabled:
   current_block_hash, block_timestamp = cur.fetchone()
   brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()), first_inscription_height)
 
-  start_server(get_last_overall_balance)
+  brc20_balance_server = BRC20BalanceServer(get_last_overall_balance)
+  brc20_balance_server.start()
+
   reorg_height = check_for_reorg()
   if reorg_height is not None:
     print("Rolling back to ", reorg_height)
@@ -1500,7 +1505,8 @@ while True:
       last_report_height = current_block
   except KeyboardInterrupt:
     brc20_prog_client.clear_caches()
-    stop_server()
+    if brc20_balance_server is not None:
+      brc20_balance_server.stop()
     traceback.print_exc()
     if in_commit: ## rollback commit if any
       print("rolling back")
