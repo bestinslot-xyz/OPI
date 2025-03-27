@@ -987,7 +987,8 @@ def check_for_reorg():
     if brc20_prog_client.is_enabled():
       print("BRC20 PROG BLOCK HEIGHT: " + str(brc20_prog_last_block_height))
       print("BRC20 PROG BLOCK HASH: " + str(brc20_prog_last_block_hash))
-      stop_brc20_balance_server()
+      if brc20_balance_server:
+        brc20_balance_server.stop()
     sys.exit(1)
 
 def reorg_fix(reorg_height):
@@ -1510,7 +1511,7 @@ while True:
       last_report_height = current_block
   except KeyboardInterrupt:
     brc20_prog_client.clear_caches()
-    if brc20_balance_server is not None:
+    if brc20_balance_server:
       brc20_balance_server.stop()
     traceback.print_exc()
     if in_commit: ## rollback commit if any
