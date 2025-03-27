@@ -94,6 +94,12 @@ class BRC20ProgClient:
 
     def is_enabled(self):
         return check_brc20_prog_enabled()
+    
+    def version(self):
+        result = jsonrpc_call("brc20_version", {})
+        if "error" in result:
+            raise Exception(result["error"])
+        return result["result"]
 
     def deposit(
         self,
@@ -308,3 +314,4 @@ if __name__ == "__main__":
     client = BRC20ProgClient()
     print("BRC20 RPC URL: " + brc20_prog_rpc_url)
     print("Block height: " + str(client.get_block_height()))
+    print("Version: " + client.version())

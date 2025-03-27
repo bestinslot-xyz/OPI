@@ -27,6 +27,7 @@ in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
 INDEXER_VERSION = "opi-brc20-full-node v0.4.1"
+BRC20_PROG_VERSION = "0.1.0"
 RECOVERABLE_DB_VERSIONS = [ 4 ]
 DB_VERSION = 5
 EVENT_HASH_VERSION = 2
@@ -1441,6 +1442,10 @@ last_report_height = 0
 
 # initialise genesis on brc20_prog
 if brc20_prog_client.is_enabled():
+  if brc20_prog_client.version() != BRC20_PROG_VERSION:
+    print("BRC20 Prog version mismatch!! Required: " + str(BRC20_PROG_VERSION) + " Found: " + str(brc20_prog_client.version()))
+    sys.exit(1)
+
   # print latest block hash and height
   cur.execute(
       "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
