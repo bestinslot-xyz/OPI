@@ -247,6 +247,7 @@ async function main_index() {
     let lines_index = fs.readFileSync(ord_folder + network_folder + "log_file_index.txt", "utf8").split('\n')
     if (lines_index.length == 1) {
       console.log("Nothing new, waiting!!")
+      await delay(2)
       continue
     }
 
