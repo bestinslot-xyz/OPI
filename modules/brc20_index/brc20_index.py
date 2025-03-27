@@ -1455,6 +1455,9 @@ if brc20_prog_client.is_enabled():
     print("Latest block height: " + str(row[0]))
     print("Latest block hash: " + row[1])
 
+  brc20_balance_server = BRC20BalanceServer(get_last_overall_balance)
+  brc20_balance_server.start()
+
   if brc20_prog_client.get_block_height() == 0:
     # Initial blocks are not indexed, so we need to mine the first blocks in brc20_prog
     brc20_prog_client.mine_blocks(first_inscription_height)
@@ -1462,9 +1465,6 @@ if brc20_prog_client.is_enabled():
   cur.execute('''select block_hash, block_timestamp  from block_hashes where block_height = %s;''', (first_inscription_height,))
   current_block_hash, block_timestamp = cur.fetchone()
   brc20_prog_client.initialise(current_block_hash, int(block_timestamp.timestamp()), first_inscription_height)
-
-  brc20_balance_server = BRC20BalanceServer(get_last_overall_balance)
-  brc20_balance_server.start()
 
   reorg_height = check_for_reorg()
   if reorg_height is not None:
