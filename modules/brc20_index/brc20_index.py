@@ -709,7 +709,7 @@ def update_event_hashes(block_height):
     cumulative_event_hash = get_sha256_hash(cur.fetchone()[0] + block_event_hash)
   cur.execute('''INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) VALUES (%s, %s, %s);''', (block_height, block_event_hash, cumulative_event_hash))
 
-def index_block(block_height, current_block_hash, block_timestamp: int):
+def index_block(block_height, current_block_hash, block_timestamp: int, is_synced):
   global ticks, block_events_str, block_start_max_event_id, brc20_events_insert_cache, brc20_tickers_insert_cache, brc20_tickers_remaining_supply_update_cache, brc20_tickers_burned_supply_update_cache, brc20_historic_balances_insert_cache, in_commit
   print("Indexing block " + str(block_height))
   block_events_str = ""
@@ -738,7 +738,8 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
     cur.execute('''INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, current_block_hash))
     if block_height >= brc20_prog_first_inscription_height:
       brc20_prog_client.finalise_block(current_block_hash, block_timestamp)
-      brc20_prog_client.commit_to_database()
+      if is_synced or block_height % 100 == 0:
+        brc20_prog_client.commit_to_database()
     return
   print("Transfer count: ", len(transfers))
 
@@ -903,7 +904,8 @@ def index_block(block_height, current_block_hash, block_timestamp: int):
 
   if block_height >= brc20_prog_first_inscription_height:
     brc20_prog_client.finalise_block(current_block_hash, block_timestamp)
-    brc20_prog_client.commit_to_database()
+    if is_synced or block_height % 100 == 0:
+      brc20_prog_client.commit_to_database()
 
   cur.execute("BEGIN;")
   in_commit = True
@@ -1526,7 +1528,7 @@ while True:
       prog_genesis_block_hash, prog_genesis_timestamp = cur_metaprotocol.fetchone()
       brc20_prog_client.initialise(prog_genesis_block_hash, int(prog_genesis_timestamp.timestamp()), brc20_prog_first_inscription_height - 1),
       brc20_prog_client.commit_to_database()
-    index_block(current_block, current_block_hash, int(block_timestamp.timestamp()))
+    index_block(current_block, current_block_hash, int(block_timestamp.timestamp()), current_block == max_block_of_metaprotocol_db)
     if max_block_of_metaprotocol_db - current_block < 10: ## only update extra tables at the end of sync
       print("checking extra tables")
       check_extra_tables()

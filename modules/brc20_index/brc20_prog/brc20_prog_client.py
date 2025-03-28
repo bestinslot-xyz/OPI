@@ -187,6 +187,9 @@ class BRC20ProgClient:
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Adding transaction to BRC20PROG")
 
+        if not block_hash.startswith("0x"):
+            block_hash = "0x" + block_hash
+
         tx_result = jsonrpc_call(
             "brc20_deploy",
             params={
@@ -223,6 +226,9 @@ class BRC20ProgClient:
             return
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Adding transaction to BRC20PROG")
+
+        if not block_hash.startswith("0x"):
+            block_hash = "0x" + block_hash
 
         tx_result = jsonrpc_call(
             "brc20_call",
