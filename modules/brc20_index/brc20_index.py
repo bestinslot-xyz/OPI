@@ -580,6 +580,10 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
     print("Invalid spent_pkScript for deploy transfer")
     return
 
+  if "d" not in content:
+    print("No data in content")
+    return
+
   brc20_prog_client.deploy(
     from_pkscript=inscribe_event["source_pkScript"],
     data=content["d"],
@@ -618,10 +622,14 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     print("Invalid spent_pkScript for call transfer")
     return
 
+  if "d" not in content:
+    print("No data in content")
+    return
+
   brc20_prog_client.call(
     from_pkscript=inscribe_event["source_pkScript"],
-    contract_address=content["c"],
-    contract_inscription_id=content["i"],
+    contract_address=content.get("c", None),
+    contract_inscription_id=content.get("i", None),
     data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
