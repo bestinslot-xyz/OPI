@@ -10,8 +10,8 @@ import traceback, time, codecs, json
 import psycopg2
 import hashlib
 
-from brc20_prog.brc20_prog_client import BRC20ProgClient
-from brc20_prog.balance_server import BRC20BalanceServer, brc20_prog_first_inscription_heights
+from brc20_prog.brc20_prog_client import BRC20ProgClient, brc20_prog_first_inscription_heights
+from brc20_prog.balance_server import BRC20BalanceServer
 
 if not os.path.isfile('.env'):
   print(".env file not found, please run \"python3 reset_init.py\" first")
@@ -973,7 +973,7 @@ def check_for_reorg():
     last_block_ord = cur_metaprotocol.fetchone()
     last_block_brc20_prog = brc20_prog_client.get_block_hash(last_block[0])
     if last_block_ord[1] == last_block[1] and (
-        not brc20_prog_client.is_enabled() or (last_block_brc20_prog is not None and last_block_brc20_prog[2:] == last_block[1])
+        not brc20_prog_client.is_enabled() or last_block[0] < brc20_prog_first_inscription_height or (last_block_brc20_prog is not None and last_block_brc20_prog[2:] == last_block[1])
     ):
         return None  ## last block hashes are the same, no reorg and heights match
 
@@ -1480,7 +1480,7 @@ if brc20_prog_client.is_enabled():
 
   if brc20_prog_client.get_block_height() == 0:
     # Initial blocks are not indexed, so we need to mine the first blocks in brc20_prog
-    brc20_prog_client.mine_blocks(brc20_prog_first_inscription_height - 1)
+    brc20_prog_client.mine_blocks(brc20_prog_first_inscription_height)
 
   cur_metaprotocol.execute('''select block_hash, block_timestamp  from block_hashes where block_height = %s;''', (brc20_prog_first_inscription_height - 1,))
   if cur_metaprotocol.rowcount != 0:
