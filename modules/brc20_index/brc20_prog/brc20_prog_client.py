@@ -284,7 +284,7 @@ class BRC20ProgClient:
     def get_block_hash(self, block_height: int):
         if not check_brc20_prog_enabled():
             return None
-        result = jsonrpc_call("eth_getBlockByNumber", {"block": str(block_height)})
+        result = jsonrpc_call("eth_getBlockByNumber", {"block": str(block_height), "is_full": False})
         if "error" in result:
             return None
 

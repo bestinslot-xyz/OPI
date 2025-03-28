@@ -948,14 +948,14 @@ def check_for_reorg():
     if cur.rowcount == 0:
       if not brc20_prog_client.is_enabled():
         return None ## nothing indexed yet
-      if brc20_prog_last_block_height == brc20_prog_first_inscription_height - 1:
+      if brc20_prog_last_block_height == brc20_prog_first_inscription_height - 2:
         return None  ## nothing indexed yet
       else:
         return brc20_prog_first_inscription_height - 1  ## brc20_prog is ahead of us
 
     last_block = cur.fetchone()
 
-    if brc20_prog_client.is_enabled() and brc20_prog_last_block_height != brc20_prog_first_inscription_height - 1 and brc20_prog_last_block_height > last_block[0]:
+    if brc20_prog_client.is_enabled() and brc20_prog_last_block_height != brc20_prog_first_inscription_height - 2 and brc20_prog_last_block_height > last_block[0]:
       return last_block[0]  ## brc20_prog is ahead of us
     
     if brc20_prog_client.is_enabled() and brc20_prog_last_block_height < last_block[0]:
@@ -1480,7 +1480,7 @@ if brc20_prog_client.is_enabled():
 
   if brc20_prog_client.get_block_height() == 0:
     # Initial blocks are not indexed, so we need to mine the first blocks in brc20_prog
-    brc20_prog_client.mine_blocks(brc20_prog_first_inscription_height)
+    brc20_prog_client.mine_blocks(brc20_prog_first_inscription_height - 1)
 
   cur_metaprotocol.execute('''select block_hash, block_timestamp  from block_hashes where block_height = %s;''', (brc20_prog_first_inscription_height - 1,))
   if cur_metaprotocol.rowcount != 0:
