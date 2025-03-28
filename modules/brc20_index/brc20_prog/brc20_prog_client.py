@@ -17,11 +17,11 @@ network_type = os.getenv("NETWORK_TYPE") or "mainnet"
   TODO: Update this value to the correct block height before launching on a network
 """
 brc20_prog_first_inscription_heights = {
-    "mainnet": 767430,  # TODO: Update this value to the correct block height before launching on mainnet
-    "testnet": 2413343,  # TODO: Update this value to the correct block height before launching on testnet
-    "testnet4": 0,  # TODO: Update this value to the correct block height before launching on testnet4
-    "signet": 112402,  # TODO: Update this value to the correct block height before launching on signet
-    "regtest": 0,  # TODO: Update this value to the correct block height before launching on regtest
+    "mainnet": 767431,  # TODO: Update this value to the correct block height before launching on mainnet
+    "testnet": 2413344,  # TODO: Update this value to the correct block height before launching on testnet
+    "testnet4": 1,  # TODO: Update this value to the correct block height before launching on testnet4
+    "signet": 230000,  # TODO: Update this value to the correct block height before launching on signet
+    "regtest": 1,  # TODO: Update this value to the correct block height before launching on regtest
 }
 
 
@@ -110,7 +110,7 @@ class BRC20ProgClient:
         amount: int,
         inscription_id: str,
     ): # Returns TxReceipt value
-        if not check_brc20_prog_inscriptions_enabled()(self.current_block_height):
+        if not check_brc20_prog_inscriptions_enabled(self.current_block_height):
             return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
 
@@ -147,7 +147,7 @@ class BRC20ProgClient:
         amount: int,
         inscription_id: str,
     ): # Returns TxReceipt value
-        if not check_brc20_prog_inscriptions_enabled()(self.current_block_height):
+        if not check_brc20_prog_inscriptions_enabled(self.current_block_height):
             return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Withdrawing from BRC20PROG")
