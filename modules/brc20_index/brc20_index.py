@@ -580,20 +580,13 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
     print("Invalid spent_pkScript for deploy transfer")
     return
 
-  result = brc20_prog_client.add_tx_to_block(
+  brc20_prog_client.deploy(
     from_pkscript=inscribe_event["source_pkScript"],
-    contract_address=None,
     data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
     inscription_id=inscription_id
   )
-
-  if result["contractAddress"] is not None:
-      cur_metaprotocol.execute(
-          """INSERT INTO brc20_prog_contracts (inscription_id, contract_address, block_height) VALUES (%s, %s, %s);""",
-          (inscription_id, result["contractAddress"], block_height),
-      )
 
 
 def brc20_prog_call_inscribe(block_height, inscription_id, new_pkScript):
@@ -625,20 +618,10 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     print("Invalid spent_pkScript for call transfer")
     return
 
-  if "c" not in content:
-    if "i" in content:
-      cur_metaprotocol.execute("SELECT contract_address FROM brc20_prog_contracts WHERE inscription_id = %s;", (content["i"],))
-      if cur_metaprotocol.rowcount == 0:
-        print("Contract not found for inscription_id " + str(content["i"]))
-        return
-      content["c"] = cur_metaprotocol.fetchone()[0]
-    else:
-      print("Contract address not found in content")
-      return
-
-  brc20_prog_client.add_tx_to_block(
+  brc20_prog_client.call(
     from_pkscript=inscribe_event["source_pkScript"],
     contract_address=content["c"],
+    contract_inscription_id=content["i"],
     data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
@@ -1006,7 +989,6 @@ def reorg_fix(reorg_height):
     tick_changes[tick] += amount
   for tick in tick_changes:
     cur.execute('''update brc20_tickers set remaining_supply = remaining_supply + %s where tick = %s;''', (tick_changes[tick], tick))
-  cur.execute('delete from brc20_prog_contracts where block_height > %s;', (reorg_height,)) ## delete new contracts
   cur.execute('delete from brc20_historic_balances where block_height > %s;', (reorg_height,)) ## delete new balances
   cur.execute('delete from brc20_events where block_height > %s;', (reorg_height,)) ## delete new events
   cur.execute('delete from brc20_cumulative_event_hashes where block_height > %s;', (reorg_height,)) ## delete new bitmaps

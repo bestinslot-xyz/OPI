@@ -201,17 +201,6 @@ for sql in sqls:
   if sql.strip() != '':
     cur.execute(sql)
 
-if BRC20_PROG_ENABLED:
-  sqls = open('brc20_prog/db_reset_prog.sql', 'r').read().split(';')
-  for sql in sqls:
-    if sql.strip() != '':
-      cur.execute(sql)
-  sqls = open('brc20_prog/db_init_prog.sql', 'r').read().split(';')
-  for sql in sqls:
-    if sql.strip() != '':
-      cur.execute(sql)
-
-
 ## close db
 cur.close()
 conn.close()

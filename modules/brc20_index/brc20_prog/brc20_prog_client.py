@@ -10,7 +10,7 @@ network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 
 """
   The first block height where BRC20 Prog inscriptions can be added to the blockchain
-  This affects add_tx_to_block and deposit/withdraw
+  This affects brc20_deploy, brc20_call, brc20_deposit and brc20_withdraw
   If the block height is less than this value, the BRC20 Prog client will not add transactions
   This is to prevent inscriptions from being added to the blockchain before the BRC20 Prog module is initialised
 
@@ -174,51 +174,75 @@ class BRC20ProgClient:
         self.current_block_tx_idx += 1
         return result["result"]
 
-    def add_tx_to_block(
+    def deploy(
         self,
         from_pkscript: str,
-        contract_address: str,
         data: str,
         timestamp: int,
         block_hash: str,
         inscription_id: str,
-    ): # Returns TxReceipt value
-        if not check_brc20_prog_inscriptions_enabled()(self.current_block_height):
-            return {}
+    ) -> tuple[str, bool, str]:
+        if not brc20_prog_enabled:
+            return
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
         print("Adding transaction to BRC20PROG")
 
-        if not block_hash.startswith("0x"):
-            block_hash = "0x" + block_hash
-
-        if contract_address is None:
-            tx_result = jsonrpc_call(
-                "brc20_addTxToBlock",
-                params={
-                    "from_pkscript": from_pkscript,
-                    "data": data,
-                    "timestamp": timestamp,
-                    "hash": block_hash,
-                    "tx_idx": self.current_block_tx_idx,
-                    "inscription_id": inscription_id,
-                },
-            )
-        else:
-            tx_result = jsonrpc_call(
-                "brc20_addTxToBlock",
-                params={
-                    "from_pkscript": from_pkscript,
-                    "to": contract_address,
-                    "data": data,
-                    "timestamp": timestamp,
-                    "hash": block_hash,
-                    "tx_idx": self.current_block_tx_idx,
-                    "inscription_id": inscription_id,
-                },
-            )
+        tx_result = jsonrpc_call(
+            "brc20_deploy",
+            params={
+                "from_pkscript": from_pkscript,
+                "data": data,
+                "timestamp": timestamp,
+                "hash": block_hash,
+                "tx_idx": self.current_block_tx_idx,
+                "inscription_id": inscription_id,
+            },
+        )
 
         if "error" in tx_result:
             raise Exception(tx_result["error"])
+
+        if tx_result["result"]["status"] == "0x0":
+            print("Transaction failed")
+            print(tx_result)
+
+        self.current_block_tx_idx += 1
+        return tx_result["result"]["contractAddress"]
+    
+    def call(
+        self,
+        from_pkscript: str,
+        contract_address: str,
+        contract_inscription_id: str,
+        data: str,
+        timestamp: int,
+        block_hash: str,
+        inscription_id: str = None,
+    ):
+        if not brc20_prog_enabled:
+            return
+        self.verify_block_hash_and_timestamp(block_hash, timestamp)
+        print("Adding transaction to BRC20PROG")
+
+        tx_result = jsonrpc_call(
+            "brc20_call",
+            params={
+                "from_pkscript": from_pkscript,
+                "contract_address": contract_address,
+                "contract_inscription_id": contract_inscription_id,
+                "data": data,
+                "timestamp": timestamp,
+                "hash": block_hash,
+                "tx_idx": self.current_block_tx_idx,
+                "inscription_id": inscription_id,
+            },
+        )
+
+        if "error" in tx_result:
+            raise Exception(tx_result["error"])
+
+        if tx_result["result"]["status"] == "0x0":
+            print("Transaction failed")
 
         self.current_block_tx_idx += 1
         return tx_result["result"]
