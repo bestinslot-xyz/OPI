@@ -25,7 +25,7 @@ class BalanceHandler(BaseHTTPRequestHandler):
         params = parse_qs(urlparse(self.path).query)
         self.wfile.write(
             str(
-                self.brc20_balance_function(params["address"][0], params["ticker"][0])
+                self.brc20_balance_function(params["pkscript"][0], params["ticker"][0])
             ).encode("utf-8")
         )
 
@@ -61,7 +61,7 @@ class BRC20BalanceServer:
 
 
 if __name__ == "__main__":
-    balance_server = BRC20BalanceServer(lambda address, ticker: abs(hash(address + ticker)) % 100)
+    balance_server = BRC20BalanceServer(lambda pkscript, ticker: abs(hash(pkscript + ticker)) % 100)
     balance_server.start()
     input("Press enter to stop server\n")
     balance_server.stop()
