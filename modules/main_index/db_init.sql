@@ -19,6 +19,8 @@ CREATE TABLE public.ord_number_to_id (
 	inscription_id text NOT NULL,
 	cursed_for_brc20 bool NOT NULL,
 	parent_id text NULL,
+   signer_pkscript text NULL,
+	signer_wallet text NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT ord_number_to_id_pk PRIMARY KEY (id)
 );

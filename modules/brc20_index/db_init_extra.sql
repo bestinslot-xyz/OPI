@@ -5,6 +5,7 @@ CREATE TABLE public.brc20_current_balances (
 	tick text NOT NULL,
 	overall_balance numeric(40) NOT NULL,
 	available_balance numeric(40) NOT NULL,
+	single_step_transfer boolean NOT NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT brc20_current_balances_pk PRIMARY KEY (id)
 );
