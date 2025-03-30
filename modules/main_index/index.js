@@ -451,17 +451,17 @@ async function main_index() {
             let content = parts.slice(8).join(';')
             if (parts[5] == 'true') { // JSON
               if (!content.includes('\\u0000')) {
-                running_promises.push(execute_on_db(sql_query_insert_content, [parts[4], content, len(content), parts[6], parts[7], block_height]))
+                running_promises.push(execute_on_db(sql_query_insert_content, [parts[4], content, Buffer.byteLength(content, 'utf8'), parts[6], parts[7], block_height]))
                 ord_sql_query_count += 1
               } else {
-                running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, len(content), parts[6], parts[7], block_height]))
+                running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, Buffer.byteLength(content, 'utf8'), parts[6], parts[7], block_height]))
                 ord_sql_query_count += 1
                 save_error_log("--------------------------------")
                 save_error_log("Error parsing JSON: " + content)
                 save_error_log("On inscription: " + parts[4])
               }
             } else {
-              running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, len(content), parts[6], parts[7], block_height]))
+              running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, Buffer.byteLength(content, 'utf8'), parts[6], parts[7], block_height]))
               ord_sql_query_count += 1
             }
           }
