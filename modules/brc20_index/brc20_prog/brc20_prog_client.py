@@ -181,7 +181,7 @@ class BRC20ProgClient:
         timestamp: int,
         block_hash: str,
         inscription_id: str,
-        inscription_length: int,
+        inscription_byte_len: int,
     ) -> str:
         if not brc20_prog_enabled:
             return
@@ -200,7 +200,7 @@ class BRC20ProgClient:
                 "hash": block_hash,
                 "tx_idx": self.current_block_tx_idx,
                 "inscription_id": inscription_id,
-                "inscription_length": inscription_length,
+                "inscription_byte_len": inscription_byte_len,
             },
         )
 
@@ -223,7 +223,7 @@ class BRC20ProgClient:
         timestamp: int,
         block_hash: str,
         inscription_id: str,
-        inscription_length: int,
+        inscription_byte_len: int,
     ):
         if not brc20_prog_enabled:
             return
@@ -244,7 +244,7 @@ class BRC20ProgClient:
                 "hash": block_hash,
                 "tx_idx": self.current_block_tx_idx,
                 "inscription_id": inscription_id,
-                "inscription_length": inscription_length,
+                "inscription_byte_len": inscription_byte_len,
             },
         )
 

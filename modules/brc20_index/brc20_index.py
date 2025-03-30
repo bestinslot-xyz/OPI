@@ -602,7 +602,7 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
     timestamp=block_timestamp,
     block_hash=block_hash,
     inscription_id=inscription_id,
-    inscription_length=byte_len
+    inscription_byte_len=byte_len
   )
 
 
@@ -649,7 +649,7 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     timestamp=block_timestamp,
     block_hash=block_hash,
     inscription_id=inscription_id,
-    inscription_length=byte_len
+    inscription_byte_len=byte_len
   )
 
 
