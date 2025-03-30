@@ -360,8 +360,8 @@ async function main_index() {
 
     let sql_query_insert_ord_number_to_id = `INSERT into ord_number_to_id (inscription_number, inscription_id, cursed_for_brc20, parent_id, block_height) values ($1, $2, $3, $4, $5);`
     let sql_query_insert_transfer = `INSERT into ord_transfers (id, inscription_id, block_height, old_satpoint, new_satpoint, new_pkScript, new_wallet, sent_as_fee, new_output_value) values ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
-    let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
-    let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5);`
+    let sql_query_insert_content = `INSERT into ord_content (inscription_id, content, byte_len, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5, $6);`
+    let sql_query_insert_text_content = `INSERT into ord_content (inscription_id, text_content, byte_len, content_type, metaprotocol, block_height) values ($1, $2, $3, $4, $5, $6);`
     
     let ord_sql_query_count = 0
     let new_inscription_count = 0
@@ -451,17 +451,17 @@ async function main_index() {
             let content = parts.slice(8).join(';')
             if (parts[5] == 'true') { // JSON
               if (!content.includes('\\u0000')) {
-                running_promises.push(execute_on_db(sql_query_insert_content, [parts[4], content, parts[6], parts[7], block_height]))
+                running_promises.push(execute_on_db(sql_query_insert_content, [parts[4], content, len(content), parts[6], parts[7], block_height]))
                 ord_sql_query_count += 1
               } else {
-                running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, parts[6], parts[7], block_height]))
+                running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, len(content), parts[6], parts[7], block_height]))
                 ord_sql_query_count += 1
                 save_error_log("--------------------------------")
                 save_error_log("Error parsing JSON: " + content)
                 save_error_log("On inscription: " + parts[4])
               }
             } else {
-              running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, parts[6], parts[7], block_height]))
+              running_promises.push(execute_on_db(sql_query_insert_text_content, [parts[4], content, len(content), parts[6], parts[7], block_height]))
               ord_sql_query_count += 1
             }
           }

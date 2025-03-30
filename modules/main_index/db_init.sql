@@ -31,6 +31,7 @@ CREATE TABLE public.ord_content (
 	inscription_id text NOT NULL,
 	"content" jsonb NULL,
 	text_content text NULL,
+	byte_len int4 NOT NULL,
 	content_type text NOT NULL,
 	metaprotocol text NULL,
 	block_height int4 NOT NULL,
