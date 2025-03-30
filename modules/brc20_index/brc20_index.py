@@ -956,17 +956,17 @@ def check_for_reorg():
     if cur.rowcount == 0:
       if not brc20_prog_client.is_enabled():
         return None ## nothing indexed yet
-      if brc20_prog_last_block_height == brc20_prog_first_inscription_height - 2:
+      if brc20_prog_last_block_height < brc20_prog_first_inscription_height:
         return None  ## nothing indexed yet
       else:
         return brc20_prog_first_inscription_height - 1  ## brc20_prog is ahead of us
 
     last_block = cur.fetchone()
 
-    if brc20_prog_client.is_enabled() and brc20_prog_last_block_height != brc20_prog_first_inscription_height - 2 and brc20_prog_last_block_height > last_block[0]:
+    if brc20_prog_client.is_enabled() and brc20_prog_last_block_height >= brc20_prog_first_inscription_height and brc20_prog_last_block_height > last_block[0]:
       return last_block[0]  ## brc20_prog is ahead of us
     
-    if brc20_prog_client.is_enabled() and brc20_prog_last_block_height < last_block[0]:
+    if brc20_prog_client.is_enabled() and brc20_prog_last_block_height >= brc20_prog_first_inscription_height and brc20_prog_last_block_height < last_block[0]:
       return brc20_prog_last_block_height  ## brc20_prog is behind us
 
     while True:
