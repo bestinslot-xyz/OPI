@@ -283,7 +283,8 @@ def get_event_str(event, event_type, inscription_id):
     res += inscription_id + ";"
     res += event["source_pkScript"] + ";"
     res += event["spent_pkScript"] + ";"
-    res += event["data"]
+    res += event["data"] + ";"
+    res += event["byte_len"]
     return res
   elif event_type == "brc20prog-call-inscribe":
     res = "brc20prog-call-inscribe;"
@@ -300,7 +301,8 @@ def get_event_str(event, event_type, inscription_id):
     res += event["spent_pkScript"] + ";"
     res += event["contract_address"] + ";"
     res += event["contract_inscription_id"] + ";"
-    res += event["data"]
+    res += event["data"] + ";"
+    res += event["byte_len"]
     return res
   elif event_type == "brc20prog-withdraw-inscribe":
     decimals_int = ticks[event["tick"]][2]
@@ -586,6 +588,7 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
     "source_pkScript": inscribe_event["source_pkScript"],
     "spent_pkScript": new_pkScript,
     "data": content["d"],
+    "byte_len": str(byte_len),
   }
   block_events_str += get_event_str(event, "brc20prog-deploy-transfer", inscription_id) + EVENT_SEPARATOR
   event_id = block_start_max_event_id + len(brc20_events_insert_cache) + 1
@@ -631,6 +634,7 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     "contract_address": content.get("c", ""),
     "contract_inscription_id": content.get("i", ""),
     "data": content["d"],
+    "byte_len": str(byte_len),
   }
   block_events_str += get_event_str(event, "brc20prog-call-transfer", inscription_id) + EVENT_SEPARATOR
   event_id = block_start_max_event_id + len(brc20_events_insert_cache) + 1
