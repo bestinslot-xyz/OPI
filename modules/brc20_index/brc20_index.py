@@ -578,7 +578,7 @@ def brc20_prog_deploy_inscribe(block_height, inscription_id, new_pkScript, conte
   set_transfer_as_valid(inscription_id)
   save_event(inscription_id, event, "brc20prog-deploy-inscribe")
 
-def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscription_id, new_pkScript, content) -> bool:
+def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscription_id, new_pkScript, content, byte_len) -> bool:
   global block_events_str, event_types
 
   inscribe_event = get_event(inscription_id, "brc20prog-deploy-inscribe")
@@ -601,7 +601,8 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
     data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
-    inscription_id=inscription_id
+    inscription_id=inscription_id,
+    inscription_length=byte_len
   )
 
 
@@ -620,7 +621,7 @@ def brc20_prog_call_inscribe(block_height, inscription_id, new_pkScript, content
   set_transfer_as_valid(inscription_id)
   save_event(inscription_id, event, "brc20prog-call-inscribe")
 
-def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscription_id, new_pkScript, content):
+def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscription_id, new_pkScript, content, byte_len):
   global block_events_str, event_types
 
   inscribe_event = get_event(inscription_id, "brc20prog-call-inscribe")
@@ -647,7 +648,8 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
-    inscription_id=inscription_id
+    inscription_id=inscription_id,
+    inscription_length=byte_len
   )
 
 
@@ -720,7 +722,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
     cur.execute('''INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, current_block_hash))
     return
 
-  cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type, onti.parent_id
+  cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.byte_len, oc.content_type, onti.parent_id
                               FROM ord_transfers ot
                               LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
                               LEFT JOIN ord_number_to_id onti ON ot.inscription_id = onti.inscription_id
@@ -757,7 +759,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
     if idx % 100 == 0:
       print(idx, '/', len(transfers))
 
-    tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, content_type, parent_id = transfer
+    tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, byte_len, content_type, parent_id = transfer
     if parent_id is None: parent_id = ""
 
     if sent_as_fee and old_satpoint == '': continue ## inscribed as fee
@@ -805,14 +807,14 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
         brc20_prog_deploy_inscribe(block_height, inscr_id, new_pkScript, js)
       elif js["op"] == 'deploy' and old_satpoint != '':
         if is_used_or_invalid(inscr_id): continue
-        brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js)
+        brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
       elif js["op"] == 'call' and old_satpoint == '':
         if "c" not in js and "i" not in js: continue
         brc20_prog_call_inscribe(block_height, inscr_id, new_pkScript, js)
       elif js["op"] == 'call' and old_satpoint != '':
         if "c" not in js and "i" not in js: continue
         if is_used_or_invalid(inscr_id): continue
-        brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js)
+        brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
       continue
 
     if "tick" not in js: continue ## invalid inscription
