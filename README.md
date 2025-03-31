@@ -143,27 +143,6 @@ python3 -m pip install json5 stdiomask;
 
 Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
 
-# (Optional) Restore from an online backup for faster initial sync
-
-1) Install dependencies: (pbzip2 is optional but greatly impoves decompress speed)
-
-```bash
-sudo apt update
-sudo apt install postgresql-client-common
-sudo apt install postgresql-client-14
-sudo apt install pbzip2
-
-python3 -m pip install boto3
-python3 -m pip install tqdm
-```
-
-2) Run `restore.py`
-
-```bash
-cd modules/;
-python3 restore.py;
-```
-
 # Run
 
 **Main Meta-Protocol Indexer**
@@ -173,6 +152,9 @@ node index.js;
 ```
 
 **BRC-20 Indexer**
+
+If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+
 ```bash
 cd modules/brc20_index;
 python3 brc20_index.py;
@@ -214,4 +196,3 @@ node api.js;
 - Update the repo (`git pull`)
 - Recompile ord (`cd ord; cargo build --release;`)
 - Re-run all indexers and apis
-- If rebuild is needed, you can run `restore.py` for faster initial sync
