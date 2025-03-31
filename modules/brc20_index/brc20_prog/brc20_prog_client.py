@@ -94,7 +94,7 @@ class BRC20ProgClient:
 
     def is_enabled(self):
         return check_brc20_prog_enabled()
-    
+
     def version(self):
         result = jsonrpc_call("brc20_version", {})
         if "error" in result:
@@ -109,7 +109,7 @@ class BRC20ProgClient:
         block_hash: str,
         amount: int,
         inscription_id: str,
-    ): # Returns TxReceipt value
+    ):  # Returns TxReceipt value
         if not check_brc20_prog_inscriptions_enabled(self.current_block_height):
             return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
@@ -146,7 +146,7 @@ class BRC20ProgClient:
         block_hash: str,
         amount: int,
         inscription_id: str,
-    ): # Returns TxReceipt value
+    ):  # Returns TxReceipt value
         if not check_brc20_prog_inscriptions_enabled(self.current_block_height):
             return {}
         self.verify_block_hash_and_timestamp(block_hash, timestamp)
@@ -213,7 +213,7 @@ class BRC20ProgClient:
 
         self.current_block_tx_idx += 1
         return tx_result["result"]["contractAddress"]
-    
+
     def call(
         self,
         from_pkscript: str,
@@ -294,7 +294,9 @@ class BRC20ProgClient:
     def get_block_hash(self, block_height: int):
         if not check_brc20_prog_enabled():
             return None
-        result = jsonrpc_call("eth_getBlockByNumber", {"block": str(block_height), "is_full": False})
+        result = jsonrpc_call(
+            "eth_getBlockByNumber", {"block": str(block_height), "is_full": False}
+        )
         if "error" in result:
             return None
 

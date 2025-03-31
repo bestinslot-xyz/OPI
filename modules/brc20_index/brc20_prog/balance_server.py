@@ -1,3 +1,4 @@
+import codecs
 from typing import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -23,11 +24,44 @@ class BalanceHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         params = parse_qs(urlparse(self.path).query)
+        if "pkscript" not in params or "ticker" not in params:
+            self.wfile.write(b"Missing parameters")
+            return
+        if len(params["pkscript"]) != 1 or len(params["ticker"]) != 1:
+            self.wfile.write(b"Invalid parameters")
+            return
+        if not all(
+            isinstance(param, str) and len(param) > 0
+            for param in params["pkscript"] + params["ticker"]
+        ):
+            self.wfile.write(b"Invalid parameters")
+            return
+
+        pkscript = params["pkscript"][0].lower()
+        if pkscript.startswith("0x"):
+            pkscript = pkscript[2:]
+
+        ticker = params["ticker"][0].lower()
+        if ticker.startswith("0x"):
+            ticker = ticker[2:]
+
+        try:
+            # Confirm pkscript is a valid hex string
+            codecs.decode(pkscript, "hex")
+        except Exception:
+            self.wfile.write(b"Invalid pkscript")
+            return
+
+        try:
+            ticker = codecs.decode(ticker, "hex").decode("utf-8")
+        except Exception:
+            self.wfile.write(b"Invalid ticker")
+            return
+
         self.wfile.write(
-            str(
-                self.brc20_balance_function(params["pkscript"][0], params["ticker"][0])
-            ).encode("utf-8")
+            str(self.brc20_balance_function(pkscript, ticker)).encode("utf-8")
         )
+
 
 class BRC20BalanceServer:
     def __init__(self, brc20_balance_function: Callable[[str, str], int]):
@@ -61,8 +95,9 @@ class BRC20BalanceServer:
 
 
 if __name__ == "__main__":
-    balance_server = BRC20BalanceServer(lambda pkscript, ticker: abs(hash(pkscript + ticker)) % 100)
+    balance_server = BRC20BalanceServer(
+        lambda pkscript, ticker: abs(hash(pkscript + ticker)) % 100
+    )
     balance_server.start()
     input("Press enter to stop server\n")
     balance_server.stop()
-
