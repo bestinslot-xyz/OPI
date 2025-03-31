@@ -310,6 +310,7 @@ def get_event_str(event, event_type, inscription_id):
     res += inscription_id + ";"
     res += event["source_pkScript"] + ";"
     res += event["tick"] + ";"
+    res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["amount"], decimals_int)
     return res
   elif event_type == "brc20prog-withdraw-transfer":
@@ -319,6 +320,7 @@ def get_event_str(event, event_type, inscription_id):
     res += event["source_pkScript"] + ";"
     res += event["spent_pkScript"] + ";"
     res += event["tick"] + ";"
+    res += event["original_tick"] + ";"
     res += fix_numstr_decimals(event["amount"], decimals_int)
     return res
   else:
@@ -657,12 +659,13 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
   )
 
 
-def brc20_prog_withdraw_inscribe(block_height, inscription_id, source_pkScript, ticker, amount):
+def brc20_prog_withdraw_inscribe(block_height, inscription_id, source_pkScript, ticker, original_tick, amount):
   global block_events_str, event_types
 
   event = {
     "source_pkScript": source_pkScript,
     "tick": ticker,
+    "original_tick": original_tick,
     "amount": str(amount),
   }
   block_events_str += get_event_str(event, "brc20prog-withdraw-inscribe", inscription_id) + EVENT_SEPARATOR
@@ -672,7 +675,7 @@ def brc20_prog_withdraw_inscribe(block_height, inscription_id, source_pkScript, 
   save_event(inscription_id, event, "brc20prog-withdraw-inscribe")
 
 
-def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, ticker, inscription_id, spent_pkScript, amount):
+def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, ticker, original_tick, inscription_id, spent_pkScript, amount):
   global block_events_str, event_types
 
   inscribe_event = get_event(inscription_id, "brc20prog-withdraw-inscribe")
@@ -680,6 +683,7 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
     "source_pkScript": inscribe_event["source_pkScript"],
     "spent_pkScript": spent_pkScript,
     "tick": ticker,
+    "original_tick": original_tick,
     "amount": str(amount),
   }
   block_events_str += get_event_str(event, "brc20prog-withdraw-transfer", inscription_id) + EVENT_SEPARATOR
@@ -779,28 +783,6 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
     if "p" not in js: continue ## invalid inscription
     if js["p"] != 'brc-20' and js["p"] != 'brc20-prog' and js["p"] != 'brc20-module': continue ## invalid inscription
 
-    if js["p"] == 'brc20-module':
-      if not brc20_prog_client.is_enabled(): continue
-      if block_height < brc20_prog_first_inscription_height: continue
-      if "module" not in js: continue
-      if js["module"] != 'BRC20PROG': continue
-      if "op" not in js: continue
-      if js["op"] != 'withdraw': continue
-      if "amt" not in js: continue
-      if not is_positive_number_with_dot(js["amt"]): continue
-      if "tick" not in js: continue
-      tick = js["tick"]
-      if tick not in ticks: continue ## not deployed
-      amount = get_number_extended_to_18_decimals(js["amt"], ticks[tick][2])
-      if amount is None: continue
-      if amount > (2**64-1) * (10**18) or amount <= 0: continue
-      if old_satpoint == '':
-        brc20_prog_withdraw_inscribe(block_height, inscr_id, new_pkScript, tick, amount)
-      else:
-        if is_used_or_invalid(inscr_id): continue
-        brc20_prog_withdraw_transfer(block_height, current_block_hash, block_timestamp, tick, inscr_id, new_pkScript, amount)
-      continue
-
     # Handle brc20-prog deploy and call inscriptions
     if js["p"] == 'brc20-prog':
       if not brc20_prog_client.is_enabled(): continue
@@ -831,7 +813,26 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
     except: continue ## invalid tick
     original_tick_len = utf8len(original_tick)
     if original_tick_len != 4 and original_tick_len != 5: continue ## invalid tick
-    
+
+    # handle brc-20 prog withdraw inscriptions
+    if js["p"] == 'brc20-module':
+      if not brc20_prog_client.is_enabled(): continue
+      if block_height < brc20_prog_first_inscription_height: continue
+      if "module" not in js: continue
+      if js["module"] != 'BRC20PROG': continue
+      if js["op"] != 'withdraw': continue
+      if "amt" not in js: continue
+      if not is_positive_number_with_dot(js["amt"]): continue
+      amount = get_number_extended_to_18_decimals(js["amt"], ticks[tick][2])
+      if amount is None: continue
+      if amount > (2**64-1) * (10**18) or amount <= 0: continue
+      if old_satpoint == '':
+        brc20_prog_withdraw_inscribe(block_height, inscr_id, new_pkScript, tick, original_tick, amount)
+      else:
+        if is_used_or_invalid(inscr_id): continue
+        brc20_prog_withdraw_transfer(block_height, current_block_hash, block_timestamp, tick, original_tick, inscr_id, new_pkScript, amount)
+      continue
+
     # handle deploy
     if js["op"] == 'deploy' and old_satpoint == '':
       if "max" not in js: continue ## invalid inscription

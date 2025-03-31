@@ -33,6 +33,18 @@ for event in block_events:
   if event is 'transfer-transfer':
     ## if sent as fee, sent_pkscript is empty
     block_str += 'transfer-transfer;<inscr_id>;<source_pkscript>;<sent_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
+  if event is 'brc20prog-deploy-inscribe':
+    block_str += 'brc20prog-deploy-inscribe;<inscr_id>;<source_pkscript>;<data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-deploy-transfer':
+    block_str += 'brc20prog-deploy-transfer;<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<byte_len>' + EVENT_SEPARATOR
+  if event is 'brc20prog-call-inscribe':
+    block_str += '<inscr_id>;<source_pkscript>;<contract_address>;<contract_inscription_id>;<data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-call-transfer':
+    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<contract_address>;<contract_inscription_id>;<data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-withdraw-inscribe':
+    block_str += '<inscr_id>;<source_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
+  if event is 'brc20prog-withdraw-transfer':
+    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
 
 if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
 block_hash = sha256_hex(block_str)

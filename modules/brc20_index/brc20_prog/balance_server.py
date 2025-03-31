@@ -53,7 +53,7 @@ class BalanceHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            ticker = codecs.decode(ticker, "hex").decode("utf-8")
+            ticker = codecs.decode(ticker, "hex").decode("utf-8").lower()
         except Exception:
             self.wfile.write(b"Invalid ticker")
             return
