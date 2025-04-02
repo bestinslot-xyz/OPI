@@ -704,7 +704,11 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
     last_balance = get_last_balance(event["spent_pkScript"], ticker)
     last_balance["overall_balance"] += amount
     last_balance["available_balance"] += amount
-    brc20_historic_balances_insert_cache.append((event["spent_pkScript"], None, ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id))
+    brc20_historic_balances_insert_cache.append((event["spent_pkScript"], None, ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+    last_balance = get_last_balance(BRC20_PROG_OP_RETURN_PKSCRIPT, ticker)
+    last_balance["overall_balance"] -= amount
+    last_balance["available_balance"] -= amount
+    brc20_historic_balances_insert_cache.append((BRC20_PROG_OP_RETURN_PKSCRIPT, '', ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id)) ## negated to make a unique event_id
 
 
 def update_event_hashes(block_height):
