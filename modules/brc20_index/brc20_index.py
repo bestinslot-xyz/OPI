@@ -1560,4 +1560,5 @@ while True:
       print("rolling back")
       cur.execute('''ROLLBACK;''')
       in_commit = False
+    reset_caches()
     time.sleep(10)
