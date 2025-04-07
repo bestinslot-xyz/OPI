@@ -31,6 +31,8 @@ if init_env:
   REPORT_NAME="opi_brc20_index"
   BRC20_PROG_ENABLED="false"
   BRC20_PROG_RPC_URL="http://localhost:18545"
+  BRC20_PROG_RPC_SERVER_USER="user"
+  BRC20_PROG_RPC_SERVER_PASSWORD="password"
   BRC20_PROG_BALANCE_SERVER_URL="http://localhost:18546"
 
   print("Initialising .env file")
@@ -119,6 +121,12 @@ if init_env:
     res = input("BRC20 programmable module RPC URL (Default: http://localhost:18545): ")
     if res != '':
       BRC20_PROG_RPC_URL = res
+    res = input("BRC20 programmable module RPC username (Default: user): ")
+    if res != '':
+      BRC20_PROG_RPC_SERVER_USER = res
+    res = stdiomask.getpass("BRC20 programmable module RPC password (Default: password): ")
+    if res != '':
+      BRC20_PROG_RPC_SERVER_PASSWORD = res
     res = input("BRC20 programmable module balance server URL (Default: http://localhost:18546): ")
     if res != '':
       BRC20_PROG_BALANCE_SERVER_URL = res
@@ -141,6 +149,8 @@ if init_env:
   f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
   f.write('BRC20_PROG_ENABLED="' + BRC20_PROG_ENABLED + '"\n')
   f.write('BRC20_PROG_RPC_URL="' + BRC20_PROG_RPC_URL + '"\n')
+  f.write('BRC20_PROG_RPC_SERVER_USER="' + BRC20_PROG_RPC_SERVER_USER + '"\n')
+  f.write('BRC20_PROG_RPC_SERVER_PASSWORD="' + BRC20_PROG_RPC_SERVER_PASSWORD + '"\n')
   f.write('BRC20_PROG_BALANCE_SERVER_URL="' + BRC20_PROG_BALANCE_SERVER_URL + '"\n')
   f.close()
 
