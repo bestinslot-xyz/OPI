@@ -653,8 +653,12 @@ def index_block(block_height, current_block_hash):
       if ticks[tick][3]: ## self-mint
         ## check parent token
         if ticks[tick][4] != parent_id: continue ## invalid parent token
-      mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, parent_id)
-    
+
+      if signer_pkscript == '':
+        mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, parent_id)
+      else:
+        mint_inscribe(block_height, inscr_id, signer_pkscript, signer_wallet, tick, original_tick, amount, parent_id)
+
     # handle transfer
     if js["op"] == 'transfer':
       if "amt" not in js: continue ## invalid inscription
