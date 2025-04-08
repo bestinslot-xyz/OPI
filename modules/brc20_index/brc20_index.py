@@ -582,8 +582,10 @@ def index_block(block_height, current_block_hash):
     content_type_base = content_type.split(';')[0]
     if content_type != 'application/json' and content_type_base != 'text/plain': continue ## invalid inscription
 
+    if block_height < SINGLE_STEP_TRANSFER_HEIGHT: ## single-step transfer not enabled yet
+      signer_pkscript = ''
+
     if cursed_for_brc20:
-      if block_height < SINGLE_STEP_TRANSFER_HEIGHT: continue ## single-step transfer not enabled yet
       if js["op"] != 'transfer': continue
       if signer_pkscript == "": continue
 
