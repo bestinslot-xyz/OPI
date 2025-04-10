@@ -953,7 +953,6 @@ def execute_batch_insert(sql_start, cache, batch_size):
 
 def check_for_reorg():
     brc20_prog_last_block_height = brc20_prog_client.get_block_height()
-    brc20_prog_last_block_hash = brc20_prog_client.get_block_hash(brc20_prog_last_block_height)
 
     cur.execute(
         "select block_height, block_hash from brc20_block_hashes order by block_height desc limit 1;"
@@ -1016,7 +1015,6 @@ def check_for_reorg():
     print("LAST ORD BLOCK HASH: " + str(last_block_ord[1]))
     if brc20_prog_client.is_enabled():
       print("BRC20 PROG BLOCK HEIGHT: " + str(brc20_prog_last_block_height))
-      print("BRC20 PROG BLOCK HASH: " + str(brc20_prog_last_block_hash))
       if brc20_balance_server:
         brc20_balance_server.stop()
     sys.exit(1)
