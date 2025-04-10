@@ -11,7 +11,7 @@ network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 
 brc20_prog_auth = auth.HTTPBasicAuth(
     os.getenv("BRC20_PROG_RPC_SERVER_USER") or "user",
-    os.getenv("BRC20_PROG_RPC_SERVER_PASSWORD") or "password"
+    os.getenv("BRC20_PROG_RPC_SERVER_PASSWORD") or "password",
 )
 
 """
@@ -258,7 +258,7 @@ class BRC20ProgClient:
         if "error" in tx_result:
             raise Exception(tx_result["error"])
 
-        if tx_result["result"]["status"] == "0x0":
+        if tx_result["result"] is None or tx_result["result"]["status"] == "0x0":
             print("Transaction failed")
 
         self.current_block_tx_idx += 1
