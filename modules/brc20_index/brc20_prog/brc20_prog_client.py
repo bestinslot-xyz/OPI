@@ -258,10 +258,9 @@ class BRC20ProgClient:
         if "error" in tx_result:
             raise Exception(tx_result["error"])
 
-        if tx_result["result"] is None or tx_result["result"]["status"] == "0x0":
-            print("Transaction failed")
+        if tx_result["result"]: # Transaction is executed, increase the transaction index
+            self.current_block_tx_idx += 1
 
-        self.current_block_tx_idx += 1
         return tx_result["result"]
 
     def mine_blocks(self, block_count: int):
