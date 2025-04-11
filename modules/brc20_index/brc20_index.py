@@ -576,13 +576,6 @@ def index_block(block_height, current_block_hash):
     content_type_base = content_type.split(';')[0]
     if content_type != 'application/json' and content_type_base != 'text/plain': continue ## invalid inscription
 
-    if block_height < SINGLE_STEP_TRANSFER_HEIGHT: ## single-step transfer not enabled yet
-      signer_pkscript = ''
-
-    if cursed_for_brc20:
-      if js["op"] != 'transfer': continue
-      if signer_pkscript == "": continue
-
     if "tick" not in js: continue ## invalid inscription
     if "op" not in js: continue ## invalid inscription
     tick = js["tick"]
@@ -594,6 +587,15 @@ def index_block(block_height, current_block_hash):
     original_tick_len = utf8len(original_tick)
     if original_tick_len != 4 and original_tick_len != 5: continue ## invalid tick
     
+    if block_height < SINGLE_STEP_TRANSFER_HEIGHT: ## single-step transfer not enabled yet
+      signer_pkscript = ''
+    if original_tick_len == 4: ## single-step transfer not enabled for 4 yet
+      signer_pkscript = ''
+
+    if cursed_for_brc20:
+      if js["op"] != 'transfer': continue
+      if signer_pkscript == "": continue
+
     # handle deploy
     if js["op"] == 'deploy' and old_satpoint == '':
       if "max" not in js: continue ## invalid inscription
