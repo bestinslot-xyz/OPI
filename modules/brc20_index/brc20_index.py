@@ -282,20 +282,18 @@ def get_last_balance(pkscript, tick):
   cache_key = pkscript + tick
   if cache_key in balance_cache:
     return balance_cache[cache_key]
-  cur.execute('''select overall_balance, available_balance, single_step_transfer from brc20_historic_balances where pkscript = %s and tick = %s order by block_height desc, id desc limit 1;''', (pkscript, tick))
+  cur.execute('''select overall_balance, available_balance from brc20_historic_balances where pkscript = %s and tick = %s order by block_height desc, id desc limit 1;''', (pkscript, tick))
   row = cur.fetchone()
   balance_obj = None
   if row is None:
     balance_obj = {
       "overall_balance": 0,
-      "available_balance": 0,
-      "single_step_transfer": False
+      "available_balance": 0
     }
   else:
     balance_obj = {
       "overall_balance": row[0],
-      "available_balance": row[1],
-      "single_step_transfer": row[2]
+      "available_balance": row[1]
     }
   balance_cache[cache_key] = balance_obj
   return balance_obj
@@ -306,9 +304,6 @@ def check_available_balance(pkScript, tick, amount):
   if available_balance < amount: return False
   return True
 
-def check_single_step_transfer(pkScript, tick):
-  last_balance = get_last_balance(pkScript, tick)
-  return last_balance["single_step_transfer"]
 
 transfer_validity_cache = {}
 def is_used_or_invalid(inscription_id):
@@ -359,7 +354,7 @@ brc20_tickers_remaining_supply_update_sql = '''update brc20_tickers set remainin
 brc20_tickers_remaining_supply_update_cache = {}
 brc20_tickers_burned_supply_update_sql = '''update brc20_tickers set burned_supply = burned_supply + %s where tick = %s;'''
 brc20_tickers_burned_supply_update_cache = {}
-brc20_historic_balances_insert_sql = '''insert into brc20_historic_balances (pkscript, wallet, tick, overall_balance, available_balance, single_step_transfer, block_height, event_id) values '''
+brc20_historic_balances_insert_sql = '''insert into brc20_historic_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id) values '''
 brc20_historic_balances_insert_cache = []
 
 def deploy_inscribe(block_height, inscription_id, deployer_pkScript, deployer_wallet, tick, original_tick, max_supply, decimals, limit_per_mint, is_self_mint):
@@ -402,8 +397,8 @@ def mint_inscribe(block_height, inscription_id, minted_pkScript, minted_wallet, 
   last_balance = get_last_balance(minted_pkScript, tick)
   last_balance["overall_balance"] += amount
   last_balance["available_balance"] += amount
-  brc20_historic_balances_insert_cache.append((minted_pkScript, minted_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], last_balance["single_step_transfer"], block_height, event_id))
-
+  brc20_historic_balances_insert_cache.append((minted_pkScript, minted_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+  
   ticks[tick][0] -= amount
 
 def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wallet, tick, original_tick, amount):
@@ -423,8 +418,8 @@ def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wall
   
   last_balance = get_last_balance(source_pkScript, tick)
   last_balance["available_balance"] -= amount
-  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], last_balance["single_step_transfer"], block_height, event_id))
-
+  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+  
   save_transfer_inscribe_event(inscription_id, event)
 
 def single_step_transfer_inscribe(block_height, inscription_id, signer_pkscript, signer_wallet, source_pkScript, source_wallet, tick, original_tick, amount):
@@ -446,14 +441,13 @@ def single_step_transfer_inscribe(block_height, inscription_id, signer_pkscript,
   set_transfer_as_valid(inscription_id)
 
   last_balance = get_last_balance(signer_pkscript, tick)
-  last_balance["single_step_transfer"] = True
   last_balance["available_balance"] -= amount
   last_balance["overall_balance"] -= amount
-  brc20_historic_balances_insert_cache.append((signer_pkscript, signer_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], last_balance["single_step_transfer"], block_height, event_id))
+  brc20_historic_balances_insert_cache.append((signer_pkscript, signer_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
 
   last_balance = get_last_balance(source_pkScript, tick)
   last_balance["overall_balance"] += amount
-  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], last_balance["single_step_transfer"], block_height, -1 * event_id))
+  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id))
 
   save_transfer_inscribe_event(inscription_id, event)
 
@@ -480,14 +474,14 @@ def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent
   
   last_balance = get_last_balance(source_pkScript, tick)
   last_balance["overall_balance"] -= amount
-  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], last_balance["single_step_transfer"], block_height, event_id))
-
+  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+  
   if spent_pkScript != source_pkScript:
     last_balance = get_last_balance(spent_pkScript, tick)
   last_balance["overall_balance"] += amount
   last_balance["available_balance"] += amount
-  brc20_historic_balances_insert_cache.append((spent_pkScript, spent_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], last_balance["single_step_transfer"], block_height, -1 * event_id)) ## negated to make a unique event_id
-
+  brc20_historic_balances_insert_cache.append((spent_pkScript, spent_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id)) ## negated to make a unique event_id
+  
   if spent_pkScript == '6a':
     brc20_tickers_burned_supply_update_cache[tick] = brc20_tickers_burned_supply_update_cache.get(tick, 0) + amount
 
@@ -514,7 +508,7 @@ def transfer_transfer_spend_to_fee(block_height, inscription_id, tick, original_
   
   last_balance = get_last_balance(source_pkScript, tick)
   last_balance["available_balance"] += amount
-  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], last_balance["single_step_transfer"], block_height, event_id))
+  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
 
 
 def update_event_hashes(block_height):
@@ -539,7 +533,7 @@ def index_block(block_height, current_block_hash):
     update_event_hashes(block_height)
     cur.execute('''INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, current_block_hash))
     return
-
+  
   cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type, onti.parent_id, onti.signer_pkscript, onti.signer_wallet, onti.cursed_for_brc20
                               FROM ord_transfers ot
                               LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
@@ -568,7 +562,7 @@ def index_block(block_height, current_block_hash):
     idx += 1
     if idx % 100 == 0:
       print(idx, '/', len(transfers))
-
+    
     tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, content_type, parent_id, signer_pkscript, signer_wallet, cursed_for_brc20 = transfer
     if parent_id is None: parent_id = ""
     if signer_pkscript is None: signer_pkscript = ""
@@ -653,7 +647,6 @@ def index_block(block_height, current_block_hash):
       if ticks[tick][3]: ## self-mint
         ## check parent token
         if ticks[tick][4] != parent_id: continue ## invalid parent token
-
       if signer_pkscript == '':
         mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, parent_id)
       else:
@@ -672,7 +665,6 @@ def index_block(block_height, current_block_hash):
       ## check if available balance is enough
       if old_satpoint == '':
         if signer_pkscript == '':
-          if check_single_step_transfer(new_pkScript, tick): continue ## single step transfer only
           if not check_available_balance(new_pkScript, tick, amount): continue ## not enough available balance
           transfer_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
         else:
@@ -946,16 +938,16 @@ def reorg_on_extra_tables(reorg_height):
   for r in rows:
     pkscript = r[0]
     tick = r[1]
-    cur.execute(''' select overall_balance, available_balance, single_step_transfer, wallet, block_height
-                    from brc20_historic_balances
+    cur.execute(''' select overall_balance, available_balance, wallet, block_height
+                    from brc20_historic_balances 
                     where block_height <= %s and pkscript = %s and tick = %s
                     order by id desc
                     limit 1;''', (reorg_height, pkscript, tick))
     if cur.rowcount != 0:
       balance = cur.fetchone()
-      cur.execute('''insert into brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, single_step_transfer, block_height)
-                      values (%s, %s, %s, %s, %s, %s, %s);''', (pkscript, balance[3], tick, balance[0], balance[1], balance[2], balance[4]))
-
+      cur.execute('''insert into brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+                      values (%s, %s, %s, %s, %s, %s);''', (pkscript, balance[2], tick, balance[0], balance[1], balance[3]))
+  
   cur.execute('truncate table brc20_unused_tx_inscrs restart identity;')
   cur.execute('''with tempp as (
                   select inscription_id, event, id, block_height
@@ -1024,7 +1016,7 @@ def initial_index_of_extra_tables():
                     from brc20_historic_balances
                     group by pkscript, tick
                   )
-                  select bhb.pkscript, bhb.tick, bhb.overall_balance, bhb.available_balance, bhb.single_step_transfer, bhb.wallet, bhb.block_height
+                  select bhb.pkscript, bhb.tick, bhb.overall_balance, bhb.available_balance, bhb.wallet, bhb.block_height
                   from tempp t
                   left join brc20_historic_balances bhb on bhb.id = t.id
                   order by bhb.pkscript asc, bhb.tick asc;''')
@@ -1038,12 +1030,11 @@ def initial_index_of_extra_tables():
     tick = r[1]
     overall_balance = r[2]
     available_balance = r[3]
-    single_step_transfer = r[4]
-    wallet = r[5]
-    block_height = r[6]
-    cur.execute('''insert into brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, single_step_transfer, block_height)
-                   values (%s, %s, %s, %s, %s, %s, %s);''', (pkscript, wallet, tick, overall_balance, available_balance, single_step_transfer, block_height))
-
+    wallet = r[4]
+    block_height = r[5]
+    cur.execute('''insert into brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+                   values (%s, %s, %s, %s, %s, %s);''', (pkscript, wallet, tick, overall_balance, available_balance, block_height))
+  
   print("resetting brc20_extras_block_hashes")
   cur.execute('truncate table brc20_extras_block_hashes restart identity;')
   print("inserting brc20_extras_block_hashes")
@@ -1072,9 +1063,9 @@ def index_extra_tables(block_height, block_hash):
   
   print("updating extra tables for block: " + str(block_height))
 
-  cur.execute('''select pkscript, wallet, tick, overall_balance, available_balance, single_step_transfer
-                 from brc20_historic_balances
-                 where block_height = %s
+  cur.execute('''select pkscript, wallet, tick, overall_balance, available_balance 
+                 from brc20_historic_balances 
+                 where block_height = %s 
                  order by id asc;''', (block_height,))
   balance_changes = cur.fetchall()
   if len(balance_changes) == 0:
@@ -1092,8 +1083,8 @@ def index_extra_tables(block_height, block_hash):
       new_balance = balance_changes_map[key]
       idx += 1
       if idx % 200 == 0: print(idx, '/', len(balance_changes_map))
-      cur.execute('''INSERT INTO brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, single_step_transfer, block_height) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                     ON CONFLICT (pkscript, tick)
+      cur.execute('''INSERT INTO brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height) VALUES (%s, %s, %s, %s, %s, %s)
+                     ON CONFLICT (pkscript, tick) 
                      DO UPDATE SET overall_balance = EXCLUDED.overall_balance
                                 , available_balance = EXCLUDED.available_balance
                                 , block_height = EXCLUDED.block_height;''', new_balance + (block_height,))

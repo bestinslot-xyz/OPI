@@ -13,7 +13,6 @@ CREATE TABLE public.brc20_historic_balances (
 	tick text NOT NULL,
 	overall_balance numeric(40) NOT NULL,
 	available_balance numeric(40) NOT NULL,
-	single_step_transfer boolean NOT NULL,
 	block_height int4 NOT NULL,
 	event_id int8 NOT NULL,
 	CONSTRAINT brc20_historic_balances_pk PRIMARY KEY (id)
