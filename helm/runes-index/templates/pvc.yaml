@@ -9,6 +9,6 @@ spec:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 100Gi
+      storage: {{ .Values.persistence.size }}
   storageClassName: hcloud-volumes
   volumeMode: Filesystem

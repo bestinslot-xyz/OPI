@@ -125,6 +125,8 @@ spec:
               configMapKeyRef:
                 name: bis-config
                 key: networkType
+          - name: DEBUG
+            value: "true"
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

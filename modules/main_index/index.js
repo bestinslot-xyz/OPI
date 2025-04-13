@@ -182,6 +182,7 @@ async function main_index() {
     }
 
     let ord_index_st_tm = +(new Date())
+    const save_point_interval = save_point_intervals[network_type]
     let ord_end_block_height = ord_last_block_height + 500
     if (ord_last_block_height < fast_index_below) { // a random point where blocks start to get more inscription
       ord_end_block_height = ord_last_block_height + 1000
@@ -189,8 +190,6 @@ async function main_index() {
     if (ord_end_block_height > 74000){
       ord_end_block_height = ord_last_block_height + save_point_interval
     }
-
-    const save_point_interval = save_point_intervals[network_type]
     ord_end_block_height = Math.ceil(ord_end_block_height / save_point_interval) * save_point_interval
 
     let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""

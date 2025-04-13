@@ -679,12 +679,12 @@ def check_for_reorg():
   last_block = cur.fetchone()
 
   cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (last_block[0],))
-  if cur_metaprotocol.rowcount == 0: return None ## probably main indexer is fixing hashes for reorg, will correct itself in next run
+  if cur_metaprotocol.rowcount == 0: return -1 ## probably main indexer is fixing hashes for reorg, will correct itself in next run
   last_block_ord = cur_metaprotocol.fetchone()
   if last_block_ord[1] == last_block[1]: return None ## last block hashes are the same, no reorg
 
   print("REORG DETECTED!!")
-  cur.execute('select block_height, block_hash from brc20_block_hashes order by block_height desc limit %s;', (2*save_point_interval,))
+  cur.execute('select block_height, block_hash from brc20_block_hashes order by block_height desc limit %s;', (4*save_point_interval,))
   hashes = cur.fetchall() ## get last 10 hashes
   for h in hashes:
     cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (h[0],))
@@ -1162,6 +1162,9 @@ while True:
   cur_metaprotocol.execute('select block_hash from block_hashes where block_height = %s;', (current_block,))
   current_block_hash = cur_metaprotocol.fetchone()[0]
   reorg_height = check_for_reorg()
+  if reorg_height == -1: ## probably main indexer is fixing hashes for reorg, will correct itself in next run
+    print("waiting for main indexer to fix hashes...")
+    continue
   if reorg_height is not None:
     print("Rolling back to ", reorg_height)
     reorg_fix(reorg_height)

@@ -82,3 +82,6 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+persistence:
+  size: 100Gi
