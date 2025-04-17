@@ -675,10 +675,13 @@ def brc20_prog_withdraw_inscribe(block_height, inscription_id, source_pkScript, 
   save_event(inscription_id, event, "brc20prog-withdraw-inscribe")
 
 
-def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, ticker, original_tick, inscription_id, spent_pkScript, amount):
+def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, ticker, original_tick, inscription_id, spent_pkScript, amount, sent_as_fee):
   global block_events_str, event_types
+  if sent_as_fee:
+    spent_pkScript = None
 
   inscribe_event = get_event(inscription_id, "brc20prog-withdraw-inscribe")
+
   event = {
     "source_pkScript": inscribe_event["source_pkScript"],
     "spent_pkScript": spent_pkScript,
@@ -701,10 +704,16 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
   )
 
   if withdraw_result["status"] == "0x1":
-    last_balance = get_last_balance(event["spent_pkScript"], ticker)
+    # If sent as fee, we withdraw to the source_pkScript
+    # Otherwise, we withdraw to the spent_pkScript
+    if sent_as_fee:
+      withdraw_to = event["source_pkScript"]
+    else:
+      withdraw_to = event["spent_pkScript"]
+    last_balance = get_last_balance(withdraw_to, ticker)
     last_balance["overall_balance"] += amount
     last_balance["available_balance"] += amount
-    brc20_historic_balances_insert_cache.append((event["spent_pkScript"], None, ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+    brc20_historic_balances_insert_cache.append((withdraw_to, None, ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
     last_balance = get_last_balance(BRC20_PROG_OP_RETURN_PKSCRIPT, ticker)
     last_balance["overall_balance"] -= amount
     last_balance["available_balance"] -= amount
@@ -800,9 +809,11 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
         brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
       elif js["op"] == 'call' and old_satpoint == '':
         if "c" not in js and "i" not in js: continue
+        if "c" in js and "i" in js: continue # Only one of c or i should be present
         brc20_prog_call_inscribe(block_height, inscr_id, new_pkScript, js)
       elif js["op"] == 'call' and old_satpoint != '':
         if "c" not in js and "i" not in js: continue
+        if "c" in js and "i" in js: continue # Only one of c or i should be present
         if is_used_or_invalid(inscr_id): continue
         brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
       continue
@@ -834,7 +845,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
         brc20_prog_withdraw_inscribe(block_height, inscr_id, new_pkScript, tick, original_tick, amount)
       else:
         if is_used_or_invalid(inscr_id): continue
-        brc20_prog_withdraw_transfer(block_height, current_block_hash, block_timestamp, tick, original_tick, inscr_id, new_pkScript, amount)
+        brc20_prog_withdraw_transfer(block_height, current_block_hash, block_timestamp, tick, original_tick, inscr_id, new_pkScript, amount, sent_as_fee)
       continue
 
     # handle deploy
