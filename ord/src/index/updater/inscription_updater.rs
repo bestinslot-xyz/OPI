@@ -1,5 +1,12 @@
 use super::*;
-
+use {
+  bitcoin::{
+    blockdata::{opcodes},
+    secp256k1::{XOnlyPublicKey},
+    script::{ScriptBuf},
+    key::{TweakedPublicKey},
+  },
+};
 use std::fs::File;
 use serde_json::Value;
 use hex;
@@ -44,6 +51,7 @@ enum Origin {
     pointer: Option<u64>,
     reinscription: bool,
     unbound: bool,
+    tapscript_pk: [u8; 35],
   },
   Old {
     old_satpoint: SatPoint,
@@ -152,6 +160,19 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       while let Some(inscription) = envelopes.peek() {
         if inscription.input != u32::try_from(input_index).unwrap() {
           break;
+        }
+
+        let mut tapscript_pk = [0u8; 35];
+        if let Some(tapscript) = tx_in.witness.tapscript() {
+          if tapscript.len() >= 35 {
+            let script_bytes = tapscript.as_bytes();
+            if script_bytes[0] == opcodes::all::OP_PUSHBYTES_32.to_u8()
+              && script_bytes[33] == opcodes::all::OP_CHECKSIGVERIFY.to_u8()
+              && script_bytes[34] >= opcodes::all::OP_PUSHNUM_1.to_u8()
+              && script_bytes[34] <= opcodes::all::OP_PUSHNUM_8.to_u8() {
+                tapscript_pk.copy_from_slice(&script_bytes[..35]);
+              }
+          }
         }
 
         let inscription_id = InscriptionId {
@@ -268,6 +289,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
             parent: inscription.payload.parent(),
             pointer: inscription.payload.pointer(),
             unbound,
+            tapscript_pk,
           },
           tx_option: Some(&tx),
         });
@@ -578,6 +600,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         pointer: _,
         reinscription,
         unbound,
+        tapscript_pk,
       } => {
         let inscription_number = if cursed {
           let number: i32 = self.cursed_inscription_count.try_into().unwrap();
@@ -612,7 +635,8 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         let is_json_or_text = is_json || is_text;
         
         let txcnt_limit = if !unbound && is_json_or_text {
-          self.write_to_file(format!("cmd;{0};insert;number_to_id;{1};{2};{3};{4}", self.height, inscription_number, flotsam.inscription_id, if cursed_for_brc20 {"1"} else {"0"}, parent.map(|p| p.to_string()).unwrap_or(String::from(""))), false)?;
+          let signer_pkscript = get_pk_script_by_pubkey_and_type(&tapscript_pk[1..33], tapscript_pk[34]).to_hex_string();
+          self.write_to_file(format!("cmd;{0};insert;number_to_id;{1};{2};{3};{4};{5}", self.height, inscription_number, flotsam.inscription_id, if cursed_for_brc20 {"1"} else {"0"}, parent.map(|p| p.to_string()).unwrap_or(String::from("")), signer_pkscript), false)?;
           // write content as minified json
           if is_json {
             let inscription_content_json = serde_json::from_slice::<Value>(&(inscription_content.unwrap())).unwrap();
@@ -765,5 +789,45 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     self.write_to_file("".to_string(), true)?;
 
     Ok(())
+  }
+}
+
+/// Get a script pubkey based on the provided pubkey and address type
+pub fn get_pk_script_by_pubkey_and_type(x_only_pubkey_bytes: &[u8], address_type: u8) -> ScriptBuf {
+  const BRC20_PUBKEY_ADDRESS_P2TR_SCRIPT: u8 = 0x51;
+  const BRC20_PUBKEY_ADDRESS_P2WPKH_EVEN: u8 = 0x52;
+  const BRC20_PUBKEY_ADDRESS_P2WPKH_ODD: u8 = 0x53;
+  const BRC20_PUBKEY_ADDRESS_P2PKH_EVEN: u8 = 0x54;
+  const BRC20_PUBKEY_ADDRESS_P2PKH_ODD: u8 = 0x55;
+  const BRC20_PUBKEY_ADDRESS_P2SH_P2WPKH_EVEN: u8 = 0x56;
+  const BRC20_PUBKEY_ADDRESS_P2SH_P2WPKH_ODD: u8 = 0x57;
+  const BRC20_PUBKEY_ADDRESS_P2TR_KEY: u8 = 0x58;
+
+  let x_only_pubkey = XOnlyPublicKey::from_slice(x_only_pubkey_bytes).unwrap();
+  let parity = if address_type == BRC20_PUBKEY_ADDRESS_P2PKH_EVEN || address_type == BRC20_PUBKEY_ADDRESS_P2WPKH_EVEN || address_type == BRC20_PUBKEY_ADDRESS_P2SH_P2WPKH_EVEN {
+    bitcoin::secp256k1::Parity::Even
+  } else {
+    bitcoin::secp256k1::Parity::Odd
+  };
+  let pubkey = bitcoin::PublicKey::new(x_only_pubkey.public_key(parity));
+  match address_type {
+    BRC20_PUBKEY_ADDRESS_P2TR_SCRIPT => {
+      let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+      ScriptBuf::new_v1_p2tr(&secp, x_only_pubkey, None)
+    },
+    BRC20_PUBKEY_ADDRESS_P2WPKH_EVEN | BRC20_PUBKEY_ADDRESS_P2WPKH_ODD => {
+      ScriptBuf::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap())
+    },
+    BRC20_PUBKEY_ADDRESS_P2PKH_EVEN | BRC20_PUBKEY_ADDRESS_P2PKH_ODD => {
+      ScriptBuf::new_p2pkh(&pubkey.pubkey_hash())
+    },
+    BRC20_PUBKEY_ADDRESS_P2SH_P2WPKH_EVEN | BRC20_PUBKEY_ADDRESS_P2SH_P2WPKH_ODD => {
+      let wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap());
+      ScriptBuf::new_p2sh(&wpkh_script.script_hash())
+    },
+    BRC20_PUBKEY_ADDRESS_P2TR_KEY => {
+      ScriptBuf::new_v1_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey))
+    },
+    _ => ScriptBuf::new(),
   }
 }

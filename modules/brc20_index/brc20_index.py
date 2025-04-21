@@ -22,6 +22,7 @@ DB_VERSION = 5
 EVENT_HASH_VERSION = 2
 
 SELF_MINT_ENABLE_HEIGHT = 837090
+SINGLE_STEP_TRANSFER_HEIGHT = 895090
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -421,6 +422,35 @@ def transfer_inscribe(block_height, inscription_id, source_pkScript, source_wall
   
   save_transfer_inscribe_event(inscription_id, event)
 
+def single_step_transfer_inscribe(block_height, inscription_id, signer_pkscript, signer_wallet, source_pkScript, source_wallet, tick, original_tick, amount):
+  global in_commit, block_events_str, event_types
+
+  event = {
+    "singer_pkScript": signer_pkscript,
+    "singer_wallet": signer_wallet,
+    "source_pkScript": source_pkScript,
+    "source_wallet": source_wallet,
+    "tick": tick,
+    "original_tick": original_tick,
+    "amount": str(amount)
+  }
+
+  block_events_str += get_event_str(event, "transfer-inscribe", inscription_id) + EVENT_SEPARATOR
+  event_id = block_start_max_event_id + len(brc20_events_insert_cache) + 1
+  brc20_events_insert_cache.append((event_id, event_types["transfer-inscribe"], block_height, inscription_id, json.dumps(event)))
+  set_transfer_as_valid(inscription_id)
+
+  last_balance = get_last_balance(signer_pkscript, tick)
+  last_balance["available_balance"] -= amount
+  last_balance["overall_balance"] -= amount
+  brc20_historic_balances_insert_cache.append((signer_pkscript, signer_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+
+  last_balance = get_last_balance(source_pkScript, tick)
+  last_balance["overall_balance"] += amount
+  brc20_historic_balances_insert_cache.append((source_pkScript, source_wallet, tick, last_balance["overall_balance"], last_balance["available_balance"], block_height, -1 * event_id))
+
+  save_transfer_inscribe_event(inscription_id, event)
+
 def transfer_transfer_normal(block_height, inscription_id, spent_pkScript, spent_wallet, tick, original_tick, amount, using_tx_id):
   global in_commit, block_events_str, event_types
 
@@ -504,12 +534,11 @@ def index_block(block_height, current_block_hash):
     cur.execute('''INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, current_block_hash))
     return
   
-  cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type, onti.parent_id
+  cur_metaprotocol.execute('''SELECT ot.id, ot.inscription_id, ot.old_satpoint, ot.new_pkscript, ot.new_wallet, ot.sent_as_fee, oc."content", oc.content_type, onti.parent_id, onti.signer_pkscript, onti.signer_wallet, onti.cursed_for_brc20
                               FROM ord_transfers ot
                               LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
                               LEFT JOIN ord_number_to_id onti ON ot.inscription_id = onti.inscription_id
-                              WHERE ot.block_height = %s 
-                                 AND onti.cursed_for_brc20 = false
+                              WHERE ot.block_height = %s
                                  AND oc."content" is not null AND oc."content"->>'p'='brc-20'
                               ORDER BY ot.id asc;''', (block_height,))
   transfers = cur_metaprotocol.fetchall()
@@ -534,9 +563,9 @@ def index_block(block_height, current_block_hash):
     if idx % 100 == 0:
       print(idx, '/', len(transfers))
     
-    tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, content_type, parent_id = transfer
+    tx_id, inscr_id, old_satpoint, new_pkScript, new_addr, sent_as_fee, js, content_type, parent_id, signer_pkscript, signer_wallet, cursed_for_brc20 = transfer
     if parent_id is None: parent_id = ""
-    
+    if signer_pkscript is None: signer_pkscript = ""
     if sent_as_fee and old_satpoint == '': continue ## inscribed as fee
 
     if content_type is None: continue ## invalid inscription
@@ -558,6 +587,17 @@ def index_block(block_height, current_block_hash):
     original_tick_len = utf8len(original_tick)
     if original_tick_len != 4 and original_tick_len != 5: continue ## invalid tick
     
+    if block_height < SINGLE_STEP_TRANSFER_HEIGHT: ## single-step transfer not enabled yet
+      signer_pkscript = ''
+    if original_tick_len == 4: ## single-step transfer not enabled for 4 yet
+      signer_pkscript = ''
+
+    if cursed_for_brc20:
+      if block_height < SINGLE_STEP_TRANSFER_HEIGHT: ## single-step transfer not enabled yet
+        continue
+
+      if not(signer_pkscript != "" and js["op"] == 'transfer') and not inscr_id.endswith("i0"): continue
+
     # handle deploy
     if js["op"] == 'deploy' and old_satpoint == '':
       if "max" not in js: continue ## invalid inscription
@@ -611,8 +651,11 @@ def index_block(block_height, current_block_hash):
       if ticks[tick][3]: ## self-mint
         ## check parent token
         if ticks[tick][4] != parent_id: continue ## invalid parent token
-      mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, parent_id)
-    
+      if signer_pkscript == '':
+        mint_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount, parent_id)
+      else:
+        mint_inscribe(block_height, inscr_id, signer_pkscript, signer_wallet, tick, original_tick, amount, parent_id)
+
     # handle transfer
     if js["op"] == 'transfer':
       if "amt" not in js: continue ## invalid inscription
@@ -625,8 +668,12 @@ def index_block(block_height, current_block_hash):
         if amount > (2**64-1) * (10**18) or amount <= 0: continue ## invalid amount
       ## check if available balance is enough
       if old_satpoint == '':
-        if not check_available_balance(new_pkScript, tick, amount): continue ## not enough available balance
-        transfer_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
+        if signer_pkscript == '':
+          if not check_available_balance(new_pkScript, tick, amount): continue ## not enough available balance
+          transfer_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
+        else:
+          if not check_available_balance(signer_pkscript, tick, amount): continue ## not enough available balance
+          single_step_transfer_inscribe(block_height, inscr_id, signer_pkscript, signer_wallet, new_pkScript, new_addr, tick, original_tick, amount)
       else:
         if is_used_or_invalid(inscr_id): continue ## already used or invalid
         if sent_as_fee: transfer_transfer_spend_to_fee(block_height, inscr_id, tick, original_tick, amount, tx_id)
