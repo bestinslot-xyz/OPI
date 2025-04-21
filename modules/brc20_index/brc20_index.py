@@ -593,8 +593,10 @@ def index_block(block_height, current_block_hash):
       signer_pkscript = ''
 
     if cursed_for_brc20:
-      if js["op"] != 'transfer': continue
-      if signer_pkscript == "": continue
+      if block_height < SINGLE_STEP_TRANSFER_HEIGHT: ## single-step transfer not enabled yet
+        continue
+
+      if not(signer_pkscript != "" and js["op"] == 'transfer') and not inscr_id.endswith("i0"): continue
 
     # handle deploy
     if js["op"] == 'deploy' and old_satpoint == '':
