@@ -659,11 +659,12 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
   )
 
 
-def brc20_prog_withdraw_inscribe(block_height, inscription_id, source_pkScript, ticker, original_tick, amount):
+def brc20_prog_withdraw_inscribe(block_height, inscription_id, source_pkScript, source_wallet, ticker, original_tick, amount):
   global block_events_str, event_types
 
   event = {
     "source_pkScript": source_pkScript,
+    "source_wallet": source_wallet,
     "tick": ticker,
     "original_tick": original_tick,
     "amount": str(amount),
@@ -675,16 +676,16 @@ def brc20_prog_withdraw_inscribe(block_height, inscription_id, source_pkScript, 
   save_event(inscription_id, event, "brc20prog-withdraw-inscribe")
 
 
-def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, ticker, original_tick, inscription_id, spent_pkScript, amount, sent_as_fee):
+def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, ticker, original_tick, inscription_id, spent_pkScript, spent_wallet, amount, sent_as_fee):
   global block_events_str, event_types
-  if sent_as_fee:
-    spent_pkScript = None
 
   inscribe_event = get_event(inscription_id, "brc20prog-withdraw-inscribe")
 
   event = {
     "source_pkScript": inscribe_event["source_pkScript"],
-    "spent_pkScript": spent_pkScript,
+    "source_wallet": inscribe_event["source_wallet"],
+    "spent_pkScript": spent_pkScript if not sent_as_fee else None,
+    "spent_wallet": spent_wallet if not sent_as_fee else None,
     "tick": ticker,
     "original_tick": original_tick,
     "amount": str(amount),
@@ -708,12 +709,14 @@ def brc20_prog_withdraw_transfer(block_height, block_hash, block_timestamp, tick
     # Otherwise, we withdraw to the spent_pkScript
     if sent_as_fee:
       withdraw_to = event["source_pkScript"]
+      withdraw_to_wallet = event["source_wallet"]
     else:
       withdraw_to = event["spent_pkScript"]
+      withdraw_to_wallet = event["spent_wallet"]
     last_balance = get_last_balance(withdraw_to, ticker)
     last_balance["overall_balance"] += amount
     last_balance["available_balance"] += amount
-    brc20_historic_balances_insert_cache.append((withdraw_to, None, ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
+    brc20_historic_balances_insert_cache.append((withdraw_to, withdraw_to_wallet, ticker, last_balance["overall_balance"], last_balance["available_balance"], block_height, event_id))
     last_balance = get_last_balance(BRC20_PROG_OP_RETURN_PKSCRIPT, ticker)
     last_balance["overall_balance"] -= amount
     last_balance["available_balance"] -= amount
@@ -842,10 +845,10 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
       if amount is None: continue
       if amount > (2**64-1) * (10**18) or amount <= 0: continue
       if old_satpoint == '':
-        brc20_prog_withdraw_inscribe(block_height, inscr_id, new_pkScript, tick, original_tick, amount)
+        brc20_prog_withdraw_inscribe(block_height, inscr_id, new_pkScript, new_addr, tick, original_tick, amount)
       else:
         if is_used_or_invalid(inscr_id): continue
-        brc20_prog_withdraw_transfer(block_height, current_block_hash, block_timestamp, tick, original_tick, inscr_id, new_pkScript, amount, sent_as_fee)
+        brc20_prog_withdraw_transfer(block_height, current_block_hash, block_timestamp, tick, original_tick, inscr_id, new_pkScript, new_addr, amount, sent_as_fee)
       continue
 
     # handle deploy
