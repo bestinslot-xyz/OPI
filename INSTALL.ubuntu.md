@@ -16,6 +16,9 @@ mkdir -p /mnt/HC_Volume/bitcoin_chain
 bitcoin-core.daemon -txindex=1 -datadir="/mnt/HC_Volume/bitcoin_chain" -rest
 ```
 
+> [!WARNING]
+> If running on Signet, add `-signet` to `bitcoin-core.daemon` command, if you're planning on running BRC2.0 Programmable Module, also enable RPC authentication by adding `-rpcuser=<USER>` and `-rpcpassword=<PASSWORD>`.
+
 ## Installing PostgreSQL
 
 1) First install and run postgresql binaries.
@@ -111,8 +114,14 @@ rustup update stable
 ## Cloning the repository
 
 ```bash
-git clone https://github.com/bestinslot-xyz/OPI.git
+git clone https://github.com/bestinslot-xyz/OPI.git && cd OPI
 ```
+
+> [!WARNING]
+> If running on Signet with BRC2.0, clone the experimental signet branch by using:
+> ```
+> git clone -b experimental-signet-brc20-prog https://github.com/bestinslot-xyz/OPI.git && cd OPI
+> ```
 
 All next shell script groups assumes that you are in OPI folder cloned by above command.
 
@@ -187,7 +196,12 @@ node index.js;
 
 **BRC-20 Indexer**
 
-If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+> [!WARNING]
+> If running BRC2.0, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+> 
+> BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`.
+> 
+> BRC2.0 needs to be running before starting the brc20 indexer. When running `reset_init.py`, enable BRC2.0 by setting the variable to true when asked.
 
 ```bash
 cd modules/brc20_index;
