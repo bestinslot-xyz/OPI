@@ -27,7 +27,7 @@ in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
 INDEXER_VERSION = "opi-brc20-full-node v0.4.1"
-BRC20_PROG_VERSION = "0.4.0"
+BRC20_PROG_VERSION = "0.4.1"
 RECOVERABLE_DB_VERSIONS = [ 4 ]
 DB_VERSION = 5
 EVENT_HASH_VERSION = 2
@@ -805,20 +805,20 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
       if block_height < brc20_prog_first_inscription_height: continue
       if "op" not in js: continue ## invalid inscription
       if "d" not in js: continue ## invalid inscription
-      if js["op"] == 'deploy' and old_satpoint == '':
-        brc20_prog_deploy_inscribe(block_height, inscr_id, new_pkScript, js)
-      elif js["op"] == 'deploy' and old_satpoint != '':
-        if is_used_or_invalid(inscr_id): continue
-        brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
-      elif js["op"] == 'call' and old_satpoint == '':
+      if (js["op"] == 'deploy' or js["op"] == 'd'):
+        if old_satpoint == '':
+          brc20_prog_deploy_inscribe(block_height, inscr_id, new_pkScript, js)
+        else:
+          if is_used_or_invalid(inscr_id): continue
+          brc20_prog_deploy_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
+      elif (js["op"] == 'call' or js["op"] == 'c'):
         if "c" not in js and "i" not in js: continue
         if "c" in js and "i" in js: continue # Only one of c or i should be present
-        brc20_prog_call_inscribe(block_height, inscr_id, new_pkScript, js)
-      elif js["op"] == 'call' and old_satpoint != '':
-        if "c" not in js and "i" not in js: continue
-        if "c" in js and "i" in js: continue # Only one of c or i should be present
-        if is_used_or_invalid(inscr_id): continue
-        brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
+        if old_satpoint == '':
+          brc20_prog_call_inscribe(block_height, inscr_id, new_pkScript, js)
+        else:
+          if is_used_or_invalid(inscr_id): continue
+          brc20_prog_call_transfer(block_height, current_block_hash, block_timestamp, inscr_id, new_pkScript, js, byte_len)
       continue
 
     if "tick" not in js: continue ## invalid inscription
