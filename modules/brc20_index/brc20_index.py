@@ -840,6 +840,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
       if js["module"] != 'BRC20PROG': continue
       if js["op"] != 'withdraw': continue
       if "amt" not in js: continue
+      if tick not in ticks: continue ## not deployed
       if not is_positive_number_with_dot(js["amt"]): continue
       amount = get_number_extended_to_18_decimals(js["amt"], ticks[tick][2])
       if amount is None: continue
