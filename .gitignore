@@ -5,6 +5,3 @@
 .venv
 **/venv/**
 **/__pycache__/**
-
-# Temporarily ignore, WIP
-modules/brc20_index_*

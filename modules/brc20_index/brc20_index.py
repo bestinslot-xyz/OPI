@@ -737,7 +737,7 @@ def update_event_hashes(block_height):
 
 def index_block(block_height, current_block_hash, block_timestamp: int, is_synced):
   global ticks, block_events_str, block_start_max_event_id, brc20_events_insert_cache, brc20_tickers_insert_cache, brc20_tickers_remaining_supply_update_cache, brc20_tickers_burned_supply_update_cache, brc20_historic_balances_insert_cache, in_commit
-  print("Indexing block " + str(block_height))
+  # print("Indexing block " + str(block_height))
   block_events_str = ""
 
   if block_height < first_brc20_height:
@@ -759,7 +759,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
                               ORDER BY ot.id asc;''', (block_height,))
   transfers = cur_metaprotocol.fetchall()
   if len(transfers) == 0:
-    print("No transfers found for block " + str(block_height))
+    # print("No transfers found for block " + str(block_height))
     update_event_hashes(block_height)
     cur.execute('''INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (%s, %s);''', (block_height, current_block_hash))
     if block_height >= brc20_prog_first_inscription_height:
@@ -1212,7 +1212,7 @@ def try_to_report_with_retries(to_send):
 def report_hashes(block_height):
   global report_to_indexer
   if not report_to_indexer:
-    print("Reporting to metaprotocol indexer is disabled.")
+    # print("Reporting to metaprotocol indexer is disabled.")
     return
   cur.execute('''select block_event_hash, cumulative_event_hash from brc20_cumulative_event_hashes where block_height = %s;''', (block_height,))
   row = cur.fetchone()
@@ -1537,7 +1537,8 @@ while True:
     time.sleep(5)
     continue
   
-  print("Processing block %s" % current_block)
+  if current_block % 1000 == 0:
+    print("Processing block %s" % current_block)
   cur_metaprotocol.execute('select block_hash, block_timestamp from block_hashes where block_height = %s;', (current_block,))
   current_block_hash, block_timestamp = cur_metaprotocol.fetchone()
   reorg_height = check_for_reorg()
@@ -1547,6 +1548,8 @@ while True:
     print("Rolled back to " + str(reorg_height))
     continue
   try:
+    if current_block == max_block_of_metaprotocol_db:
+      exit(0) ## no new blocks to index, exit
     if current_block == brc20_prog_first_inscription_height:
       cur_metaprotocol.execute('''select block_hash, block_timestamp  from block_hashes where block_height = %s;''', (brc20_prog_first_inscription_height - 1,))
       prog_genesis_block_hash, prog_genesis_timestamp = cur_metaprotocol.fetchone()
