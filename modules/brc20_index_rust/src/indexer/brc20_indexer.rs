@@ -1,4 +1,4 @@
-use std::{error::Error, process};
+use std::error::Error;
 
 use brc20_prog::{Brc20ProgApiClient, types::InscriptionBytes};
 use jsonrpsee::http_client::HttpClient;
@@ -174,14 +174,6 @@ impl Brc20Indexer {
             }
 
             let is_synced = next_brc20_block == last_opi_block;
-
-            if is_synced {
-                tracing::info!(
-                    "BRC20 indexer is synced with main index at block height {}, exiting",
-                    next_brc20_block
-                );
-                process::exit(0)
-            }
 
             if is_synced || next_brc20_block % 1000 == 0 {
                 tracing::info!("Processing block: {}", next_brc20_block);
