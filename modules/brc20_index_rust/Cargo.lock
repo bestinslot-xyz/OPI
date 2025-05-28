@@ -1032,6 +1032,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "serde_with",
  "sha256",
  "sqlx",
  "tokio",

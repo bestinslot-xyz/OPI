@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use super::Event;
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
-
 pub struct Brc20ProgCallTransferEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
@@ -12,6 +13,7 @@ pub struct Brc20ProgCallTransferEvent {
     pub contract_address: Option<String>,
     pub contract_inscription_id: Option<String>,
     pub data: String,
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     pub byte_len: u64,
 }
 

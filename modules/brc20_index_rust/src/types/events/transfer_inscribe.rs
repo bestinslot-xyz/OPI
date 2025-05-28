@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use crate::types::events::number_string_with_full_decimals;
 
 use super::Event;
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
-
 pub struct TransferInscribeEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
@@ -14,6 +15,7 @@ pub struct TransferInscribeEvent {
     pub ticker: String,
     #[serde(rename = "original_tick")]
     pub original_ticker: String,
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     pub amount: u128,
 }
 

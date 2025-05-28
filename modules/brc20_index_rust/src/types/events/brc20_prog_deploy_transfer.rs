@@ -1,15 +1,17 @@
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use super::Event;
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
-
 pub struct Brc20ProgDeployTransferEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
     #[serde(rename = "spent_pkScript")]
     pub spent_pk_script: String,
     pub data: String,
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     pub byte_len: i32,
 }
 
