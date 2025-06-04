@@ -94,7 +94,6 @@ mod re;
 mod representation;
 pub mod settings;
 pub mod subcommand;
-pub mod rpc_server;
 
 type Result<T = (), E = Error> = std::result::Result<T, E>;
 type SnafuResult<T = (), E = SnafuError> = std::result::Result<T, E>;
