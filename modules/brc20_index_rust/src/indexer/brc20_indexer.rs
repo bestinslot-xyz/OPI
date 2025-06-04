@@ -49,11 +49,7 @@ impl Brc20Indexer {
     pub fn new(config: Brc20IndexerConfig) -> Self {
         let brc20_db = Brc20Database::new(&config);
         let main_db = OpiDatabase::new(
-            &config.db_user,
-            &config.db_password,
-            &config.db_host,
-            &config.db_port,
-            &config.db_database,
+            "http://localhost:11030".to_string()
         );
 
         let brc20_prog_client = build_brc20_prog_http_client(&config);
@@ -70,12 +66,6 @@ impl Brc20Indexer {
     }
 
     async fn init(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.config.network_type != self.main_db.get_network_type().await? {
-            return Err("network_type mismatch between main index and brc20 index".into());
-        }
-        if self.main_db.get_max_transfer_count().await? < 2 {
-            return Err("default max_transfer_cnt is less than 2, brc20_indexer requires at least 2, please recreate db from scratch and rerun ord with default tx limit set to 2 or more".into());
-        }
         let db_version = self.brc20_db.get_db_version().await?;
         if db_version != DB_VERSION {
             return Err(format!(
@@ -704,7 +694,7 @@ impl Brc20Indexer {
                             original_ticker,
                             amount,
                             transfer.sent_as_fee,
-                            transfer.tx_id,
+                            transfer.tx_id.clone(),
                             brc20_prog_tx_idx,
                             &mut block_events_buffer,
                         )
@@ -1477,7 +1467,7 @@ impl Brc20Indexer {
         original_ticker: &str,
         amount: u128,
         sent_as_fee: bool,
-        tx_id: i64,
+        tx_id: String,
         brc20_prog_tx_idx: u64,
         block_events_buffer: &mut String,
     ) -> Result<(), Box<dyn Error>> {

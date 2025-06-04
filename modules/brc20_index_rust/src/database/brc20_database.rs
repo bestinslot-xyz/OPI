@@ -63,11 +63,11 @@ impl Brc20Database {
             .max_connections(5)
             .connect_lazy(&format!(
                 "postgres://{}:{}@{}:{}/{}",
-                config.db_metaprotocol_user,
-                config.db_metaprotocol_password,
-                config.db_metaprotocol_host,
-                config.db_metaprotocol_port,
-                config.db_metaprotocol_database,
+                config.db_user,
+                config.db_password,
+                config.db_host,
+                config.db_port,
+                config.db_database,
             ))
             .expect("Failed to connect to the database");
         Brc20Database {

@@ -22,7 +22,7 @@ pub struct TransferTransferEvent {
     pub amount: u128,
     #[serde(rename = "using_tx_id")]
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub tx_id: i64,
+    pub tx_id: String,
 }
 
 impl Event for TransferTransferEvent {

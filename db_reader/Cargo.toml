@@ -1,0 +1,25 @@
+[package]
+name = "db_reader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rocksdb = "0.23.0"
+rlimit = "0.10.2"
+jsonrpsee = { version = "0.25.1", features = [
+    "server",
+    "client",
+    "macros",
+    "jsonrpsee-core",
+    "jsonrpsee-types",
+] }
+tower = "0.5.2"
+tower-http = { version = "0.6.2", features = ["auth", "compression-br", "compression-gzip", "cors", "set-header"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
+hyper = { version = "1.5.2", features = ["client", "http2"] }
+hyper-util = { version = "0.1.10", features = ["client", "client-legacy", "http2", "tokio"] }
+serde = { version = "1.0.137", features = ["derive"] }
+hex = "0.4.3"
+serde-hex = "0.1.0"
+serde_json = { version = "1.0.81", features = ["preserve_order"] }
+bitcoin = { version = "0.32.5", features = ["rand"] }

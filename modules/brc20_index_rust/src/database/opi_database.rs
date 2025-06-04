@@ -1,126 +1,120 @@
 use std::error::Error;
 
-use bitcoin::Network;
-use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+use serde::Deserialize;
 
 use crate::types::Transfer;
 
 pub struct OpiDatabase {
-    pub client: Pool<Postgres>,
+    pub url: String,
+    client: reqwest::Client,
+}
+
+#[derive(Deserialize)]
+struct LatestHeightResponse {
+    jsonrpc: String,
+    id: i32,
+    result: i32,
+}
+
+#[derive(Deserialize)]
+struct HashAndTsResponse {
+    jsonrpc: String,
+    id: i32,
+    result: BlockHashAndTsResult,
+}
+
+#[derive(Deserialize)]
+struct BlockHashAndTsResult {
+    block_hash: String,
+    timestamp: i64,
+}
+
+#[derive(Deserialize)]
+struct BRC20TxsResponse {
+    jsonrpc: String,
+    id: i32,
+    result: Vec<BRC20TxResultItem>,
+}
+
+#[derive(Deserialize)]
+struct BRC20TxResultItem {
+    tx_id: String,
+    inscription_id: String,
+    old_satpoint: Option<String>,
+    new_pkscript: String,
+    new_wallet: String,
+    sent_as_fee: bool,
+    content_hex: String,
+    byte_len: u32,
+    content_type_hex: String,
+    parent_id: Option<String>,
 }
 
 impl OpiDatabase {
     pub fn new(
-        db_user: &str,
-        db_password: &str,
-        db_host: &str,
-        db_port: &str,
-        db_database: &str,
+        url: String,
     ) -> Self {
-        let client = PgPoolOptions::new()
-            .max_connections(5)
-            .connect_lazy(&format!(
-                "postgres://{}:{}@{}:{}/{}",
-                db_user, db_password, db_host, db_port, db_database
-            ))
-            .expect("Failed to connect to the database");
-        OpiDatabase { client }
+        let client = reqwest::Client::new();
+        OpiDatabase { url, client }
     }
 
-    pub async fn get_network_type(&self) -> Result<Network, Box<dyn Error>> {
-        let row = sqlx::query!("SELECT network_type FROM ord_network_type LIMIT 1")
-            .fetch_one(&self.client)
+    pub async fn rpc_call<T: serde::de::DeserializeOwned>(
+        &self,
+        url: String,
+        method: &str,
+        params: &[serde_json::Value],
+    ) -> Result<T, Box<dyn Error>> {
+        let res = self.client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params,
+            }))
+            .send()
+            .await?
+            .json::<T>()
             .await?;
-        match row.network_type.as_str() {
-            "mainnet" => Ok(Network::Bitcoin),
-            "testnet" => Ok(Network::Testnet),
-            "testnet4" => Ok(Network::Testnet4),
-            "regtest" => Ok(Network::Regtest),
-            "signet" => Ok(Network::Signet),
-            _ => Err("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js in main_index".into()),
-        }
-    }
 
-    pub async fn get_max_transfer_count(&self) -> Result<i32, Box<dyn Error>> {
-        let row = sqlx::query!(
-            "SELECT max_transfer_cnt from ord_transfer_counts WHERE event_type = 'default';"
-        )
-        .fetch_one(&self.client)
-        .await?;
-        Ok(row.max_transfer_cnt)
+        Ok(res)
     }
 
     pub async fn get_current_block_height(&self) -> Result<i32, Box<dyn Error>> {
-        let row = sqlx::query!(
-            "SELECT block_height FROM block_hashes ORDER BY block_height DESC LIMIT 1"
-        )
-        .fetch_one(&self.client)
-        .await?;
-        Ok(row.block_height)
+        let res: LatestHeightResponse = self.rpc_call(self.url.clone(), "getLatestBlockHeight", &[]).await?;
+        Ok(res.result)
     }
 
     pub async fn get_block_hash(&self, block_height: i32) -> Result<String, Box<dyn Error>> {
-        let row = sqlx::query!(
-            "SELECT block_hash FROM block_hashes WHERE block_height = $1",
-            block_height
-        )
-        .fetch_one(&self.client)
-        .await?;
-        Ok(row.block_hash)
+        let res: HashAndTsResponse = self.rpc_call(self.url.clone(), "getBlockHashAndTs", &[serde_json::Value::Number(block_height.into())]).await?;
+        Ok(res.result.block_hash)
     }
 
     pub async fn get_block_hash_and_time(
         &self,
         block_height: i32,
     ) -> Result<(String, i64), Box<dyn Error>> {
-        let row = sqlx::query!(
-            "SELECT block_hash, block_timestamp FROM block_hashes WHERE block_height = $1",
-            block_height
-        )
-        .fetch_one(&self.client)
-        .await?;
-        Ok((row.block_hash, row.block_timestamp.unix_timestamp()))
+        let res: HashAndTsResponse = self.rpc_call(self.url.clone(), "getBlockHashAndTs", &[serde_json::Value::Number(block_height.into())]).await?;
+        Ok((res.result.block_hash, res.result.timestamp))
     }
 
     pub async fn get_transfers(&self, block_height: i32) -> Result<Vec<Transfer>, Box<dyn Error>> {
-        Ok(sqlx::query!(
-            r#"SELECT
-                ot.id,
-                ot.inscription_id,
-                ot.old_satpoint,
-                ot.new_pkscript,
-                ot.new_wallet,
-                ot.sent_as_fee,
-                oc."content",
-                oc.byte_len,
-                oc.content_type,
-                onti.parent_id
-                FROM ord_transfers ot
-                LEFT JOIN ord_content oc ON ot.inscription_id = oc.inscription_id
-                LEFT JOIN ord_number_to_id onti ON ot.inscription_id = onti.inscription_id
-                WHERE ot.block_height = $1
-                    AND onti.cursed_for_brc20 = false
-                    AND oc."content" is not null
-                    AND (oc."content"->>'p'='brc-20' 
-                        OR oc."content"->>'p'='brc20-prog'
-                        OR (oc."content"->>'p'='brc20-module' AND oc."content"->>'module'='BRC20PROG'))
-                ORDER BY ot.id asc;"#,
-            block_height
-        ).fetch_all(&self.client)
-        .await?.iter().map(|row|
+        let res: BRC20TxsResponse = self.rpc_call(self.url.clone(), "getBlockBRC20Txes", &[serde_json::Value::Number(block_height.into())]).await?;
+        let transfers: Vec<Transfer> = res.result.iter().map(|item| {
             Transfer {
-                tx_id: row.id,
-                inscription_id: row.inscription_id.clone(),
-                old_satpoint: none_if_empty(row.old_satpoint.clone()),
-                new_pkscript: row.new_pkscript.clone(),
-                new_wallet: none_if_empty(row.new_wallet.clone()),
-                sent_as_fee: row.sent_as_fee,
-                content: row.content.clone(),
-                byte_length: row.byte_len,
-                content_type: row.content_type.clone(),
-                parent_inscription_id: none_if_empty(row.parent_id.clone()),
+                tx_id: item.tx_id.clone(),
+                inscription_id: item.inscription_id.clone(),
+                old_satpoint: item.old_satpoint.clone(),
+                new_pkscript: item.new_pkscript.clone(),
+                new_wallet: none_if_empty(Some(item.new_wallet.clone())),
+                sent_as_fee: item.sent_as_fee,
+                content: Some(serde_json::from_slice(&hex::decode(&item.content_hex).unwrap()).unwrap_or_default()),
+                byte_length: item.byte_len as i32,
+                content_type: item.content_type_hex.clone(),
+                parent_inscription_id: item.parent_id.clone(),
             }
-        ).collect())
+        }).collect();
+        Ok(transfers)
     }
 }
 

@@ -100,42 +100,42 @@ for *A*, *B*, *C*, and *D*, respectively.
 Now for some examples. This satoshi is common:
 
 ```
-1°1′1″1‴
+0°0′0″1‴
 │ │ │ ╰─ Not first sat in block
-│ │ ╰─── Not first block in difficulty adjustment period
-│ ╰───── Not first block in halving epoch
-╰─────── Second cycle
+│ │ ╰─── Any block in difficulty adjustment period
+│ ╰───── Any block in halving epoch
+╰─────── Any cycle
 ```
 
 
 This satoshi is uncommon:
 
 ```
-1°1′1″0‴
+0°1′1″0‴
 │ │ │ ╰─ First sat in block
 │ │ ╰─── Not first block in difficulty adjustment period
 │ ╰───── Not first block in halving epoch
-╰─────── Second cycle
+╰─────── Any cycle
 ```
 
 This satoshi is rare:
 
 ```
-1°1′0″0‴
-│ │ │ ╰─ First sat in block
-│ │ ╰─── First block in difficulty adjustment period
-│ ╰───── Not the first block in halving epoch
-╰─────── Second cycle
+0°2016′0″0‴
+│    │ │ ╰─ First sat in block
+│    │ ╰─── First block in difficulty adjustment period
+│    ╰───── Not the first block in halving epoch
+╰────────── Any cycle
 ```
 
 This satoshi is epic:
 
 ```
-1°0′1″0‴
-│ │ │ ╰─ First sat in block
-│ │ ╰─── Not first block in difficulty adjustment period
-│ ╰───── First block in halving epoch
-╰─────── Second cycle
+0°0′336″0‴
+│ │   │ ╰─ First sat in block
+│ │   ╰─── Not first block in difficulty adjustment period
+│ ╰─────── First block in halving epoch
+╰───────── Any cycle
 ```
 
 This satoshi is legendary:
@@ -145,7 +145,7 @@ This satoshi is legendary:
 │ │ │ ╰─ First sat in block
 │ │ ╰─── First block in difficulty adjustment period
 │ ╰───── First block in halving epoch
-╰─────── Second cycle
+╰─────── Any cycle but first
 ```
 
 And this satoshi is mythic:
@@ -173,24 +173,24 @@ Rare Satoshi Supply
 
 ### Total Supply
 
-- `common`: 2.1 quadrillion
-- `uncommon`: 6,929,999
-- `rare`: 3437
-- `epic`: 32
+- `common`: 2,099,999,990,760,000
+- `uncommon`: 6,926,535
+- `rare`: 3432
+- `epic`: 27
 - `legendary`: 5
 - `mythic`: 1
 
 ### Current Supply
 
-- `common`: 1.9 quadrillion
-- `uncommon`: 808,262
-- `rare`: 369
+- `common`: ~1.98 quadrillion
+- `uncommon`: ~880,000 (a new uncommon is mined roughly every ten minutes)
+- `rare`: ~430 (a new rare is mined roughly every two weeks)
 - `epic`: 3
 - `legendary`: 0
 - `mythic`: 1
 
 At the moment, even uncommon satoshis are quite rare. As of this writing,
-745,855 uncommon satoshis have been mined - one per 25.6 bitcoin in
+876,023 uncommon satoshis have been mined - one per 22.6 bitcoin in
 circulation.
 
 Names

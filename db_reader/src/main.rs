@@ -1,0 +1,406 @@
+use std::cmp::Ordering;
+use std::error::Error;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use hyper::Method;
+use jsonrpsee::core::middleware::RpcServiceBuilder;
+use jsonrpsee::core::{async_trait, RpcResult};
+use jsonrpsee::server::{Server, ServerHandle};
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::{ErrorObject, ErrorObjectOwned};
+use rocksdb::{IteratorMode, Options, DB};
+use tower::ServiceBuilder;
+use tower_http::cors::{Any, CorsLayer};
+use serde::{Deserialize, Serialize};
+
+struct RpcServer {
+  ord_transfers: DB,
+  ord_inscription_info: DB,
+  ord_index_stats: DB,
+  height_to_block_header: DB,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct IndexTimes {
+  fetch_time: u128,
+  index_time: u128,
+  commit_time: u128,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BRC20Tx {
+  tx_id: String,
+  inscription_id: String,
+  old_satpoint: Option<String>,
+  new_pkscript: String,
+  new_wallet: String,
+  sent_as_fee: bool,
+  content_hex: String,
+  byte_len: u32,
+  content_type_hex: String,
+  parent_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BlockInfo {
+  block_hash: String,
+  timestamp: u64,
+}
+
+#[derive(Clone)]
+struct InscriptionInfo {
+  _inscription_id: String,
+  _inscription_number: i32,
+  cursed_for_brc20: bool,
+  parent_id: Option<String>,
+  is_json: bool,
+  content_hex: String,
+  content_type_hex: String,
+  _metaprotocol_hex: String,
+}
+
+struct TransferInfo {
+  inscription_id: String,
+  old_satpoint: Option<String>,
+  _new_satpoint: String,
+  sent_as_fee: bool,
+  _new_output_value: u64,
+  new_pkscript: String,
+}
+
+#[rpc(server, client)]
+pub trait Brc20Api {
+  #[method(name = "getBlockIndexTimes")]
+  async fn get_block_index_times(&self, block_height: u32) -> RpcResult<Option<IndexTimes>>;
+
+  #[method(name = "getBlockBRC20Txes")]
+  async fn get_block_brc20_txes(&self, block_height: u32) -> RpcResult<Option<Vec<BRC20Tx>>>;
+
+  #[method(name = "getBlockHashAndTs")]
+  async fn get_block_hash_and_ts(&self, block_height: u32) -> RpcResult<Option<BlockInfo>>;
+
+  #[method(name = "getLatestBlockHeight")]
+  async fn get_latest_block_height(&self) -> RpcResult<Option<u32>>;
+}
+
+pub fn wrap_rpc_error(error: Box<dyn Error>) -> ErrorObject<'static> {
+  ErrorObjectOwned::owned(400, error.to_string(), None::<String>)
+}
+
+fn get_times_from_raw(
+  raw: Option<Vec<u8>>,
+) -> Option<IndexTimes> {
+  if raw.is_none() {
+    return None;
+  }
+  let raw = raw?;
+  let mut iter = raw.chunks(16);
+  let fetch_tm = u128::from_be_bytes(iter.next()?.try_into().ok()?);
+  let index_tm = u128::from_be_bytes(iter.next()?.try_into().ok()?);
+  let commit_tm = u128::from_be_bytes(iter.next()?.try_into().ok()?);
+  Some(IndexTimes { fetch_time: fetch_tm, index_time: index_tm, commit_time: commit_tm })
+}
+
+fn load_inscription_id(raw: &[u8]) -> Option<String> {
+  let mut rev_txid = Vec::new();
+  for i in (0..32).rev() {
+    rev_txid.push(raw[i]);
+  }
+
+  let txid = hex::encode(&rev_txid);
+  if txid == "0000000000000000000000000000000000000000000000000000000000000000" {
+    return None;
+  }
+  let index = u32::from_be_bytes(raw[32..36].try_into().unwrap());
+  Some(format!("{}i{}", txid, index))
+}
+
+fn get_inscription_info_from_raw(
+  raw: Vec<u8>,
+  inscription_id: String,
+) -> InscriptionInfo {
+  let inscription_number = i32::from_be_bytes(raw[0..4].try_into().ok().unwrap());
+  let cursed_for_brc20 = raw[4] != 0;
+  let parent_id = load_inscription_id(&raw[5..41]);
+  let is_json = raw[41] != 0;
+  let content_len = u32::from_be_bytes(raw[42..46].try_into().ok().unwrap());
+  let content_hex = hex::encode(&raw[46..(46 + content_len as usize)]);
+  let content_type_len = u32::from_be_bytes(raw[(46 + content_len as usize)..(50 + content_len as usize)].try_into().ok().unwrap());
+  let content_type_hex = hex::encode(&raw[(50 + content_len as usize)..(50 + content_len as usize + content_type_len as usize)]);
+  let metaprotocol_len = u32::from_be_bytes(raw[(50 + content_len as usize + content_type_len as usize)..(54 + content_len as usize + content_type_len as usize)].try_into().ok().unwrap());
+  let metaprotocol_hex = hex::encode(&raw[(54 + content_len as usize + content_type_len as usize)..(54 + content_len as usize + content_type_len as usize + metaprotocol_len as usize)]);
+  InscriptionInfo {
+    _inscription_id: inscription_id,
+    _inscription_number: inscription_number,
+    cursed_for_brc20,
+    parent_id,
+    is_json,
+    content_hex,
+    content_type_hex,
+    _metaprotocol_hex: metaprotocol_hex,
+  }
+}
+
+fn load_satpoint(raw: &[u8]) -> Option<String> {
+  let mut rev_txid = Vec::new();
+  for i in (0..32).rev() {
+    rev_txid.push(raw[i]);
+  }
+  let txid = hex::encode(&rev_txid);
+  if txid == "0000000000000000000000000000000000000000000000000000000000000000" {
+    return None;
+  }
+  let vout = u32::from_be_bytes(raw[32..36].try_into().unwrap());
+  let sat = u64::from_be_bytes(raw[36..44].try_into().unwrap());
+  Some(format!("{}:{}:{}", txid, vout, sat))
+}
+
+fn get_transfer_info_from_raw(
+  raw: Vec<u8>,
+) -> TransferInfo{
+  let inscription_id = load_inscription_id(&raw[0..36]).unwrap();
+  let old_satpoint = load_satpoint(&raw[36..80]);
+  let new_satpoint = load_satpoint(&raw[80..124]).unwrap();
+  let sent_as_fee = raw[124] != 0;
+  let new_output_value = u64::from_be_bytes(raw[125..133].try_into().ok().unwrap());
+  let new_pkscript = hex::encode(&raw[133..]);
+  TransferInfo {
+    inscription_id,
+    old_satpoint,
+    _new_satpoint: new_satpoint,
+    sent_as_fee,
+    _new_output_value: new_output_value,
+    new_pkscript,
+  }
+}
+
+fn compare_be_arrays(a: &[u8], b: &[u8]) -> Ordering {
+  let min_len = a.len().min(b.len());
+  for i in 0..min_len {
+    let cmp = a[i].cmp(&b[i]);
+    if cmp != Ordering::Equal {
+      return cmp;
+    }
+  }
+  a.len().cmp(&b.len())
+}
+
+fn is_valid_brc20(inscription_info: &InscriptionInfo) -> bool {
+  if inscription_info.cursed_for_brc20 { return false; }
+  if !inscription_info.is_json { return false; }
+
+  let json_data: serde_json::Value = match serde_json::from_slice(&hex::decode(&inscription_info.content_hex).unwrap()) {
+    Ok(data) => data,
+    Err(_) => return false, // Invalid JSON
+  };
+
+  let p = json_data.get("p");
+  if p.is_none() || !p.unwrap().is_string() {
+    return false; // Missing or invalid 'p' field
+  }
+  let p_value = p.unwrap().as_str().unwrap();
+  if p_value != "brc-20" && p_value != "brc20-prog" && p_value != "brc20-module" {
+    return false;
+  }
+  if p_value == "brc20-module" {
+    let module = json_data.get("module");
+    if module.is_none() || !module.unwrap().is_string() {
+      return false; // Missing or invalid 'module' field
+    }
+    let module_value = module.unwrap().as_str().unwrap();
+    if module_value != "BRC20PROG" {
+      return false; // Invalid module value
+    }
+  }
+  
+  return true;
+}
+
+fn get_wallet(pkscript: &str) -> String {
+  bitcoin::Address::from_script(
+    bitcoin::Script::from_bytes(&hex::decode(pkscript).unwrap()),
+    bitcoin::Network::Bitcoin,
+  )
+  .map(|addr| addr.to_string())
+  .unwrap_or_else(|_| "".to_string())
+}
+
+fn get_inscription_id_key(inscription_id: &str) -> Vec<u8> {
+  let mut key = vec![0; 36];
+  let txid = &inscription_id[0..64];
+  let mut txid_dec = hex::decode(txid).unwrap();
+  txid_dec.reverse(); // Reverse the txid to match the expected format
+  let index = inscription_id[65..].parse::<u32>().unwrap();
+  key[0..32].copy_from_slice(&txid_dec);
+  key[32..36].copy_from_slice(&index.to_be_bytes());
+  key
+}
+
+#[async_trait]
+impl Brc20ApiServer for RpcServer {
+  async fn get_block_index_times(
+    &self,
+    block_height: u32,
+  ) -> RpcResult<Option<IndexTimes>> {
+    Ok(self.ord_index_stats.get(&block_height.to_be_bytes())
+      .map(|time| get_times_from_raw(time))
+      .unwrap())
+  }
+
+  async fn get_block_brc20_txes(
+    &self,
+    block_height: u32,
+  ) -> RpcResult<Option<Vec<BRC20Tx>>> {
+    let mut inscription_info_map = std::collections::HashMap::new();
+    let mut invalid_brc20_map = std::collections::HashMap::new();
+
+    // scan ord_transfers from block_height.0u32 to (block_height+1).0u32
+    let start_key = block_height.to_be_bytes();
+    let end_key = (block_height + 1).to_be_bytes();
+    let mut iter = self.ord_transfers.raw_iterator();
+    iter.seek(start_key);
+    let mut txes = Vec::new();
+    while iter.valid() && compare_be_arrays(iter.key().unwrap(), &end_key) == Ordering::Less {
+      let raw = iter.value().unwrap().to_vec();
+      let transfer_info = get_transfer_info_from_raw(raw);
+
+      let inscription_id = transfer_info.inscription_id.clone();
+      if invalid_brc20_map.contains_key(&inscription_id) {
+        iter.next();
+        continue;
+      }
+
+      let inscription_info = if inscription_info_map.contains_key(&inscription_id) {
+        inscription_info_map.get(&inscription_id).unwrap()
+      } else {
+        let inscription_id_key = get_inscription_id_key(&inscription_id);
+        let raw_info = self.ord_inscription_info.get(&inscription_id_key).unwrap().unwrap();
+        let info = get_inscription_info_from_raw(raw_info, inscription_id.clone());
+        inscription_info_map.insert(inscription_id.clone(), info.clone());
+
+        &info.clone()
+      };
+
+      if !is_valid_brc20(inscription_info) {
+        invalid_brc20_map.insert(inscription_id, ());
+        iter.next();
+        continue;
+      }
+
+      let block_height = u32::from_be_bytes(iter.key().unwrap()[0..4].try_into().unwrap());
+      let tx_index = u32::from_be_bytes(iter.key().unwrap()[4..8].try_into().unwrap());
+      let tx_id = format!(
+        "{}:{}",
+        block_height,
+        tx_index
+      );
+
+      txes.push(BRC20Tx {
+        tx_id,
+        inscription_id,
+        old_satpoint: transfer_info.old_satpoint,
+        new_pkscript: transfer_info.new_pkscript.clone(),
+        new_wallet: get_wallet(&transfer_info.new_pkscript),
+        sent_as_fee: transfer_info.sent_as_fee,
+        content_hex: inscription_info.content_hex.clone(),
+        byte_len: inscription_info.content_hex.len() as u32 / 2, // Each byte is represented by 2 hex characters
+        content_type_hex: inscription_info.content_type_hex.clone(),
+        parent_id: inscription_info.parent_id.clone(),
+      });
+
+      iter.next();
+    }
+
+    Ok(Some(txes))
+  }
+
+  async fn get_block_hash_and_ts(
+    &self,
+    block_height: u32,
+  ) -> RpcResult<Option<BlockInfo>> {
+    let key = block_height.to_be_bytes();
+    if let Some(raw) = self.height_to_block_header.get(&key).unwrap() {
+      let header: bitcoin::block::Header = bitcoin::consensus::encode::deserialize(&raw).unwrap();
+      let hash = header.block_hash().to_string();
+      let timestamp = header.time as u64;
+      Ok(Some(BlockInfo { block_hash: hash, timestamp }))
+    } else {
+      Ok(None)
+    }
+  }
+
+  async fn get_latest_block_height(&self) -> RpcResult<Option<u32>> {
+    let block_height = self.height_to_block_header.iterator(IteratorMode::End)
+      .next()
+      .transpose()
+      .unwrap_or(None)
+      .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()));
+
+    Ok(block_height)
+  }
+}
+
+pub async fn start_rpc_server(
+  index_path: PathBuf,
+) -> Result<ServerHandle, Box<dyn Error>> {
+  let mut opts = Options::default();
+  opts.create_if_missing(true);
+  opts.set_max_open_files(256);
+  
+  let ord_transfers_path = index_path.join("ord_transfers.db");
+  let ord_transfers = DB::open_for_read_only(&opts, &ord_transfers_path, true)?;
+
+  let ord_inscription_info_path = index_path.join("ord_inscription_info.db");
+  let ord_inscription_info = DB::open_for_read_only(&opts, &ord_inscription_info_path, true)?;
+
+  let ord_index_stats_path = index_path.join("ord_index_stats.db");
+  let ord_index_stats = DB::open_for_read_only(&opts, &ord_index_stats_path, true)?;
+
+  let height_to_block_header_path = index_path.join("height_to_block_header.db");
+  let height_to_block_header = DB::open_for_read_only(&opts, &height_to_block_header_path, true)?;
+
+  let cors = CorsLayer::new()
+    // Allow `POST` when accessing the resource
+    .allow_methods([Method::POST])
+    // Allow requests from any origin
+    .allow_origin(Any)
+    .allow_headers([hyper::header::CONTENT_TYPE]);
+
+  let http_middleware =
+    ServiceBuilder::new()
+      .layer(cors);
+  let rpc_middleware = RpcServiceBuilder::new()
+    .rpc_logger(1024);
+  let module = RpcServer { 
+    ord_transfers,
+    ord_inscription_info,
+    ord_index_stats,
+    height_to_block_header,
+  }.into_rpc();
+
+  let handle = Server::builder()
+    .set_http_middleware(http_middleware)
+    .set_rpc_middleware(rpc_middleware)
+    .build("127.0.0.1:11030".parse::<SocketAddr>()?)
+    .await?
+    .start(module);
+
+  println!("RPC server started at http://127.0.0.1:11030");
+
+  Ok(handle)
+}
+
+#[tokio::main]
+async fn main() {
+  let rpc_handle = start_rpc_server(PathBuf::from("/Volumes/LaCieData/opi/OPI_rocks_all_saved/ord/target/release/dbs")).await.unwrap();
+
+  tokio::spawn(rpc_handle.stopped());
+
+  // The server will run indefinitely, handling requests.
+  // You can add more functionality or shutdown logic as needed.
+  // For now, we just keep the main function running.
+  loop {
+    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+  }
+}

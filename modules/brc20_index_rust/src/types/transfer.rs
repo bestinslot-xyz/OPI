@@ -2,7 +2,7 @@ use serde_json::Value as JsonValue;
 
 #[derive(Debug)]
 pub struct Transfer {
-    pub tx_id: i64,
+    pub tx_id: String,
     pub inscription_id: String,
     pub old_satpoint: Option<String>,
     pub new_pkscript: String,

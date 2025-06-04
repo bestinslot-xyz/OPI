@@ -37,13 +37,13 @@ impl Representation {
 }
 
 impl FromStr for Representation {
-  type Err = Error;
+  type Err = SnafuError;
 
-  fn from_str(s: &str) -> Result<Self> {
-    if let Some(i) = REGEX_SET.matches(s).into_iter().next() {
+  fn from_str(input: &str) -> Result<Self, Self::Err> {
+    if let Some(i) = REGEX_SET.matches(input).into_iter().next() {
       Ok(PATTERNS[i].0)
     } else {
-      Err(anyhow!("unrecognized object"))
+      Err(error::UnrecognizedRepresentation { input }.build())
     }
   }
 }
@@ -65,16 +65,4 @@ const PATTERNS: &[(Representation, &str)] = &[
 lazy_static! {
   static ref REGEX_SET: RegexSet =
     RegexSet::new(PATTERNS.iter().map(|(_representation, pattern)| pattern),).unwrap();
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn all_patterns_are_anchored() {
-    assert!(PATTERNS
-      .iter()
-      .all(|(_representation, pattern)| pattern.starts_with('^') && pattern.ends_with('$')));
-  }
 }

@@ -49,21 +49,6 @@ pub const DB_PASSWORD_DEFAULT: &str = "";
 pub const DB_DATABASE_KEY: &str = "DB_DATABASE";
 pub const DB_DATABASE_DEFAULT: &str = "postgres";
 
-pub const DB_METAPROTOCOL_HOST_KEY: &str = "DB_METAPROTOCOL_HOST";
-pub const DB_METAPROTOCOL_HOST_DEFAULT: &str = "localhost";
-
-pub const DB_METAPROTOCOL_PORT_KEY: &str = "DB_METAPROTOCOL_PORT";
-pub const DB_METAPROTOCOL_PORT_DEFAULT: &str = "5432";
-
-pub const DB_METAPROTOCOL_USER_KEY: &str = "DB_METAPROTOCOL_USER";
-pub const DB_METAPROTOCOL_USER_DEFAULT: &str = "postgres";
-
-pub const DB_METAPROTOCOL_PASSWORD_KEY: &str = "DB_METAPROTOCOL_PASSWD";
-pub const DB_METAPROTOCOL_PASSWORD_DEFAULT: &str = "";
-
-pub const DB_METAPROTOCOL_DATABASE_KEY: &str = "DB_METAPROTOCOL_DATABASE";
-pub const DB_METAPROTOCOL_DATABASE_DEFAULT: &str = "postgres";
-
 pub const REPORT_TO_INDEXER_KEY: &str = "REPORT_TO_INDEXER";
 pub const REPORT_TO_INDEXER_DEFAULT: &str = "true";
 
@@ -161,12 +146,6 @@ pub struct Brc20IndexerConfig {
     pub db_password: String,
     pub db_database: String,
 
-    pub db_metaprotocol_host: String,
-    pub db_metaprotocol_port: String,
-    pub db_metaprotocol_user: String,
-    pub db_metaprotocol_password: String,
-    pub db_metaprotocol_database: String,
-
     pub report_to_indexer: bool,
     pub report_url: String,
     pub report_retries: i32,
@@ -201,17 +180,6 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| DB_PASSWORD_DEFAULT.to_string()),
             db_database: std::env::var(DB_DATABASE_KEY)
                 .unwrap_or_else(|_| DB_DATABASE_DEFAULT.to_string()),
-
-            db_metaprotocol_host: std::env::var(DB_METAPROTOCOL_HOST_KEY)
-                .unwrap_or_else(|_| DB_METAPROTOCOL_HOST_DEFAULT.to_string()),
-            db_metaprotocol_port: std::env::var(DB_METAPROTOCOL_PORT_KEY)
-                .unwrap_or_else(|_| DB_METAPROTOCOL_PORT_DEFAULT.to_string()),
-            db_metaprotocol_user: std::env::var(DB_METAPROTOCOL_USER_KEY)
-                .unwrap_or_else(|_| DB_METAPROTOCOL_USER_DEFAULT.to_string()),
-            db_metaprotocol_password: std::env::var(DB_METAPROTOCOL_PASSWORD_KEY)
-                .unwrap_or_else(|_| DB_METAPROTOCOL_PASSWORD_DEFAULT.to_string()),
-            db_metaprotocol_database: std::env::var(DB_METAPROTOCOL_DATABASE_KEY)
-                .unwrap_or_else(|_| DB_METAPROTOCOL_DATABASE_DEFAULT.to_string()),
 
             report_to_indexer: std::env::var(REPORT_TO_INDEXER_KEY)
                 .unwrap_or_else(|_| REPORT_TO_INDEXER_DEFAULT.to_string())
