@@ -1,5 +1,3 @@
-use tokio::runtime::Runtime;
-
 use super::*;
 
 pub(crate) fn run(settings: Settings) -> SubcommandResult {

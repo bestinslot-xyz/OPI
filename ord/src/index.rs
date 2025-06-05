@@ -8,18 +8,7 @@ use {
     reorg::Reorg,
     updater::Updater,
     utxo_entry::{ParsedUtxoEntry, UtxoEntryBuf},
-  },
-  super::*,
-  bitcoin::block::Header,
-  bitcoincore_rpc::{
-    Client,
-  },
-  indicatif::{ProgressBar, ProgressStyle},
-  log::log_enabled,
-  std::{
-    collections::HashMap,
-  },
-  rocksdb::{DB, Options, IteratorMode},
+  }, super::*, bitcoin::block::Header, bitcoincore_rpc::Client, indicatif::{ProgressBar, ProgressStyle}, log::log_enabled, rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB}, std::collections::HashMap
 };
 
 pub use updater::get_tx_limits;
@@ -125,22 +114,13 @@ impl<T> BitcoinCoreRpcResultExt<T> for Result<T, bitcoincore_rpc::Error> {
 
 pub struct Index {
   pub(crate) client: Client,
-  height_to_block_header: DB,
-  height_to_last_sequence_number: DB,
-  outpoint_to_utxo_entry: DB,
-  inscription_id_to_sequence_number: DB,
-  inscription_number_to_sequence_number: DB,
-  inscription_id_to_txcnt: DB,
-  sequence_number_to_inscription_entry: DB,
-  statistic_to_count: DB,
-  ord_transfers: DB,
-  ord_inscription_info: DB,
-  ord_index_stats: DB,
+  db: DB,
   event_sender: Option<tokio::sync::mpsc::Sender<Event>>,
   height_limit: Option<u32>,
   settings: Settings,
   first_index_height: u32,
   unrecoverably_reorged: AtomicBool,
+  write_options: rocksdb::WriteOptions,
   pub(crate) path: PathBuf,
 }
 
@@ -170,43 +150,32 @@ impl Index {
     let mut opts = Options::default();
     opts.create_if_missing(true);
     opts.set_max_open_files(256);
+    opts.set_write_buffer_size(8192 * 1024 * 1024); // 8 GiB
+    opts.set_atomic_flush(true);
+    opts.create_missing_column_families(true);
 
     rlimit::Resource::NOFILE.set(4096, 8192)?;
 
-    let height_to_block_header_path = index_path.join("height_to_block_header.db");
-    let height_to_block_header = DB::open(&opts, &height_to_block_header_path)?;
+    let column_families = vec! [
+      ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),
+      ColumnFamilyDescriptor::new("height_to_last_sequence_number", Options::default()),
+      ColumnFamilyDescriptor::new("outpoint_to_utxo_entry", Options::default()),
+      ColumnFamilyDescriptor::new("inscription_id_to_sequence_number", Options::default()),
+      ColumnFamilyDescriptor::new("inscription_number_to_sequence_number", Options::default()),
+      ColumnFamilyDescriptor::new("inscription_id_to_txcnt", Options::default()),
+      ColumnFamilyDescriptor::new("sequence_number_to_inscription_entry", Options::default()),
+      ColumnFamilyDescriptor::new("statistic_to_count", Options::default()),
+      ColumnFamilyDescriptor::new("ord_transfers", Options::default()),
+      ColumnFamilyDescriptor::new("ord_inscription_info", Options::default()),
+      ColumnFamilyDescriptor::new("ord_index_stats", Options::default()),
+    ];
 
-    let outpoint_to_utxo_entry_path = index_path.join("outpoint_to_utxo_entry.db");
-    let outpoint_to_utxo_entry = DB::open(&opts, &outpoint_to_utxo_entry_path)?;
+    let db_path = path.join("index.db");
+    let db = DB::open_cf_descriptors(&opts, &db_path, column_families)?;
+    let statistic_to_count = db.cf_handle("statistic_to_count")
+      .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?;
 
-    let inscription_id_to_sequence_number_path = index_path.join("inscription_id_to_sequence_number.db");
-    let inscription_id_to_sequence_number = DB::open(&opts, &inscription_id_to_sequence_number_path)?;
-
-    let inscription_number_to_sequence_number_path = index_path.join("inscription_number_to_sequence_number.db");
-    let inscription_number_to_sequence_number = DB::open(&opts, &inscription_number_to_sequence_number_path)?;
-
-    let inscription_id_to_txcnt_path = index_path.join("inscription_id_to_txcnt.db");
-    let inscription_id_to_txcnt = DB::open(&opts, &inscription_id_to_txcnt_path)?;
-
-    let sequence_number_to_inscription_entry_path = index_path.join("sequence_number_to_inscription_entry.db");
-    let sequence_number_to_inscription_entry = DB::open(&opts, &sequence_number_to_inscription_entry_path)?;
-
-    let height_to_last_sequence_number_path = index_path.join("height_to_last_sequence_number.db");
-    let height_to_last_sequence_number = DB::open(&opts, &height_to_last_sequence_number_path)?;
-
-    let statistic_to_count_path = index_path.join("statistic_to_count.db");
-    let statistic_to_count = DB::open(&opts, &statistic_to_count_path)?;
-
-    let ord_transfers_path = index_path.join("ord_transfers.db");
-    let ord_transfers = DB::open(&opts, &ord_transfers_path)?;
-
-    let ord_inscription_info_path = index_path.join("ord_inscription_info.db");
-    let ord_inscription_info = DB::open(&opts, &ord_inscription_info_path)?;
-
-    let ord_index_stats_path = index_path.join("ord_index_stats.db");
-    let ord_index_stats = DB::open(&opts, &ord_index_stats_path)?;
-
-    let schema_version = statistic_to_count.get(&Statistic::Schema.key().to_be_bytes());
+    let schema_version = db.get_cf(statistic_to_count, &Statistic::Schema.key().to_be_bytes());
     if schema_version.is_err() || schema_version.as_ref().unwrap().is_none() {
       println!(
         "Initializing index schema version {} at {}",
@@ -215,7 +184,12 @@ impl Index {
       );
 
       // If the schema version is not set, we need to initialize it.
-      statistic_to_count.put(&Statistic::Schema.key().to_be_bytes(), &SCHEMA_VERSION.to_be_bytes())?;
+      db.put_cf(
+        statistic_to_count,
+        &Statistic::Schema.key().to_be_bytes(),
+        &SCHEMA_VERSION.to_be_bytes(),
+      )?;
+      db.flush()?;
     } else {
       let schema_version = u64::from_be_bytes(schema_version.unwrap().unwrap().try_into().unwrap());
       println!(
@@ -235,25 +209,22 @@ impl Index {
 
     let first_index_height = settings.first_inscription_height();
 
+    let write_options = {
+      let mut write_options = rocksdb::WriteOptions::default();
+      write_options.disable_wal(true);
+      write_options
+    };
+
     Ok(Self {
       client,
-      height_to_block_header,
-      height_to_last_sequence_number,
-      outpoint_to_utxo_entry,
-      inscription_id_to_sequence_number,
-      inscription_number_to_sequence_number,
-      inscription_id_to_txcnt,
-      sequence_number_to_inscription_entry,
-      statistic_to_count,
-      ord_transfers,
-      ord_inscription_info,
-      ord_index_stats,
+      db,
       event_sender,
       first_index_height,
       height_limit: settings.height_limit(),
       settings: settings.clone(),
       unrecoverably_reorged: AtomicBool::new(false),
       path,
+      write_options,
     })
   }
 
@@ -272,12 +243,15 @@ impl Index {
 
   pub fn update(&self) -> Result {
     loop {
-      let blocks_indexed = self.height_to_block_header.iterator(IteratorMode::End)
+      let height_to_block_header = self.db.cf_handle("height_to_block_header")
+        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+
+      let blocks_indexed = self.db.iterator_cf(height_to_block_header, IteratorMode::End)
         .next()
         .transpose()?
         .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()) + 1)
         .unwrap_or(0);
-      
+
       let mut updater = Updater {
         height: blocks_indexed,
         index: self,
@@ -306,7 +280,10 @@ impl Index {
   }
 
   pub fn block_count(&self) -> Result<u32> {
-    let blocks_indexed = self.height_to_block_header.iterator(IteratorMode::End)
+      let height_to_block_header = self.db.cf_handle("height_to_block_header")
+        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+
+      let blocks_indexed = self.db.iterator_cf(height_to_block_header, IteratorMode::End)
       .next()
       .transpose()?
       .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()) + 1)
@@ -316,7 +293,10 @@ impl Index {
   }
 
   pub fn block_height(&self) -> Result<Option<Height>> {
-    let block_height = self.height_to_block_header.iterator(IteratorMode::End)
+      let height_to_block_header = self.db.cf_handle("height_to_block_header")
+        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+
+      let block_height = self.db.iterator_cf(height_to_block_header, IteratorMode::End)
       .next()
       .transpose()?
       .map(|(height, _header)| Height(u32::from_be_bytes((*height).try_into().unwrap())));
@@ -325,10 +305,13 @@ impl Index {
   }
 
   pub fn block_hash(&self, height: Option<u32>) -> Result<Option<BlockHash>> {
+    let height_to_block_header = self.db.cf_handle("height_to_block_header")
+      .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+
     Ok(
       match height {
-        Some(height) => self.height_to_block_header.get(&height.to_be_bytes()).unwrap(),
-        None => self.height_to_block_header.iterator(IteratorMode::End)
+        Some(height) => self.db.get_cf(height_to_block_header, &height.to_be_bytes()).unwrap(),
+        None => self.db.iterator_cf(height_to_block_header, IteratorMode::End)
           .next()
           .transpose()?
           .map(|(_height, header)| (*header).to_vec()),
@@ -338,9 +321,12 @@ impl Index {
   }
 
   pub fn blocks(&self, take: usize) -> Result<Vec<(u32, BlockHash)>> {
+    let height_to_block_header = self.db.cf_handle("height_to_block_header")
+      .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+
     let mut blocks = Vec::with_capacity(take);
 
-    for next in self.height_to_block_header.iterator(IteratorMode::End)
+    for next in self.db.iterator_cf(height_to_block_header, IteratorMode::End)
       .take(take)
     {
       let next = next?;
@@ -354,17 +340,23 @@ impl Index {
     &self,
     inscription_id: InscriptionId,
   ) -> Result<Option<InscriptionEntry>> {
+    let inscription_id_to_sequence_number = self.db.cf_handle("inscription_id_to_sequence_number")
+      .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_sequence_number'"))?;
+
     let Some(sequence_number) = self
-      .inscription_id_to_sequence_number
-      .get(&inscription_id.store())?
+      .db
+      .get_cf(inscription_id_to_sequence_number, &inscription_id.store())?
       .map(|value| u32::from_be_bytes(value.try_into().unwrap()))
     else {
       return Ok(None);
     };
 
+    let sequence_number_to_inscription_entry = self.db.cf_handle("sequence_number_to_inscription_entry")
+      .ok_or_else(|| anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'"))?;
+
     let entry = self
-      .sequence_number_to_inscription_entry
-      .get(&sequence_number.to_be_bytes())?
+      .db
+      .get_cf(sequence_number_to_inscription_entry, &sequence_number.to_be_bytes())?
       .map(|value| InscriptionEntry::load(value.try_into().unwrap()));
     Ok(entry)
   }

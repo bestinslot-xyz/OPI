@@ -1,5 +1,6 @@
 use super::*;
 
+use rocksdb::WriteOptions;
 use serde_json::Value;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -53,16 +54,18 @@ pub(super) struct InscriptionUpdater<'a> {
   pub(super) cursed_inscription_count: u64,
   pub(super) flotsam: Vec<Flotsam<'a>>,
   pub(super) height: u32,
-  pub(super) id_to_sequence_number: &'a DB,
-  pub(super) inscription_number_to_sequence_number: &'a DB,
-  pub(super) id_to_txcnt: &'a DB,
+  pub(super) db: &'a DB,
+  pub(super) id_to_sequence_number: &'a ColumnFamily,
+  pub(super) inscription_number_to_sequence_number: &'a ColumnFamily,
+  pub(super) id_to_txcnt: &'a ColumnFamily,
   pub(super) next_sequence_number: u32,
   pub(super) reward: u64,
-  pub(super) sequence_number_to_entry: &'a DB,
-  pub(super) ord_transfers: &'a DB,
-  pub(super) ord_inscription_info: &'a DB,
+  pub(super) sequence_number_to_entry: &'a ColumnFamily,
+  pub(super) ord_transfers: &'a ColumnFamily,
+  pub(super) ord_inscription_info: &'a ColumnFamily,
   pub(super) transfer_idx: u32,
   pub(super) early_transfer_info: HashMap<InscriptionId, u32>,
+  pub(super) write_options: &'a WriteOptions,
 }
 
 impl<'a> InscriptionUpdater<'a> {
@@ -109,8 +112,8 @@ impl<'a> InscriptionUpdater<'a> {
 
         let inscription_id = InscriptionEntry::load(
           self
-            .sequence_number_to_entry
-            .get(sequence_number.to_be_bytes())?
+            .db
+            .get_cf(self.sequence_number_to_entry, sequence_number.to_be_bytes())?
             .unwrap(),
         )
         .id;
@@ -169,12 +172,12 @@ impl<'a> InscriptionUpdater<'a> {
             Some(Curse::Reinscription)
           } else {
             let initial_inscription_sequence_number =
-              u32::from_be_bytes(self.id_to_sequence_number.get(id.store())?.unwrap().try_into().unwrap());
+              u32::from_be_bytes(self.db.get_cf(self.id_to_sequence_number, id.store())?.unwrap().try_into().unwrap());
 
             let entry = InscriptionEntry::load(
               self
-                .sequence_number_to_entry
-                .get(initial_inscription_sequence_number.to_be_bytes())?
+                .db
+                .get_cf(self.sequence_number_to_entry, initial_inscription_sequence_number.to_be_bytes())?
                 .unwrap()
             );
 
@@ -212,12 +215,12 @@ impl<'a> InscriptionUpdater<'a> {
             Some(Curse::Reinscription)
           } else {
             let initial_inscription_sequence_number =
-              u32::from_be_bytes(self.id_to_sequence_number.get(id.store())?.unwrap().try_into().unwrap());
+              u32::from_be_bytes(self.db.get_cf(self.id_to_sequence_number, id.store())?.unwrap().try_into().unwrap());
 
             let initial_inscription_is_cursed = InscriptionEntry::load(
               self
-                .sequence_number_to_entry
-                .get(initial_inscription_sequence_number.to_be_bytes())?
+                .db
+                .get_cf(self.sequence_number_to_entry, initial_inscription_sequence_number.to_be_bytes())?
                 .unwrap()
             )
             .is_cursed_for_brc20; // NOTE: CHANGED TO BE SAME AS 0.9 RULES
@@ -507,11 +510,11 @@ impl<'a> InscriptionUpdater<'a> {
   ) -> Result {
     let tx = tx_option.unwrap();
     let inscription_id = flotsam.inscription_id;
-    let txcnt_of_inscr: i64 = self.id_to_txcnt.get(&inscription_id.store())?
+    let txcnt_of_inscr: i64 = self.db.get_cf(self.id_to_txcnt, &inscription_id.store())?
         .map(|txcnt| i64::from_be_bytes(txcnt.try_into().unwrap()))
         .unwrap_or(0) + 1;
     if txcnt_of_inscr == 1 {
-      self.id_to_txcnt.put(&inscription_id.store(), &txcnt_of_inscr.to_be_bytes())?;
+      self.db.put_cf_opt(self.id_to_txcnt, &inscription_id.store(), &txcnt_of_inscr.to_be_bytes(), self.write_options)?;
     }
 
     let (unbound, sequence_number) = match flotsam.origin {
@@ -529,7 +532,7 @@ impl<'a> InscriptionUpdater<'a> {
           })?;
         }
 
-        let entry = self.sequence_number_to_entry.get(&sequence_number.to_be_bytes())?;
+        let entry = self.db.get_cf(self.sequence_number_to_entry, &sequence_number.to_be_bytes())?;
         let entry = entry
           .map(|entry| InscriptionEntry::load(entry))
           .unwrap();
@@ -554,7 +557,7 @@ impl<'a> InscriptionUpdater<'a> {
             new_output_value.unwrap_or(&0).to_be_bytes().to_vec(),
             new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes(),
           ].concat();
-          self.ord_transfers.put(&transfer_key, &transfer_data)?;
+          self.db.put_cf_opt(self.ord_transfers, &transfer_key, &transfer_data, self.write_options)?;
 
           /* self.write_to_file(format!("cmd;{0};insert;transfer;{1};{old_satpoint};{new_satpoint};{send_to_coinbase};{2};{3}",
                     self.height, flotsam.inscription_id,
@@ -562,7 +565,7 @@ impl<'a> InscriptionUpdater<'a> {
                     new_output_value.unwrap_or(&0)), false)?; */
 
           if txcnt_of_inscr != 1 {
-            self.id_to_txcnt.put(&inscription_id.store(), &txcnt_of_inscr.to_be_bytes())?;
+            self.db.put_cf_opt(self.id_to_txcnt, &inscription_id.store(), &txcnt_of_inscr.to_be_bytes(), self.write_options)?;
           }
         }
 
@@ -591,8 +594,8 @@ impl<'a> InscriptionUpdater<'a> {
         self.next_sequence_number += 1;
 
         self
-          .inscription_number_to_sequence_number
-          .put(inscription_number.to_be_bytes(), sequence_number.to_be_bytes())?;
+          .db
+          .put_cf_opt(self.inscription_number_to_sequence_number, inscription_number.to_be_bytes(), sequence_number.to_be_bytes(), self.write_options)?;
 
         let inscription = ParsedEnvelope::from_transaction(&tx)
             .get(flotsam.inscription_id.index as usize)
@@ -620,7 +623,7 @@ impl<'a> InscriptionUpdater<'a> {
             inscription_metaprotocol.as_ref().map(|metaprotocol| metaprotocol.len() as u32).unwrap_or(0).to_be_bytes().to_vec(),
             inscription_metaprotocol.unwrap_or(Vec::new()),
           ].concat();
-          self.ord_inscription_info.put(&inscription_id_key, &inscription_info_data)?;
+          self.db.put_cf_opt(self.ord_inscription_info, &inscription_id_key, &inscription_info_data, self.write_options)?;
 
 
           //self.write_to_file(format!("cmd;{0};insert;number_to_id;{1};{2};{3};{4}", self.height, inscription_number, flotsam.inscription_id, if cursed_for_brc20 {"1"} else {"0"}, parents.get(0).map(|p| p.to_string()).unwrap_or(String::from(""))), false)?;
@@ -694,7 +697,8 @@ impl<'a> InscriptionUpdater<'a> {
           })?;
         }
 
-        self.sequence_number_to_entry.put(
+        self.db.put_cf_opt(
+          self.sequence_number_to_entry,
           sequence_number.to_be_bytes(),
           &InscriptionEntry {
             charms,
@@ -706,11 +710,12 @@ impl<'a> InscriptionUpdater<'a> {
             txcnt_limit,
           }
           .store(),
+          self.write_options,
         )?;
 
         self
-          .id_to_sequence_number
-          .put(&inscription_id.store(), sequence_number.to_be_bytes())?;
+          .db
+          .put_cf_opt(self.id_to_sequence_number, &inscription_id.store(), sequence_number.to_be_bytes(), self.write_options)?;
 
         if !unbound && is_json_or_text {
           let transfer_idx = if self.early_transfer_info.contains_key(&inscription_id) {
@@ -734,7 +739,7 @@ impl<'a> InscriptionUpdater<'a> {
             new_output_value.unwrap_or(&0).to_be_bytes().to_vec(),
             new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes(),
           ].concat();
-          self.ord_transfers.put(&transfer_key, &transfer_data)?;
+          self.db.put_cf_opt(self.ord_transfers, &transfer_key, &transfer_data, self.write_options)?;
 
           /* self.write_to_file(format!("cmd;{0};insert;transfer;{1};;{new_satpoint};{send_to_coinbase};{2};{3}",
                     self.height, flotsam.inscription_id,
