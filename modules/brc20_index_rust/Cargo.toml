@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 base64 = "0.22.1"
 bitcoin = "0.32.6"
-brc20-prog = "0.6.2"
+brc20-prog = "0.7.0"
 dotenvy = "0.15.7"
 hex = "0.4.3"
 jsonrpsee = { version = "0.25.1", features = ["client", "tokio"] }
