@@ -706,9 +706,9 @@ dependencies = [
 
 [[package]]
 name = "brc20-prog"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e977d6aa3d7f3b5ad0ff97eb59ccf17a5a44fd343c4dc2dccdfeb800de2670a7"
+checksum = "34ed14dd4cae94730b90bb006b97f5568d4e99976edd9df7585323764df01d8d"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-trace",
