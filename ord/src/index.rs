@@ -160,6 +160,12 @@ impl Index {
     let mut cf_opts = Options::default();
     cf_opts.set_write_buffer_size(8192 * 1024 * 1024); // 8 GiB
 
+    let write_options = {
+      let mut write_options = rocksdb::WriteOptions::default();
+      write_options.disable_wal(true);
+      write_options
+    };
+
     rlimit::Resource::NOFILE.set(4096, 8192)?;
 
     let column_families = vec! [
@@ -190,10 +196,11 @@ impl Index {
       );
 
       // If the schema version is not set, we need to initialize it.
-      db.put_cf(
+      db.put_cf_opt(
         statistic_to_count,
         &Statistic::Schema.key().to_be_bytes(),
         &SCHEMA_VERSION.to_be_bytes(),
+        &write_options,
       )?;
       db.flush()?;
     } else {
@@ -214,12 +221,6 @@ impl Index {
     }
 
     let first_index_height = settings.first_inscription_height();
-
-    let write_options = {
-      let mut write_options = rocksdb::WriteOptions::default();
-      write_options.disable_wal(true);
-      write_options
-    };
 
     Ok(Self {
       client,
