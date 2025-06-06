@@ -157,20 +157,23 @@ impl Index {
     opts.create_missing_column_families(true);
     opts.enable_statistics();
 
+    let mut cf_opts = Options::default();
+    cf_opts.set_write_buffer_size(8192 * 1024 * 1024); // 8 GiB
+
     rlimit::Resource::NOFILE.set(4096, 8192)?;
 
     let column_families = vec! [
-      ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),
-      ColumnFamilyDescriptor::new("height_to_last_sequence_number", Options::default()),
-      ColumnFamilyDescriptor::new("outpoint_to_utxo_entry", Options::default()),
-      ColumnFamilyDescriptor::new("inscription_id_to_sequence_number", Options::default()),
-      ColumnFamilyDescriptor::new("inscription_number_to_sequence_number", Options::default()),
-      ColumnFamilyDescriptor::new("inscription_id_to_txcnt", Options::default()),
-      ColumnFamilyDescriptor::new("sequence_number_to_inscription_entry", Options::default()),
-      ColumnFamilyDescriptor::new("statistic_to_count", Options::default()),
-      ColumnFamilyDescriptor::new("ord_transfers", Options::default()),
-      ColumnFamilyDescriptor::new("ord_inscription_info", Options::default()),
-      ColumnFamilyDescriptor::new("ord_index_stats", Options::default()),
+      ColumnFamilyDescriptor::new("height_to_block_header", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("height_to_last_sequence_number", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("outpoint_to_utxo_entry", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("inscription_id_to_sequence_number", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("inscription_number_to_sequence_number", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("inscription_id_to_txcnt", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("sequence_number_to_inscription_entry", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("statistic_to_count", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("ord_transfers", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("ord_inscription_info", cf_opts.clone()),
+      ColumnFamilyDescriptor::new("ord_index_stats", cf_opts.clone()),
     ];
 
     let db_path = path.join("index.db");

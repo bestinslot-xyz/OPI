@@ -129,6 +129,17 @@ impl Updater<'_> {
               }
             }
           }
+          if let Some(line) = stats_unw.lines().find(|line| line.starts_with("rocksdb.wal.bytes")) {
+            // split line from : and parse the right part as u64
+            if let Some(value) = line.split_once(": ") {
+              if let Ok(value) = value.1.trim().parse::<u64>() {
+                if value != 0 {
+                  let value_kb = value as f64 / (1024.0);
+                  println!("RocksDB total WAL size: {value_kb:.3} KB");
+                }
+              }
+            }
+          }
         })
         .unwrap_or_else(|err| println!("Failed to get RocksDB options-statistics: {err}"));
 
