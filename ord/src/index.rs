@@ -8,7 +8,9 @@ use {
     reorg::Reorg,
     updater::Updater,
     utxo_entry::{ParsedUtxoEntry, UtxoEntryBuf},
-  }, super::*, bitcoin::block::Header, bitcoincore_rpc::Client, indicatif::{ProgressBar, ProgressStyle}, log::log_enabled, rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB}, std::collections::HashMap
+  }, super::*, bitcoin::block::Header, bitcoincore_rpc::Client, indicatif::{ProgressBar, ProgressStyle}, log::log_enabled
+  , rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB}
+  , std::collections::HashMap
 };
 
 pub use updater::get_tx_limits;
@@ -153,6 +155,7 @@ impl Index {
     opts.set_write_buffer_size(8192 * 1024 * 1024); // 8 GiB
     opts.set_atomic_flush(true);
     opts.create_missing_column_families(true);
+    opts.enable_statistics();
 
     rlimit::Resource::NOFILE.set(4096, 8192)?;
 

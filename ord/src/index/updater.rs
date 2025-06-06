@@ -80,6 +80,7 @@ impl Updater<'_> {
     let mut gtms = [0; 3];
     let ord_index_stats = self.index.db.cf_handle("ord_index_stats")
       .ok_or_else(|| anyhow!("Failed to open column family 'ord_index_stats'"))?;
+    let mut last_flush_bytes: u64 = 0;
     while let Ok(block) = rx.recv() {
       let mut tms = [0; 3];
       tms[0] = tm.elapsed().as_millis();
@@ -102,6 +103,34 @@ impl Updater<'_> {
           }
         })
         .unwrap_or_else(|err| log::error!("Failed to get RocksDB memtable size: {err}"));
+
+
+      self.index.db.property_value("rocksdb.options-statistics")
+        .map(|stats| {
+          if stats.is_none() {
+            println!("RocksDB options-statistics is not available");
+            return;
+          }
+
+          let stats_unw = stats.unwrap();
+          // find the line starting with "rocksdb.flush.write.bytes"
+          if let Some(line) = stats_unw.lines().find(|line| line.starts_with("rocksdb.flush.write.bytes")) {
+            // split line from : and parse the right part as u64
+            if let Some(value) = line.split_once(": ") {
+              if let Ok(value) = value.1.trim().parse::<u64>() {
+                if value != last_flush_bytes {
+                  let diff = value.saturating_sub(last_flush_bytes);
+                  let diff_mb = diff as f64 / (1024.0 * 1024.0);
+                  println!(
+                    "RocksDB incr. flush write: {diff_mb:.3} MB"
+                  );
+                  last_flush_bytes = value;
+                }
+              }
+            }
+          }
+        })
+        .unwrap_or_else(|err| println!("Failed to get RocksDB options-statistics: {err}"));
 
       self.index_block(
         &mut output_sender,
@@ -199,6 +228,32 @@ impl Updater<'_> {
     if let Some(progress_bar) = &mut progress_bar {
       progress_bar.finish_and_clear();
     }
+
+    self.index.db.property_value("rocksdb.options-statistics")
+      .map(|stats| {
+        if stats.is_none() {
+          println!("RocksDB options-statistics is not available");
+          return;
+        }
+
+        let stats_unw = stats.unwrap();
+        // find the line starting with "rocksdb.flush.write.bytes"
+        if let Some(line) = stats_unw.lines().find(|line| line.starts_with("rocksdb.flush.write.bytes")) {
+          // split line from : and parse the right part as u64
+          if let Some(value) = line.split_once(": ") {
+            if let Ok(value) = value.1.trim().parse::<u64>() {
+              let diff = value.saturating_sub(last_flush_bytes);
+              let diff_mb = diff as f64 / (1024.0 * 1024.0);
+              println!(
+                "RocksDB incr. flush write: {diff_mb:.3} MB"
+              );
+              let value_mb = value as f64 / (1024.0 * 1024.0);
+              println!("RocksDB total flush write: {value_mb:.3} MB");
+            }
+          }
+        }
+      })
+      .unwrap_or_else(|err| println!("Failed to get RocksDB options-statistics: {err}"));
 
     Ok(())
   }
