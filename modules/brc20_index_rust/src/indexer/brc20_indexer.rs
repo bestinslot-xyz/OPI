@@ -733,8 +733,6 @@ impl Brc20Indexer {
             }
         }
 
-        self.brc20_db.clear_caches();
-
         Ok(block_events_buffer
             .trim_end_matches(EVENT_SEPARATOR)
             .to_string())

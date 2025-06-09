@@ -73,7 +73,7 @@ pub async fn run_balance_server(
                     }
 
                     // Call the balance function
-                    let Ok(balance) = database.get_balance(ticker.as_str(), pkscript).await else {
+                    let Ok(balance) = database.get_balance_nonmutable(ticker.as_str(), pkscript).await else {
                         socket.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to get balance").await.unwrap();
                         return;
                     };

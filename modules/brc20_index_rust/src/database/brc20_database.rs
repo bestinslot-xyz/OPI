@@ -55,6 +55,8 @@ pub struct Brc20Database {
     pub transfer_validity_cache: HashMap<String, TransferValidity>,
     pub current_event_id: i64,
     pub tickers: HashMap<String, Ticker>,
+    pub cached_events: HashMap<String, serde_json::Value>,
+    pub balance_cache: HashMap<String, Brc20Balance>,
 }
 
 impl Brc20Database {
@@ -76,6 +78,8 @@ impl Brc20Database {
             transfer_validity_cache: HashMap::new(),
             current_event_id: 0,
             tickers: HashMap::new(),
+            cached_events: HashMap::new(),
+            balance_cache: HashMap::new(),
         }
     }
 
@@ -284,7 +288,7 @@ impl Brc20Database {
         Ok(false)
     }
 
-    pub async fn reorg(&self, block_height: i32) -> Result<(), Box<dyn Error>> {
+    pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         for table_name in ALL_TABLES_WITH_BLOCK_HEIGHT.iter() {
             sqlx::query(&format!(
                 "DELETE FROM {} WHERE block_height >= $1",
@@ -294,6 +298,26 @@ impl Brc20Database {
             .execute(&self.client)
             .await?;
         }
+
+        self.current_event_id =
+            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
+                .fetch_optional(&self.client)
+                .await?
+                .map(|row| row.max_event_id.unwrap_or(-1))
+                .unwrap_or(-1)
+                + 1;
+
+        self.tickers.clear();
+        for ticker in self.get_tickers().await? {
+            self.tickers.insert(ticker.ticker.clone(), ticker);
+        }
+
+        self.cached_events.clear();
+
+        self.transfer_validity_cache.clear();
+
+        self.balance_cache.clear();
+
         Ok(())
     }
 
@@ -332,6 +356,16 @@ impl Brc20Database {
         Ok((block_events_hash, cumulative_event_hash))
     }
 
+    pub fn get_event_key<T>(
+        &self,
+        inscription_id: &str,
+    ) -> String
+    where
+        T: Event,
+    {
+        format!("{}{}", T::event_id(), inscription_id)
+    }
+
     pub async fn get_event_with_type<T>(
         &self,
         inscription_id: &str,
@@ -339,6 +373,12 @@ impl Brc20Database {
     where
         T: Event + for<'de> Deserialize<'de>,
     {
+        if let Some(event) = self.cached_events.get(self.get_event_key::<T>(inscription_id).as_str()) {
+            return serde_json::from_value(event.clone())
+                .map(Some)
+                .map_err(|e| e.into());
+        }
+        
         let row = sqlx::query!(
             "SELECT event FROM brc20_events WHERE inscription_id = $1 AND event_type = $2",
             inscription_id,
@@ -372,6 +412,16 @@ impl Brc20Database {
             block_height,
             event
         );
+        if self.cached_events.contains_key(&self.get_event_key::<T>(inscription_id)) {
+            return Err(format!(
+                "Event for inscription_id {} and event_type {} already exists",
+                inscription_id,
+                T::event_name()
+            )
+            .into());
+        }
+        self.cached_events
+            .insert(self.get_event_key::<T>(inscription_id), serde_json::to_value(event)?);
         sqlx::query!(
             "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event) VALUES ($1, $2, $3, $4, $5)",
             self.current_event_id,
@@ -428,10 +478,62 @@ impl Brc20Database {
     }
 
     pub async fn get_balance(
+        &mut self,
+        ticker: &str,
+        pkscript: &str,
+    ) -> Result<Brc20Balance, Box<dyn Error>> {
+        if let Some(balance) = self.balance_cache.get(&format!("{}:{}", ticker, pkscript)) {
+            return Ok(balance.clone());
+        }
+
+        let row = sqlx::query!(
+            "SELECT 
+                overall_balance, available_balance
+                FROM brc20_historic_balances
+                WHERE pkscript = $1 AND tick = $2
+                ORDER BY block_height DESC, id DESC LIMIT 1;",
+            pkscript,
+            ticker
+        )
+        .fetch_optional(&self.client)
+        .await?;
+
+        if row.is_none() {
+            return Ok(Brc20Balance {
+                overall_balance: 0,
+                available_balance: 0,
+            });
+        }
+
+        let Some(overall_balance) = row.as_ref().and_then(|r| r.overall_balance.to_u128()) else {
+            return Err("Invalid overall balance".into());
+        };
+
+        let Some(available_balance) = row.as_ref().and_then(|r| r.available_balance.to_u128())
+        else {
+            return Err("Invalid available balance".into());
+        };
+
+        let balance = Brc20Balance {
+            overall_balance,
+            available_balance,
+        };
+        self.balance_cache
+            .insert(format!("{}:{}", ticker, pkscript), balance.clone());
+
+        Ok(balance)
+    }
+
+
+    pub async fn get_balance_nonmutable(
         &self,
         ticker: &str,
         pkscript: &str,
     ) -> Result<Brc20Balance, Box<dyn Error>> {
+        if let Some(balance) = self.balance_cache.get(&format!("{}:{}", ticker, pkscript)) {
+            return Ok(balance.clone());
+        }
+
         let row = sqlx::query!(
             "SELECT 
                 overall_balance, available_balance
@@ -467,7 +569,7 @@ impl Brc20Database {
     }
 
     pub async fn update_balance(
-        &self,
+        &mut self,
         ticker: &str,
         pkscript: &str,
         wallet: &str,
@@ -475,6 +577,9 @@ impl Brc20Database {
         block_height: i32,
         event_id: i64,
     ) -> Result<(), Box<dyn Error>> {
+        self.balance_cache
+            .insert(format!("{}:{}", ticker, pkscript), balance.clone());
+
         sqlx::query!(
             "INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
             pkscript,
@@ -488,10 +593,6 @@ impl Brc20Database {
         .execute(&self.client)
         .await?;
         Ok(())
-    }
-
-    pub fn clear_caches(&mut self) {
-        self.transfer_validity_cache.clear();
     }
 
     pub async fn reset(&mut self) -> Result<(), Box<dyn Error>> {
