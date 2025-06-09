@@ -82,10 +82,10 @@ impl Reorg {
     Ok(result)
   }
 
-  pub(crate) fn handle_reorg(index: &Index, height: u32, depth: u32) -> Result {
+  pub(crate) fn handle_reorg(path: &PathBuf, height: u32, depth: u32) -> Result {
     println!("rolling back database after reorg of depth {depth} at height {height}");
 
-    let backup_opts = BackupEngineOptions::new(&index.path.join("backup"))?;
+    let backup_opts = BackupEngineOptions::new(&path.join("backup"))?;
     let mut backup_engine = BackupEngine::open(&backup_opts, &rocksdb::Env::new()?)?;
 
     let backups = backup_engine.get_backup_info();
@@ -97,15 +97,14 @@ impl Reorg {
     let backup_id = oldest_backup.backup_id;
 
     println!("restoring backup with id {}", backup_id);
-    let db_dir = index.path.join("index.db");
-    let wal_dir = index.path.join("index.db");
+    let db_dir = path.join("index.db");
+    let wal_dir = path.join("index.db");
     let opts = rocksdb::backup::RestoreOptions::default();
 
     backup_engine.restore_from_backup(db_dir, wal_dir, &opts, backup_id)?;
 
     println!(
-      "successfully rolled back database to height {}",
-      index.block_count()?
+      "successfully rolled back database"
     );
 
     Ok(())

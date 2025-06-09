@@ -19,7 +19,7 @@ pub(crate) mod entry;
 pub mod event;
 mod fetcher;
 mod lot;
-mod reorg;
+pub(crate) mod reorg;
 mod updater;
 mod utxo_entry;
 
@@ -280,8 +280,8 @@ impl Index {
           log::info!("{err}");
 
           match err.downcast_ref() {
-            Some(&reorg::Error::Recoverable { height, depth }) => {
-              Reorg::handle_reorg(self, height, depth)?;
+            Some(&reorg::Error::Recoverable { height: _, depth: _ }) => {
+              return Err(err); // Reorg::handle_reorg(self, height, depth)?;
             }
             Some(&reorg::Error::Unrecoverable) => {
               self
