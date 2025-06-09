@@ -9,7 +9,7 @@ use {
     updater::Updater,
     utxo_entry::{ParsedUtxoEntry, UtxoEntryBuf},
   }, super::*, bitcoin::block::Header, bitcoincore_rpc::Client, indicatif::{ProgressBar, ProgressStyle}, log::log_enabled
-  , rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB}
+  , rocksdb::{backup::{BackupEngine, BackupEngineOptions}, ColumnFamilyDescriptor, IteratorMode, Options, DB}
   , std::collections::HashMap
 };
 
@@ -30,6 +30,7 @@ pub(crate) enum Statistic {
   Schema = 0,
   BlessedInscriptions = 1,
   CursedInscriptions = 3,
+  LastSavepointHeight = 17,
 }
 
 impl Statistic {
@@ -273,6 +274,9 @@ impl Index {
           log::info!("{err}");
 
           match err.downcast_ref() {
+            Some(&reorg::Error::Recoverable { height, depth }) => {
+              Reorg::handle_reorg(self, height, depth)?;
+            }
             Some(&reorg::Error::Unrecoverable) => {
               self
                 .unrecoverably_reorged
