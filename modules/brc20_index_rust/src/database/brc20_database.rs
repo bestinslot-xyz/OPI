@@ -1,10 +1,10 @@
-use std::{collections::HashMap, error::Error, time::Instant};
+use std::{collections::HashMap, error::Error, time::Instant, vec};
 
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
+use sqlx::{postgres::{PgPoolOptions}, types::BigDecimal, Pool, Postgres, Row};
 
 use crate::{
     config::{Brc20IndexerConfig, EVENT_SEPARATOR},
@@ -49,6 +49,32 @@ pub struct Brc20Balance {
 }
 
 #[derive(Debug, Clone)]
+pub struct TickerUpdateData {
+    pub remaining_supply: u128,
+    pub burned_supply: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventInsertData {
+    pub event_id: i64,
+    pub event_type_id: i32,
+    pub block_height: i32,
+    pub inscription_id: String,
+    pub event: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct BalanceUpdateData {
+    pub ticker: String,
+    pub pkscript: String,
+    pub wallet: String,
+    pub overall_balance: u128,
+    pub available_balance: u128,
+    pub block_height: i32,
+    pub event_id: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct Brc20Database {
     pub client: Pool<Postgres>,
     pub first_inscription_height: i32,
@@ -57,6 +83,11 @@ pub struct Brc20Database {
     pub tickers: HashMap<String, Ticker>,
     pub cached_events: HashMap<String, serde_json::Value>,
     pub balance_cache: HashMap<String, Brc20Balance>,
+
+    pub new_tickers: Vec<Ticker>,
+    pub ticker_updates: HashMap<String, TickerUpdateData>,
+    pub event_inserts: Vec<EventInsertData>,
+    pub balance_updates: Vec<BalanceUpdateData>,
 }
 
 impl Brc20Database {
@@ -80,6 +111,11 @@ impl Brc20Database {
             tickers: HashMap::new(),
             cached_events: HashMap::new(),
             balance_cache: HashMap::new(),
+
+            new_tickers: Vec::new(),
+            ticker_updates: HashMap::new(),
+            event_inserts: Vec::new(),
+            balance_updates: Vec::new(),
         }
     }
 
@@ -135,74 +171,39 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn add_ticker(&mut self, ticker: &Ticker) -> Result<(), Box<dyn Error>> {
+    pub fn add_ticker(&mut self, ticker: &Ticker) -> Result<(), Box<dyn Error>> {
         if self.tickers.contains_key(&ticker.ticker) {
             return Err(format!("Ticker {} already exists", ticker.ticker).into());
         }
         self.tickers.insert(ticker.ticker.clone(), ticker.clone());
-        sqlx::query!(
-            "INSERT INTO brc20_tickers (tick, original_tick, max_supply, decimals, limit_per_mint, remaining_supply, burned_supply, block_height, is_self_mint, deploy_inscription_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-            ticker.ticker,
-            ticker.original_ticker,
-            BigDecimal::from(ticker.remaining_supply),
-            ticker.decimals as i32,
-            BigDecimal::from(ticker.limit_per_mint),
-            BigDecimal::from(ticker.remaining_supply),
-            BigDecimal::from(0u128), // Assuming burned_supply starts at 0
-            ticker.deploy_block_height,
-            ticker.is_self_mint,
-            ticker.deploy_inscription_id
-        )
-        .execute(&self.client)
-        .await?;
+
+        self.new_tickers.push(ticker.clone());
 
         Ok(())
     }
 
-    pub async fn update_ticker(&mut self, updated_ticker: Ticker) -> Result<(), Box<dyn Error>> {
+    pub fn update_ticker(&mut self, updated_ticker: Ticker) -> Result<(), Box<dyn Error>> {
         if !self.tickers.contains_key(&updated_ticker.ticker) {
             return Err(format!("Ticker {} not found", updated_ticker.ticker).into());
         }
         self.tickers
             .insert(updated_ticker.ticker.clone(), updated_ticker.clone());
-        sqlx::query!(
-            "UPDATE brc20_tickers SET remaining_supply = $1, burned_supply = $2 WHERE tick = $3",
-            BigDecimal::from(updated_ticker.remaining_supply),
-            BigDecimal::from(updated_ticker.burned_supply),
-            updated_ticker.ticker
-        )
-        .execute(&self.client)
-        .await?;
+
+        self.ticker_updates
+            .insert(updated_ticker.ticker.clone(), TickerUpdateData {
+                remaining_supply: updated_ticker.remaining_supply,
+                burned_supply: updated_ticker.burned_supply,
+            });
+
         Ok(())
     }
 
-    pub async fn get_ticker(&self, ticker: &str) -> Result<Option<Ticker>, Box<dyn Error>> {
+    pub fn get_ticker(&self, ticker: &str) -> Result<Option<Ticker>, Box<dyn Error>> {
         if let Some(ticker) = self.tickers.get(ticker) {
             return Ok(Some(ticker.clone()));
         }
-        let row = sqlx::query!(
-            "SELECT tick, original_tick, max_supply, remaining_supply, burned_supply, limit_per_mint, decimals, is_self_mint, deploy_inscription_id, block_height FROM brc20_tickers WHERE tick = $1",
-            ticker
-        )
-        .fetch_optional(&self.client)
-        .await?;
 
-        if let Some(row) = row {
-            Ok(Some(Ticker {
-                ticker: row.tick,
-                _max_supply: row.max_supply.to_u128().unwrap(),
-                remaining_supply: row.remaining_supply.to_u128().unwrap(),
-                burned_supply: row.burned_supply.to_u128().unwrap(),
-                limit_per_mint: row.limit_per_mint.to_u128().unwrap(),
-                decimals: row.decimals.to_u8().unwrap(),
-                is_self_mint: row.is_self_mint,
-                deploy_block_height: row.block_height,
-                deploy_inscription_id: row.deploy_inscription_id,
-                original_ticker: row.original_tick,
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(None)
     }
 
     async fn get_tickers(&self) -> Result<Vec<Ticker>, Box<dyn Error>> {
@@ -308,15 +309,17 @@ impl Brc20Database {
                 + 1;
 
         self.tickers.clear();
+        self.cached_events.clear();
+        self.transfer_validity_cache.clear();
+        self.balance_cache.clear();
+        self.new_tickers.clear();
+        self.ticker_updates.clear();
+        self.event_inserts.clear();
+        self.balance_updates.clear();
+
         for ticker in self.get_tickers().await? {
             self.tickers.insert(ticker.ticker.clone(), ticker);
         }
-
-        self.cached_events.clear();
-
-        self.transfer_validity_cache.clear();
-
-        self.balance_cache.clear();
 
         Ok(())
     }
@@ -396,7 +399,7 @@ impl Brc20Database {
     }
 
     /// Returns the event ID of the last event added to the database.
-    pub async fn add_event<T>(
+    pub fn add_event<T>(
         &mut self,
         block_height: i32,
         inscription_id: &str,
@@ -422,16 +425,15 @@ impl Brc20Database {
         }
         self.cached_events
             .insert(self.get_event_key::<T>(inscription_id), serde_json::to_value(event)?);
-        sqlx::query!(
-            "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event) VALUES ($1, $2, $3, $4, $5)",
-            self.current_event_id,
-            T::event_id(),
+
+        self.event_inserts.push(EventInsertData {
+            event_id: self.current_event_id,
+            event_type_id: T::event_id(),
             block_height,
-            inscription_id,
-            serde_json::to_value(event)?
-        )
-        .execute(&self.client)
-        .await?;
+            inscription_id: inscription_id.to_string(),
+            event: serde_json::to_value(event)?,
+        });
+
         self.current_event_id += 1;
         Ok(self.current_event_id - 1)
     }
@@ -568,7 +570,7 @@ impl Brc20Database {
         })
     }
 
-    pub async fn update_balance(
+    pub fn update_balance(
         &mut self,
         ticker: &str,
         pkscript: &str,
@@ -580,18 +582,138 @@ impl Brc20Database {
         self.balance_cache
             .insert(format!("{}:{}", ticker, pkscript), balance.clone());
 
-        sqlx::query!(
-            "INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            pkscript,
-            wallet,
-            ticker,
-            BigDecimal::from(balance.overall_balance),
-            BigDecimal::from(balance.available_balance),
+        self.balance_updates.push(BalanceUpdateData {
+            ticker: ticker.to_string(),
+            pkscript: pkscript.to_string(),
+            wallet: wallet.to_string(),
+            overall_balance: balance.overall_balance,
+            available_balance: balance.available_balance,
             block_height,
-            event_id
-        )
-        .execute(&self.client)
-        .await?;
+            event_id,
+        });
+
+        Ok(())
+    }
+
+    pub async fn flush_queries_to_db(&mut self) -> Result<(), Box<dyn Error>> {
+        if !self.new_tickers.is_empty() {
+            let mut all_tickers = Vec::new();
+            let mut all_original_tickers = Vec::new();
+            let mut all_remaining_supplies = Vec::new();
+            let mut all_burned_supplies = Vec::new();
+            let mut all_limit_per_mints = Vec::new();
+            let mut all_decimals = Vec::new();
+            let mut all_is_self_mints = Vec::new();
+            let mut all_deploy_inscription_ids = Vec::new();
+            let mut all_deploy_block_heights = Vec::new();
+            for ticker in &self.new_tickers {
+                all_tickers.push(ticker.ticker.clone());
+                all_original_tickers.push(ticker.original_ticker.clone());
+                all_remaining_supplies.push(BigDecimal::from(ticker.remaining_supply));
+                all_burned_supplies.push(BigDecimal::from(ticker.burned_supply));
+                all_limit_per_mints.push(BigDecimal::from(ticker.limit_per_mint));
+                all_decimals.push(ticker.decimals as i32);
+                all_is_self_mints.push(ticker.is_self_mint);
+                all_deploy_inscription_ids.push(ticker.deploy_inscription_id.clone());
+                all_deploy_block_heights.push(ticker.deploy_block_height);
+            }
+
+            sqlx::query!(
+                "INSERT INTO brc20_tickers (tick, original_tick, max_supply, remaining_supply, burned_supply, limit_per_mint, decimals, is_self_mint, deploy_inscription_id, block_height) SELECT * FROM UNNEST
+                ($1::text[], $2::text[], $3::numeric(40)[], $4::numeric(40)[], $5::numeric(40)[], $6::numeric(40)[], $7::int4[], $8::boolean[], $9::text[], $10::int4[])",
+                &all_tickers,
+                &all_original_tickers,
+                &all_remaining_supplies,
+                &all_remaining_supplies,
+                &all_burned_supplies,
+                &all_limit_per_mints,
+                &all_decimals,
+                &all_is_self_mints,
+                &all_deploy_inscription_ids,
+                &all_deploy_block_heights
+            )
+            .execute(&self.client)
+            .await?;
+            
+            self.new_tickers.clear();
+        }
+
+        if !self.ticker_updates.is_empty() {
+            for (ticker_name, update_data) in &self.ticker_updates {
+                sqlx::query!(
+                    "UPDATE brc20_tickers SET remaining_supply = $1, burned_supply = $2 WHERE tick = $3",
+                    BigDecimal::from(update_data.remaining_supply),
+                    BigDecimal::from(update_data.burned_supply),
+                    ticker_name
+                )
+                .execute(&self.client)
+                .await?;
+            }
+            self.ticker_updates.clear();
+        }
+
+        if !self.event_inserts.is_empty() {
+            let mut all_event_ids = Vec::new();
+            let mut all_event_type_ids = Vec::new();
+            let mut all_block_heights = Vec::new();
+            let mut all_inscription_ids = Vec::new();
+            let mut all_events = Vec::new();
+            for event_data in &self.event_inserts {
+                all_event_ids.push(event_data.event_id);
+                all_event_type_ids.push(event_data.event_type_id);
+                all_block_heights.push(event_data.block_height);
+                all_inscription_ids.push(event_data.inscription_id.clone());
+                all_events.push(event_data.event.clone());
+            }
+            sqlx::query!(
+                "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event) SELECT * FROM UNNEST
+                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::jsonb[])",
+                &all_event_ids,
+                &all_event_type_ids,
+                &all_block_heights,
+                &all_inscription_ids,
+                &all_events
+            )
+            .execute(&self.client)
+            .await?;
+
+            self.event_inserts.clear();
+        }
+
+        if !self.balance_updates.is_empty() {
+            let mut all_pkscripts = Vec::new();
+            let mut all_wallets = Vec::new();
+            let mut all_tickers = Vec::new();
+            let mut all_overall_balances = Vec::new();
+            let mut all_available_balances = Vec::new();
+            let mut all_block_heights = Vec::new();
+            let mut all_event_ids = Vec::new();
+            for balance_update in &self.balance_updates {
+                all_pkscripts.push(balance_update.pkscript.clone());
+                all_wallets.push(balance_update.wallet.clone());
+                all_tickers.push(balance_update.ticker.clone());
+                all_overall_balances.push(BigDecimal::from(balance_update.overall_balance));
+                all_available_balances.push(BigDecimal::from(balance_update.available_balance));
+                all_block_heights.push(balance_update.block_height);
+                all_event_ids.push(balance_update.event_id);
+            }
+            sqlx::query!(
+                "INSERT INTO brc20_historic_balances (pkscript, wallet, tick,
+                overall_balance, available_balance, block_height, event_id) SELECT * FROM UNNEST
+                ($1::text[], $2::text[], $3::text[], $4::numeric(40)[], $5::numeric(40)[], $6::int4[], $7::int8[])",
+                &all_pkscripts,
+                &all_wallets,
+                &all_tickers,
+                &all_overall_balances,
+                &all_available_balances,
+                &all_block_heights,
+                &all_event_ids
+            )
+            .execute(&self.client)
+            .await?;
+        
+            self.balance_updates.clear();
+        }
         Ok(())
     }
 

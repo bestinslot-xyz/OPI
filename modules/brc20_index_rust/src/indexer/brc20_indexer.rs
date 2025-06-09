@@ -369,8 +369,7 @@ impl Brc20Indexer {
                             &transfer.new_pkscript,
                             data,
                             &mut block_events_buffer,
-                        )
-                        .await?;
+                        )?;
                     }
                 } else if operation == OPERATION_BRC20_PROG_CALL
                     || operation == OPERATION_BRC20_PROG_CALL_SHORT
@@ -415,8 +414,7 @@ impl Brc20Indexer {
                             content.get(INSCRIPTION_ID_KEY).and_then(|i| i.as_str()),
                             data,
                             &mut block_events_buffer,
-                        )
-                        .await?;
+                        )?;
                     }
                 }
                 continue;
@@ -441,7 +439,7 @@ impl Brc20Indexer {
             }
 
             if protocol == PROTOCOL_BRC20_MODULE {
-                let Ok(Some(deployed_ticker)) = self.brc20_db.get_ticker(&ticker).await else {
+                let Ok(Some(deployed_ticker)) = self.brc20_db.get_ticker(&ticker) else {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is not deployed",
                         transfer.inscription_id,
@@ -515,14 +513,13 @@ impl Brc20Indexer {
                         original_ticker,
                         amount,
                         &mut block_events_buffer,
-                    )
-                    .await?;
+                    )?;
                 }
                 continue;
             }
 
             if operation == OPERATION_DEPLOY && transfer.old_satpoint.is_none() {
-                if let Ok(Some(_)) = self.brc20_db.get_ticker(&ticker).await {
+                if let Ok(Some(_)) = self.brc20_db.get_ticker(&ticker) {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is already deployed",
                         transfer.inscription_id,
@@ -614,14 +611,13 @@ impl Brc20Indexer {
                     decimals,
                     is_self_mint,
                     &mut block_events_buffer,
-                )
-                .await?;
+                )?;
 
                 continue;
             }
 
             if operation == OPERATION_MINT && transfer.old_satpoint.is_none() {
-                let Ok(Some(mut deployed_ticker)) = self.brc20_db.get_ticker(&ticker).await else {
+                let Ok(Some(mut deployed_ticker)) = self.brc20_db.get_ticker(&ticker) else {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is not deployed",
                         transfer.inscription_id,
@@ -659,7 +655,7 @@ impl Brc20Indexer {
             }
 
             if operation == OPERATION_TRANSFER {
-                let Ok(Some(mut deployed_ticker)) = self.brc20_db.get_ticker(&ticker).await else {
+                let Ok(Some(mut deployed_ticker)) = self.brc20_db.get_ticker(&ticker) else {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is not deployed",
                         transfer.inscription_id,
@@ -723,6 +719,8 @@ impl Brc20Indexer {
             }
             continue;
         }
+        
+        self.brc20_db.flush_queries_to_db().await?;
 
         if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_height {
             self.brc20_prog_client
@@ -880,7 +878,7 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    pub async fn brc20_prog_deploy_inscribe(
+    pub fn brc20_prog_deploy_inscribe(
         &mut self,
         block_height: i32,
         inscription_id: &str,
@@ -893,8 +891,7 @@ impl Brc20Indexer {
             data: data.to_string(),
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)
-            .await?;
+            .add_event(block_height, inscription_id, &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
         self.brc20_db
@@ -957,8 +954,7 @@ impl Brc20Indexer {
             byte_len: byte_length,
         };
         self.brc20_db
-            .add_event(block_height, &inscription_id, &event)
-            .await?;
+            .add_event(block_height, &inscription_id, &event)?;
         block_events_buffer.push_str(&event.get_event_str(&inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1037,8 +1033,7 @@ impl Brc20Indexer {
             contract_inscription_id: contract_inscription_id.map(|s| s.to_string()),
         };
         self.brc20_db
-            .add_event(block_height, &inscription_id, &event)
-            .await?;
+            .add_event(block_height, &inscription_id, &event)?;
         block_events_buffer.push_str(&event.get_event_str(&inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1065,7 +1060,7 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    async fn brc20_prog_call_inscribe(
+    fn brc20_prog_call_inscribe(
         &mut self,
         block_height: i32,
         inscription_id: &str,
@@ -1084,8 +1079,7 @@ impl Brc20Indexer {
             data: data.to_string(),
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)
-            .await?;
+            .add_event(block_height, inscription_id, &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
         self.brc20_db
@@ -1140,8 +1134,7 @@ impl Brc20Indexer {
         };
         let event_id = self
             .brc20_db
-            .add_event(block_height, &inscription_id, &event)
-            .await?;
+            .add_event(block_height, &inscription_id, &event)?;
         self.brc20_db
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
         block_events_buffer.push_str(&event.get_event_str(&inscription_id, ticker.decimals));
@@ -1194,8 +1187,7 @@ impl Brc20Indexer {
                     },
                     block_height,
                     event_id,
-                )
-                .await?;
+                )?;
 
             let mut target_balance = self
                 .brc20_db
@@ -1216,13 +1208,12 @@ impl Brc20Indexer {
                     },
                     block_height,
                     -event_id, // Negate to create a unique event ID
-                )
-                .await?;
+                )?;
         }
         Ok(())
     }
 
-    async fn brc20_prog_withdraw_inscribe(
+    fn brc20_prog_withdraw_inscribe(
         &mut self,
         block_height: i32,
         inscription_id: &str,
@@ -1241,8 +1232,7 @@ impl Brc20Indexer {
             amount,
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)
-            .await?;
+            .add_event(block_height, inscription_id, &event)?;
         self.brc20_db
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
         block_events_buffer.push_str(&event.get_event_str(inscription_id, ticker.decimals));
@@ -1250,7 +1240,7 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    async fn brc20_deploy_inscribe(
+    fn brc20_deploy_inscribe(
         &mut self,
         block_height: i32,
         inscription_id: &str,
@@ -1275,8 +1265,7 @@ impl Brc20Indexer {
             is_self_mint,
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)
-            .await?;
+            .add_event(block_height, inscription_id, &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1292,7 +1281,7 @@ impl Brc20Indexer {
             burned_supply: 0,
             deploy_block_height: block_height,
         };
-        self.brc20_db.add_ticker(&new_ticker).await?;
+        self.brc20_db.add_ticker(&new_ticker)?;
 
         Ok(())
     }
@@ -1364,14 +1353,13 @@ impl Brc20Indexer {
         };
         let event_id = self
             .brc20_db
-            .add_event(block_height, inscription_id, &event)
-            .await?;
+            .add_event(block_height, inscription_id, &event)?;
         block_events_buffer
             .push_str(&event.get_event_str(inscription_id, deployed_ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
         deployed_ticker.remaining_supply -= amount;
-        self.brc20_db.update_ticker(deployed_ticker.clone()).await?;
+        self.brc20_db.update_ticker(deployed_ticker.clone())?;
 
         let mut balance = self
             .brc20_db
@@ -1389,8 +1377,7 @@ impl Brc20Indexer {
                 &balance,
                 block_height,
                 event_id,
-            )
-            .await?;
+            )?;
 
         Ok(())
     }
@@ -1432,8 +1419,7 @@ impl Brc20Indexer {
 
         let event_id = self
             .brc20_db
-            .add_event(block_height, inscription_id, &event)
-            .await?;
+            .add_event(block_height, inscription_id, &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1447,8 +1433,7 @@ impl Brc20Indexer {
                 &balance,
                 block_height,
                 event_id,
-            )
-            .await?;
+            )?;
 
         Ok(())
     }
@@ -1529,8 +1514,7 @@ impl Brc20Indexer {
 
         let event_id = self
             .brc20_db
-            .add_event(block_height, inscription_id, &event)
-            .await?;
+            .add_event(block_height, inscription_id, &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1555,8 +1539,7 @@ impl Brc20Indexer {
                     &source_balance,
                     block_height,
                     event_id,
-                )
-                .await?;
+                )?;
         } else if new_pkscript == BRC20_PROG_OP_RETURN_PKSCRIPT {
             source_balance.overall_balance -= amount;
 
@@ -1568,8 +1551,7 @@ impl Brc20Indexer {
                     &source_balance,
                     block_height,
                     event_id,
-                )
-                .await?;
+                )?;
 
             let mut brc20_prog_balance = self
                 .brc20_db
@@ -1587,8 +1569,7 @@ impl Brc20Indexer {
                     &brc20_prog_balance,
                     block_height,
                     -event_id, // Negate to create a unique event ID
-                )
-                .await?;
+                )?;
             self.brc20_prog_client
                 .brc20_deposit(
                     inscribe_event.source_pk_script,
@@ -1616,12 +1597,11 @@ impl Brc20Indexer {
                     &source_balance,
                     block_height,
                     event_id,
-                )
-                .await?;
+                )?;
 
             // Update burned supply
             ticker.burned_supply += amount;
-            self.brc20_db.update_ticker(ticker.clone()).await?;
+            self.brc20_db.update_ticker(ticker.clone())?;
         } else {
             let mut source_balance = self
                 .brc20_db
@@ -1638,8 +1618,7 @@ impl Brc20Indexer {
                     &source_balance,
                     block_height,
                     event_id,
-                )
-                .await?;
+                )?;
 
             let mut target_balance = self
                 .brc20_db
@@ -1657,8 +1636,7 @@ impl Brc20Indexer {
                     &target_balance,
                     block_height,
                     -event_id, // Negate to create a unique event ID
-                )
-                .await?;
+                )?;
         }
         self.brc20_db
             .set_transfer_validity(inscription_id, TransferValidity::Used);
