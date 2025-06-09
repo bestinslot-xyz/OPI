@@ -57,6 +57,9 @@ pub fn get_amount_value(
     if let Some(dot_index) = number.find('.') {
         let integer_part = &number[..dot_index];
         let decimal_part = &number[dot_index + 1..];
+        if decimal_part.len() > ticker_decimals as usize {
+            return Err("Too many digits after the decimal point".into());
+        }
         result.push_str(integer_part);
         result.push_str(decimal_part);
         for _ in decimal_part.len()..18 as usize {
@@ -64,12 +67,8 @@ pub fn get_amount_value(
         }
     } else {
         result.push_str(number);
-        if ticker_decimals > 0 {
-            // No dot in the result
-            // result.push('.');
-            for _ in 0..18 as usize {
-                result.push('0');
-            }
+        for _ in 0..18 as usize {
+            result.push('0');
         }
     }
     let uint = result.parse::<u128>()?;
