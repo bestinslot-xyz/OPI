@@ -1135,8 +1135,6 @@ impl Brc20Indexer {
         let event_id = self
             .brc20_db
             .add_event(block_height, &inscription_id, &event)?;
-        self.brc20_db
-            .set_transfer_validity(inscription_id, TransferValidity::Valid);
         block_events_buffer.push_str(&event.get_event_str(&inscription_id, ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1408,6 +1406,9 @@ impl Brc20Indexer {
             );
             return Ok(());
         }
+
+        self.brc20_db
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
 
         let event = TransferInscribeEvent {
             source_pk_script: new_pkscript.to_string(),
