@@ -16,7 +16,6 @@ use crate::{
         PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
     },
     database::{Brc20Balance, Brc20Database, OpiDatabase, TransferValidity},
-    default,
     indexer::{
         brc20_prog_client::build_brc20_prog_http_client,
         brc20_reporter::Brc20Reporter,
@@ -551,18 +550,26 @@ impl Brc20Indexer {
                     continue;
                 };
 
-                let Ok(mut limit_per_mint) = get_amount_value(
+                let mut limit_per_mint_res = get_amount_value(
                     content.get(LIMIT_PER_MINT_KEY).and_then(|l| l.as_str()),
                     decimals,
-                    default!(max_supply),
+                    no_default!(),
                     DISALLOW_ZERO,
-                ) else {
-                    tracing::debug!(
-                        "Skipping transfer {} as limit per mint is not present or invalid",
-                        transfer.inscription_id
-                    );
-                    continue;
-                };
+                );
+
+                if limit_per_mint_res.is_err() {
+                    if content.get(LIMIT_PER_MINT_KEY).is_none() {
+                        limit_per_mint_res = Ok(max_supply);
+                    } else {
+                        tracing::debug!(
+                            "Skipping transfer {} as limit per mint is not present or invalid",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+                }
+
+                let mut limit_per_mint = limit_per_mint_res?;
 
                 let mut is_self_mint = false;
                 if original_ticker.as_bytes().len() == 5 {
