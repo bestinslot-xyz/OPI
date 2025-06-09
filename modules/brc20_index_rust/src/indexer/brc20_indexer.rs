@@ -555,7 +555,7 @@ impl Brc20Indexer {
                     content.get(LIMIT_PER_MINT_KEY).and_then(|l| l.as_str()),
                     decimals,
                     default!(max_supply),
-                    ALLOW_ZERO,
+                    DISALLOW_ZERO,
                 ) else {
                     tracing::debug!(
                         "Skipping transfer {} as limit per mint is not present or invalid",
