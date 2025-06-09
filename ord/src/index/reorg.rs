@@ -59,7 +59,7 @@ impl Reorg {
 
     let last_savepoint_height = index.db
       .get_cf(statistic_to_count, &Statistic::LastSavepointHeight.key().to_be_bytes())?
-      .map(|last_savepoint_height| u64::from_be_bytes(last_savepoint_height.try_into().unwrap()))
+      .map(|last_savepoint_height| u64::from(u32::from_be_bytes(last_savepoint_height.try_into().unwrap())))
       .unwrap_or(0);
 
     let blocks = index.client.get_blockchain_info()?.headers;
