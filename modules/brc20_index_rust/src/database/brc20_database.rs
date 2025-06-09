@@ -1,5 +1,6 @@
 use std::{collections::HashMap, error::Error, time::Instant, vec};
 
+use brc20_index::types::events;
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
 use rust_embed::Embed;
@@ -290,15 +291,84 @@ impl Brc20Database {
     }
 
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
-        for table_name in ALL_TABLES_WITH_BLOCK_HEIGHT.iter() {
-            sqlx::query(&format!(
-                "DELETE FROM {} WHERE block_height >= $1",
-                table_name
-            ))
+        sqlx::query("DELETE FROM brc20_tickers WHERE block_height > $1")
             .bind(block_height)
             .execute(&self.client)
             .await?;
+
+        let res = sqlx::query("SELECT event FROM brc20_events WHERE event_type = $1 AND block_height > $2")
+            .bind(crate::types::events::MintInscribeEvent::event_id())
+            .bind(block_height)
+            .fetch_all(&self.client)
+            .await?;
+        let mut ticker_changes = HashMap::new();
+        for row in res {
+            let event: events::MintInscribeEvent = serde_json::from_value(row.get("event"))?;
+            let ticker = event.ticker.clone();
+            let amount = event.amount;
+            // add amount to ticker_changes
+            ticker_changes
+                .entry(ticker)
+                .and_modify(|e| *e += amount)
+                .or_insert(amount);
         }
+        // Update ticker remaining_supply based on ticker_changes
+        for (ticker, change) in ticker_changes {
+            sqlx::query!(
+                "UPDATE brc20_tickers SET remaining_supply = remaining_supply + $1 WHERE tick = $2",
+                BigDecimal::from(change),
+                ticker
+            )
+            .execute(&self.client)
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM brc20_historic_balances WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("DELETE FROM brc20_events WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("DELETE FROM brc20_cumulative_event_hashes WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_cumulative_event_hashes_id_seq', max(id)) from brc20_cumulative_event_hashes;")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_tickers_id_seq', max(id)) from brc20_tickers;")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_historic_balances_id_seq', max(id)) from brc20_historic_balances;")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_events_id_seq', max(id)) from brc20_events;")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("DELETE FROM brc20_block_hashes WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_block_hashes_id_seq', max(id)) from brc20_block_hashes;")
+            .bind(block_height)
+            .execute(&self.client)
+            .await?;
+
+        // TODO: also handle brc20_unused_tx_inscrs and brc20_current_balances
 
         self.current_event_id =
             sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
