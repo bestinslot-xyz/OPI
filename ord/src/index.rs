@@ -251,6 +251,10 @@ impl Index {
 
   pub fn update(&self) -> Result {
     loop {
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Ok(());
+      }
+
       let height_to_block_header = self.db.cf_handle("height_to_block_header")
         .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
@@ -269,7 +273,9 @@ impl Index {
       };
 
       match updater.update_index() {
-        Ok(ok) => return Ok(ok),
+        Ok(_ok) => {
+          thread::sleep(Duration::from_secs(5));
+        },
         Err(err) => {
           log::info!("{err}");
 
