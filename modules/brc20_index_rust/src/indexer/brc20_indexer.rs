@@ -243,7 +243,7 @@ impl Brc20Indexer {
         for index in 0..transfers.len() {
             let transfer = &transfers[index];
             if index % 100 == 0 && transfers.len() > 100 {
-                tracing::info!("Processing transfer {} / {}", index, transfers.len());
+                tracing::debug!("Processing transfer {} / {}", index, transfers.len());
             }
 
             if transfer.sent_as_fee && transfer.old_satpoint.as_ref().is_none_or(|x| x.is_empty()) {
