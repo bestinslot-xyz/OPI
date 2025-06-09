@@ -15,7 +15,7 @@ jsonrpsee = { version = "0.25.1", features = [
 ] }
 tower = "0.5.2"
 tower-http = { version = "0.6.2", features = ["auth", "compression-br", "compression-gzip", "cors", "set-header"] }
-tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "signal"] }
 hyper = { version = "1.5.2", features = ["client", "http2"] }
 hyper-util = { version = "0.1.10", features = ["client", "client-legacy", "http2", "tokio"] }
 serde = { version = "1.0.137", features = ["derive"] }
@@ -23,3 +23,5 @@ hex = "0.4.3"
 serde-hex = "0.1.0"
 serde_json = { version = "1.0.81", features = ["preserve_order"] }
 bitcoin = { version = "0.32.5", features = ["rand"] }
+ctrlc = "3.4.7"
+signal-hook = "0.3.18"

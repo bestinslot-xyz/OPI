@@ -9,16 +9,15 @@ use jsonrpsee::core::{async_trait, RpcResult};
 use jsonrpsee::server::{Server, ServerHandle};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::{ErrorObject, ErrorObjectOwned};
-use rocksdb::{IteratorMode, Options, DB};
+use rocksdb::{ColumnFamilyDescriptor, IteratorMode, Options, DB};
+use signal_hook::consts::SIGINT;
+use signal_hook::iterator::Signals;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use serde::{Deserialize, Serialize};
 
 struct RpcServer {
-  ord_transfers: DB,
-  ord_inscription_info: DB,
-  ord_index_stats: DB,
-  height_to_block_header: DB,
+  pub db: &'static DB,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -243,7 +242,10 @@ impl Brc20ApiServer for RpcServer {
     &self,
     block_height: u32,
   ) -> RpcResult<Option<IndexTimes>> {
-    Ok(self.ord_index_stats.get(&block_height.to_be_bytes())
+    let ord_index_stats = self.db.cf_handle("ord_index_stats")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'ord_index_stats' not found"))))?;
+
+    Ok(self.db.get_cf(ord_index_stats, &block_height.to_be_bytes())
       .map(|time| get_times_from_raw(time))
       .unwrap())
   }
@@ -255,10 +257,15 @@ impl Brc20ApiServer for RpcServer {
     let mut inscription_info_map = std::collections::HashMap::new();
     let mut invalid_brc20_map = std::collections::HashMap::new();
 
+    let ord_transfers = self.db.cf_handle("ord_transfers")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'ord_transfers' not found"))))?;
+    let ord_inscription_info = self.db.cf_handle("ord_inscription_info")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'ord_inscription_info' not found"))))?;
+
     // scan ord_transfers from block_height.0u32 to (block_height+1).0u32
     let start_key = block_height.to_be_bytes();
     let end_key = (block_height + 1).to_be_bytes();
-    let mut iter = self.ord_transfers.raw_iterator();
+    let mut iter = self.db.raw_iterator_cf(ord_transfers);
     iter.seek(start_key);
     let mut txes = Vec::new();
     while iter.valid() && compare_be_arrays(iter.key().unwrap(), &end_key) == Ordering::Less {
@@ -275,7 +282,7 @@ impl Brc20ApiServer for RpcServer {
         inscription_info_map.get(&inscription_id).unwrap()
       } else {
         let inscription_id_key = get_inscription_id_key(&inscription_id);
-        let raw_info = self.ord_inscription_info.get(&inscription_id_key).unwrap().unwrap();
+        let raw_info = self.db.get_cf(ord_inscription_info, &inscription_id_key).unwrap().unwrap();
         let info = get_inscription_info_from_raw(raw_info, inscription_id.clone());
         inscription_info_map.insert(inscription_id.clone(), info.clone());
 
@@ -319,8 +326,11 @@ impl Brc20ApiServer for RpcServer {
     &self,
     block_height: u32,
   ) -> RpcResult<Option<BlockInfo>> {
+    let height_to_block_header = self.db.cf_handle("height_to_block_header")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'height_to_block_header' not found"))))?;
+
     let key = block_height.to_be_bytes();
-    if let Some(raw) = self.height_to_block_header.get(&key).unwrap() {
+    if let Some(raw) = self.db.get_cf(height_to_block_header, &key).unwrap() {
       let header: bitcoin::block::Header = bitcoin::consensus::encode::deserialize(&raw).unwrap();
       let hash = header.block_hash().to_string();
       let timestamp = header.time as u64;
@@ -331,7 +341,10 @@ impl Brc20ApiServer for RpcServer {
   }
 
   async fn get_latest_block_height(&self) -> RpcResult<Option<u32>> {
-    let block_height = self.height_to_block_header.iterator(IteratorMode::End)
+    let height_to_block_header = self.db.cf_handle("height_to_block_header")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'height_to_block_header' not found"))))?;
+
+    let block_height = self.db.iterator_cf(height_to_block_header, IteratorMode::End)
       .next()
       .transpose()
       .unwrap_or(None)
@@ -342,24 +355,8 @@ impl Brc20ApiServer for RpcServer {
 }
 
 pub async fn start_rpc_server(
-  index_path: PathBuf,
+  db: &'static DB,
 ) -> Result<ServerHandle, Box<dyn Error>> {
-  let mut opts = Options::default();
-  opts.create_if_missing(true);
-  opts.set_max_open_files(256);
-  
-  let ord_transfers_path = index_path.join("ord_transfers.db");
-  let ord_transfers = DB::open_for_read_only(&opts, &ord_transfers_path, true)?;
-
-  let ord_inscription_info_path = index_path.join("ord_inscription_info.db");
-  let ord_inscription_info = DB::open_for_read_only(&opts, &ord_inscription_info_path, true)?;
-
-  let ord_index_stats_path = index_path.join("ord_index_stats.db");
-  let ord_index_stats = DB::open_for_read_only(&opts, &ord_index_stats_path, true)?;
-
-  let height_to_block_header_path = index_path.join("height_to_block_header.db");
-  let height_to_block_header = DB::open_for_read_only(&opts, &height_to_block_header_path, true)?;
-
   let cors = CorsLayer::new()
     // Allow `POST` when accessing the resource
     .allow_methods([Method::POST])
@@ -373,10 +370,7 @@ pub async fn start_rpc_server(
   let rpc_middleware = RpcServiceBuilder::new()
     .rpc_logger(1024);
   let module = RpcServer { 
-    ord_transfers,
-    ord_inscription_info,
-    ord_index_stats,
-    height_to_block_header,
+    db,
   }.into_rpc();
 
   let handle = Server::builder()
@@ -393,7 +387,27 @@ pub async fn start_rpc_server(
 
 #[tokio::main]
 async fn main() {
-  let rpc_handle = start_rpc_server(PathBuf::from("/Volumes/LaCieData/opi/OPI_rocks_all_saved/ord/target/release/dbs")).await.unwrap();
+  let mut signals = Signals::new([SIGINT])
+    .expect("Failed to create signal handler");
+
+  let index_path = PathBuf::from("../../../ord/target/release/dbs");
+
+  let column_families = vec! [
+    ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),
+    ColumnFamilyDescriptor::new("ord_transfers", Options::default()),
+    ColumnFamilyDescriptor::new("ord_inscription_info", Options::default()),
+    ColumnFamilyDescriptor::new("ord_index_stats", Options::default()),
+  ];
+  
+  let db_path = index_path.join("index.db");
+  let sec_db_path = index_path.join("secondary.db");
+  let db = DB::open_cf_descriptors_as_secondary(&Options::default(), &db_path, &sec_db_path, column_families)
+    .expect("Failed to open database");
+
+  // Leak the DB to get a 'static reference
+  let db: &'static DB = Box::leak(Box::new(db));
+
+  let rpc_handle = start_rpc_server(db).await.unwrap();
 
   tokio::spawn(rpc_handle.stopped());
 
@@ -401,6 +415,17 @@ async fn main() {
   // You can add more functionality or shutdown logic as needed.
   // For now, we just keep the main function running.
   loop {
-    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+    if signals.pending().next().is_some() {
+      println!("Received SIGINT, stopping RPC server...");
+      break; // Exit the loop on SIGINT
+    }
+    
+    db.try_catch_up_with_primary()
+      .map_err(|e| eprintln!("Failed to catch up with primary: {}", e))
+      .ok();
   }
+
+  println!("RPC server stopped.");
 }
