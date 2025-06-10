@@ -47,8 +47,8 @@ pub struct BlockInfo {
   timestamp: u64,
 }
 
-#[derive(Clone)]
-struct InscriptionInfo {
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InscriptionInfo {
   _inscription_id: String,
   _inscription_number: i32,
   cursed_for_brc20: bool,
@@ -57,6 +57,23 @@ struct InscriptionInfo {
   content_hex: String,
   content_type_hex: String,
   _metaprotocol_hex: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InscriptionEntry {
+  charms: u16,
+  id: String,
+  inscription_number: i32,
+  sequence_number: u32,
+  is_json_or_text: bool,
+  is_cursed_for_brc20: bool,
+  txcnt_limit: i16,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InscriptionInformation {
+  info: InscriptionInfo,
+  entry: InscriptionEntry,
 }
 
 struct TransferInfo {
@@ -81,6 +98,9 @@ pub trait Brc20Api {
 
   #[method(name = "getLatestBlockHeight")]
   async fn get_latest_block_height(&self) -> RpcResult<Option<u32>>;
+
+  #[method(name = "getInscriptionInfo")]
+  async fn get_inscription_info(&self, inscription_id: String) -> RpcResult<Option<InscriptionInformation>>;
 }
 
 pub fn wrap_rpc_error(error: Box<dyn Error>) -> ErrorObject<'static> {
@@ -138,6 +158,28 @@ fn get_inscription_info_from_raw(
     content_hex,
     content_type_hex,
     _metaprotocol_hex: metaprotocol_hex,
+  }
+}
+
+fn get_inscription_entry_from_raw(
+  raw: Vec<u8>,
+) -> InscriptionEntry {
+  let charms = u16::from_be_bytes(raw[0..2].try_into().unwrap());
+  let id = load_inscription_id(&raw[2..38]).unwrap();
+  let inscription_number = i32::from_be_bytes(raw[38..42].try_into().unwrap());
+  let sequence_number = u32::from_be_bytes(raw[42..46].try_into().unwrap());
+  let is_json_or_text = raw[46] != 0;
+  let is_cursed_for_brc20 = raw[47] != 0;
+  let txcnt_limit = i16::from_be_bytes(raw[48..50].try_into().unwrap());
+
+  InscriptionEntry {
+    charms,
+    id,
+    inscription_number,
+    sequence_number,
+    is_json_or_text,
+    is_cursed_for_brc20,
+    txcnt_limit,
   }
 }
 
@@ -352,6 +394,42 @@ impl Brc20ApiServer for RpcServer {
 
     Ok(block_height)
   }
+
+  async fn get_inscription_info(
+    &self,
+    inscription_id: String,
+  ) -> RpcResult<Option<InscriptionInformation>> {
+    let ord_inscription_info = self.db.cf_handle("ord_inscription_info")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'ord_inscription_info' not found"))))?;
+    let inscription_id_to_sequence_number = self.db.cf_handle("inscription_id_to_sequence_number")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'inscription_id_to_sequence_number' not found"))))?;
+    let sequence_number_to_inscription_entry = self.db.cf_handle("sequence_number_to_inscription_entry")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'sequence_number_to_inscription_entry' not found"))))?;
+
+    let inscription_id_key = get_inscription_id_key(&inscription_id);
+    // Check if the inscription_id exists in the inscription_id_to_sequence_number column family
+    let sequence_number_raw = self.db.get_cf(inscription_id_to_sequence_number, &inscription_id_key).unwrap();
+    if sequence_number_raw.is_none() {
+      return Ok(None);
+    }
+    let sequence_number = u32::from_be_bytes(sequence_number_raw.unwrap()[0..4].try_into().unwrap());
+
+    // Now check if the sequence_number exists in the sequence_number_to_inscription_entry column family
+    let entry_raw = self.db.get_cf(sequence_number_to_inscription_entry, &sequence_number.to_be_bytes()).unwrap();
+    if entry_raw.is_none() {
+      return Ok(None);
+    }
+    // If both checks passed, we can retrieve the inscription info
+    let entry = get_inscription_entry_from_raw(entry_raw.unwrap().to_vec());
+
+    if let Some(raw) = self.db.get_cf(ord_inscription_info, &inscription_id_key).unwrap() {
+      let info = get_inscription_info_from_raw(raw, inscription_id.clone());
+      
+      Ok(Some(InscriptionInformation { info, entry }))
+    } else {
+      Ok(None)
+    }
+  }
 }
 
 pub async fn start_rpc_server(
@@ -394,6 +472,8 @@ async fn main() {
 
   let column_families = vec! [
     ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),
+    ColumnFamilyDescriptor::new("inscription_id_to_sequence_number", Options::default()),
+    ColumnFamilyDescriptor::new("sequence_number_to_inscription_entry", Options::default()),
     ColumnFamilyDescriptor::new("ord_transfers", Options::default()),
     ColumnFamilyDescriptor::new("ord_inscription_info", Options::default()),
     ColumnFamilyDescriptor::new("ord_index_stats", Options::default()),
