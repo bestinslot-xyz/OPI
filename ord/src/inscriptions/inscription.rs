@@ -110,7 +110,7 @@ impl Inscription {
   }
 
   pub fn pointer_value(pointer: u64) -> Vec<u8> {
-    let mut bytes = pointer.to_be_bytes().to_vec();
+    let mut bytes = pointer.to_le_bytes().to_vec();
 
     while bytes.last().copied() == Some(0) {
       bytes.pop();
@@ -233,6 +233,6 @@ impl Inscription {
       value.get(7).copied().unwrap_or(0),
     ];
 
-    Some(u64::from_be_bytes(pointer))
+    Some(u64::from_le_bytes(pointer))
   }
 }
