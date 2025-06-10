@@ -112,6 +112,9 @@ pub trait Brc20Api {
 
   #[method(name = "getUTXOInfo")]
   async fn get_utxo_info(&self, outpoint: String) -> RpcResult<Option<UTXOInfo>>;
+
+  #[method(name = "getInscriptionInfoBySequenceNumber")]
+  async fn get_inscription_info_by_sequence_number(&self, sequence_number: u32) -> RpcResult<Option<InscriptionInformation>>;
 }
 
 pub fn wrap_rpc_error(error: Box<dyn Error>) -> ErrorObject<'static> {
@@ -555,6 +558,32 @@ impl Brc20ApiServer for RpcServer {
       Ok(None)
     }
   }
+
+  async fn get_inscription_info_by_sequence_number(
+    &self,
+    sequence_number: u32,
+  ) -> RpcResult<Option<InscriptionInformation>> {
+    let ord_inscription_info = self.db.cf_handle("ord_inscription_info")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'ord_inscription_info' not found"))))?;
+    let sequence_number_to_inscription_entry = self.db.cf_handle("sequence_number_to_inscription_entry")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'sequence_number_to_inscription_entry' not found"))))?;
+
+    let entry_raw = self.db.get_cf(sequence_number_to_inscription_entry, &sequence_number.to_be_bytes()).unwrap();
+    if entry_raw.is_none() {
+      return Ok(None);
+    }
+    let entry = get_inscription_entry_from_raw(entry_raw.unwrap().to_vec());
+
+    let inscription_id_key = get_inscription_id_key(&entry.id);
+    if let Some(raw) = self.db.get_cf(ord_inscription_info, &inscription_id_key).unwrap() {
+      let info = get_inscription_info_from_raw(raw, entry.id.clone());
+      
+      Ok(Some(InscriptionInformation { info, entry }))
+    } else {
+      Ok(None)
+    }
+  }
+
 }
 
 pub async fn start_rpc_server(
