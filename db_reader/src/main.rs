@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -76,6 +77,13 @@ pub struct InscriptionInformation {
   entry: InscriptionEntry,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct UTXOInfo {
+  sats: u64,
+  sequence_numbers: Vec<u32>,
+  satpoint_offsets: Vec<u64>,
+}
+
 struct TransferInfo {
   inscription_id: String,
   old_satpoint: Option<String>,
@@ -101,6 +109,9 @@ pub trait Brc20Api {
 
   #[method(name = "getInscriptionInfo")]
   async fn get_inscription_info(&self, inscription_id: String) -> RpcResult<Option<InscriptionInformation>>;
+
+  #[method(name = "getUTXOInfo")]
+  async fn get_utxo_info(&self, outpoint: String) -> RpcResult<Option<UTXOInfo>>;
 }
 
 pub fn wrap_rpc_error(error: Box<dyn Error>) -> ErrorObject<'static> {
@@ -180,6 +191,84 @@ fn get_inscription_entry_from_raw(
     is_json_or_text,
     is_cursed_for_brc20,
     txcnt_limit,
+  }
+}
+
+pub fn varint_decode(buffer: &[u8]) -> Result<(u128, usize), VarintError> {
+  let mut n = 0u128;
+
+  for (i, &byte) in buffer.iter().enumerate() {
+    if i > 18 {
+      return Err(VarintError::Overlong);
+    }
+
+    let value = u128::from(byte) & 0b0111_1111;
+
+    if i == 18 && value & 0b0111_1100 != 0 {
+      return Err(VarintError::Overflow);
+    }
+
+    n |= value << (7 * i);
+
+    if byte & 0b1000_0000 == 0 {
+      return Ok((n, i + 1));
+    }
+  }
+
+  Err(VarintError::Unterminated)
+}
+
+#[derive(PartialEq, Debug)]
+pub enum VarintError {
+  Overlong,
+  Overflow,
+  Unterminated,
+}
+
+impl Display for VarintError {
+  fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+    match self {
+      Self::Overlong => write!(f, "too long"),
+      Self::Overflow => write!(f, "overflow"),
+      Self::Unterminated => write!(f, "unterminated"),
+    }
+  }
+}
+
+impl std::error::Error for VarintError {}
+
+fn get_utxo_entry_from_raw(
+  raw: Vec<u8>,
+) -> UTXOInfo {
+  let sats;
+
+  let mut offset = 0;
+  let (value, varint_len) = varint_decode(&raw).unwrap();
+  sats = value as u64;
+  offset += varint_len;
+
+  let mut parsed_inscriptions = Vec::new();
+  while offset < raw.len() {
+    let sequence_number = u32::from_be_bytes(
+      raw[offset..offset + 4]
+        .try_into()
+        .unwrap(),
+    );
+    offset += 4;
+
+    let (satpoint_offset, varint_len) = varint_decode(&raw[offset..]).unwrap();
+    let satpoint_offset = u64::try_from(satpoint_offset).unwrap();
+    offset += varint_len;
+
+    parsed_inscriptions.push((sequence_number, satpoint_offset));
+  }
+  
+  let sequence_numbers: Vec<u32> = parsed_inscriptions.iter().map(|(seq, _)| *seq).collect();
+  let satpoint_offsets: Vec<u64> = parsed_inscriptions.iter().map(|(_, offset)| *offset).collect();
+  UTXOInfo {
+    sats,
+    sequence_numbers,
+    satpoint_offsets,
   }
 }
 
@@ -275,6 +364,25 @@ fn get_inscription_id_key(inscription_id: &str) -> Vec<u8> {
   let index = inscription_id[65..].parse::<u32>().unwrap();
   key[0..32].copy_from_slice(&txid_dec);
   key[32..36].copy_from_slice(&index.to_be_bytes());
+  key
+}
+
+fn parse_outpoint(outpoint: &str) -> (Vec<u8>, u32) {
+  let parts: Vec<&str> = outpoint.split(':').collect();
+  if parts.len() != 2 {
+    panic!("Invalid outpoint format, expected <txid>:<vout>");
+  }
+  let mut txid = hex::decode(parts[0]).unwrap();
+  txid.reverse(); // Reverse the txid to match the expected format
+  let vout = parts[1].parse::<u32>().unwrap();
+  (txid, vout)
+}
+
+fn get_outpoint_key(outpoint: &str) -> Vec<u8> {
+  let mut key = vec![0; 44];
+  let (txid, vout) = parse_outpoint(outpoint);
+  key[0..32].copy_from_slice(&txid);
+  key[32..36].copy_from_slice(&vout.to_be_bytes());
   key
 }
 
@@ -430,6 +538,23 @@ impl Brc20ApiServer for RpcServer {
       Ok(None)
     }
   }
+
+  async fn get_utxo_info(
+    &self,
+    outpoint: String,
+  ) -> RpcResult<Option<UTXOInfo>> {
+    let outpoint_to_utxo_entry = self.db.cf_handle("outpoint_to_utxo_entry")
+      .ok_or_else(|| wrap_rpc_error(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Column family 'outpoint_to_utxo_entry' not found"))))?;
+
+    let outpoint_key = get_outpoint_key(&outpoint);
+
+    if let Some(raw) = self.db.get_cf(outpoint_to_utxo_entry, &outpoint_key).unwrap() {
+      let utxo_info = get_utxo_entry_from_raw(raw.to_vec());
+      Ok(Some(utxo_info))
+    } else {
+      Ok(None)
+    }
+  }
 }
 
 pub async fn start_rpc_server(
@@ -476,6 +601,7 @@ async fn main() {
     ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),
     ColumnFamilyDescriptor::new("inscription_id_to_sequence_number", Options::default()),
     ColumnFamilyDescriptor::new("sequence_number_to_inscription_entry", Options::default()),
+    ColumnFamilyDescriptor::new("outpoint_to_utxo_entry", Options::default()),
     ColumnFamilyDescriptor::new("ord_transfers", Options::default()),
     ColumnFamilyDescriptor::new("ord_inscription_info", Options::default()),
     ColumnFamilyDescriptor::new("ord_index_stats", Options::default()),
