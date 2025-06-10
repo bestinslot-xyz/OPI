@@ -11,16 +11,32 @@ use tracing::Level;
 struct Args {
     is_setup: bool,
     is_reset: bool,
+    reorg_height: Option<i32>,
 }
 
 fn parse_args() -> Args {
     let mut is_setup = false;
     let mut is_reset = false;
+    let mut reorg_height: Option<i32> = None;
 
     for (idx, arg) in std::env::args().enumerate() {
         match arg.as_str() {
             "--setup" => is_setup = true,
             "--reset" => is_reset = true,
+            "--reorg" => {
+                if let Some(height_str) = std::env::args().nth(idx + 1) {
+                    if let Ok(height) = height_str.parse::<i32>() {
+                        println!("Reorganizing to height: {}", height);
+                        reorg_height = Some(height);
+                    } else {
+                        eprintln!("Invalid height provided for --reorg");
+                        std::process::exit(0);
+                    }
+                } else {
+                    eprintln!("No height provided after --reorg");
+                    std::process::exit(0);
+                }
+            },
             "--log-level" | "-l" => {
                 if let Some(level) = std::env::args().nth(idx + 1) {
                     match level.as_str() {
@@ -73,6 +89,9 @@ fn parse_args() -> Args {
                 println!(
                     "  --log-level, -l <level>  Set the log level (trace, debug, info, warn, error)."
                 );
+                println!(
+                    "  --reorg <height>  Reorganize the indexer to the specified height."
+                );
                 println!("  --help    Show this help message.");
                 std::process::exit(0);
             }
@@ -80,7 +99,7 @@ fn parse_args() -> Args {
         }
     }
 
-    Args { is_setup, is_reset }
+    Args { is_setup, is_reset, reorg_height }
 }
 
 #[tokio::main]
@@ -94,6 +113,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut brc20_indexer = Brc20Indexer::new(Default::default());
     if args.is_reset {
         brc20_indexer.reset().await?;
+        return Ok(());
+    }
+    if let Some(height) = args.reorg_height {
+        brc20_indexer.brc20_db.reorg(height).await?;
         return Ok(());
     }
     brc20_indexer
