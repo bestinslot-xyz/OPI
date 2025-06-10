@@ -619,6 +619,12 @@ impl Brc20Indexer {
                             );
                             continue;
                         }
+                    } else {
+                        tracing::debug!(
+                            "Skipping transfer {} as self mint is not present",
+                            transfer.inscription_id
+                        );
+                        continue;
                     }
                     is_self_mint = true;
                     if max_supply == 0 {
