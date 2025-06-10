@@ -279,6 +279,28 @@ impl Brc20Indexer {
                 continue;
             }
 
+            if decoded_content_type.starts_with("application/json")
+                && decoded_content_type != "application/json"
+                && !decoded_content_type.starts_with("application/json;")
+            {
+                tracing::debug!(
+                    "Skipping transfer {} as content type starts with application/json but has extras that are not charset",
+                    transfer.inscription_id
+                );
+                continue;
+            }
+
+            if decoded_content_type.starts_with("text/plain")
+                && decoded_content_type != "text/plain"
+                && !decoded_content_type.starts_with("text/plain;")
+            {
+                tracing::debug!(
+                    "Skipping transfer {} as content type starts with text/plain but has extras that are not charset",
+                    transfer.inscription_id
+                );
+                continue;
+            }
+
             let Some(content) = &transfer.content else {
                 tracing::debug!(
                     "Skipping transfer {} as content is not present",
@@ -428,6 +450,15 @@ impl Brc20Indexer {
             };
 
             let ticker = original_ticker.to_lowercase();
+
+            // if ticker or original_ticker contains \x00, skip the transfer
+            if ticker.contains('\x00') || original_ticker.contains('\x00') {
+                tracing::debug!(
+                    "Skipping transfer {} as ticker or original_ticker contains null byte",
+                    transfer.inscription_id
+                );
+                continue;
+            }
 
             if ticker.as_bytes().len() != 4 && ticker.as_bytes().len() != 5 {
                 tracing::debug!(
