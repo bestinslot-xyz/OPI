@@ -460,7 +460,7 @@ impl Brc20Indexer {
                 continue;
             }
 
-            if ticker.as_bytes().len() != 4 && ticker.as_bytes().len() != 5 {
+            if original_ticker.as_bytes().len() != 4 && original_ticker.as_bytes().len() != 5 {
                 tracing::debug!(
                     "Skipping transfer {} as ticker length is not 4 or 5 bytes",
                     transfer.inscription_id
