@@ -34,7 +34,6 @@ pub struct InscriptionEntry {
   pub inscription_number: i32,
   pub sequence_number: u32,
   pub is_json_or_text: bool,
-  pub is_cursed_for_brc20: bool,
   pub txcnt_limit: i16,
 }
 
@@ -52,15 +51,13 @@ impl Entry for InscriptionEntry {
     let inscription_number = i32::from_be_bytes(data[38..42].try_into().unwrap());
     let sequence_number = u32::from_be_bytes(data[42..46].try_into().unwrap());
     let is_json_or_text = data[46] != 0;
-    let is_cursed_for_brc20 = data[47] != 0;
-    let txcnt_limit = i16::from_be_bytes(data[48..50].try_into().unwrap());
+    let txcnt_limit = i16::from_be_bytes(data[47..49].try_into().unwrap());
     Self {
       charms,
       id,
       inscription_number,
       sequence_number,
       is_json_or_text,
-      is_cursed_for_brc20,
       txcnt_limit,
     }
   }
@@ -72,7 +69,6 @@ impl Entry for InscriptionEntry {
     data.extend(self.inscription_number.to_be_bytes());
     data.extend(self.sequence_number.to_be_bytes());
     data.push(if self.is_json_or_text { 1 } else { 0 });
-    data.push(if self.is_cursed_for_brc20 { 1 } else { 0 });
     data.extend(self.txcnt_limit.to_be_bytes());
     data
   }

@@ -194,47 +194,6 @@ impl<'a> InscriptionUpdater<'a> {
           None
         };
 
-        let cursed_for_brc20 = if inscription.payload.unrecognized_even_field {
-          Some(Curse::UnrecognizedEvenField)
-        } else if inscription.payload.duplicate_field {
-          Some(Curse::DuplicateField)
-        } else if inscription.payload.incomplete_field {
-          Some(Curse::IncompleteField)
-        } else if inscription.input != 0 {
-          Some(Curse::NotInFirstInput)
-        } else if inscription.offset != 0 {
-          Some(Curse::NotAtOffsetZero)
-        } else if inscription.payload.pointer.is_some() {
-          Some(Curse::Pointer)
-        } else if inscription.pushnum {
-          Some(Curse::Pushnum)
-        } else if inscription.stutter {
-          Some(Curse::Stutter)
-        } else if let Some((id, count)) = inscribed_offsets.get(&offset) {
-          if *count > 1 {
-            Some(Curse::Reinscription)
-          } else {
-            let initial_inscription_sequence_number =
-              u32::from_be_bytes(self.db.get_cf(self.id_to_sequence_number, id.store())?.unwrap().try_into().unwrap());
-
-            let initial_inscription_is_cursed = InscriptionEntry::load(
-              self
-                .db
-                .get_cf(self.sequence_number_to_entry, initial_inscription_sequence_number.to_be_bytes())?
-                .unwrap()
-            )
-            .is_cursed_for_brc20; // NOTE: CHANGED TO BE SAME AS 0.9 RULES
-
-            if initial_inscription_is_cursed {
-              None
-            } else {
-              Some(Curse::Reinscription)
-            }
-          }
-        } else {
-          None
-        };
-
         let offset = inscription
           .payload
           .pointer()
@@ -246,7 +205,7 @@ impl<'a> InscriptionUpdater<'a> {
           offset,
           origin: Origin::New {
             cursed: curse.is_some() && !jubilant,
-            cursed_for_brc20: cursed_for_brc20.is_some(),
+            cursed_for_brc20: curse.is_some(),
             fee: 0,
             parents: inscription.payload.parents(),
             reinscription: inscribed_offsets.contains_key(&offset),
@@ -706,7 +665,6 @@ impl<'a> InscriptionUpdater<'a> {
             inscription_number,
             sequence_number,
             is_json_or_text,
-            is_cursed_for_brc20: cursed_for_brc20,
             txcnt_limit,
           }
           .store(),
