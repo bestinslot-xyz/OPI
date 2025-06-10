@@ -454,11 +454,11 @@ pub async fn start_rpc_server(
   let handle = Server::builder()
     .set_http_middleware(http_middleware)
     .set_rpc_middleware(rpc_middleware)
-    .build("127.0.0.1:11030".parse::<SocketAddr>()?)
+    .build("0.0.0.0:11030".parse::<SocketAddr>()?)
     .await?
     .start(module);
 
-  println!("RPC server started at http://127.0.0.1:11030");
+  println!("RPC server started at http://0.0.0.0:11030");
 
   Ok(handle)
 }
