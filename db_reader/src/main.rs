@@ -379,10 +379,10 @@ fn parse_outpoint(outpoint: &str) -> (Vec<u8>, u32) {
 }
 
 fn get_outpoint_key(outpoint: &str) -> Vec<u8> {
-  let mut key = vec![0; 44];
+  let mut key = vec![0; 36];
   let (txid, vout) = parse_outpoint(outpoint);
   key[0..32].copy_from_slice(&txid);
-  key[32..36].copy_from_slice(&vout.to_be_bytes());
+  key[32..36].copy_from_slice(&vout.to_le_bytes());
   key
 }
 
