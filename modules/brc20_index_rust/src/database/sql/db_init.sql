@@ -29,6 +29,10 @@ CREATE TABLE public.brc20_events (
 	event_type int4 NOT NULL,
 	block_height int4 NOT NULL,
 	inscription_id text NOT NULL,
+	inscription_number int4 NOT NULL,
+	old_satpoint text,
+	new_satpoint text NOT NULL,
+	txid text NOT NULL,
 	"event" jsonb NOT NULL,
 	CONSTRAINT events_pk PRIMARY KEY (id)
 );

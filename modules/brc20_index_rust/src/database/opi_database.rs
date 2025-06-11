@@ -40,7 +40,10 @@ struct BRC20TxsResponse {
 struct BRC20TxResultItem {
     tx_id: String,
     inscription_id: String,
+    inscription_number: i32,
     old_satpoint: Option<String>,
+    new_satpoint: String,
+    txid: String,
     new_pkscript: String,
     new_wallet: String,
     sent_as_fee: bool,
@@ -104,7 +107,10 @@ impl OpiDatabase {
             Transfer {
                 tx_id: item.tx_id.clone(),
                 inscription_id: item.inscription_id.clone(),
+                inscription_number: item.inscription_number,
                 old_satpoint: item.old_satpoint.clone(),
+                new_satpoint: item.new_satpoint.clone(),
+                txid: item.txid.clone(),
                 new_pkscript: item.new_pkscript.clone(),
                 new_wallet: none_if_empty(Some(item.new_wallet.clone())),
                 sent_as_fee: item.sent_as_fee,

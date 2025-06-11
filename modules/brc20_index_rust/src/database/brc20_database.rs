@@ -61,6 +61,10 @@ pub struct EventInsertData {
     pub event_type_id: i32,
     pub block_height: i32,
     pub inscription_id: String,
+    pub inscription_number: i32,
+    pub old_satpoint: Option<String>,
+    pub new_satpoint: String,
+    pub txid: String,
     pub event: serde_json::Value,
 }
 
@@ -473,6 +477,10 @@ impl Brc20Database {
         &mut self,
         block_height: i32,
         inscription_id: &str,
+        inscription_number: &i32,
+        old_satpoint: &Option<String>,
+        new_satpoint: &String,
+        txid: &String,
         event: &T,
     ) -> Result<i64, Box<dyn Error>>
     where
@@ -501,6 +509,10 @@ impl Brc20Database {
             event_type_id: T::event_id(),
             block_height,
             inscription_id: inscription_id.to_string(),
+            inscription_number: inscription_number.clone(),
+            old_satpoint: old_satpoint.clone(),
+            new_satpoint: new_satpoint.clone(),
+            txid: txid.clone(),
             event: serde_json::to_value(event)?,
         });
 
@@ -727,21 +739,33 @@ impl Brc20Database {
             let mut all_event_type_ids = Vec::new();
             let mut all_block_heights = Vec::new();
             let mut all_inscription_ids = Vec::new();
+            let mut all_inscription_numbers = Vec::new();
+            let mut all_old_satpoints = Vec::new();
+            let mut all_new_satpoints = Vec::new();
+            let mut all_txids = Vec::new();
             let mut all_events = Vec::new();
             for event_data in &self.event_inserts {
                 all_event_ids.push(event_data.event_id);
                 all_event_type_ids.push(event_data.event_type_id);
                 all_block_heights.push(event_data.block_height);
                 all_inscription_ids.push(event_data.inscription_id.clone());
+                all_inscription_numbers.push(event_data.inscription_number);
+                all_old_satpoints.push(event_data.old_satpoint.clone().unwrap_or_else(|| "".into()));
+                all_new_satpoints.push(event_data.new_satpoint.clone());
+                all_txids.push(event_data.txid.clone());
                 all_events.push(event_data.event.clone());
             }
             sqlx::query!(
-                "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event) SELECT * FROM UNNEST
-                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::jsonb[])",
+                "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, inscription_number, old_satpoint, new_satpoint, txid, event) SELECT * FROM UNNEST
+                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::int4[], $6::text[], $7::text[], $8::text[], $9::jsonb[])",
                 &all_event_ids,
                 &all_event_type_ids,
                 &all_block_heights,
                 &all_inscription_ids,
+                &all_inscription_numbers,
+                &all_old_satpoints,
+                &all_new_satpoints,
+                &all_txids,
                 &all_events
             )
             .execute(&self.client)

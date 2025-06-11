@@ -32,7 +32,10 @@ pub struct IndexTimes {
 pub struct BRC20Tx {
   tx_id: String,
   inscription_id: String,
+  inscription_number: i32,
   old_satpoint: Option<String>,
+  new_satpoint: String,
+  txid: String,
   new_pkscript: String,
   new_wallet: String,
   sent_as_fee: bool,
@@ -51,7 +54,7 @@ pub struct BlockInfo {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InscriptionInfo {
   _inscription_id: String,
-  _inscription_number: i32,
+  inscription_number: i32,
   cursed_for_brc20: bool,
   parent_id: Option<String>,
   is_json: bool,
@@ -87,9 +90,10 @@ pub struct UTXOInfo {
 struct TransferInfo {
   inscription_id: String,
   old_satpoint: Option<String>,
-  _new_satpoint: String,
+  new_satpoint: String,
   sent_as_fee: bool,
   _new_output_value: u64,
+  txid: String,
   new_pkscript: String,
 }
 
@@ -165,7 +169,7 @@ fn get_inscription_info_from_raw(
   let metaprotocol_hex = hex::encode(&raw[(54 + content_len as usize + content_type_len as usize)..(54 + content_len as usize + content_type_len as usize + metaprotocol_len as usize)]);
   InscriptionInfo {
     _inscription_id: inscription_id,
-    _inscription_number: inscription_number,
+    inscription_number,
     cursed_for_brc20,
     parent_id,
     is_json,
@@ -289,6 +293,14 @@ fn load_satpoint(raw: &[u8]) -> Option<String> {
   Some(format!("{}:{}:{}", txid, vout, sat))
 }
 
+fn load_txid(raw: &[u8]) -> String {
+  let mut rev_txid = Vec::new();
+  for i in (0..32).rev() {
+    rev_txid.push(raw[i]);
+  }
+  hex::encode(&rev_txid)
+}
+
 fn get_transfer_info_from_raw(
   raw: Vec<u8>,
 ) -> TransferInfo{
@@ -297,13 +309,15 @@ fn get_transfer_info_from_raw(
   let new_satpoint = load_satpoint(&raw[80..124]).unwrap();
   let sent_as_fee = raw[124] != 0;
   let new_output_value = u64::from_be_bytes(raw[125..133].try_into().ok().unwrap());
-  let new_pkscript = hex::encode(&raw[133..]);
+  let txid = load_txid(&raw[133..165]);
+  let new_pkscript = hex::encode(&raw[165..]);
   TransferInfo {
     inscription_id,
     old_satpoint,
-    _new_satpoint: new_satpoint,
+    new_satpoint,
     sent_as_fee,
     _new_output_value: new_output_value,
+    txid,
     new_pkscript,
   }
 }
@@ -459,7 +473,10 @@ impl Brc20ApiServer for RpcServer {
       txes.push(BRC20Tx {
         tx_id,
         inscription_id,
+        inscription_number: inscription_info.inscription_number,
         old_satpoint: transfer_info.old_satpoint,
+        new_satpoint: transfer_info.new_satpoint,
+        txid: transfer_info.txid,
         new_pkscript: transfer_info.new_pkscript.clone(),
         new_wallet: get_wallet(&transfer_info.new_pkscript),
         sent_as_fee: transfer_info.sent_as_fee,

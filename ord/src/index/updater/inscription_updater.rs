@@ -468,6 +468,7 @@ impl<'a> InscriptionUpdater<'a> {
     index: &Index,
   ) -> Result {
     let tx = tx_option.unwrap();
+    let txid = tx.compute_txid();
     let inscription_id = flotsam.inscription_id;
     let txcnt_of_inscr: i64 = self.db.get_cf(self.id_to_txcnt, &inscription_id.store())?
         .map(|txcnt| i64::from_be_bytes(txcnt.try_into().unwrap()))
@@ -514,6 +515,7 @@ impl<'a> InscriptionUpdater<'a> {
             new_satpoint.store().to_vec(),
             vec![send_to_coinbase as u8],
             new_output_value.unwrap_or(&0).to_be_bytes().to_vec(),
+            txid.store().to_vec(),
             new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes(),
           ].concat();
           self.db.put_cf_opt(self.ord_transfers, &transfer_key, &transfer_data, self.write_options)?;
@@ -695,6 +697,7 @@ impl<'a> InscriptionUpdater<'a> {
             new_satpoint.store().to_vec(),
             vec![send_to_coinbase as u8],
             new_output_value.unwrap_or(&0).to_be_bytes().to_vec(),
+            txid.store().to_vec(),
             new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes(),
           ].concat();
           self.db.put_cf_opt(self.ord_transfers, &transfer_key, &transfer_data, self.write_options)?;

@@ -6,30 +6,22 @@ use tokio::task::JoinHandle;
 
 use crate::{
     config::{
-        AMOUNT_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION,
-        Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY,
-        EVENT_SEPARATOR, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY,
-        MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
-        OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
-        OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
-        OPERATION_TRANSFER, OPERATION_WITHDRAW, PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE,
-        PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
+        Brc20IndexerConfig, AMOUNT_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY, EVENT_SEPARATOR, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OPERATION_BRC20_PROG_CALL, OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY, OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT, OPERATION_TRANSFER, OPERATION_WITHDRAW, OP_RETURN, PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY
     },
     database::{Brc20Balance, Brc20Database, OpiDatabase, TransferValidity},
     indexer::{
         brc20_prog_client::build_brc20_prog_http_client,
         brc20_reporter::Brc20Reporter,
-        utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
+        utils::{get_amount_value, get_decimals_value, ALLOW_ZERO, DISALLOW_ZERO},
     },
     no_default,
     types::{
-        Ticker,
         events::{
             Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
             Brc20ProgDeployTransferEvent, Brc20ProgWithdrawInscribeEvent,
             Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
             TransferInscribeEvent, TransferTransferEvent,
-        },
+        }, Ticker, Transfer
     },
 };
 
@@ -375,6 +367,7 @@ impl Brc20Indexer {
                                 block_hash,
                                 brc20_prog_tx_idx,
                                 &mut block_events_buffer,
+                                transfer,
                             )
                             .await
                         {
@@ -390,6 +383,7 @@ impl Brc20Indexer {
                             &transfer.new_pkscript,
                             data,
                             &mut block_events_buffer,
+                            transfer,
                         )?;
                     }
                 } else if operation == OPERATION_BRC20_PROG_CALL
@@ -418,6 +412,7 @@ impl Brc20Indexer {
                                 block_hash,
                                 brc20_prog_tx_idx,
                                 &mut block_events_buffer,
+                                transfer,
                             )
                             .await
                         {
@@ -435,6 +430,7 @@ impl Brc20Indexer {
                             content.get(INSCRIPTION_ID_KEY).and_then(|i| i.as_str()),
                             data,
                             &mut block_events_buffer,
+                            transfer,
                         )?;
                     }
                 }
@@ -525,6 +521,7 @@ impl Brc20Indexer {
                             transfer.sent_as_fee,
                             brc20_prog_tx_idx,
                             &mut block_events_buffer,
+                            transfer,
                         )
                         .await
                     {
@@ -543,6 +540,7 @@ impl Brc20Indexer {
                         original_ticker,
                         amount,
                         &mut block_events_buffer,
+                        transfer,
                     )?;
                 }
                 continue;
@@ -655,6 +653,7 @@ impl Brc20Indexer {
                     decimals,
                     is_self_mint,
                     &mut block_events_buffer,
+                    transfer,
                 )?;
 
                 continue;
@@ -693,6 +692,7 @@ impl Brc20Indexer {
                     amount,
                     transfer.parent_inscription_id.clone(),
                     &mut block_events_buffer,
+                    transfer,
                 )
                 .await?;
                 continue;
@@ -737,6 +737,7 @@ impl Brc20Indexer {
                             transfer.tx_id.clone(),
                             brc20_prog_tx_idx,
                             &mut block_events_buffer,
+                            transfer,
                         )
                         .await
                     {
@@ -757,6 +758,7 @@ impl Brc20Indexer {
                         original_ticker,
                         amount,
                         &mut block_events_buffer,
+                        transfer,
                     )
                     .await?;
                 }
@@ -929,13 +931,20 @@ impl Brc20Indexer {
         source_pk_script: &str,
         data: &str,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let event = Brc20ProgDeployInscribeEvent {
             source_pk_script: source_pk_script.to_string(),
             data: data.to_string(),
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
         self.brc20_db
@@ -954,6 +963,7 @@ impl Brc20Indexer {
         block_hash: &str,
         brc20_prog_tx_idx: u64,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let TransferValidity::Valid = self
             .brc20_db
@@ -998,7 +1008,13 @@ impl Brc20Indexer {
             byte_len: byte_length,
         };
         self.brc20_db
-            .add_event(block_height, &inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(&inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1031,6 +1047,7 @@ impl Brc20Indexer {
         block_hash: &str,
         brc20_prog_tx_idx: u64,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let TransferValidity::Valid = self
             .brc20_db
@@ -1077,7 +1094,13 @@ impl Brc20Indexer {
             contract_inscription_id: contract_inscription_id.map(|s| s.to_string()),
         };
         self.brc20_db
-            .add_event(block_height, &inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(&inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1113,6 +1136,7 @@ impl Brc20Indexer {
         contract_inscription_id: Option<&str>,
         data: &str,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let event = Brc20ProgCallInscribeEvent {
             source_pk_script: new_pkscript.to_string(),
@@ -1123,7 +1147,13 @@ impl Brc20Indexer {
             data: data.to_string(),
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
         self.brc20_db
@@ -1145,6 +1175,7 @@ impl Brc20Indexer {
         sent_as_fee: bool,
         brc20_prog_tx_idx: u64,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let TransferValidity::Valid = self
             .brc20_db
@@ -1178,7 +1209,13 @@ impl Brc20Indexer {
         };
         let event_id = self
             .brc20_db
-            .add_event(block_height, &inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(&inscription_id, ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1265,6 +1302,7 @@ impl Brc20Indexer {
         original_ticker: &str,
         amount: u128,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let event = Brc20ProgWithdrawInscribeEvent {
             source_pk_script: new_pkscript.to_string(),
@@ -1274,7 +1312,13 @@ impl Brc20Indexer {
             amount,
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         self.brc20_db
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
         block_events_buffer.push_str(&event.get_event_str(inscription_id, ticker.decimals));
@@ -1295,6 +1339,7 @@ impl Brc20Indexer {
         decimals: u8,
         is_self_mint: bool,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let event = DeployInscribeEvent {
             deployer_pk_script: new_pkscript.to_string(),
@@ -1307,7 +1352,13 @@ impl Brc20Indexer {
             is_self_mint,
         };
         self.brc20_db
-            .add_event(block_height, inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1339,6 +1390,7 @@ impl Brc20Indexer {
         mut amount: u128,
         parent_id: Option<String>,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         if deployed_ticker.is_self_mint {
             let Some(parent_id) = parent_id.as_ref() else {
@@ -1395,7 +1447,13 @@ impl Brc20Indexer {
         };
         let event_id = self
             .brc20_db
-            .add_event(block_height, inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer
             .push_str(&event.get_event_str(inscription_id, deployed_ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
@@ -1434,6 +1492,7 @@ impl Brc20Indexer {
         original_ticker: &str,
         amount: u128,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         let mut balance = self
             .brc20_db
@@ -1464,7 +1523,13 @@ impl Brc20Indexer {
 
         let event_id = self
             .brc20_db
-            .add_event(block_height, inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
@@ -1498,6 +1563,7 @@ impl Brc20Indexer {
         tx_id: String,
         brc20_prog_tx_idx: u64,
         block_events_buffer: &mut String,
+        transfer: &Transfer,
     ) -> Result<(), Box<dyn Error>> {
         tracing::debug!(
             "Processing transfer for inscription ID: {}, new pk script: {}, new wallet: {:?}, ticker: {}, original ticker: {}, amount: {}, sent as fee: {}, tx_id: {}",
@@ -1559,7 +1625,13 @@ impl Brc20Indexer {
 
         let event_id = self
             .brc20_db
-            .add_event(block_height, inscription_id, &event)?;
+            .add_event(block_height, 
+                inscription_id, 
+                &transfer.inscription_number,
+                &transfer.old_satpoint,
+                &transfer.new_satpoint,
+                &transfer.txid,
+                &event)?;
         block_events_buffer.push_str(&event.get_event_str(inscription_id, ticker.decimals));
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
