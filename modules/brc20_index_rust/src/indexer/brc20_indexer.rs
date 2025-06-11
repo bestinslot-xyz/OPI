@@ -156,6 +156,13 @@ impl Brc20Indexer {
 
             let is_synced = next_brc20_block == last_opi_block;
 
+            if next_brc20_block % 1000 == 0 {
+                tracing::info!(
+                    "Clearing brc20 db caches at block height {}",
+                    next_brc20_block
+                );
+                self.brc20_db.clear_caches();
+            }
             if is_synced || next_brc20_block % 1000 == 0 {
                 tracing::info!("Processing block: {}", next_brc20_block);
             }

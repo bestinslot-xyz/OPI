@@ -1,3 +1,4 @@
+use core::panic;
 use std::{collections::HashMap, error::Error, time::Instant, vec};
 
 use brc20_index::types::events;
@@ -97,15 +98,21 @@ pub struct Brc20Database {
 
 impl Brc20Database {
     pub fn new(config: &Brc20IndexerConfig) -> Self {
+        let ssl_mode = if config.db_ssl {
+            "?sslmode=require"
+        } else {
+            ""
+        };
         let client = PgPoolOptions::new()
             .max_connections(5)
             .connect_lazy(&format!(
-                "postgres://{}:{}@{}:{}/{}",
-                config.db_user,
-                config.db_password,
+                "postgres://{}:{}@{}:{}/{}{}",
+                config.db_user.replace("/", "%2F").replace(":", "%3A").replace("@", "%40"),
+                config.db_password.replace("/", "%2F").replace(":", "%3A").replace("@", "%40"),
                 config.db_host,
                 config.db_port,
-                config.db_database,
+                config.db_database.replace("/", "%2F").replace(":", "%3A").replace("@", "%40"),
+                ssl_mode
             ))
             .expect("Failed to connect to the database");
         Brc20Database {
@@ -809,6 +816,19 @@ impl Brc20Database {
             self.balance_updates.clear();
         }
         Ok(())
+    }
+
+    pub fn clear_caches(&mut self) {
+        if !self.new_tickers.is_empty()
+            || !self.ticker_updates.is_empty()
+            || !self.event_inserts.is_empty()
+            || !self.balance_updates.is_empty()
+        {
+            panic!("clear caches called while there are pending updates");
+        }
+        self.transfer_validity_cache.clear();
+        self.cached_events.clear();
+        self.balance_cache.clear();
     }
 
     pub async fn reset(&mut self) -> Result<(), Box<dyn Error>> {

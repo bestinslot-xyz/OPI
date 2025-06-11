@@ -19,11 +19,13 @@ if init_env:
   DB_PORT="5432"
   DB_DATABASE="postgres"
   DB_PASSWD=""
+  DB_SSL="false"
   DB_METAPROTOCOL_USER="postgres"
   DB_METAPROTOCOL_HOST="localhost"
   DB_METAPROTOCOL_PORT="5432"
   DB_METAPROTOCOL_DATABASE="postgres"
   DB_METAPROTOCOL_PASSWD=""
+  DB_METAPROTOCOL_SSL="false"
   NETWORK_TYPE="mainnet"
   REPORT_TO_INDEXER="true"
   REPORT_URL="https://api.opi.network/report_block"
@@ -50,6 +52,7 @@ if init_env:
     DB_PORT = env.get("DB_PORT") or "5432"
     DB_DATABASE = env.get("DB_DATABASE") or "postgres"
     DB_PASSWD = env.get("DB_PASSWD")
+    DB_SSL = env.get("DB_SSL") or "false"
   else:
     res = input("BRC20 Postgres DB username (Default: postgres): ")
     if res != '':
@@ -65,6 +68,9 @@ if init_env:
       DB_DATABASE = res
     res = stdiomask.getpass("BRC20 Postgres DB password: ")
     DB_PASSWD = res
+    res = input("BRC20 Postgres DB SSL (Default: false) options: true, false: ")
+    if res != '':
+      DB_SSL = res
   use_main_env = False
   main_env_exists = os.path.isfile('../main_index/.env')
   if main_env_exists:
@@ -78,6 +84,7 @@ if init_env:
     DB_METAPROTOCOL_PORT = env.get("DB_PORT") or "5432"
     DB_METAPROTOCOL_DATABASE = env.get("DB_DATABASE") or "postgres"
     DB_METAPROTOCOL_PASSWD = env.get("DB_PASSWD")
+    DB_METAPROTOCOL_SSL = env.get("DB_SSL") or "false"
     NETWORK_TYPE = env.get("NETWORK_TYPE") or "mainnet"
   else:
     res = input("Main Postgres DB username (Default: postgres): ")
@@ -94,6 +101,9 @@ if init_env:
       DB_METAPROTOCOL_DATABASE = res
     res = stdiomask.getpass("Main Postgres DB password: ")
     DB_METAPROTOCOL_PASSWD = res
+    res = input("Main Postgres DB SSL (Default: false) options: true, false: ")
+    if res != '':
+      DB_METAPROTOCOL_SSL = res
     res = input("Network type (Default: mainnet) options: mainnet, testnet, testnet4, signet, regtest: ")
     if res != '':
       NETWORK_TYPE = res
@@ -137,11 +147,13 @@ if init_env:
   f.write('DB_PORT="' + DB_PORT + '"\n')
   f.write('DB_DATABASE="' + DB_DATABASE + '"\n')
   f.write('DB_PASSWD="' + DB_PASSWD + '"\n')
+  f.write('DB_SSL="' + DB_SSL + '"\n')
   f.write('DB_METAPROTOCOL_USER="' + DB_METAPROTOCOL_USER + '"\n')
   f.write('DB_METAPROTOCOL_HOST="' + DB_METAPROTOCOL_HOST + '"\n')
   f.write('DB_METAPROTOCOL_PORT="' + str(DB_METAPROTOCOL_PORT) + '"\n')
   f.write('DB_METAPROTOCOL_DATABASE="' + DB_METAPROTOCOL_DATABASE + '"\n')
   f.write('DB_METAPROTOCOL_PASSWD="' + DB_METAPROTOCOL_PASSWD + '"\n')
+  f.write('DB_METAPROTOCOL_SSL="' + DB_METAPROTOCOL_SSL + '"\n')
   f.write('NETWORK_TYPE="' + NETWORK_TYPE + '"\n')
   f.write('REPORT_TO_INDEXER="' + REPORT_TO_INDEXER + '"\n')
   f.write('REPORT_URL="' + REPORT_URL + '"\n')

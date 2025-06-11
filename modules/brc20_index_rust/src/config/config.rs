@@ -49,6 +49,9 @@ pub const DB_PASSWORD_DEFAULT: &str = "";
 pub const DB_DATABASE_KEY: &str = "DB_DATABASE";
 pub const DB_DATABASE_DEFAULT: &str = "postgres";
 
+pub const DB_SSL_KEY: &str = "DB_SSL";
+pub const DB_SSL_DEFAULT: &str = "false";
+
 pub const REPORT_TO_INDEXER_KEY: &str = "REPORT_TO_INDEXER";
 pub const REPORT_TO_INDEXER_DEFAULT: &str = "true";
 
@@ -145,6 +148,7 @@ pub struct Brc20IndexerConfig {
     pub db_user: String,
     pub db_password: String,
     pub db_database: String,
+    pub db_ssl: bool,
 
     pub report_to_indexer: bool,
     pub report_url: String,
@@ -180,6 +184,9 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| DB_PASSWORD_DEFAULT.to_string()),
             db_database: std::env::var(DB_DATABASE_KEY)
                 .unwrap_or_else(|_| DB_DATABASE_DEFAULT.to_string()),
+            db_ssl: std::env::var(DB_SSL_KEY)
+                .unwrap_or_else(|_| DB_SSL_DEFAULT.to_string())
+                == "true",
 
             report_to_indexer: std::env::var(REPORT_TO_INDEXER_KEY)
                 .unwrap_or_else(|_| REPORT_TO_INDEXER_DEFAULT.to_string())
