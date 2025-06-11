@@ -622,9 +622,15 @@ pub async fn start_rpc_server(
     db,
   }.into_rpc();
 
+  let server_config = jsonrpsee::server::ServerConfig::builder()
+    .max_request_body_size(1024 * 1024 * 10) // 10 MB
+    .max_response_body_size(1024 * 1024 * 1024) // 1 GB
+    .build();
+
   let handle = Server::builder()
     .set_http_middleware(http_middleware)
     .set_rpc_middleware(rpc_middleware)
+    .set_config(server_config)
     .build("0.0.0.0:11030".parse::<SocketAddr>()?)
     .await?
     .start(module);
