@@ -435,7 +435,7 @@ impl Brc20Database {
 
         let balance_changes = sqlx::query("select pkscript, wallet, tick, overall_balance, available_balance 
                  from brc20_historic_balances 
-                 where block_height = %$1
+                 where block_height = $1
                  order by id asc;")
             .bind(block_height)
             .fetch_all(&mut *tx)
