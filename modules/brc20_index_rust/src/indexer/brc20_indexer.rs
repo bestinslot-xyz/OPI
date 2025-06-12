@@ -175,6 +175,14 @@ impl Brc20Indexer {
                 .index_block(next_brc20_block, &block_hash, block_time as u64, is_synced)
                 .await?;
 
+            if next_brc20_block >= self.config.first_brc20_height &&
+                    self.brc20_db.should_index_extras(next_brc20_block, last_opi_block).await? {
+                // Index extras if synced or close to sync
+                self.brc20_db
+                    .index_extra_tables(next_brc20_block)
+                    .await?;
+            }
+
             self.brc20_db
                 .set_block_hash(next_brc20_block, &block_hash)
                 .await?;

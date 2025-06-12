@@ -40,6 +40,7 @@ CREATE UNIQUE INDEX brc20_events_event_type_inscription_id_idx ON public.brc20_e
 CREATE INDEX brc20_events_block_height_idx ON public.brc20_events USING btree (block_height);
 CREATE INDEX brc20_events_event_type_idx ON public.brc20_events USING btree (event_type);
 CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree (inscription_id);
+CREATE INDEX brc20_events_ticker_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)));
 
 CREATE TABLE public.brc20_tickers (
 	id bigserial NOT NULL,
@@ -113,7 +114,7 @@ CREATE INDEX brc20_current_balances_pkscript_idx ON public.brc20_current_balance
 CREATE INDEX brc20_current_balances_tick_idx ON public.brc20_current_balances USING btree (tick);
 CREATE INDEX brc20_current_balances_wallet_idx ON public.brc20_current_balances USING btree (wallet);
 
-CREATE TABLE public.brc20_unused_tx_inscrs (
+CREATE TABLE public.brc20_unused_txes (
 	id bigserial NOT NULL,
 	inscription_id text NOT NULL,
 	tick text NOT NULL,
@@ -122,17 +123,9 @@ CREATE TABLE public.brc20_unused_tx_inscrs (
 	current_holder_wallet text NULL,
 	event_id int8 NOT NULL,
 	block_height int4 NOT NULL,
-	CONSTRAINT brc20_unused_tx_inscrs_pk PRIMARY KEY (id)
+	CONSTRAINT brc20_unused_txes_pk PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX brc20_unused_tx_inscrs_inscription_id_idx ON public.brc20_unused_tx_inscrs USING btree (inscription_id);
-CREATE INDEX brc20_unused_tx_inscrs_tick_idx ON public.brc20_unused_tx_inscrs USING btree (tick);
-CREATE INDEX brc20_unused_tx_inscrs_pkscript_idx ON public.brc20_unused_tx_inscrs USING btree (current_holder_pkscript);
-CREATE INDEX brc20_unused_tx_inscrs_wallet_idx ON public.brc20_unused_tx_inscrs USING btree (current_holder_wallet);
-
-CREATE TABLE public.brc20_extras_block_hashes (
-	id bigserial NOT NULL,
-	block_height int4 NOT NULL,
-	block_hash text NOT NULL,
-	CONSTRAINT brc20_extras_block_hashes_pk PRIMARY KEY (id)
-);
-CREATE UNIQUE INDEX brc20_extras_block_hashes_block_height_idx ON public.brc20_extras_block_hashes USING btree (block_height);
+CREATE UNIQUE INDEX brc20_unused_txes_inscription_id_idx ON public.brc20_unused_txes USING btree (inscription_id);
+CREATE INDEX brc20_unused_txes_tick_idx ON public.brc20_unused_txes USING btree (tick);
+CREATE INDEX brc20_unused_txes_pkscript_idx ON public.brc20_unused_txes USING btree (current_holder_pkscript);
+CREATE INDEX brc20_unused_txes_wallet_idx ON public.brc20_unused_txes USING btree (current_holder_wallet);

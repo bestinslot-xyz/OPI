@@ -20,7 +20,7 @@ lazy_static! {
         "brc20_events",
         "brc20_cumulative_event_hashes",
         "brc20_block_hashes",
-        "brc20_unused_tx_inscrs",
+        "brc20_unused_txes",
         "brc20_current_balances",
     ];
 }
@@ -275,6 +275,247 @@ impl Brc20Database {
         Ok(row.block_hash)
     }
 
+    pub async fn should_index_extras(
+        &self,
+        brc20_block_height: i32,
+        ord_block_height: i32,
+    ) -> Result<bool, Box<dyn Error>> {
+        // does brc20_unused_txes have any rows?
+        let brc20_unused_txes_is_empty = sqlx::query(
+            "SELECT 1 FROM brc20_unused_txes LIMIT 1"
+        )
+        .fetch_optional(&self.client)
+        .await?
+        .is_none();
+
+        if !brc20_unused_txes_is_empty {
+            return Ok(true);
+        }
+
+        let brc20_current_balances_is_empty = sqlx::query(
+            "SELECT 1 FROM brc20_current_balances LIMIT 1"
+        )
+        .fetch_optional(&self.client)
+        .await?
+        .is_none();
+
+        if !brc20_current_balances_is_empty {
+            return Ok(true);
+        }
+
+        if brc20_block_height > ord_block_height - 10 {
+            self.initial_index_of_extra_tables()
+                .await?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    pub async fn initial_index_of_extra_tables(
+        &self,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut tx = self.client.begin().await?;
+
+        tracing::info!("Resetting brc20_unused_txes");
+
+        sqlx::query("truncate table brc20_unused_txes restart identity;")
+            .execute(&mut *tx)
+            .await?;
+
+        tracing::info!("Selecting unused txes");
+
+        let unused_txes = sqlx::query("with tempp as (
+                  select inscription_id, event, id, block_height
+                  from brc20_events
+                  where event_type = $1
+                ), tempp2 as (
+                  select inscription_id, event
+                  from brc20_events
+                  where event_type = $2
+                )
+                select t.event, t.id, t.block_height, t.inscription_id
+                from tempp t
+                left join tempp2 t2 on t.inscription_id = t2.inscription_id
+                where t2.inscription_id is null;")
+            .bind(crate::types::events::TransferInscribeEvent::event_id())
+            .bind(crate::types::events::TransferTransferEvent::event_id())
+            .fetch_all(&mut *tx)
+            .await?;
+
+        tracing::info!("Inserting unused txes");
+
+        for (index, row) in unused_txes.iter().enumerate() {
+            if index % 1000 == 0 {
+                tracing::info!("Inserting unused txes: {}/{}", index, unused_txes.len());
+            }
+
+            let inscription_id: String = row.get("inscription_id");
+            let new_event: serde_json::Value = row.get("event");
+            let event_id: i64 = row.get("id");
+            let block_height: i32 = row.get("block_height");
+
+            sqlx::query!(
+                "INSERT INTO brc20_unused_txes (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                inscription_id,
+                new_event.get("tick").unwrap().as_str().unwrap_or(""),
+                BigDecimal::from(new_event.get("amount").unwrap().as_str().unwrap().parse::<u128>().unwrap()),
+                new_event.get("source_pkScript").unwrap().as_str().unwrap(),
+                new_event.get("source_wallet").unwrap().as_str().unwrap(),
+                event_id,
+                block_height
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tracing::info!("Resetting brc20_current_balances");
+
+        sqlx::query("truncate table brc20_current_balances restart identity;")
+            .execute(&mut *tx)
+            .await?;
+
+        tracing::info!("Selecting current balances");
+
+        let current_balances = sqlx::query("with tempp as (
+                    select max(id) as id
+                    from brc20_historic_balances
+                    group by pkscript, tick
+                  )
+                  select bhb.pkscript, bhb.tick, bhb.overall_balance, bhb.available_balance, bhb.wallet, bhb.block_height
+                  from tempp t
+                  left join brc20_historic_balances bhb on bhb.id = t.id
+                  order by bhb.pkscript asc, bhb.tick asc;")
+            .fetch_all(&mut *tx)
+            .await?;
+
+        tracing::info!("Inserting current balances");
+
+        for (index, row) in current_balances.iter().enumerate() {
+            if index % 1000 == 0 {
+                tracing::info!("Inserting current balances: {}/{}", index, current_balances.len());
+            }
+
+            let pkscript: String = row.get("pkscript");
+            let tick: String = row.get("tick");
+            let overall_balance: BigDecimal = row.get("overall_balance");
+            let available_balance: BigDecimal = row.get("available_balance");
+            let wallet: String = row.get("wallet");
+            let block_height: i32 = row.get("block_height");
+
+            sqlx::query!(
+                "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)
+                    VALUES ($1, $2, $3, $4, $5, $6)",
+                pkscript,
+                tick,
+                overall_balance,
+                available_balance,
+                wallet,
+                block_height
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tracing::info!("Initial index of extra tables completed");
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    pub async fn index_extra_tables(
+        &mut self,
+        block_height: i32,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut tx = self.client.begin().await?;
+
+        tracing::info!("Indexing extra tables for block height {}", block_height);
+
+        let balance_changes = sqlx::query("select pkscript, wallet, tick, overall_balance, available_balance 
+                 from brc20_historic_balances 
+                 where block_height = %$1
+                 order by id asc;")
+            .bind(block_height)
+            .fetch_all(&mut *tx)
+            .await?;
+
+        let mut balance_changes_map = HashMap::new();
+        for row in balance_changes {
+            let pkscript: String = row.get("pkscript");
+            let wallet: String = row.get("wallet");
+            let tick: String = row.get("tick");
+            let overall_balance: BigDecimal = row.get("overall_balance");
+            let available_balance: BigDecimal = row.get("available_balance");
+
+            balance_changes_map.insert((pkscript, tick), (wallet, overall_balance, available_balance));
+        }
+        for ((pkscript, tick), (wallet, overall_balance, available_balance)) in balance_changes_map {
+            sqlx::query!(
+                "INSERT INTO brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height) VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT (pkscript, tick) 
+                     DO UPDATE SET overall_balance = EXCLUDED.overall_balance
+                                , available_balance = EXCLUDED.available_balance
+                                , block_height = EXCLUDED.block_height;",
+                pkscript,
+                wallet,
+                tick,
+                overall_balance,
+                available_balance,
+                block_height
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let events = sqlx::query("select event, id, event_type, inscription_id 
+                 from brc20_events where block_height = $1 and (event_type = $2 or event_type = $3) 
+                 order by id asc;")
+            .bind(block_height)
+            .bind(crate::types::events::TransferInscribeEvent::event_id())
+            .bind(crate::types::events::TransferTransferEvent::event_id())
+            .fetch_all(&mut *tx)
+            .await?;
+
+        for row in events {
+            let new_event: serde_json::Value = row.get("event");
+            let event_id: i64 = row.get("id");
+            let event_type: i32 = row.get("event_type");
+            let inscription_id: String = row.get("inscription_id");
+
+            if event_type == crate::types::events::TransferInscribeEvent::event_id() {
+                sqlx::query!(
+                    "INSERT INTO brc20_unused_txes (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (inscription_id) DO NOTHING;",
+                    inscription_id,
+                    new_event.get("tick").unwrap().as_str().unwrap(),
+                    BigDecimal::from(new_event.get("amount").unwrap().as_str().unwrap().parse::<u128>().unwrap()),
+                    new_event.get("source_pkScript").unwrap().as_str().unwrap(),
+                    new_event.get("source_wallet").unwrap().as_str().unwrap(),
+                    event_id,
+                    block_height
+                )
+                .execute(&mut *tx)
+                .await?;
+            } else if event_type == crate::types::events::TransferTransferEvent::event_id() {
+                sqlx::query!("DELETE FROM brc20_unused_txes WHERE inscription_id = $1", inscription_id)
+                    .execute(&mut *tx)
+                    .await?;
+            } else {
+                panic!(
+                    "Unknown event type {} for inscription_id {}",
+                    event_type,
+                    inscription_id
+                );
+            }
+        }
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
     pub async fn check_residue(&self, block_height: i32) -> Result<bool, Box<dyn Error>> {
         for table_name in ALL_TABLES_WITH_BLOCK_HEIGHT.iter() {
             let row = sqlx::query(&format!(
@@ -302,15 +543,19 @@ impl Brc20Database {
     }
 
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        let mut tx = self.client.begin().await?;
+
+        tracing::info!("Starting reorg up to block height {}", block_height);
+
         sqlx::query("DELETE FROM brc20_tickers WHERE block_height > $1")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         let res = sqlx::query("SELECT event FROM brc20_events WHERE event_type = $1 AND block_height > $2")
             .bind(crate::types::events::MintInscribeEvent::event_id())
             .bind(block_height)
-            .fetch_all(&self.client)
+            .fetch_all(&mut *tx)
             .await?;
         let mut ticker_changes = HashMap::new();
         for row in res {
@@ -330,56 +575,139 @@ impl Brc20Database {
                 BigDecimal::from(change),
                 ticker
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
         }
 
         sqlx::query("DELETE FROM brc20_historic_balances WHERE block_height > $1")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("DELETE FROM brc20_events WHERE block_height > $1")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("DELETE FROM brc20_cumulative_event_hashes WHERE block_height > $1")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("SELECT setval('brc20_cumulative_event_hashes_id_seq', max(id)) from brc20_cumulative_event_hashes;")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("SELECT setval('brc20_tickers_id_seq', max(id)) from brc20_tickers;")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("SELECT setval('brc20_historic_balances_id_seq', max(id)) from brc20_historic_balances;")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("SELECT setval('brc20_events_id_seq', max(id)) from brc20_events;")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("DELETE FROM brc20_block_hashes WHERE block_height > $1")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("SELECT setval('brc20_block_hashes_id_seq', max(id)) from brc20_block_hashes;")
             .bind(block_height)
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
-        // TODO: also handle brc20_unused_tx_inscrs and brc20_current_balances
+        tracing::info!("Starting reorg on extra tables");
+
+        let to_replace_balances = sqlx::query("delete from brc20_current_balances where block_height > $1 RETURNING pkscript, tick;")
+            .bind(block_height)
+            .fetch_all(&mut *tx)
+            .await?;
+
+        for (index, row) in to_replace_balances.iter().enumerate() {
+            if index % 1000 == 0 {
+                tracing::info!("Replacing current balances: {}/{}", index, to_replace_balances.len());
+            }
+
+            let pkscript: String = row.get("pkscript");
+            let tick: String = row.get("tick");
+
+            sqlx::query!(
+                "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)
+                    SELECT pkscript, tick, overall_balance, available_balance, wallet, block_height
+                    FROM brc20_historic_balances
+                    WHERE pkscript = $1 AND tick = $2
+                    ORDER BY block_height DESC LIMIT 1",
+                pkscript,
+                tick
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tracing::info!("Resetting brc20_unused_txes");
+
+        sqlx::query("truncate table brc20_unused_txes restart identity;")
+            .execute(&mut *tx)
+            .await?;
+
+        tracing::info!("Selecting unused txes");
+
+        let unused_txes = sqlx::query("with tempp as (
+                  select inscription_id, event, id, block_height
+                  from brc20_events
+                  where event_type = $1
+                ), tempp2 as (
+                  select inscription_id, event
+                  from brc20_events
+                  where event_type = $2
+                )
+                select t.event, t.id, t.block_height, t.inscription_id
+                from tempp t
+                left join tempp2 t2 on t.inscription_id = t2.inscription_id
+                where t2.inscription_id is null;")
+            .bind(crate::types::events::TransferInscribeEvent::event_id())
+            .bind(crate::types::events::TransferTransferEvent::event_id())
+            .fetch_all(&mut *tx)
+            .await?;
+
+        tracing::info!("Inserting unused txes");
+
+        for (index, row) in unused_txes.iter().enumerate() {
+            if index % 1000 == 0 {
+                tracing::info!("Inserting unused txes: {}/{}", index, unused_txes.len());
+            }
+
+            let inscription_id: String = row.get("inscription_id");
+            let new_event: serde_json::Value = row.get("event");
+            let event_id: i64 = row.get("id");
+            let block_height: i32 = row.get("block_height");
+
+            sqlx::query!(
+                "INSERT INTO brc20_unused_txes (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                inscription_id,
+                new_event.get("tick").unwrap().as_str().unwrap_or(""),
+                BigDecimal::from(new_event.get("amount").unwrap().as_str().unwrap().parse::<u128>().unwrap()),
+                new_event.get("source_pkScript").unwrap().as_str().unwrap(),
+                new_event.get("source_wallet").unwrap().as_str().unwrap(),
+                event_id,
+                block_height
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        tracing::info!("Reorg completed up to block height {}", block_height);
 
         self.current_event_id =
             sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
