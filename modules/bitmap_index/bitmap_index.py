@@ -208,7 +208,7 @@ def index_block(block_height, current_block_hash):
       print("bitmap_number > block_height: " + str(bitmap_number) + " > " + str(block_height))
       continue
     cur.execute('''INSERT INTO bitmaps (inscription_id, inscription_number, bitmap_number, block_height) VALUES (%s, %s, %s, %s) ON CONFLICT (bitmap_number) 
-                    DO UPDATE SET inscription_id = EXCLUDED.inscription_id, inscription_number = EXCLUDED.inscription_number, block_height = EXCLUDED.block_height;''', 
+                    DO NOTHING RETURNING id;''', 
                 (inscr_id, inscr_num, bitmap_number, block_height))
     if cur.rowcount == 0: 
       print("bitmap_number already exists: " + str(bitmap_number))
