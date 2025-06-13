@@ -35,6 +35,16 @@ pub struct BitmapInscription {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct SNSInscription {
+    pub tx_id: String,
+    pub txid: String,
+    pub inscription_id: String,
+    pub inscription_number: i32,
+    pub content_hex: String,
+    pub content_type_hex: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BlockInfo {
     pub block_hash: String,
     pub timestamp: u64,
@@ -107,4 +117,7 @@ pub trait Brc20Api {
 
     #[method(name = "getBlockBitmapInscrs")]
     async fn get_block_bitmap_inscrs(&self, block_height: u32) -> RpcResult<Option<Vec<BitmapInscription>>>;
+
+    #[method(name = "getBlockSNSInscrs")]
+    async fn get_block_sns_inscrs(&self, block_height: u32) -> RpcResult<Option<Vec<SNSInscription>>>;
 }

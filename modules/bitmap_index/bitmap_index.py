@@ -29,11 +29,6 @@ db_host = os.getenv("DB_HOST") or "localhost"
 db_port = int(os.getenv("DB_PORT") or "5432")
 db_database = os.getenv("DB_DATABASE") or "postgres"
 db_password = os.getenv("DB_PASSWD")
-db_metaprotocol_user = os.getenv("DB_METAPROTOCOL_USER") or "postgres"
-db_metaprotocol_host = os.getenv("DB_METAPROTOCOL_HOST") or "localhost"
-db_metaprotocol_port = int(os.getenv("DB_METAPROTOCOL_PORT") or "5432")
-db_metaprotocol_database = os.getenv("DB_METAPROTOCOL_DATABASE") or "postgres"
-db_metaprotocol_password = os.getenv("DB_METAPROTOCOL_PASSWD")
 network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 
 first_inscription_heights = {
