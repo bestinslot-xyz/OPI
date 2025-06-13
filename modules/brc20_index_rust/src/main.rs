@@ -36,7 +36,7 @@ fn parse_args() -> Args {
                     eprintln!("No height provided after --reorg");
                     std::process::exit(0);
                 }
-            },
+            }
             "--log-level" | "-l" => {
                 if let Some(level) = std::env::args().nth(idx + 1) {
                     match level.as_str() {
@@ -89,9 +89,7 @@ fn parse_args() -> Args {
                 println!(
                     "  --log-level, -l <level>  Set the log level (trace, debug, info, warn, error)."
                 );
-                println!(
-                    "  --reorg <height>  Reorganize the indexer to the specified height."
-                );
+                println!("  --reorg <height>  Reorganize the indexer to the specified height.");
                 println!("  --help    Show this help message.");
                 std::process::exit(0);
             }
@@ -99,7 +97,11 @@ fn parse_args() -> Args {
         }
     }
 
-    Args { is_setup, is_reset, reorg_height }
+    Args {
+        is_setup,
+        is_reset,
+        reorg_height,
+    }
 }
 
 #[tokio::main]

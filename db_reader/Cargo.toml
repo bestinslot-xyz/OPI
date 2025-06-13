@@ -25,3 +25,7 @@ serde_json = { version = "1.0.81", features = ["preserve_order"] }
 bitcoin = { version = "0.32.5", features = ["rand"] }
 ctrlc = "3.4.7"
 signal-hook = "0.3.18"
+
+[[bin]]
+name = "db_reader"
+path = "src/bin/main.rs"

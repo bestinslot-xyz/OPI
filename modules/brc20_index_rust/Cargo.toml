@@ -7,9 +7,10 @@ edition = "2024"
 base64 = "0.22.1"
 bitcoin = "0.32.6"
 brc20-prog = "0.6.2"
+db_reader = { path = "../../db_reader" }
 dotenvy = "0.15.7"
 hex = "0.4.3"
-jsonrpsee = { version = "0.25.1", features = ["client", "tokio"] }
+jsonrpsee = { version = "0.25.1", features = ["client", "http-client", "tokio"] }
 lazy_static = "1.5.0"
 num-traits = "0.2.19"
 reqwest = { version = "0.12.15", features = ["json"] }

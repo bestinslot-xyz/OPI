@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::{PgPoolOptions}, types::BigDecimal, Pool, Postgres, Row};
+use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 
 use crate::{
     config::{Brc20IndexerConfig, EVENT_SEPARATOR},
@@ -107,11 +107,23 @@ impl Brc20Database {
             .max_connections(5)
             .connect_lazy(&format!(
                 "postgres://{}:{}@{}:{}/{}{}",
-                config.db_user.replace("/", "%2F").replace(":", "%3A").replace("@", "%40"),
-                config.db_password.replace("/", "%2F").replace(":", "%3A").replace("@", "%40"),
+                config
+                    .db_user
+                    .replace("/", "%2F")
+                    .replace(":", "%3A")
+                    .replace("@", "%40"),
+                config
+                    .db_password
+                    .replace("/", "%2F")
+                    .replace(":", "%3A")
+                    .replace("@", "%40"),
                 config.db_host,
                 config.db_port,
-                config.db_database.replace("/", "%2F").replace(":", "%3A").replace("@", "%40"),
+                config
+                    .db_database
+                    .replace("/", "%2F")
+                    .replace(":", "%3A")
+                    .replace("@", "%40"),
                 ssl_mode
             ))
             .expect("Failed to connect to the database");
@@ -201,11 +213,13 @@ impl Brc20Database {
         self.tickers
             .insert(updated_ticker.ticker.clone(), updated_ticker.clone());
 
-        self.ticker_updates
-            .insert(updated_ticker.ticker.clone(), TickerUpdateData {
+        self.ticker_updates.insert(
+            updated_ticker.ticker.clone(),
+            TickerUpdateData {
                 remaining_supply: updated_ticker.remaining_supply,
                 burned_supply: updated_ticker.burned_supply,
-            });
+            },
+        );
 
         Ok(())
     }
@@ -768,10 +782,7 @@ impl Brc20Database {
         Ok((block_events_hash, cumulative_event_hash))
     }
 
-    pub fn get_event_key<T>(
-        &self,
-        inscription_id: &str,
-    ) -> String
+    pub fn get_event_key<T>(&self, inscription_id: &str) -> String
     where
         T: Event,
     {
@@ -785,12 +796,15 @@ impl Brc20Database {
     where
         T: Event + for<'de> Deserialize<'de>,
     {
-        if let Some(event) = self.cached_events.get(self.get_event_key::<T>(inscription_id).as_str()) {
+        if let Some(event) = self
+            .cached_events
+            .get(self.get_event_key::<T>(inscription_id).as_str())
+        {
             return serde_json::from_value(event.clone())
                 .map(Some)
                 .map_err(|e| e.into());
         }
-        
+
         let row = sqlx::query!(
             "SELECT event FROM brc20_events WHERE inscription_id = $1 AND event_type = $2",
             inscription_id,
@@ -828,7 +842,10 @@ impl Brc20Database {
             block_height,
             event
         );
-        if self.cached_events.contains_key(&self.get_event_key::<T>(inscription_id)) {
+        if self
+            .cached_events
+            .contains_key(&self.get_event_key::<T>(inscription_id))
+        {
             return Err(format!(
                 "Event for inscription_id {} and event_type {} already exists",
                 inscription_id,
@@ -836,8 +853,10 @@ impl Brc20Database {
             )
             .into());
         }
-        self.cached_events
-            .insert(self.get_event_key::<T>(inscription_id), serde_json::to_value(event)?);
+        self.cached_events.insert(
+            self.get_event_key::<T>(inscription_id),
+            serde_json::to_value(event)?,
+        );
 
         self.event_inserts.push(EventInsertData {
             event_id: self.current_event_id,
@@ -942,7 +961,6 @@ impl Brc20Database {
 
         Ok(balance)
     }
-
 
     pub async fn get_balance_nonmutable(
         &self,
@@ -1051,7 +1069,7 @@ impl Brc20Database {
             )
             .execute(&self.client)
             .await?;
-            
+
             self.new_tickers.clear();
         }
 
@@ -1085,7 +1103,8 @@ impl Brc20Database {
                 all_block_heights.push(event_data.block_height);
                 all_inscription_ids.push(event_data.inscription_id.clone());
                 all_inscription_numbers.push(event_data.inscription_number);
-                all_old_satpoints.push(event_data.old_satpoint.clone().unwrap_or_else(|| "".into()));
+                all_old_satpoints
+                    .push(event_data.old_satpoint.clone().unwrap_or_else(|| "".into()));
                 all_new_satpoints.push(event_data.new_satpoint.clone());
                 all_txids.push(event_data.txid.clone());
                 all_events.push(event_data.event.clone());
@@ -1140,7 +1159,7 @@ impl Brc20Database {
             )
             .execute(&self.client)
             .await?;
-        
+
             self.balance_updates.clear();
         }
         Ok(())
