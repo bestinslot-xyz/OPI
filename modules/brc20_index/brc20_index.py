@@ -27,7 +27,7 @@ in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
 INDEXER_VERSION = "opi-brc20-full-node v0.4.1"
-BRC20_PROG_VERSION = "0.6.2"
+BRC20_PROG_VERSION = "0.7.1"
 RECOVERABLE_DB_VERSIONS = [ 4 ]
 DB_VERSION = 5
 EVENT_HASH_VERSION = 2
@@ -277,8 +277,7 @@ def get_event_str(event, event_type, inscription_id):
     res = "brc20prog-deploy-inscribe;"
     res += inscription_id + ";"
     res += event["source_pkScript"] + ";"
-    res += event["data"] + ";"
-    res += event["base64_data"]
+    res += event["data"]
     return res
   elif event_type == "brc20prog-deploy-transfer":
     res = "brc20prog-deploy-transfer;"
@@ -286,7 +285,6 @@ def get_event_str(event, event_type, inscription_id):
     res += event["source_pkScript"] + ";"
     res += event["spent_pkScript"] + ";"
     res += event["data"] + ";"
-    res += event["base64_data"] + ";"
     res += event["byte_len"]
     return res
   elif event_type == "brc20prog-call-inscribe":
@@ -295,8 +293,7 @@ def get_event_str(event, event_type, inscription_id):
     res += event["source_pkScript"] + ";"
     res += event["contract_address"] + ";"
     res += event["contract_inscription_id"] + ";"
-    res += event["data"] + ";"
-    res += event["base64_data"]
+    res += event["data"]
     return res
   elif event_type == "brc20prog-call-transfer":
     res = "brc20prog-call-transfer;"
@@ -306,7 +303,6 @@ def get_event_str(event, event_type, inscription_id):
     res += event["contract_address"] + ";"
     res += event["contract_inscription_id"] + ";"
     res += event["data"] + ";"
-    res += event["base64_data"] + ";"
     res += event["byte_len"]
     return res
   elif event_type == "brc20prog-withdraw-inscribe":
@@ -579,8 +575,7 @@ def brc20_prog_deploy_inscribe(block_height, inscription_id, new_pkScript, conte
 
   event = {
     "source_pkScript": new_pkScript,
-    "data": content.get("d", ""),
-    "base64_data": content.get("b", ""),
+    "data": content["d"],
   }
   block_events_str += get_event_str(event, "brc20prog-deploy-inscribe", inscription_id) + EVENT_SEPARATOR
   event_id = block_start_max_event_id + len(brc20_events_insert_cache) + 1
@@ -595,8 +590,7 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
   event = {
     "source_pkScript": inscribe_event["source_pkScript"],
     "spent_pkScript": new_pkScript,
-    "data": content.get("d", ""),
-    "base64_data": content.get("b", ""),
+    "data": content["d"],
     "byte_len": str(byte_len),
   }
   block_events_str += get_event_str(event, "brc20prog-deploy-transfer", inscription_id) + EVENT_SEPARATOR
@@ -610,8 +604,7 @@ def brc20_prog_deploy_transfer(block_height, block_hash, block_timestamp, inscri
 
   brc20_prog_client.deploy(
     from_pkscript=inscribe_event["source_pkScript"],
-    data=content.get("d", None),
-    base64_data=content.get("b", None),
+    data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
     inscription_id=inscription_id,
@@ -626,8 +619,7 @@ def brc20_prog_call_inscribe(block_height, inscription_id, new_pkScript, content
     "source_pkScript": new_pkScript,
     "contract_address": content.get("c", ""),
     "contract_inscription_id": content.get("i", ""),
-    "data": content.get("d", ""),
-    "base64_data": content.get("b", ""),
+    "data": content["d"],
   }
   block_events_str += get_event_str(event, "brc20prog-call-inscribe", inscription_id) + EVENT_SEPARATOR
   event_id = block_start_max_event_id + len(brc20_events_insert_cache) + 1
@@ -644,8 +636,7 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     "spent_pkScript": new_pkScript,
     "contract_address": content.get("c", ""),
     "contract_inscription_id": content.get("i", ""),
-    "data": content.get("d", ""),
-    "base64_data": content.get("b", ""),
+    "data": content["d"],
     "byte_len": str(byte_len),
   }
   block_events_str += get_event_str(event, "brc20prog-call-transfer", inscription_id) + EVENT_SEPARATOR
@@ -661,8 +652,7 @@ def brc20_prog_call_transfer(block_height, block_hash, block_timestamp, inscript
     from_pkscript=inscribe_event["source_pkScript"],
     contract_address=content.get("c", None),
     contract_inscription_id=content.get("i", None),
-    data=content.get("d", None),
-    base64_data=content.get("b", None),
+    data=content["d"],
     timestamp=block_timestamp,
     block_hash=block_hash,
     inscription_id=inscription_id,
@@ -815,8 +805,7 @@ def index_block(block_height, current_block_hash, block_timestamp: int, is_synce
       if not brc20_prog_client.is_enabled(): continue
       if block_height < brc20_prog_first_inscription_height: continue
       if "op" not in js: continue ## invalid inscription
-      if "d" not in js and "b" not in js: continue ## invalid inscription
-      if "d" in js and "b" in js: continue ## Only one of d or b should be present
+      if "d" not in js: continue ## invalid inscription
       if (js["op"] == 'deploy' or js["op"] == 'd'):
         if old_satpoint == '':
           brc20_prog_deploy_inscribe(block_height, inscr_id, new_pkScript, js)
