@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use db_reader::{
     BRC20Tx, BlockInfo, Brc20ApiServer, IndexTimes, InscriptionEntry, InscriptionInfo,
-    InscriptionInformation, UTXOInfo,
+    InscriptionInformation, UTXOInfo, BitmapInscription,
 };
 use hyper::Method;
 use jsonrpsee::core::middleware::RpcServiceBuilder;
@@ -285,6 +285,20 @@ fn is_valid_brc20(inscription_info: &InscriptionInfo) -> bool {
     }
 
     return true;
+}
+
+fn is_valid_bitmap(inscription_info: &InscriptionInfo) -> bool {
+    if inscription_info.inscription_number < 0 {
+        return false;
+    }
+    if inscription_info.is_json {
+        return false;
+    }
+    if !inscription_info.content_type_hex.to_lowercase().starts_with("746578742f706c61696e") {
+        return false;
+    }
+
+    true
 }
 
 fn get_wallet(pkscript: &str) -> String {
@@ -602,6 +616,73 @@ impl Brc20ApiServer for RpcServer {
         } else {
             Ok(None)
         }
+    }
+
+    async fn get_block_bitmap_inscrs(&self, block_height: u32) -> RpcResult<Option<Vec<BitmapInscription>>> {
+        let ord_transfers = self.db.cf_handle("ord_transfers").ok_or_else(|| {
+            wrap_rpc_error(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Column family 'ord_transfers' not found",
+            )))
+        })?;
+        let ord_inscription_info = self.db.cf_handle("ord_inscription_info").ok_or_else(|| {
+            wrap_rpc_error(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Column family 'ord_inscription_info' not found",
+            )))
+        })?;
+
+        // scan ord_transfers from block_height.0u32 to (block_height+1).0u32
+        let start_key = block_height.to_be_bytes();
+        let end_key = (block_height + 1).to_be_bytes();
+        let mut iter = self.db.raw_iterator_cf(ord_transfers);
+        iter.seek(start_key);
+        let mut bitmap_inscrs = Vec::new();
+        while iter.valid() && compare_be_arrays(iter.key().unwrap(), &end_key) == Ordering::Less {
+            let raw = iter.value().unwrap().to_vec();
+            let transfer_info = get_transfer_info_from_raw(raw);
+
+            if transfer_info.old_satpoint.is_some() {
+                // This is a transfer, skip it
+                iter.next();
+                continue;
+            }
+
+            let inscription_id = transfer_info.inscription_id.clone();
+
+            let inscription_id_key = get_inscription_id_key(&inscription_id);
+            let raw_info = self
+                .db
+                .get_cf(ord_inscription_info, &inscription_id_key)
+                .unwrap()
+                .unwrap();
+            let info = get_inscription_info_from_raw(raw_info, inscription_id.clone());
+            let inscription_info = info.clone();
+
+            if !is_valid_bitmap(&inscription_info) {
+                iter.next();
+                continue;
+            }
+
+            let block_height = u32::from_be_bytes(iter.key().unwrap()[0..4].try_into().unwrap());
+            let tx_index = u32::from_be_bytes(iter.key().unwrap()[4..8].try_into().unwrap());
+            let tx_id = format!("{}:{}", block_height, tx_index);
+
+            bitmap_inscrs.push(BitmapInscription {
+                tx_id,
+                inscription_id,
+                inscription_number: inscription_info.inscription_number,
+                txid: transfer_info.txid,
+                content_hex: inscription_info.content_hex.clone(),
+            });
+
+            iter.next();
+        }
+
+        // sort bitmap_inscrs by inscription_number
+        bitmap_inscrs.sort_by(|a, b| a.inscription_number.cmp(&b.inscription_number));
+
+        Ok(Some(bitmap_inscrs))
     }
 }
 

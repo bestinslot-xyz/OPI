@@ -26,6 +26,15 @@ pub struct BRC20Tx {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct BitmapInscription {
+    pub tx_id: String,
+    pub txid: String,
+    pub inscription_id: String,
+    pub inscription_number: i32,
+    pub content_hex: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BlockInfo {
     pub block_hash: String,
     pub timestamp: u64,
@@ -95,4 +104,7 @@ pub trait Brc20Api {
         &self,
         sequence_number: u32,
     ) -> RpcResult<Option<InscriptionInformation>>;
+
+    #[method(name = "getBlockBitmapInscrs")]
+    async fn get_block_bitmap_inscrs(&self, block_height: u32) -> RpcResult<Option<Vec<BitmapInscription>>>;
 }
