@@ -267,7 +267,7 @@ impl Brc20Indexer {
                 continue;
             }
 
-            let Ok(content_type) = hex::decode(&transfer.content_hex) else {
+            let Ok(content_type) = hex::decode(&transfer.content_type_hex) else {
                 tracing::debug!(
                     "Skipping transfer {} as content type is not valid hex",
                     transfer.inscription_id
