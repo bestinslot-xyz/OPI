@@ -130,7 +130,7 @@ def get_bitmap_inscrs(block_height):
     raise Exception("Error while getting ord bitmap inscrs: no result in response")
   res = []
   for inscr in js['result']:
-    res.append((inscr['inscription_id'], inscr['content_hex']))
+    res.append((inscr['inscription_id'], inscr['content_hex'], inscr['inscription_number']))
   return res
 
 ## helper functions
@@ -201,14 +201,15 @@ def index_block(block_height, current_block_hash):
     idx += 1
     if idx % 1000 == 0:
       print(idx, '/', len(inscrs))
-    inscr_id, content_hex = inscr
+    inscr_id, content_hex, inscr_num = inscr
     bitmap_number = get_bitmap_number(content_hex)
     if bitmap_number is None: continue
     if bitmap_number > block_height: 
       print("bitmap_number > block_height: " + str(bitmap_number) + " > " + str(block_height))
       continue
-    cur.execute('''INSERT INTO bitmaps (inscription_id, bitmap_number, block_height) VALUES (%s, %s, %s) ON CONFLICT (bitmap_number) DO NOTHING RETURNING id;''', 
-                (inscr_id, bitmap_number, block_height))
+    cur.execute('''INSERT INTO bitmaps (inscription_id, inscription_number, bitmap_number, block_height) VALUES (%s, %s, %s, %s) ON CONFLICT (bitmap_number) 
+                    DO UPDATE SET inscription_id = EXCLUDED.inscription_id, inscription_number = EXCLUDED.inscription_number, block_height = EXCLUDED.block_height;''', 
+                (inscr_id, inscr_num, bitmap_number, block_height))
     if cur.rowcount == 0: 
       print("bitmap_number already exists: " + str(bitmap_number))
       continue
