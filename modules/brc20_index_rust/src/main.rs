@@ -3,7 +3,10 @@ mod database;
 mod indexer;
 mod types;
 
-use std::error::Error;
+use std::{
+    error::Error,
+    io::{self, Write},
+};
 
 use indexer::Brc20Indexer;
 use tracing::Level;
@@ -12,6 +15,18 @@ struct Args {
     is_setup: bool,
     is_reset: bool,
     reorg_height: Option<i32>,
+}
+
+fn confirm(prompt: &str) -> bool {
+    print!("{} [y/N]: ", prompt);
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_ok() {
+        matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+    } else {
+        false
+    }
 }
 
 fn parse_args() -> Args {
@@ -26,7 +41,6 @@ fn parse_args() -> Args {
             "--reorg" => {
                 if let Some(height_str) = std::env::args().nth(idx + 1) {
                     if let Ok(height) = height_str.parse::<i32>() {
-                        println!("Reorganizing to height: {}", height);
                         reorg_height = Some(height);
                     } else {
                         eprintln!("Invalid height provided for --reorg");
@@ -113,13 +127,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let mut brc20_indexer = Brc20Indexer::new(Default::default());
-    if args.is_reset {
-        brc20_indexer.reset().await?;
-        return Ok(());
+    if let Some(reorg_height) = args.reorg_height {
+        if confirm(
+            "Are you sure you want to reorg the indexer? This will reset the state to the specified height.",
+        ) {
+            brc20_indexer.reorg(reorg_height).await?;
+            println!("Reorg to height {} completed successfully.", reorg_height);
+            return Ok(());
+        } else {
+            eprintln!("Reorg cancelled.");
+            return Ok(());
+        }
     }
-    if let Some(height) = args.reorg_height {
-        brc20_indexer.brc20_db.reorg(height).await?;
-        return Ok(());
+    if args.is_reset {
+        if confirm(
+            "Are you sure you want to reset the indexer? This will delete all data and start fresh.",
+        ) {
+            brc20_indexer.reset().await?;
+            println!("Indexer reset successfully.");
+            return Ok(());
+        } else {
+            eprintln!("Reset cancelled.");
+            return Ok(());
+        }
     }
     brc20_indexer
         .run()

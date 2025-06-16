@@ -37,12 +37,12 @@ use crate::{
 use super::brc20_prog_balance_server::run_balance_server;
 
 pub struct Brc20Indexer {
-    pub brc20_db: Brc20Database,
-    pub main_db: OpiDatabase,
-    pub config: Brc20IndexerConfig,
-    pub brc20_prog_client: HttpClient,
-    pub brc20_reporter: Brc20Reporter,
-    pub server_handle: Option<JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>>,
+    brc20_db: Brc20Database,
+    main_db: OpiDatabase,
+    config: Brc20IndexerConfig,
+    brc20_prog_client: HttpClient,
+    brc20_reporter: Brc20Reporter,
+    server_handle: Option<JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>>,
 }
 
 impl Brc20Indexer {
@@ -126,15 +126,20 @@ impl Brc20Indexer {
                 "BRC20 indexer residue found at block height {}, reorging to last synced block height",
                 current_block_height
             );
-            self.brc20_db.reorg(current_block_height).await?;
-            if self.config.brc20_prog_enabled
-                && current_block_height >= self.config.first_brc20_prog_height
-            {
-                self.brc20_prog_client
-                    .brc20_reorg(current_block_height as u64)
-                    .await?;
-            }
+            self.reorg(current_block_height).await?;
         }
+        Ok(())
+    }
+
+    pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        tracing::info!("Reorganizing BRC20 indexer database...");
+        self.brc20_db.reorg(block_height).await?;
+        if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_height {
+            self.brc20_prog_client
+                .brc20_reorg(block_height as u64)
+                .await?;
+        }
+        tracing::info!("BRC20 indexer database reorg complete.");
         Ok(())
     }
 
