@@ -24,7 +24,7 @@ lazy_static::lazy_static! {
 
     pub static ref FIRST_BRC20_PROG_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
-        map.insert(Network::Bitcoin, i32::MAX);
+        map.insert(Network::Bitcoin, 909969);
         map.insert(Network::Testnet, 0);
         map.insert(Network::Testnet4, 0);
         map.insert(Network::Regtest, 0);
