@@ -9,7 +9,8 @@ pub struct Brc20ProgCallInscribeEvent {
     pub source_pk_script: String,
     pub contract_address: String,
     pub contract_inscription_id: String,
-    pub data: String,
+    pub data: Option<String>,
+    pub base64_data: Option<String>,
 }
 
 impl Event for Brc20ProgCallInscribeEvent {
@@ -23,13 +24,14 @@ impl Event for Brc20ProgCallInscribeEvent {
 
     fn get_event_str(&self, inscription_id: &str, _decimals: u8) -> String {
         format!(
-            "{};{};{};{};{};{}",
+            "{};{};{};{};{};{};{}",
             Self::event_name(),
             inscription_id,
             self.source_pk_script,
             self.contract_address,
             self.contract_inscription_id,
-            self.data
+            self.data.clone().unwrap_or_default(),
+            self.base64_data.clone().unwrap_or_default()
         )
     }
 }

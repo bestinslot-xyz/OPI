@@ -1,16 +1,19 @@
 use std::error::Error;
 
-use brc20_prog::{Brc20ProgApiClient, types::InscriptionBytes};
+use brc20_prog::{
+    Brc20ProgApiClient,
+    types::{Base64Bytes, RawBytes},
+};
 use db_reader::BRC20Tx;
 use jsonrpsee::http_client::HttpClient;
 use tokio::task::JoinHandle;
 
 use crate::{
     config::{
-        AMOUNT_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION,
-        Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY,
-        EVENT_SEPARATOR, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY,
-        MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
+        AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT,
+        BRC20_PROG_VERSION, Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION,
+        DECIMALS_KEY, EVENT_SEPARATOR, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT,
+        MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
         OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
         OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
         OPERATION_TRANSFER, OPERATION_WITHDRAW, PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE,
@@ -187,12 +190,14 @@ impl Brc20Indexer {
                 .index_block(next_brc20_block, &block_hash, block_time as u64, is_synced)
                 .await?;
 
-            if next_brc20_block >= self.config.first_brc20_height &&
-                    self.brc20_db.should_index_extras(next_brc20_block, last_opi_block).await? {
+            if next_brc20_block >= self.config.first_brc20_height
+                && self
+                    .brc20_db
+                    .should_index_extras(next_brc20_block, last_opi_block)
+                    .await?
+            {
                 // Index extras if synced or close to sync
-                self.brc20_db
-                    .index_extra_tables(next_brc20_block)
-                    .await?;
+                self.brc20_db.index_extra_tables(next_brc20_block).await?;
             }
 
             self.brc20_db
@@ -382,13 +387,24 @@ impl Brc20Indexer {
                     continue;
                 }
 
-                let Some(data) = content.get(DATA_KEY).and_then(|d| d.as_str()) else {
+                let data = content.get(DATA_KEY).and_then(|d| d.as_str());
+                let base64_data = content.get(BASE64_DATA_KEY).and_then(|b| b.as_str());
+
+                if data.is_none() && base64_data.is_none() {
                     tracing::debug!(
-                        "Skipping transfer {} as data is not present",
+                        "Skipping transfer {} as data or base64_data is not present",
                         transfer.inscription_id
                     );
                     continue;
-                };
+                }
+
+                if data.is_some() && base64_data.is_some() {
+                    tracing::debug!(
+                        "Skipping transfer {} as both data and base64_data are present",
+                        transfer.inscription_id
+                    );
+                    continue;
+                }
 
                 if operation == OPERATION_BRC20_PROG_DEPLOY
                     || operation == OPERATION_BRC20_PROG_DEPLOY_SHORT
@@ -400,6 +416,7 @@ impl Brc20Indexer {
                                 &transfer.inscription_id,
                                 &transfer.new_pkscript,
                                 data,
+                                base64_data,
                                 transfer.byte_len as i32,
                                 block_time,
                                 block_hash,
@@ -420,6 +437,7 @@ impl Brc20Indexer {
                             &transfer.inscription_id,
                             &transfer.new_pkscript,
                             data,
+                            base64_data,
                             &mut block_events_buffer,
                             transfer,
                         )?;
@@ -445,6 +463,7 @@ impl Brc20Indexer {
                                 content.get(CONTRACT_ADDRESS_KEY).and_then(|c| c.as_str()),
                                 content.get(INSCRIPTION_ID_KEY).and_then(|i| i.as_str()),
                                 data,
+                                base64_data,
                                 transfer.byte_len as i32,
                                 block_time,
                                 block_hash,
@@ -467,6 +486,7 @@ impl Brc20Indexer {
                             content.get(CONTRACT_ADDRESS_KEY).and_then(|c| c.as_str()),
                             content.get(INSCRIPTION_ID_KEY).and_then(|i| i.as_str()),
                             data,
+                            base64_data,
                             &mut block_events_buffer,
                             transfer,
                         )?;
@@ -967,13 +987,15 @@ impl Brc20Indexer {
         block_height: i32,
         inscription_id: &str,
         source_pk_script: &str,
-        data: &str,
+        data: Option<&str>,
+        base64_data: Option<&str>,
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
     ) -> Result<(), Box<dyn Error>> {
         let event = Brc20ProgDeployInscribeEvent {
             source_pk_script: source_pk_script.to_string(),
-            data: data.to_string(),
+            data: data.map(|d| d.to_string()),
+            base64_data: base64_data.map(|b| b.to_string()),
         };
         self.brc20_db.add_event(
             block_height,
@@ -996,7 +1018,8 @@ impl Brc20Indexer {
         block_height: i32,
         inscription_id: &str,
         new_pkscript: &str,
-        data: &str,
+        data: Option<&str>,
+        base64_data: Option<&str>,
         byte_length: i32,
         block_time: u64,
         block_hash: &str,
@@ -1043,7 +1066,8 @@ impl Brc20Indexer {
         let event = Brc20ProgDeployTransferEvent {
             source_pk_script: inscribe_event.source_pk_script.clone(),
             spent_pk_script: new_pkscript.to_string(),
-            data: data.to_string(),
+            data: data.map(|d| d.to_string()),
+            base64_data: base64_data.map(|b| b.to_string()),
             byte_len: byte_length,
         };
         self.brc20_db.add_event(
@@ -1061,7 +1085,8 @@ impl Brc20Indexer {
         self.brc20_prog_client
             .brc20_deploy(
                 inscribe_event.source_pk_script,
-                InscriptionBytes::new(data.to_string()),
+                data.map(|d| RawBytes::new(d.to_string())),
+                base64_data.map(|b| Base64Bytes::new(b.to_string())),
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
@@ -1081,7 +1106,8 @@ impl Brc20Indexer {
         new_pkscript: &str,
         contract_address: Option<&str>,
         contract_inscription_id: Option<&str>,
-        data: &str,
+        data: Option<&str>,
+        base64_data: Option<&str>,
         byte_length: i32,
         block_time: u64,
         block_hash: &str,
@@ -1128,7 +1154,8 @@ impl Brc20Indexer {
         let event = Brc20ProgCallTransferEvent {
             source_pk_script: inscribe_event.source_pk_script.clone(),
             spent_pk_script: new_pkscript.to_string().into(),
-            data: data.to_string(),
+            data: data.map(|d| d.to_string()),
+            base64_data: base64_data.map(|b| b.to_string()),
             byte_len: byte_length as u64,
             contract_address: contract_address.map(|s| s.to_string()),
             contract_inscription_id: contract_inscription_id.map(|s| s.to_string()),
@@ -1155,7 +1182,8 @@ impl Brc20Indexer {
                 inscribe_event.source_pk_script,
                 contract_address,
                 contract_inscription_id.map(|s| s.to_string()),
-                InscriptionBytes::new(data.to_string()),
+                data.map(|d| RawBytes::new(d.to_string())),
+                base64_data.map(|b| Base64Bytes::new(b.to_string())),
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
@@ -1175,7 +1203,8 @@ impl Brc20Indexer {
         new_pkscript: &str,
         contract_address: Option<&str>,
         contract_inscription_id: Option<&str>,
-        data: &str,
+        data: Option<&str>,
+        base64_data: Option<&str>,
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
     ) -> Result<(), Box<dyn Error>> {
@@ -1185,7 +1214,8 @@ impl Brc20Indexer {
             contract_inscription_id: contract_inscription_id
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
-            data: data.to_string(),
+            data: data.map(|d| d.to_string()),
+            base64_data: base64_data.map(|b| b.to_string()),
         };
         self.brc20_db.add_event(
             block_height,

@@ -10,7 +10,8 @@ pub struct Brc20ProgDeployTransferEvent {
     pub source_pk_script: String,
     #[serde(rename = "spent_pkScript")]
     pub spent_pk_script: String,
-    pub data: String,
+    pub data: Option<String>,
+    pub base64_data: Option<String>,
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub byte_len: i32,
 }
@@ -26,12 +27,13 @@ impl Event for Brc20ProgDeployTransferEvent {
 
     fn get_event_str(&self, inscription_id: &str, _decimals: u8) -> String {
         format!(
-            "{};{};{};{};{};{}",
+            "{};{};{};{};{};{};{}",
             Self::event_name(),
             inscription_id,
             self.source_pk_script,
             self.spent_pk_script,
-            self.data,
+            self.data.clone().unwrap_or_default(),
+            self.base64_data.clone().unwrap_or_default(),
             self.byte_len
         )
     }

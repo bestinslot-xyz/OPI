@@ -7,7 +7,8 @@ use super::Event;
 pub struct Brc20ProgDeployInscribeEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
-    pub data: String,
+    pub data: Option<String>,
+    pub base64_data: Option<String>,
 }
 
 impl Event for Brc20ProgDeployInscribeEvent {
@@ -21,11 +22,12 @@ impl Event for Brc20ProgDeployInscribeEvent {
 
     fn get_event_str(&self, inscription_id: &str, _decimals: u8) -> String {
         format!(
-            "{};{};{};{}",
+            "{};{};{};{};{}",
             Self::event_name(),
             inscription_id,
             self.source_pk_script,
-            self.data
+            self.data.clone().unwrap_or_default(),
+            self.base64_data.clone().unwrap_or_default()
         )
     }
 }

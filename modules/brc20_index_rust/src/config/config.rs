@@ -98,6 +98,7 @@ pub const SELF_MINT_KEY: &str = "self_mint";
 
 // BRC20 prog specific keys
 pub const DATA_KEY: &str = "d";
+pub const BASE64_DATA_KEY: &str = "b";
 pub const CONTRACT_ADDRESS_KEY: &str = "c";
 pub const INSCRIPTION_ID_KEY: &str = "i";
 
@@ -126,9 +127,9 @@ pub const SELF_MINT_ENABLE_HEIGHT: i32 = 837090;
 
 // Versions used for database migrations and version checks
 // These should be updated when the database schema changes
-pub const DB_VERSION: i32 = 5;
-pub const EVENT_HASH_VERSION: i32 = 2;
-pub const BRC20_PROG_VERSION: &str = "0.6.2";
+pub const DB_VERSION: i32 = 6;
+pub const EVENT_HASH_VERSION: i32 = 3;
+pub const BRC20_PROG_VERSION: &str = "0.8.2";
 pub const INDEXER_VERSION: &str = "opi-brc20-full-node v0.4.1";
 
 fn get_bitcoin_network_type(network_type: &str) -> Network {
