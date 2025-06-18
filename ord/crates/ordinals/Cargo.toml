@@ -1,0 +1,22 @@
+[package]
+name = "ordinals"
+version = "0.0.15"
+description = "Library for interoperating with ordinals and inscriptions"
+
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitcoin.workspace = true
+derive_more.workspace = true
+serde.workspace = true
+serde_with.workspace = true
+thiserror = "2.0.0"
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+serde_json.workspace = true

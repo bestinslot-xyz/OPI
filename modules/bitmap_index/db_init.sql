@@ -9,6 +9,7 @@ CREATE UNIQUE INDEX bitmap_block_hashes_block_height_idx ON public.bitmap_block_
 CREATE TABLE public.bitmaps (
 	id bigserial NOT NULL,
 	inscription_id text NOT NULL,
+	inscription_number int4 NOT NULL,
 	bitmap_number int4 NOT NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT bitmaps_pk PRIMARY KEY (id)

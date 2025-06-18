@@ -1,9 +1,31 @@
 use super::*;
+use crate::index::reorg::Reorg;
+use crate::index::reorg::Error as ReorgError;
 
-pub(crate) fn run(options: Options) -> SubcommandResult {
-  let index = Index::open(&options)?;
+pub(crate) fn run(settings: Settings) -> SubcommandResult {
+  loop {
+    let index = Index::open(&settings)?;
 
-  index.update()?;
+    let res = index.update();
 
-  Ok(Box::new(Empty {}))
+    match res {
+      Err(err) => {
+        match err.downcast_ref() {
+          Some(&ReorgError::Recoverable { height, depth }) => {
+            let index_path = index.path.clone();
+            drop(index); // Ensure the index and dbs are closed before handling the reorg
+            Reorg::handle_reorg(&index_path, height, depth)?;
+          }
+          _ => {
+            break;
+          }
+        }
+      }
+      _ => {
+        break;
+      }
+    }
+  }
+
+  Ok(None)
 }

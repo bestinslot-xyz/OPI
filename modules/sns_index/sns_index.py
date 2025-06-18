@@ -31,11 +31,6 @@ db_host = os.getenv("DB_HOST") or "localhost"
 db_port = int(os.getenv("DB_PORT") or "5432")
 db_database = os.getenv("DB_DATABASE") or "postgres"
 db_password = os.getenv("DB_PASSWD")
-db_metaprotocol_user = os.getenv("DB_METAPROTOCOL_USER") or "postgres"
-db_metaprotocol_host = os.getenv("DB_METAPROTOCOL_HOST") or "localhost"
-db_metaprotocol_port = int(os.getenv("DB_METAPROTOCOL_PORT") or "5432")
-db_metaprotocol_database = os.getenv("DB_METAPROTOCOL_DATABASE") or "postgres"
-db_metaprotocol_password = os.getenv("DB_METAPROTOCOL_PASSWD")
 network_type = os.getenv("NETWORK_TYPE") or "mainnet"
 
 first_inscription_heights = {
@@ -75,40 +70,74 @@ conn = psycopg2.connect(
 conn.autocommit = True
 cur = conn.cursor()
 
-conn_metaprotocol = psycopg2.connect(
-  host=db_metaprotocol_host,
-  port=db_metaprotocol_port,
-  database=db_metaprotocol_database,
-  user=db_metaprotocol_user,
-  password=db_metaprotocol_password)
-conn_metaprotocol.autocommit = True
-cur_metaprotocol = conn_metaprotocol.cursor()
 
-cur_metaprotocol.execute('SELECT network_type from ord_network_type LIMIT 1;')
-if cur_metaprotocol.rowcount == 0:
-  print("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js or main_index")
-  sys.exit(1)
+def get_block_hash_by_height(block_height):
+  url = "http://localhost:11030/"
+  data = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getBlockHashAndTs",
+    "params": [block_height]
+  }
+  r = requests.post(url, json=data)
+  if r.status_code != 200:
+    print("Error while getting block hash by height: " + str(r.status_code))
+    raise Exception("Error while getting block hash by height: " + str(r.status_code))
+  js = r.json()
+  if 'error' in js:
+    print("Error while getting block hash by height: " + str(js['error']))
+    raise Exception("Error while getting block hash by height: " + str(js['error']))
+  if 'result' not in js:
+    print("Error while getting block hash by height: no result in response")
+    raise Exception("Error while getting block hash by height: no result in response")
+  if 'block_hash' not in js['result']:
+    print("Error while getting block hash by height: no block_hash in result")
+    raise Exception("Error while getting block hash by height: no block_hash in result")
+  return js['result']['block_hash']
 
-network_type_db = cur_metaprotocol.fetchone()[0]
-if network_type_db != network_type:
-  print("network_type mismatch between main index and bitmap index")
-  sys.exit(1)
+def get_ord_block_height():
+  url = "http://localhost:11030/"
+  data = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getLatestBlockHeight"
+  }
+  r = requests.post(url, json=data)
+  if r.status_code != 200:
+    print("Error while getting ord block height: " + str(r.status_code))
+    raise Exception("Error while getting ord block height: " + str(r.status_code))
+  js = r.json()
+  if 'error' in js:
+    print("Error while getting ord block height: " + str(js['error']))
+    raise Exception("Error while getting ord block height: " + str(js['error']))
+  if 'result' not in js:
+    print("Error while getting ord block height: no result in response")
+    raise Exception("Error while getting ord block height: no result in response")
+  return js['result']
 
-cur_metaprotocol.execute('SELECT event_type, max_transfer_cnt from ord_transfer_counts;')
-if cur_metaprotocol.rowcount == 0:
-  print("ord_transfer_counts not found, please run index.js in main_index to fix db")
-  sys.exit(1)
-
-default_max_transfer_cnt = 0
-tx_limits = cur_metaprotocol.fetchall()
-for tx_limit in tx_limits:
-  if tx_limit[0] == 'default':
-    default_max_transfer_cnt = tx_limit[1]
-    break
-
-if default_max_transfer_cnt < 1:
-  print("default max_transfer_cnt is less than 1, sns_indexer requires at least 1, please recreate db from scratch and rerun ord with default tx limit set to 1 or more")
-  sys.exit(1)
+def get_sns_inscrs(block_height):
+  url = "http://localhost:11030/"
+  data = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getBlockSNSInscrs",
+    "params": [block_height]
+  }
+  r = requests.post(url, json=data)
+  if r.status_code != 200:
+    print("Error while getting ord bitmap inscrs: " + str(r.status_code))
+    raise Exception("Error while getting ord bitmap inscrs: " + str(r.status_code))
+  js = r.json()
+  if 'error' in js:
+    print("Error while getting ord bitmap inscrs: " + str(js['error']))
+    raise Exception("Error while getting ord bitmap inscrs: " + str(js['error']))
+  if 'result' not in js:
+    print("Error while getting ord bitmap inscrs: no result in response")
+    raise Exception("Error while getting ord bitmap inscrs: no result in response")
+  res = []
+  for inscr in js['result']:
+    res.append((inscr['inscription_id'], inscr['inscription_number'], inscr['content_hex'], inscr['content_type_hex']))
+  return res
 
 
 ## helper functions
@@ -243,15 +272,15 @@ def index_block(block_height, current_block_hash):
   block_events_str = ""
   
   ## get text/plain and application/json inscrs from ord
-  cur_metaprotocol.execute('''SELECT oc.inscription_id, onti.inscription_number, oc.content, oc.text_content, oc.content_type
-                              FROM ord_content oc
-                              LEFT JOIN ord_number_to_id onti on oc.inscription_id = onti.inscription_id
-                              WHERE oc.block_height = %s AND 
-                                    (oc.content_type LIKE '746578742f706c61696e%%' OR
-                                     oc.content_type LIKE '6170706c69636174696f6e2f6a736f6e%%') AND
-                                    onti.inscription_number >= 0
-                              ORDER BY onti.inscription_number asc;''', (block_height,))
-  inscrs = cur_metaprotocol.fetchall()
+  # cur_metaprotocol.execute('''SELECT oc.inscription_id, onti.inscription_number, oc.content, oc.text_content, oc.content_type
+  #                             FROM ord_content oc
+  #                             LEFT JOIN ord_number_to_id onti on oc.inscription_id = onti.inscription_id
+  #                             WHERE oc.block_height = %s AND 
+  #                                   (oc.content_type LIKE '746578742f706c61696e%%' OR
+  #                                    oc.content_type LIKE '6170706c69636174696f6e2f6a736f6e%%') AND
+  #                                   onti.inscription_number >= 0
+  #                             ORDER BY onti.inscription_number asc;''', (block_height,))
+  inscrs = get_sns_inscrs(block_height)
   if len(inscrs) == 0:
     print("No new inscrs found for block " + str(block_height))
     update_event_hashes(block_height)
@@ -264,7 +293,7 @@ def index_block(block_height, current_block_hash):
     idx += 1
     if idx % 1000 == 0:
       print(idx, '/', len(inscrs))
-    inscr_id, inscr_num, content_js, content_hex, content_type_hex = inscr
+    inscr_id, inscr_num, content_hex, content_type_hex = inscr
     if content_type_hex != '746578742f706c61696e' and content_type_hex != '6170706c69636174696f6e2f6a736f6e':
       if not content_type_hex.startswith('746578742f706c61696e3b') and not content_type_hex.startswith('6170706c69636174696f6e2f6a736f6e3b'):
         continue
@@ -274,9 +303,6 @@ def index_block(block_height, current_block_hash):
     if content_hex is not None:
       name, domain = get_sns_name(content_hex)
       namespace = get_ns_register(content_hex)
-    if content_js is not None:
-      name, domain = get_sns_name_js(content_js)
-      namespace = get_ns_register_js(content_js)
     if name is None and namespace is None: continue
     if name is not None:
       if '\x00' in name or '\x00' in domain: continue
@@ -320,17 +346,15 @@ def check_for_reorg():
   if cur.rowcount == 0: return None ## nothing indexed yet
   last_block = cur.fetchone()
 
-  cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (last_block[0],))
-  last_block_ord = cur_metaprotocol.fetchone()
-  if last_block_ord[1] == last_block[1]: return None ## last block hashes are the same, no reorg
+  last_block_ord = get_block_hash_by_height(last_block[0])
+  if last_block_ord == last_block[1]: return None ## last block hashes are the same, no reorg
 
   print("REORG DETECTED!!")
   cur.execute('select block_height, block_hash from sns_block_hashes order by block_height desc limit %s;', (2*save_point_interval,))
   hashes = cur.fetchall() ## get last 10 hashes
   for h in hashes:
-    cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (h[0],))
-    block = cur_metaprotocol.fetchone()
-    if block[1] == h[1]: ## found reorg height by a matching hash
+    block = get_block_hash_by_height(h[0])
+    if block == h[1]: ## found reorg height by a matching hash
       print("REORG HEIGHT FOUND: " + str(h[0]))
       return h[0]
   
@@ -428,8 +452,7 @@ check_if_there_is_residue_from_last_run()
 while True:
   check_if_there_is_residue_from_last_run()
   ## check if a new block is indexed
-  cur_metaprotocol.execute('''SELECT coalesce(max(block_height), -1) as max_height from block_hashes;''')
-  max_block_of_metaprotocol_db = cur_metaprotocol.fetchone()[0]
+  max_block_of_metaprotocol_db = get_ord_block_height()
   cur.execute('''select max(block_height) from sns_block_hashes;''')
   row = cur.fetchone()
   current_block = None
@@ -441,8 +464,7 @@ while True:
     continue
   
   print("Processing block %s" % current_block)
-  cur_metaprotocol.execute('select block_hash from block_hashes where block_height = %s;', (current_block,))
-  current_block_hash = cur_metaprotocol.fetchone()[0]
+  current_block_hash = get_block_hash_by_height(current_block)
   reorg_height = check_for_reorg()
   if reorg_height is not None:
     print("Rolling back to ", reorg_height)

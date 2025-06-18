@@ -132,6 +132,9 @@ node index.js
 ```
 
 **BRC-20 Indexer**
+
+If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+
 ```bash
 cd ..
 cd brc20_index
