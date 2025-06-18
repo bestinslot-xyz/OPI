@@ -295,40 +295,34 @@ impl Brc20Database {
         ord_block_height: i32,
     ) -> Result<bool, Box<dyn Error>> {
         // does brc20_unused_txes have any rows?
-        let brc20_unused_txes_is_empty = sqlx::query(
-            "SELECT 1 FROM brc20_unused_txes LIMIT 1"
-        )
-        .fetch_optional(&self.client)
-        .await?
-        .is_none();
+        let brc20_unused_txes_is_empty = sqlx::query("SELECT 1 FROM brc20_unused_txes LIMIT 1")
+            .fetch_optional(&self.client)
+            .await?
+            .is_none();
 
         if !brc20_unused_txes_is_empty {
             return Ok(true);
         }
 
-        let brc20_current_balances_is_empty = sqlx::query(
-            "SELECT 1 FROM brc20_current_balances LIMIT 1"
-        )
-        .fetch_optional(&self.client)
-        .await?
-        .is_none();
+        let brc20_current_balances_is_empty =
+            sqlx::query("SELECT 1 FROM brc20_current_balances LIMIT 1")
+                .fetch_optional(&self.client)
+                .await?
+                .is_none();
 
         if !brc20_current_balances_is_empty {
             return Ok(true);
         }
 
         if brc20_block_height > ord_block_height - 10 {
-            self.initial_index_of_extra_tables()
-                .await?;
+            self.initial_index_of_extra_tables().await?;
             return Ok(true);
         }
 
         Ok(false)
     }
 
-    pub async fn initial_index_of_extra_tables(
-        &self,
-    ) -> Result<(), Box<dyn Error>> {
+    pub async fn initial_index_of_extra_tables(&self) -> Result<(), Box<dyn Error>> {
         let mut tx = self.client.begin().await?;
 
         tracing::info!("Resetting brc20_unused_txes");
@@ -339,7 +333,8 @@ impl Brc20Database {
 
         tracing::info!("Selecting unused txes");
 
-        let unused_txes = sqlx::query("with tempp as (
+        let unused_txes = sqlx::query(
+            "with tempp as (
                   select inscription_id, event, id, block_height
                   from brc20_events
                   where event_type = $1
@@ -351,11 +346,12 @@ impl Brc20Database {
                 select t.event, t.id, t.block_height, t.inscription_id
                 from tempp t
                 left join tempp2 t2 on t.inscription_id = t2.inscription_id
-                where t2.inscription_id is null;")
-            .bind(crate::types::events::TransferInscribeEvent::event_id())
-            .bind(crate::types::events::TransferTransferEvent::event_id())
-            .fetch_all(&mut *tx)
-            .await?;
+                where t2.inscription_id is null;",
+        )
+        .bind(crate::types::events::TransferInscribeEvent::event_id())
+        .bind(crate::types::events::TransferTransferEvent::event_id())
+        .fetch_all(&mut *tx)
+        .await?;
 
         tracing::info!("Inserting unused txes");
 
@@ -408,7 +404,11 @@ impl Brc20Database {
 
         for (index, row) in current_balances.iter().enumerate() {
             if index % 1000 == 0 {
-                tracing::info!("Inserting current balances: {}/{}", index, current_balances.len());
+                tracing::info!(
+                    "Inserting current balances: {}/{}",
+                    index,
+                    current_balances.len()
+                );
             }
 
             let pkscript: String = row.get("pkscript");
@@ -439,21 +439,20 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn index_extra_tables(
-        &mut self,
-        block_height: i32,
-    ) -> Result<(), Box<dyn Error>> {
+    pub async fn index_extra_tables(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         let mut tx = self.client.begin().await?;
 
         tracing::info!("Indexing extra tables for block height {}", block_height);
 
-        let balance_changes = sqlx::query("select pkscript, wallet, tick, overall_balance, available_balance 
+        let balance_changes = sqlx::query(
+            "select pkscript, wallet, tick, overall_balance, available_balance 
                  from brc20_historic_balances 
                  where block_height = $1
-                 order by id asc;")
-            .bind(block_height)
-            .fetch_all(&mut *tx)
-            .await?;
+                 order by id asc;",
+        )
+        .bind(block_height)
+        .fetch_all(&mut *tx)
+        .await?;
 
         let mut balance_changes_map = HashMap::new();
         for row in balance_changes {
@@ -463,9 +462,13 @@ impl Brc20Database {
             let overall_balance: BigDecimal = row.get("overall_balance");
             let available_balance: BigDecimal = row.get("available_balance");
 
-            balance_changes_map.insert((pkscript, tick), (wallet, overall_balance, available_balance));
+            balance_changes_map.insert(
+                (pkscript, tick),
+                (wallet, overall_balance, available_balance),
+            );
         }
-        for ((pkscript, tick), (wallet, overall_balance, available_balance)) in balance_changes_map {
+        for ((pkscript, tick), (wallet, overall_balance, available_balance)) in balance_changes_map
+        {
             sqlx::query!(
                 "INSERT INTO brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height) VALUES ($1, $2, $3, $4, $5, $6)
                      ON CONFLICT (pkscript, tick) 
@@ -483,14 +486,16 @@ impl Brc20Database {
             .await?;
         }
 
-        let events = sqlx::query("select event, id, event_type, inscription_id 
+        let events = sqlx::query(
+            "select event, id, event_type, inscription_id 
                  from brc20_events where block_height = $1 and (event_type = $2 or event_type = $3) 
-                 order by id asc;")
-            .bind(block_height)
-            .bind(crate::types::events::TransferInscribeEvent::event_id())
-            .bind(crate::types::events::TransferTransferEvent::event_id())
-            .fetch_all(&mut *tx)
-            .await?;
+                 order by id asc;",
+        )
+        .bind(block_height)
+        .bind(crate::types::events::TransferInscribeEvent::event_id())
+        .bind(crate::types::events::TransferTransferEvent::event_id())
+        .fetch_all(&mut *tx)
+        .await?;
 
         for row in events {
             let new_event: serde_json::Value = row.get("event");
@@ -513,14 +518,16 @@ impl Brc20Database {
                 .execute(&mut *tx)
                 .await?;
             } else if event_type == crate::types::events::TransferTransferEvent::event_id() {
-                sqlx::query!("DELETE FROM brc20_unused_txes WHERE inscription_id = $1", inscription_id)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query!(
+                    "DELETE FROM brc20_unused_txes WHERE inscription_id = $1",
+                    inscription_id
+                )
+                .execute(&mut *tx)
+                .await?;
             } else {
                 panic!(
                     "Unknown event type {} for inscription_id {}",
-                    event_type,
-                    inscription_id
+                    event_type, inscription_id
                 );
             }
         }
@@ -566,11 +573,13 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        let res = sqlx::query("SELECT event FROM brc20_events WHERE event_type = $1 AND block_height > $2")
-            .bind(crate::types::events::MintInscribeEvent::event_id())
-            .bind(block_height)
-            .fetch_all(&mut *tx)
-            .await?;
+        let res = sqlx::query(
+            "SELECT event FROM brc20_events WHERE event_type = $1 AND block_height > $2",
+        )
+        .bind(crate::types::events::MintInscribeEvent::event_id())
+        .bind(block_height)
+        .fetch_all(&mut *tx)
+        .await?;
         let mut ticker_changes = HashMap::new();
         for row in res {
             let event: events::MintInscribeEvent = serde_json::from_value(row.get("event"))?;
@@ -640,14 +649,20 @@ impl Brc20Database {
 
         tracing::info!("Starting reorg on extra tables");
 
-        let to_replace_balances = sqlx::query("delete from brc20_current_balances where block_height > $1 RETURNING pkscript, tick;")
-            .bind(block_height)
-            .fetch_all(&mut *tx)
-            .await?;
+        let to_replace_balances = sqlx::query(
+            "delete from brc20_current_balances where block_height > $1 RETURNING pkscript, tick;",
+        )
+        .bind(block_height)
+        .fetch_all(&mut *tx)
+        .await?;
 
         for (index, row) in to_replace_balances.iter().enumerate() {
             if index % 1000 == 0 {
-                tracing::info!("Replacing current balances: {}/{}", index, to_replace_balances.len());
+                tracing::info!(
+                    "Replacing current balances: {}/{}",
+                    index,
+                    to_replace_balances.len()
+                );
             }
 
             let pkscript: String = row.get("pkscript");
@@ -674,7 +689,8 @@ impl Brc20Database {
 
         tracing::info!("Selecting unused txes");
 
-        let unused_txes = sqlx::query("with tempp as (
+        let unused_txes = sqlx::query(
+            "with tempp as (
                   select inscription_id, event, id, block_height
                   from brc20_events
                   where event_type = $1
@@ -686,11 +702,12 @@ impl Brc20Database {
                 select t.event, t.id, t.block_height, t.inscription_id
                 from tempp t
                 left join tempp2 t2 on t.inscription_id = t2.inscription_id
-                where t2.inscription_id is null;")
-            .bind(crate::types::events::TransferInscribeEvent::event_id())
-            .bind(crate::types::events::TransferTransferEvent::event_id())
-            .fetch_all(&mut *tx)
-            .await?;
+                where t2.inscription_id is null;",
+        )
+        .bind(crate::types::events::TransferInscribeEvent::event_id())
+        .bind(crate::types::events::TransferTransferEvent::event_id())
+        .fetch_all(&mut *tx)
+        .await?;
 
         tracing::info!("Inserting unused txes");
 

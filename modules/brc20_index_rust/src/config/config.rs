@@ -113,6 +113,9 @@ pub const OPERATION_BRC20_PROG_DEPLOY_SHORT: &str = "d";
 pub const OPERATION_BRC20_PROG_CALL: &str = "call";
 pub const OPERATION_BRC20_PROG_CALL_SHORT: &str = "c";
 
+pub const OPERATION_BRC20_PROG_TRANSACT: &str = "transact";
+pub const OPERATION_BRC20_PROG_TRANSACT_SHORT: &str = "t";
+
 pub const BRC20_PROG_OP_RETURN_PKSCRIPT: &str = "6a09425243323050524f47";
 pub const OP_RETURN: &str = "6a";
 

@@ -30,3 +30,9 @@ pub use brc20_prog_withdraw_inscribe::Brc20ProgWithdrawInscribeEvent;
 
 mod brc20_prog_withdraw_transfer;
 pub use brc20_prog_withdraw_transfer::Brc20ProgWithdrawTransferEvent;
+
+mod brc20_prog_transact_inscribe;
+pub use brc20_prog_transact_inscribe::Brc20ProgTransactInscribeEvent;
+
+mod brc20_prog_transact_transfer;
+pub use brc20_prog_transact_transfer::Brc20ProgTransactTransferEvent;

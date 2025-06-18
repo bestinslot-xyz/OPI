@@ -15,7 +15,8 @@ use crate::{
         DECIMALS_KEY, EVENT_SEPARATOR, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT,
         MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
         OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
-        OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
+        OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_BRC20_PROG_TRANSACT,
+        OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
         OPERATION_TRANSFER, OPERATION_WITHDRAW, PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE,
         PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
     },
@@ -30,7 +31,8 @@ use crate::{
         Ticker,
         events::{
             Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
-            Brc20ProgDeployTransferEvent, Brc20ProgWithdrawInscribeEvent,
+            Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
+            Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
             Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
             TransferInscribeEvent, TransferTransferEvent,
         },
@@ -490,6 +492,43 @@ impl Brc20Indexer {
                             &mut block_events_buffer,
                             transfer,
                         )?;
+                    }
+                } else if operation == OPERATION_BRC20_PROG_TRANSACT
+                    || operation == OPERATION_BRC20_PROG_TRANSACT_SHORT
+                {
+                    if transfer.old_satpoint.is_some() {
+                        match self
+                            .brc20_prog_transact_transfer(
+                                block_height,
+                                block_hash,
+                                block_time,
+                                &transfer.inscription_id,
+                                &transfer.new_pkscript,
+                                data,
+                                base64_data,
+                                transfer.byte_len as i32,
+                                brc20_prog_tx_idx,
+                                &mut block_events_buffer,
+                                transfer,
+                            )
+                            .await
+                        {
+                            Ok(txes_executed) => {
+                                brc20_prog_tx_idx += txes_executed;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        self.brc20_prog_transact_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
+                            &transfer.new_pkscript,
+                            data,
+                            base64_data,
+                            &mut block_events_buffer,
+                            transfer,
+                        )
+                        .await?;
                     }
                 }
                 continue;
@@ -1231,6 +1270,121 @@ impl Brc20Indexer {
         self.brc20_db
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
         Ok(())
+    }
+
+    async fn brc20_prog_transact_inscribe(
+        &mut self,
+        block_height: i32,
+        inscription_id: &str,
+        new_pkscript: &str,
+        data: Option<&str>,
+        base64_data: Option<&str>,
+        block_events_buffer: &mut String,
+        transfer: &BRC20Tx,
+    ) -> Result<(), Box<dyn Error>> {
+        let event = Brc20ProgTransactInscribeEvent {
+            source_pk_script: new_pkscript.to_string(),
+            data: data.map(|d| d.to_string()),
+            base64_data: base64_data.map(|b| b.to_string()),
+        };
+        self.brc20_db.add_event(
+            block_height,
+            inscription_id,
+            &transfer.inscription_number,
+            &transfer.old_satpoint,
+            &transfer.new_satpoint,
+            &transfer.txid,
+            &event,
+        )?;
+        block_events_buffer.push_str(&event.get_event_str(inscription_id, 0));
+        block_events_buffer.push_str(EVENT_SEPARATOR);
+        self.brc20_db
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        Ok(())
+    }
+
+    async fn brc20_prog_transact_transfer(
+        &mut self,
+        block_height: i32,
+        block_hash: &str,
+        block_time: u64,
+        inscription_id: &str,
+        new_pkscript: &str,
+        data: Option<&str>,
+        base64_data: Option<&str>,
+        byte_length: i32,
+        brc20_prog_tx_idx: u64,
+        block_events_buffer: &mut String,
+        transfer: &BRC20Tx,
+    ) -> Result<u64, Box<dyn Error>> {
+        let TransferValidity::Valid = self
+            .brc20_db
+            .get_transfer_validity(
+                &inscription_id,
+                Brc20ProgTransactInscribeEvent::event_id(),
+                Brc20ProgTransactTransferEvent::event_id(),
+            )
+            .await?
+        else {
+            tracing::debug!(
+                "Transfer is not valid for inscription ID: {}",
+                inscription_id
+            );
+            return Err("Transfer is not valid")?;
+        };
+        let Some(inscribe_event) = self
+            .brc20_db
+            .get_event_with_type::<Brc20ProgTransactInscribeEvent>(&inscription_id)
+            .await?
+        else {
+            tracing::debug!(
+                "Inscribe event not found for inscription ID: {}",
+                inscription_id
+            );
+            return Err("Inscribe event not found")?;
+        };
+        if new_pkscript != BRC20_PROG_OP_RETURN_PKSCRIPT {
+            tracing::debug!(
+                "New pk script is not brc20_prog op return pk script for inscription ID: {}",
+                inscription_id
+            );
+            return Err("New pk script is not brc20_prog op return pk script")?;
+        }
+        self.brc20_db
+            .set_transfer_validity(&inscription_id, TransferValidity::Used);
+
+        let event = Brc20ProgTransactTransferEvent {
+            source_pk_script: inscribe_event.source_pk_script.clone(),
+            spent_pk_script: new_pkscript.to_string().into(),
+            data: data.map(|d| d.to_string()),
+            base64_data: base64_data.map(|b| b.to_string()),
+            byte_len: byte_length,
+        };
+        self.brc20_db.add_event(
+            block_height,
+            inscription_id,
+            &transfer.inscription_number,
+            &transfer.old_satpoint,
+            &transfer.new_satpoint,
+            &transfer.txid,
+            &event,
+        )?;
+        block_events_buffer.push_str(&event.get_event_str(&inscription_id, 0));
+        block_events_buffer.push_str(EVENT_SEPARATOR);
+        let transact_result = self
+            .brc20_prog_client
+            .brc20_transact(
+                data.map(|d| RawBytes::new(d.to_string())),
+                base64_data.map(|b| Base64Bytes::new(b.to_string())),
+                block_time,
+                block_hash.try_into()?,
+                brc20_prog_tx_idx,
+                Some(inscription_id.to_string()),
+                Some(byte_length as u64),
+            )
+            .await
+            .expect("Failed to run transact, please check your brc20_prog node");
+        Ok(transact_result.len() as u64)
     }
 
     async fn brc20_prog_withdraw_transfer(
