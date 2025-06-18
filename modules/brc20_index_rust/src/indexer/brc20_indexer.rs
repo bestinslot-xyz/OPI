@@ -417,7 +417,6 @@ impl Brc20Indexer {
                                 block_height,
                                 data,
                                 base64_data,
-                                transfer.byte_len as i32,
                                 block_time,
                                 block_hash,
                                 brc20_prog_tx_idx,
@@ -460,7 +459,6 @@ impl Brc20Indexer {
                                 content.get(INSCRIPTION_ID_KEY).and_then(|i| i.as_str()),
                                 data,
                                 base64_data,
-                                transfer.byte_len as i32,
                                 block_time,
                                 block_hash,
                                 brc20_prog_tx_idx,
@@ -496,7 +494,6 @@ impl Brc20Indexer {
                                 block_time,
                                 data,
                                 base64_data,
-                                transfer.byte_len as i32,
                                 brc20_prog_tx_idx,
                                 &mut block_events_buffer,
                                 transfer,
@@ -1021,7 +1018,6 @@ impl Brc20Indexer {
         block_height: i32,
         data: Option<&str>,
         base64_data: Option<&str>,
-        byte_length: i32,
         block_time: u64,
         block_hash: &str,
         brc20_prog_tx_idx: u64,
@@ -1069,7 +1065,7 @@ impl Brc20Indexer {
             spent_pk_script: transfer.new_pkscript.to_string(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
-            byte_len: byte_length,
+            byte_len: transfer.byte_len as i32,
         };
         self.brc20_db.add_event(
             block_height,
@@ -1092,7 +1088,7 @@ impl Brc20Indexer {
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
                 Some(transfer.inscription_id.to_string()),
-                Some(byte_length as u64),
+                Some(transfer.byte_len as u64),
             )
             .await
             .expect("Failed to deploy smart contract, please check your brc20_prog node");
@@ -1107,7 +1103,6 @@ impl Brc20Indexer {
         contract_inscription_id: Option<&str>,
         data: Option<&str>,
         base64_data: Option<&str>,
-        byte_length: i32,
         block_time: u64,
         block_hash: &str,
         brc20_prog_tx_idx: u64,
@@ -1155,7 +1150,7 @@ impl Brc20Indexer {
             spent_pk_script: transfer.new_pkscript.to_string().into(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
-            byte_len: byte_length as u64,
+            byte_len: transfer.byte_len as u64,
             contract_address: contract_address.map(|s| s.to_string()),
             contract_inscription_id: contract_inscription_id.map(|s| s.to_string()),
         };
@@ -1187,7 +1182,7 @@ impl Brc20Indexer {
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
                 Some(transfer.inscription_id.to_string()),
-                Some(byte_length as u64),
+                Some(transfer.byte_len as u64),
             )
             .await
             .expect("Failed to call smart contract, please check your brc20_prog node");
@@ -1266,7 +1261,6 @@ impl Brc20Indexer {
         block_time: u64,
         data: Option<&str>,
         base64_data: Option<&str>,
-        byte_length: i32,
         brc20_prog_tx_idx: u64,
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
@@ -1312,7 +1306,7 @@ impl Brc20Indexer {
             spent_pk_script: transfer.new_pkscript.to_string().into(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
-            byte_len: byte_length,
+            byte_len: transfer.byte_len as i32,
         };
         self.brc20_db.add_event(
             block_height,
@@ -1334,7 +1328,7 @@ impl Brc20Indexer {
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
                 Some(transfer.inscription_id.to_string()),
-                Some(byte_length as u64),
+                Some(transfer.byte_len as u64),
             )
             .await
             .expect("Failed to run transact, please check your brc20_prog node");
