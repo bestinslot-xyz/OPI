@@ -819,10 +819,6 @@ impl Updater<'_> {
     println!("First commit done in {} ms", st_tm_2.elapsed().as_millis());
     let st_tm_3 = Instant::now();
 
-    // Commit twice since due to a bug redb will only reuse pages freed in the
-    // transaction before last.
-    self.index.begin_write()?.commit()?;
-
     Reorg::update_savepoints(self.index, self.height)?;
 
     println!("Savepoints updated in {} ms", st_tm_3.elapsed().as_millis());

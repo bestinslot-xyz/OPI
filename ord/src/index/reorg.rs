@@ -1,5 +1,4 @@
 use {super::*, updater::BlockData};
-use phf::phf_map;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Error {
@@ -25,14 +24,6 @@ pub(crate) struct Reorg {}
 impl Reorg {
   pub(crate) fn detect_reorg(block: &BlockData, height: u32, index: &Index) -> Result {
     let bitcoind_prev_blockhash = block.header.prev_blockhash;
-    let chain: &str = match index.options.chain() {
-      Chain::Mainnet => "mainnet",
-      Chain::Testnet4 => "testnet4",
-      Chain::Regtest => "regtest",
-      Chain::Signet => "signet",
-      Chain::Testnet => "testnet",
-    };
-    let savepoint_interval: u32 = *SAVEPOINT_INTERVALS_BY_CHAIN.get(chain).unwrap();
 
     match index.block_hash(height.checked_sub(1))? {
       Some(index_prev_blockhash) if index_prev_blockhash == bitcoind_prev_blockhash => Ok(()),
