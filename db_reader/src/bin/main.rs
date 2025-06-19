@@ -13,7 +13,10 @@ async fn main() {
         .expect("Failed to set file descriptor limits");
     let mut signals = Signals::new([SIGINT]).expect("Failed to create signal handler");
 
-    let index_path = PathBuf::from("../../../ord/target/release/dbs");
+    let index_path = PathBuf::from(
+        std::env::var("INDEX_PATH")
+            .unwrap_or_else(|_| "../../../ord/target/release/dbs".to_string())
+    );
 
     let column_families = vec![
         ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),

@@ -783,15 +783,19 @@ pub async fn start_rpc_server(db: &Arc<DB>) -> Result<ServerHandle, Box<dyn Erro
         .max_response_body_size(1024 * 1024 * 1024) // 1 GB
         .build();
 
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "11030".to_string());
+    let bind_address = format!("0.0.0.0:{}", port);
+
     let handle = Server::builder()
         .set_http_middleware(http_middleware)
         .set_rpc_middleware(rpc_middleware)
         .set_config(server_config)
-        .build("0.0.0.0:11030".parse::<SocketAddr>()?)
+        .build(bind_address.parse::<SocketAddr>()?)
         .await?
         .start(module);
 
-    println!("RPC server started at http://0.0.0.0:11030");
+    println!("RPC server started at http://{}", bind_address);
 
     Ok(handle)
 }

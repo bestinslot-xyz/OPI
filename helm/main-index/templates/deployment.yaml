@@ -40,28 +40,6 @@ spec:
       serviceAccountName: {{ include "main-index.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
-      - name: init-check-create-files
-        image: busybox
-        command: ['sh', '-c']
-        args:
-          - |
-            if [ ! -d "/main-index/signet" ]; then
-              mkdir "/main-index/signet"
-              echo "Created signet directory"
-            else
-              echo "signet directory already exists; skipping creation"
-            fi
-
-            if [ ! -d "/main-index/testnet4" ]; then
-              mkdir "/main-index/testnet4"
-              echo "Created testnet4 directory"
-            else
-              echo "testnet4 directory already exists; skipping creation"
-            fi
-        volumeMounts:
-          - name: opi-main-index
-            mountPath: /main-index
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -69,40 +47,12 @@ spec:
           image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
-          - name: DB_USER
-            valueFrom:
-              configMapKeyRef:
-                name: bis-config
-                key: metaDb.user
-          - name: DB_HOST
-            valueFrom:
-              configMapKeyRef:
-                name: bis-config
-                key: metaDb.host
-          - name: DB_DATABASE
-            valueFrom:
-              configMapKeyRef:
-                name: bis-config
-                key: metaDb.database
-          - name: DB_PASSWD
-            valueFrom:
-              secretKeyRef:
-                name: metadb-app
-                key: password
-          - name: DB_PORT
-            value: "5432"
-          - name: DB_MAX_CONNECTIONS
-            value: "50"
-          - name: DB_SSL
-            value: "false"
-          - name: BITCOIN_CHAIN_FOLDER
-            value: "~/.bitcoin/"
-          - name: BITCOIN_RPC_USER
+          - name: BITCOIN_RPC_USERNAME
             valueFrom:
               configMapKeyRef:
                 name: bis-config
                 key: rpc.user
-          - name: BITCOIN_RPC_PASSWD
+          - name: BITCOIN_RPC_PASSWORD
             valueFrom:
               secretKeyRef:
                 name: rpc-credentials
@@ -112,30 +62,24 @@ spec:
               configMapKeyRef:
                 name: bis-config
                 key: rpc.host
-          - name: ORD_BINARY
-            value: "ord"
-          - name: ORD_FOLDER
-            value: "/main-index"
-          - name: ORD_DATADIR
-            value: "."
-          - name: COOKIE_FILE
-            value: ""
-          - name: NETWORK_TYPE
-            valueFrom:
-              configMapKeyRef:
-                name: bis-config
-                key: networkType
-          - name: DEBUG
-            value: "true"
-          ports:
-            - name: http
-              containerPort: {{ .Values.service.port }}
-              protocol: TCP
+          - name: DATA_DIR
+            value: "/ord"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: opi-main-index
-              mountPath: /main-index
+              mountPath: /ord
+        - name: db-reader
+          image: "{{ .Values.dbReaderImage.registry }}/{{ .Values.dbReaderImage.repository }}:{{ .Values.dbReaderImage.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.dbReaderImage.pullPolicy }}
+          env:
+            - name: DATA_DIR
+              value: "/ord"
+          resources:
+            {{- toYaml .Values.dbReaderResources | nindent 12 }}
+          volumeMounts:
+            - name: opi-main-index
+              mountPath: /ord
       volumes:
         - name: opi-main-index
           persistentVolumeClaim:
