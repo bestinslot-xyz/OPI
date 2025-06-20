@@ -6,10 +6,17 @@ replicaCount: 1
 
 image:
   registry: registry.bestinslot.xyz
-  repository: main-index
+  repository: main-opi-ord
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "0.0.1"
+
+dbReaderImage:
+  registry: registry.bestinslot.xyz
+  repository: db-reader
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "0.0.1"
 
 imagePullSecrets:
   - name: bispullsecret

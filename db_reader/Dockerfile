@@ -7,7 +7,7 @@ RUN apt-get update && \
         libclang-dev && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /usr/src/ord
+WORKDIR /usr/src/db_reader
 
 COPY . .
 
@@ -15,6 +15,6 @@ RUN cargo build --bin db_reader --release
 
 FROM gcr.io/distroless/cc-debian12
 
-COPY --from=builder /usr/src/db_reader/target/release/db_reader /usr/local/bin
+COPY --from=builder /usr/src/db_reader/target/release/db_reader /usr/local/bin/db_reader
 
-CMD ["sh", "-c", "db_reader"]
+CMD ["db_reader"]
