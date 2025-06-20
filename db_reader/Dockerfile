@@ -1,22 +1,20 @@
-FROM rust:1.86.0-bookworm as builder
+FROM rust:1.86.0-bookworm AS builder
 
-# Install libclang and other dependencies needed for rocksdb
-RUN apt-get update && apt-get install -y \
-    libclang-dev \
-    clang \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install additional build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libssl-dev \
+        libclang-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-WORKDIR /usr/src/db_reader
+WORKDIR /usr/src/ord
 
 COPY . .
 
 RUN cargo build --bin db_reader --release
 
-FROM debian:bookworm-slim
+FROM gcr.io/distroless/cc-debian12
 
 COPY --from=builder /usr/src/db_reader/target/release/db_reader /usr/local/bin
-RUN apt-get update && apt-get install -y openssl
 
 CMD ["sh", "-c", "db_reader"]
