@@ -766,7 +766,7 @@ impl Brc20ApiServer for RpcServer {
     }
 }
 
-pub async fn start_rpc_server(db: &Arc<DB>) -> Result<ServerHandle, Box<dyn Error>> {
+pub async fn start_rpc_server(db: &Arc<DB>, api_url: &Option<String>) -> Result<ServerHandle, Box<dyn Error>> {
     let cors = CorsLayer::new()
         // Allow `POST` when accessing the resource
         .allow_methods([Method::POST])
@@ -783,15 +783,16 @@ pub async fn start_rpc_server(db: &Arc<DB>) -> Result<ServerHandle, Box<dyn Erro
         .max_response_body_size(1024 * 1024 * 1024) // 1 GB
         .build();
 
+    let url = api_url.clone().unwrap_or_else(|| "0.0.0.0:11030".into());
     let handle = Server::builder()
         .set_http_middleware(http_middleware)
         .set_rpc_middleware(rpc_middleware)
         .set_config(server_config)
-        .build("0.0.0.0:11030".parse::<SocketAddr>()?)
+        .build(url.parse::<SocketAddr>()?)
         .await?
         .start(module);
 
-    println!("RPC server started at http://0.0.0.0:11030");
+    println!("RPC server started at http://{}", url);
 
     Ok(handle)
 }
