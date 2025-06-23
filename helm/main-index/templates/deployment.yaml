@@ -46,6 +46,17 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--bitcoin-rpc-url"
+            - "$(BITCOIN_RPC_URL)"
+            - "--bitcoin-rpc-username"
+            - "$(BITCOIN_RPC_USERNAME)"
+            - "--bitcoin-rpc-password"
+            - "$(BITCOIN_RPC_PASSWORD)"
+            - "--data-dir"
+            - "$(DATA_DIR)"
+            - "index"
+            - "run"
           env:
           - name: BITCOIN_RPC_USERNAME
             valueFrom:
