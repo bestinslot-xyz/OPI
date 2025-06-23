@@ -75,7 +75,7 @@ fn parse_args() -> Args {
 #[tokio::main]
 async fn main() {
     rlimit::Resource::NOFILE
-        .set(4096, 8192)
+        .set(65536, 131072)
         .expect("Failed to set file descriptor limits");
     let mut signals = Signals::new([SIGINT]).expect("Failed to create signal handler");
 
