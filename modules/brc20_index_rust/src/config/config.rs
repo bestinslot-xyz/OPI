@@ -22,7 +22,8 @@ lazy_static::lazy_static! {
         map
     };
 
-    pub static ref FIRST_BRC20_PROG_HEIGHTS: HashMap<Network, i32> = {
+    /// During phase 1, only 6 byte tickers can get deposited into programmable module.
+    pub static ref FIRST_BRC20_PROG_PHASE_1_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
         map.insert(Network::Bitcoin, 909969);
         map.insert(Network::Testnet, 0);
@@ -32,6 +33,15 @@ lazy_static::lazy_static! {
         map
     };
 
+    pub static ref FIRST_BRC20_PROG_PHASE_2_HEIGHTS: HashMap<Network, i32> = {
+        let mut map = HashMap::new();
+        map.insert(Network::Bitcoin, 914888);
+        map.insert(Network::Testnet, 0);
+        map.insert(Network::Testnet4, 0);
+        map.insert(Network::Regtest, 0);
+        map.insert(Network::Signet, 230000);
+        map
+    };
 }
 
 pub const DB_HOST_KEY: &str = "DB_HOST";
@@ -163,7 +173,10 @@ pub struct Brc20IndexerConfig {
 
     pub first_inscription_height: i32,
     pub first_brc20_height: i32,
-    pub first_brc20_prog_height: i32,
+    /// Phase 1 adds support for contracts and depositing tickers with 6 byte length.
+    pub first_brc20_prog_phase_one_height: i32,
+    /// Phase 2 adds support for all tickers.
+    pub first_brc20_prog_all_tickers_height: i32,
 
     pub brc20_prog_enabled: bool,
     pub brc20_prog_rpc_url: String,
@@ -212,7 +225,10 @@ impl Default for Brc20IndexerConfig {
             first_brc20_height: *FIRST_BRC20_HEIGHTS
                 .get(&network_type)
                 .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
-            first_brc20_prog_height: *FIRST_BRC20_PROG_HEIGHTS
+            first_brc20_prog_phase_one_height: *FIRST_BRC20_PROG_PHASE_1_HEIGHTS
+                .get(&network_type)
+                .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
+            first_brc20_prog_all_tickers_height: *FIRST_BRC20_PROG_PHASE_2_HEIGHTS
                 .get(&network_type)
                 .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
 

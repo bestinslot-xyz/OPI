@@ -105,10 +105,10 @@ impl Brc20Indexer {
                     .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
                     .await?;
             }
-            if brc20_prog_block_height < self.config.first_brc20_prog_height {
+            if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height {
                 self.brc20_prog_client
                     .brc20_mine(
-                        (self.config.first_brc20_prog_height - brc20_prog_block_height - 1) as u64,
+                        (self.config.first_brc20_prog_phase_one_height - brc20_prog_block_height - 1) as u64,
                         0,
                     )
                     .await?;
@@ -139,7 +139,7 @@ impl Brc20Indexer {
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         tracing::info!("Reorganizing BRC20 indexer database...");
         self.brc20_db.reorg(block_height).await?;
-        if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_height {
+        if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_phase_one_height {
             self.brc20_prog_client
                 .brc20_reorg(block_height as u64)
                 .await?;
@@ -246,7 +246,7 @@ impl Brc20Indexer {
 
         let transfers = self.main_db.get_transfers(block_height).await?;
         if transfers.is_empty() {
-            if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_height
+            if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_phase_one_height
             {
                 self.brc20_prog_client
                     .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
@@ -279,71 +279,7 @@ impl Brc20Indexer {
                 continue;
             }
 
-            let Ok(content_type) = hex::decode(&transfer.content_type_hex) else {
-                tracing::debug!(
-                    "Skipping transfer {} as content type is not valid hex",
-                    transfer.inscription_id
-                );
-                continue;
-            };
-
-            let Ok(decoded_content_type) = String::from_utf8(content_type) else {
-                tracing::debug!(
-                    "Skipping transfer {} as content type is not valid UTF-8",
-                    transfer.inscription_id
-                );
-                continue;
-            };
-
-            if !decoded_content_type.starts_with("application/json")
-                && !decoded_content_type.starts_with("text/plain")
-            {
-                tracing::debug!(
-                    "Skipping transfer {} as content type is not application/json or text/plain",
-                    transfer.inscription_id
-                );
-                continue;
-            }
-
-            if decoded_content_type.starts_with("application/json")
-                && decoded_content_type != "application/json"
-                && !decoded_content_type.starts_with("application/json;")
-            {
-                tracing::debug!(
-                    "Skipping transfer {} as content type starts with application/json but has extras that are not charset",
-                    transfer.inscription_id
-                );
-                continue;
-            }
-
-            if decoded_content_type.starts_with("text/plain")
-                && decoded_content_type != "text/plain"
-                && !decoded_content_type.starts_with("text/plain;")
-            {
-                tracing::debug!(
-                    "Skipping transfer {} as content type starts with text/plain but has extras that are not charset",
-                    transfer.inscription_id
-                );
-                continue;
-            }
-
-            let Ok(content_slice) = hex::decode(&transfer.content_hex) else {
-                tracing::debug!(
-                    "Skipping transfer {} as content is not present",
-                    transfer.inscription_id
-                );
-                continue;
-            };
-
-            let Ok(content) = serde_json::from_slice::<serde_json::Value>(&content_slice) else {
-                tracing::debug!(
-                    "Skipping transfer {} as content is not valid JSON",
-                    transfer.inscription_id
-                );
-                continue;
-            };
-
-            let Some(protocol) = content.get(PROTOCOL_KEY).and_then(|p| p.as_str()) else {
+            let Some(protocol) = transfer.content.get(PROTOCOL_KEY).and_then(|p| p.as_str()) else {
                 tracing::debug!(
                     "Skipping transfer {} as protocol is not present",
                     transfer.inscription_id
@@ -362,7 +298,11 @@ impl Brc20Indexer {
                 continue;
             }
 
-            let Some(operation) = content.get(OPERATION_KEY).and_then(|op| op.as_str()) else {
+            let Some(operation) = transfer
+                .content
+                .get(OPERATION_KEY)
+                .and_then(|op| op.as_str())
+            else {
                 tracing::debug!(
                     "Skipping transfer {} as operation is not present",
                     transfer.inscription_id
@@ -379,18 +319,21 @@ impl Brc20Indexer {
                     continue;
                 }
 
-                if block_height < self.config.first_brc20_prog_height {
+                if block_height < self.config.first_brc20_prog_phase_one_height {
                     tracing::debug!(
                         "Skipping transfer {} as block height {} is less than first BRC20 Prog height {}",
                         transfer.inscription_id,
                         block_height,
-                        self.config.first_brc20_prog_height
+                        self.config.first_brc20_prog_phase_one_height
                     );
                     continue;
                 }
 
-                let data = content.get(DATA_KEY).and_then(|d| d.as_str());
-                let base64_data = content.get(BASE64_DATA_KEY).and_then(|b| b.as_str());
+                let data = transfer.content.get(DATA_KEY).and_then(|d| d.as_str());
+                let base64_data = transfer
+                    .content
+                    .get(BASE64_DATA_KEY)
+                    .and_then(|b| b.as_str());
 
                 if data.is_none() && base64_data.is_none() {
                     tracing::debug!(
@@ -442,8 +385,8 @@ impl Brc20Indexer {
                 } else if operation == OPERATION_BRC20_PROG_CALL
                     || operation == OPERATION_BRC20_PROG_CALL_SHORT
                 {
-                    if content.get(CONTRACT_ADDRESS_KEY).is_none()
-                        && content.get(INSCRIPTION_ID_KEY).is_none()
+                    if transfer.content.get(CONTRACT_ADDRESS_KEY).is_none()
+                        && transfer.content.get(INSCRIPTION_ID_KEY).is_none()
                     {
                         tracing::debug!(
                             "Skipping transfer {} as contract address or inscription ID is not present",
@@ -455,8 +398,14 @@ impl Brc20Indexer {
                         match self
                             .brc20_prog_call_transfer(
                                 block_height,
-                                content.get(CONTRACT_ADDRESS_KEY).and_then(|c| c.as_str()),
-                                content.get(INSCRIPTION_ID_KEY).and_then(|i| i.as_str()),
+                                transfer
+                                    .content
+                                    .get(CONTRACT_ADDRESS_KEY)
+                                    .and_then(|c| c.as_str()),
+                                transfer
+                                    .content
+                                    .get(INSCRIPTION_ID_KEY)
+                                    .and_then(|i| i.as_str()),
                                 data,
                                 base64_data,
                                 block_time,
@@ -475,8 +424,14 @@ impl Brc20Indexer {
                     } else {
                         self.brc20_prog_call_inscribe(
                             block_height,
-                            content.get(CONTRACT_ADDRESS_KEY).and_then(|c| c.as_str()),
-                            content.get(INSCRIPTION_ID_KEY).and_then(|i| i.as_str()),
+                            transfer
+                                .content
+                                .get(CONTRACT_ADDRESS_KEY)
+                                .and_then(|c| c.as_str()),
+                            transfer
+                                .content
+                                .get(INSCRIPTION_ID_KEY)
+                                .and_then(|i| i.as_str()),
                             data,
                             base64_data,
                             &mut block_events_buffer,
@@ -519,7 +474,8 @@ impl Brc20Indexer {
                 continue;
             }
 
-            let Some(original_ticker) = content.get(TICKER_KEY).and_then(|ot| ot.as_str()) else {
+            let Some(original_ticker) = transfer.content.get(TICKER_KEY).and_then(|ot| ot.as_str())
+            else {
                 tracing::debug!(
                     "Skipping transfer {} as ticker is not present",
                     transfer.inscription_id
@@ -538,7 +494,8 @@ impl Brc20Indexer {
                 continue;
             }
 
-            if original_ticker.as_bytes().len() != 4 && original_ticker.as_bytes().len() != 5 {
+            if original_ticker.as_bytes().len() != 4 && original_ticker.as_bytes().len() != 5 && 
+            (original_ticker.as_bytes().len() == 6 && block_height < self.config.first_brc20_prog_phase_one_height) {
                 tracing::debug!(
                     "Skipping transfer {} as ticker length is not 4 or 5 bytes",
                     transfer.inscription_id
@@ -556,7 +513,7 @@ impl Brc20Indexer {
                     continue;
                 };
 
-                let Some(module) = content.get(MODULE_KEY).and_then(|m| m.as_str()) else {
+                let Some(module) = transfer.content.get(MODULE_KEY).and_then(|m| m.as_str()) else {
                     tracing::debug!(
                         "Skipping transfer {} as module is not present",
                         transfer.inscription_id
@@ -576,7 +533,7 @@ impl Brc20Indexer {
                 }
 
                 let Ok(amount) = get_amount_value(
-                    content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
+                    transfer.content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
                     deployed_ticker.decimals,
                     no_default!(),
                     DISALLOW_ZERO,
@@ -632,7 +589,7 @@ impl Brc20Indexer {
                 }
 
                 let Ok(decimals) =
-                    get_decimals_value(content.get(DECIMALS_KEY).and_then(|d| d.as_str()))
+                    get_decimals_value(transfer.content.get(DECIMALS_KEY).and_then(|d| d.as_str()))
                 else {
                     tracing::debug!(
                         "Skipping transfer {} as decimals are not present or invalid",
@@ -642,7 +599,10 @@ impl Brc20Indexer {
                 };
 
                 let Ok(mut max_supply) = get_amount_value(
-                    content.get(MAX_SUPPLY_KEY).and_then(|m| m.as_str()),
+                    transfer
+                        .content
+                        .get(MAX_SUPPLY_KEY)
+                        .and_then(|m| m.as_str()),
                     decimals,
                     no_default!(),
                     ALLOW_ZERO,
@@ -655,14 +615,17 @@ impl Brc20Indexer {
                 };
 
                 let mut limit_per_mint_res = get_amount_value(
-                    content.get(LIMIT_PER_MINT_KEY).and_then(|l| l.as_str()),
+                    transfer
+                        .content
+                        .get(LIMIT_PER_MINT_KEY)
+                        .and_then(|l| l.as_str()),
                     decimals,
                     no_default!(),
                     DISALLOW_ZERO,
                 );
 
                 if limit_per_mint_res.is_err() {
-                    if content.get(LIMIT_PER_MINT_KEY).is_none() {
+                    if transfer.content.get(LIMIT_PER_MINT_KEY).is_none() {
                         limit_per_mint_res = Ok(max_supply);
                     } else {
                         tracing::debug!(
@@ -684,7 +647,9 @@ impl Brc20Indexer {
                         );
                         continue;
                     }
-                    if let Some(self_mint) = content.get(SELF_MINT_KEY).and_then(|s| s.as_str()) {
+                    if let Some(self_mint) =
+                        transfer.content.get(SELF_MINT_KEY).and_then(|s| s.as_str())
+                    {
                         if self_mint != "true" {
                             tracing::debug!(
                                 "Skipping transfer {} as self mint is not enabled",
@@ -742,7 +707,7 @@ impl Brc20Indexer {
                 };
 
                 let Ok(amount) = get_amount_value(
-                    content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
+                    transfer.content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
                     deployed_ticker.decimals,
                     no_default!(),
                     DISALLOW_ZERO,
@@ -777,7 +742,7 @@ impl Brc20Indexer {
                 };
 
                 let Ok(amount) = get_amount_value(
-                    content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
+                    transfer.content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
                     deployed_ticker.decimals,
                     no_default!(),
                     DISALLOW_ZERO,
@@ -828,7 +793,7 @@ impl Brc20Indexer {
 
         self.brc20_db.flush_queries_to_db().await?;
 
-        if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_height {
+        if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_phase_one_height {
             self.brc20_prog_client
                 .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
                 .await?;
@@ -847,7 +812,7 @@ impl Brc20Indexer {
         let mut last_brc20_block_height = self.brc20_db.get_current_block_height().await?;
         let last_opi_block_height = self.main_db.get_current_block_height().await?;
         let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled {
-            self.config.first_brc20_prog_height
+            self.config.first_brc20_prog_phase_one_height
         } else {
             parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
         };
@@ -855,10 +820,10 @@ impl Brc20Indexer {
         // BRC20 indexer has not indexed any blocks yet, no need to reorg BRC20
         if last_brc20_block_height < self.config.first_brc20_height {
             if self.config.brc20_prog_enabled
-                && last_brc20_prog_block_height > self.config.first_brc20_prog_height
+                && last_brc20_prog_block_height > self.config.first_brc20_prog_phase_one_height
             {
                 self.brc20_prog_client
-                    .brc20_reorg(self.config.first_brc20_prog_height as u64)
+                    .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
                     .await?;
             }
             return Ok(());
@@ -872,7 +837,7 @@ impl Brc20Indexer {
         );
 
         if self.config.brc20_prog_enabled
-            && last_brc20_prog_block_height >= self.config.first_brc20_prog_height
+            && last_brc20_prog_block_height >= self.config.first_brc20_prog_phase_one_height
         {
             if last_brc20_block_height == last_brc20_prog_block_height {
                 // BRC20 and BRC20 Prog are already synced, no need to reorg
@@ -920,7 +885,7 @@ impl Brc20Indexer {
             let brc20_block_hash = self.brc20_db.get_block_hash(current_brc20_height).await?;
             let opi_block_hash = self.main_db.get_block_hash(current_brc20_height).await?;
             let brc20_prog_block_hash = if !self.config.brc20_prog_enabled
-                || current_brc20_height < self.config.first_brc20_prog_height
+                || current_brc20_height < self.config.first_brc20_prog_phase_one_height
             {
                 opi_block_hash.clone()
             } else {
@@ -972,7 +937,7 @@ impl Brc20Indexer {
                 self.brc20_db.reorg(self.config.first_brc20_height).await?;
                 if self.config.brc20_prog_enabled {
                     self.brc20_prog_client
-                        .brc20_reorg(self.config.first_brc20_prog_height as u64)
+                        .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
                         .await?;
                 }
                 break;
@@ -1815,44 +1780,66 @@ impl Brc20Indexer {
                 event_id,
             )?;
         } else if transfer.new_pkscript == BRC20_PROG_OP_RETURN_PKSCRIPT {
-            source_balance.overall_balance -= amount;
+            if (block_height < self.config.first_brc20_prog_all_tickers_height
+                && original_ticker.as_bytes().len() < 6)
+                || block_height < self.config.first_brc20_prog_phase_one_height
+                || !self.config.brc20_prog_enabled
+            {
+                // Burn tokens if BRC20 Prog is not enabled for this ticker yet
+                source_balance.overall_balance -= amount;
+                self.brc20_db.update_balance(
+                    &ticker.ticker,
+                    &inscribe_event.source_pk_script,
+                    &inscribe_event.source_wallet,
+                    &source_balance,
+                    block_height,
+                    event_id,
+                )?;
 
-            self.brc20_db.update_balance(
-                &ticker.ticker,
-                &inscribe_event.source_pk_script,
-                &inscribe_event.source_wallet,
-                &source_balance,
-                block_height,
-                event_id,
-            )?;
+                ticker.burned_supply += amount;
+                self.brc20_db.update_ticker(ticker.clone())?;
 
-            let mut brc20_prog_balance = self
-                .brc20_db
-                .get_balance(&ticker.ticker, BRC20_PROG_OP_RETURN_PKSCRIPT)
-                .await?;
+                Err("Burning tokens, BRC20 Prog is not enabled yet")?;
+            } else {
+                source_balance.overall_balance -= amount;
 
-            brc20_prog_balance.available_balance += amount;
-            brc20_prog_balance.overall_balance += amount;
+                self.brc20_db.update_balance(
+                    &ticker.ticker,
+                    &inscribe_event.source_pk_script,
+                    &inscribe_event.source_wallet,
+                    &source_balance,
+                    block_height,
+                    event_id,
+                )?;
 
-            self.brc20_db.update_balance(
-                &ticker.ticker,
-                BRC20_PROG_OP_RETURN_PKSCRIPT,
-                NO_WALLET,
-                &brc20_prog_balance,
-                block_height,
-                -event_id, // Negate to create a unique event ID
-            )?;
-            self.brc20_prog_client
-                .brc20_deposit(
-                    inscribe_event.source_pk_script,
-                    ticker.ticker.clone(),
-                    amount.into(),
-                    block_time,
-                    block_hash.try_into()?,
-                    brc20_prog_tx_idx,
-                    Some(transfer.inscription_id.to_string()),
-                )
-                .await?;
+                let mut brc20_prog_balance = self
+                    .brc20_db
+                    .get_balance(&ticker.ticker, BRC20_PROG_OP_RETURN_PKSCRIPT)
+                    .await?;
+
+                brc20_prog_balance.available_balance += amount;
+                brc20_prog_balance.overall_balance += amount;
+
+                self.brc20_db.update_balance(
+                    &ticker.ticker,
+                    BRC20_PROG_OP_RETURN_PKSCRIPT,
+                    NO_WALLET,
+                    &brc20_prog_balance,
+                    block_height,
+                    -event_id, // Negate to create a unique event ID
+                )?;
+                self.brc20_prog_client
+                    .brc20_deposit(
+                        inscribe_event.source_pk_script,
+                        ticker.ticker.clone(),
+                        amount.into(),
+                        block_time,
+                        block_hash.try_into()?,
+                        brc20_prog_tx_idx,
+                        Some(transfer.inscription_id.to_string()),
+                    )
+                    .await?;
+            }
         } else if transfer.new_pkscript == OP_RETURN {
             let mut source_balance = self
                 .brc20_db

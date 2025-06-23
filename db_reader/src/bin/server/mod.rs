@@ -5,8 +5,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use db_reader::{
-    BRC20Tx, BlockInfo, Brc20ApiServer, IndexTimes, InscriptionEntry, InscriptionInfo,
-    InscriptionInformation, UTXOInfo, BitmapInscription, SNSInscription,
+    BRC20Tx, BitmapInscription, BlockInfo, Brc20ApiServer, IndexTimes, InscriptionEntry,
+    InscriptionInfo, InscriptionInformation, SNSInscription, UTXOInfo,
 };
 use hyper::Method;
 use jsonrpsee::core::middleware::RpcServiceBuilder;
@@ -259,27 +259,51 @@ fn is_valid_brc20(inscription_info: &InscriptionInfo) -> bool {
         return false;
     }
 
+    let Ok(content_type) = hex::decode(&inscription_info.content_type_hex) else {
+        return false;
+    };
+
+    let Ok(decoded_content_type) = String::from_utf8(content_type) else {
+        return false;
+    };
+
+    if !decoded_content_type.starts_with("application/json")
+        && !decoded_content_type.starts_with("text/plain")
+    {
+        return false;
+    }
+
+    if decoded_content_type.starts_with("application/json")
+        && decoded_content_type != "application/json"
+        && !decoded_content_type.starts_with("application/json;")
+    {
+        return false;
+    }
+
+    if decoded_content_type.starts_with("text/plain")
+        && decoded_content_type != "text/plain"
+        && !decoded_content_type.starts_with("text/plain;")
+    {
+        return false;
+    }
+
     let json_data: serde_json::Value =
         match serde_json::from_slice(&hex::decode(&inscription_info.content_hex).unwrap()) {
             Ok(data) => data,
             Err(_) => return false, // Invalid JSON
         };
 
-    let p = json_data.get("p");
-    if p.is_none() || !p.unwrap().is_string() {
+    let Some(protocol) = json_data.get("p").and_then(|v| v.as_str()) else {
         return false; // Missing or invalid 'p' field
-    }
-    let p_value = p.unwrap().as_str().unwrap();
-    if p_value != "brc-20" && p_value != "brc20-prog" && p_value != "brc20-module" {
+    };
+    if protocol != "brc-20" && protocol != "brc20-prog" && protocol != "brc20-module" {
         return false;
     }
-    if p_value == "brc20-module" {
-        let module = json_data.get("module");
-        if module.is_none() || !module.unwrap().is_string() {
-            return false; // Missing or invalid 'module' field
-        }
-        let module_value = module.unwrap().as_str().unwrap();
-        if module_value != "BRC20PROG" {
+    if protocol == "brc20-module" {
+        let Some(module) = json_data.get("module").and_then(|m| m.as_str()) else {
+            return false; // Missing or invalid 'module' field for brc20-module
+        };
+        if module != "BRC20PROG" {
             return false; // Invalid module value
         }
     }
@@ -294,7 +318,11 @@ fn is_valid_bitmap(inscription_info: &InscriptionInfo) -> bool {
     if inscription_info.is_json {
         return false;
     }
-    if !inscription_info.content_type_hex.to_lowercase().starts_with("746578742f706c61696e") {
+    if !inscription_info
+        .content_type_hex
+        .to_lowercase()
+        .starts_with("746578742f706c61696e")
+    {
         return false;
     }
 
@@ -305,8 +333,15 @@ fn is_valid_sns(inscription_info: &InscriptionInfo) -> bool {
     if inscription_info.inscription_number < 0 {
         return false;
     }
-    if !inscription_info.content_type_hex.to_lowercase().starts_with("746578742f706c61696e")
-        && !inscription_info.content_type_hex.to_lowercase().starts_with("6170706c69636174696f6e2f6a736f6e") {
+    if !inscription_info
+        .content_type_hex
+        .to_lowercase()
+        .starts_with("746578742f706c61696e")
+        && !inscription_info
+            .content_type_hex
+            .to_lowercase()
+            .starts_with("6170706c69636174696f6e2f6a736f6e")
+    {
         return false;
     }
 
@@ -437,9 +472,13 @@ impl Brc20ApiServer for RpcServer {
                 new_pkscript: transfer_info.new_pkscript.clone(),
                 new_wallet: get_wallet(&transfer_info.new_pkscript),
                 sent_as_fee: transfer_info.sent_as_fee,
-                content_hex: inscription_info.content_hex.clone(),
+                content: serde_json::from_slice(
+                    hex::decode(&inscription_info.content_hex)
+                        .unwrap_or(vec![])
+                        .as_slice(),
+                )
+                .unwrap_or(serde_json::Value::Null),
                 byte_len: inscription_info.content_hex.len() as u32 / 2, // Each byte is represented by 2 hex characters
-                content_type_hex: inscription_info.content_type_hex.clone(),
                 parent_id: inscription_info.parent_id.clone(),
             });
 
@@ -630,7 +669,10 @@ impl Brc20ApiServer for RpcServer {
         }
     }
 
-    async fn get_block_bitmap_inscrs(&self, block_height: u32) -> RpcResult<Option<Vec<BitmapInscription>>> {
+    async fn get_block_bitmap_inscrs(
+        &self,
+        block_height: u32,
+    ) -> RpcResult<Option<Vec<BitmapInscription>>> {
         let ord_transfers = self.db.cf_handle("ord_transfers").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -697,7 +739,10 @@ impl Brc20ApiServer for RpcServer {
         Ok(Some(bitmap_inscrs))
     }
 
-    async fn get_block_sns_inscrs(&self, block_height: u32) -> RpcResult<Option<Vec<SNSInscription>>> {
+    async fn get_block_sns_inscrs(
+        &self,
+        block_height: u32,
+    ) -> RpcResult<Option<Vec<SNSInscription>>> {
         let ord_transfers = self.db.cf_handle("ord_transfers").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
