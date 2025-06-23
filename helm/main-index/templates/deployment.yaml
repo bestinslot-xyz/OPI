@@ -73,7 +73,7 @@ spec:
           image: "{{ .Values.dbReaderImage.registry }}/{{ .Values.dbReaderImage.repository }}:{{ .Values.dbReaderImage.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.dbReaderImage.pullPolicy }}
           env:
-            - name: DATA_DIR
+            - name: INDEX_PATH
               value: "/ord"
           resources:
             {{- toYaml .Values.dbReaderResources | nindent 12 }}

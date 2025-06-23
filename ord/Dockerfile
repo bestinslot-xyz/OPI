@@ -20,5 +20,6 @@ COPY --from=builder /usr/src/ord/target/release/ord /usr/local/bin/ord
 ENV RUST_BACKTRACE=1
 ENV RUST_LOG=info
 
-CMD ["sh", "-c", "ord --bitcoin-rpc-url $BITCOIN_RPC_URL --bitcoin-rpc-username $BITCOIN_RPC_USERNAME --bitcoin-rpc-password $BITCOIN_RPC_PASSWORD --data-dir $DATA_DIR index run"]
+ENTRYPOINT ["ord"]
+CMD ["--bitcoin-rpc-url", "$BITCOIN_RPC_URL", "--bitcoin-rpc-username", "$BITCOIN_RPC_USERNAME", "--bitcoin-rpc-password", "$BITCOIN_RPC_PASSWORD", "--data-dir", "$DATA_DIR", "index", "run"]
 
