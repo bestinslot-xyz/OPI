@@ -783,7 +783,7 @@ pub async fn start_rpc_server(db: &Arc<DB>, api_url: &Option<String>) -> Result<
         .max_response_body_size(1024 * 1024 * 1024) // 1 GB
         .build();
 
-    let url = api_url.clone().unwrap_or_else(|| "0.0.0.0:11030".into());
+    let url = api_url.clone().unwrap_or_else(|| "127.0.0.1:11030".into());
     let handle = Server::builder()
         .set_http_middleware(http_middleware)
         .set_rpc_middleware(rpc_middleware)

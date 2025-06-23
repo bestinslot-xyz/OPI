@@ -56,7 +56,9 @@ fn parse_args() -> Args {
                 println!("  --testnet  Use the Testnet network.");
                 println!("  --testnet4 Use the Testnet4 network.");
                 println!("  --regtest  Use the Regtest network.");
-                println!("  --help     Show this help message.");
+                println!("  --db-path <path>  Specify the path to the database.");
+                println!("  --api-url <url>    Specify the API Host and Port to bind to (default: 127.0.0.1:11030).");
+                println!("  -h, --help  Show this help message.");
                 std::process::exit(0);
             }
             _ => {}
