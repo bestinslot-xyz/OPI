@@ -98,7 +98,7 @@ CREATE TABLE public.brc20_indexer_version (
 	event_hash_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-full-node v0.4.1', 5, 2);
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-full-node v0.5.0', 6, 2);
 
 CREATE TABLE public.brc20_current_balances (
 	id bigserial NOT NULL,
