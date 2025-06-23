@@ -20,8 +20,9 @@ use crate::{
         OPERATION_TRANSFER, OPERATION_WITHDRAW, PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE,
         PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
     },
-    database::{Brc20Balance, Brc20Database, OpiDatabase, TransferValidity},
+    database::{Brc20Balance, OpiDatabase, TransferValidity, get_brc20_database},
     indexer::{
+        brc20_prog_balance_server::run_balance_server,
         brc20_prog_client::build_brc20_prog_http_client,
         brc20_reporter::Brc20Reporter,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
@@ -39,10 +40,7 @@ use crate::{
     },
 };
 
-use super::brc20_prog_balance_server::run_balance_server;
-
 pub struct Brc20Indexer {
-    brc20_db: Brc20Database,
     main_db: OpiDatabase,
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
@@ -52,14 +50,12 @@ pub struct Brc20Indexer {
 
 impl Brc20Indexer {
     pub fn new(config: Brc20IndexerConfig) -> Self {
-        let brc20_db = Brc20Database::new(&config);
         let main_db = OpiDatabase::new("http://localhost:11030".to_string());
 
         let brc20_prog_client = build_brc20_prog_http_client(&config);
         let brc20_reporter = Brc20Reporter::new(&config);
 
         Brc20Indexer {
-            brc20_db,
             main_db,
             config,
             brc20_prog_client,
@@ -69,7 +65,7 @@ impl Brc20Indexer {
     }
 
     async fn init(&mut self) -> Result<(), Box<dyn Error>> {
-        let db_version = self.brc20_db.get_db_version().await?;
+        let db_version = get_brc20_database().lock().await.get_db_version().await?;
         if db_version != DB_VERSION {
             return Err(format!(
                 "db_version mismatch, expected {}, got {}, please run brc20_indexer with --reset",
@@ -77,7 +73,6 @@ impl Brc20Indexer {
             )
             .into());
         }
-        self.brc20_db.init().await?;
 
         self.clear_caches().await?;
 
@@ -91,9 +86,10 @@ impl Brc20Indexer {
                 .into());
             }
 
-            self.server_handle = Some(tokio::spawn(async {
-                run_balance_server(Default::default()).await
-            }));
+            let url_clone = self.config.brc20_prog_balance_server_url.clone();
+            self.server_handle = Some(tokio::spawn(
+                async move { run_balance_server(url_clone).await },
+            ));
             // Wait for the server to start
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -108,7 +104,9 @@ impl Brc20Indexer {
             if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height {
                 self.brc20_prog_client
                     .brc20_mine(
-                        (self.config.first_brc20_prog_phase_one_height - brc20_prog_block_height - 1) as u64,
+                        (self.config.first_brc20_prog_phase_one_height
+                            - brc20_prog_block_height
+                            - 1) as u64,
                         0,
                     )
                     .await?;
@@ -124,9 +122,18 @@ impl Brc20Indexer {
             self.brc20_prog_client.brc20_clear_caches().await?;
         }
 
-        let current_block_height = self.brc20_db.get_current_block_height().await?;
+        let current_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
 
-        if self.brc20_db.check_residue(current_block_height).await? {
+        if get_brc20_database()
+            .lock()
+            .await
+            .check_residue(current_block_height)
+            .await?
+        {
             tracing::debug!(
                 "BRC20 indexer residue found at block height {}, reorging to last synced block height",
                 current_block_height
@@ -138,8 +145,14 @@ impl Brc20Indexer {
 
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         tracing::info!("Reorganizing BRC20 indexer database...");
-        self.brc20_db.reorg(block_height).await?;
-        if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_phase_one_height {
+        get_brc20_database()
+            .lock()
+            .await
+            .reorg(block_height)
+            .await?;
+        if self.config.brc20_prog_enabled
+            && block_height >= self.config.first_brc20_prog_phase_one_height
+        {
             self.brc20_prog_client
                 .brc20_reorg(block_height as u64)
                 .await?;
@@ -150,8 +163,8 @@ impl Brc20Indexer {
 
     pub async fn reset(&mut self) -> Result<(), Box<dyn Error>> {
         tracing::info!("Resetting BRC20 indexer database...");
-        self.brc20_db.reset().await?;
-        self.brc20_db.init().await?;
+        get_brc20_database().lock().await.reset().await?;
+        get_brc20_database().lock().await.init().await?;
         tracing::info!("BRC20 indexer database reset complete.");
         Ok(())
     }
@@ -164,7 +177,11 @@ impl Brc20Indexer {
 
             // Check if a new block is available
             let last_opi_block = self.main_db.get_current_block_height().await?;
-            let next_brc20_block = self.brc20_db.get_next_block_height().await?;
+            let next_brc20_block = get_brc20_database()
+                .lock()
+                .await
+                .get_next_block_height()
+                .await?;
             if next_brc20_block > last_opi_block {
                 tracing::info!("Waiting for new blocks...");
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -178,7 +195,7 @@ impl Brc20Indexer {
                     "Clearing brc20 db caches at block height {}",
                     next_brc20_block
                 );
-                self.brc20_db.clear_caches();
+                get_brc20_database().lock().await.clear_caches();
             }
             if is_synced || next_brc20_block % 1000 == 0 {
                 tracing::info!("Processing block: {}", next_brc20_block);
@@ -193,20 +210,28 @@ impl Brc20Indexer {
                 .await?;
 
             if next_brc20_block >= self.config.first_brc20_height
-                && self
-                    .brc20_db
+                && get_brc20_database()
+                    .lock()
+                    .await
                     .should_index_extras(next_brc20_block, last_opi_block)
                     .await?
             {
                 // Index extras if synced or close to sync
-                self.brc20_db.index_extra_tables(next_brc20_block).await?;
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .index_extra_tables(next_brc20_block)
+                    .await?;
             }
 
-            self.brc20_db
+            get_brc20_database()
+                .lock()
+                .await
                 .set_block_hash(next_brc20_block, &block_hash)
                 .await?;
-            let (block_events_hash, cumulative_events_hash) = self
-                .brc20_db
+            let (block_events_hash, cumulative_events_hash) = get_brc20_database()
+                .lock()
+                .await
                 .update_cumulative_hash(next_brc20_block, &block_events)
                 .await?;
 
@@ -246,7 +271,8 @@ impl Brc20Indexer {
 
         let transfers = self.main_db.get_transfers(block_height).await?;
         if transfers.is_empty() {
-            if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_phase_one_height
+            if self.config.brc20_prog_enabled
+                && block_height >= self.config.first_brc20_prog_phase_one_height
             {
                 self.brc20_prog_client
                     .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
@@ -380,7 +406,8 @@ impl Brc20Indexer {
                             base64_data,
                             &mut block_events_buffer,
                             transfer,
-                        )?;
+                        )
+                        .await?;
                     }
                 } else if operation == OPERATION_BRC20_PROG_CALL
                     || operation == OPERATION_BRC20_PROG_CALL_SHORT
@@ -436,7 +463,8 @@ impl Brc20Indexer {
                             base64_data,
                             &mut block_events_buffer,
                             transfer,
-                        )?;
+                        )
+                        .await?;
                     }
                 } else if operation == OPERATION_BRC20_PROG_TRANSACT
                     || operation == OPERATION_BRC20_PROG_TRANSACT_SHORT
@@ -494,8 +522,11 @@ impl Brc20Indexer {
                 continue;
             }
 
-            if original_ticker.as_bytes().len() != 4 && original_ticker.as_bytes().len() != 5 && 
-            (original_ticker.as_bytes().len() == 6 && block_height < self.config.first_brc20_prog_phase_one_height) {
+            if original_ticker.as_bytes().len() != 4
+                && original_ticker.as_bytes().len() != 5
+                && (original_ticker.as_bytes().len() == 6
+                    && block_height < self.config.first_brc20_prog_phase_one_height)
+            {
                 tracing::debug!(
                     "Skipping transfer {} as ticker length is not 4 or 5 bytes",
                     transfer.inscription_id
@@ -504,7 +535,9 @@ impl Brc20Indexer {
             }
 
             if protocol == PROTOCOL_BRC20_MODULE {
-                let Ok(Some(deployed_ticker)) = self.brc20_db.get_ticker(&ticker) else {
+                let Ok(Some(deployed_ticker)) =
+                    get_brc20_database().lock().await.get_ticker(&ticker)
+                else {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is not deployed",
                         transfer.inscription_id,
@@ -573,13 +606,14 @@ impl Brc20Indexer {
                         amount,
                         &mut block_events_buffer,
                         transfer,
-                    )?;
+                    )
+                    .await?;
                 }
                 continue;
             }
 
             if operation == OPERATION_DEPLOY && transfer.old_satpoint.is_none() {
-                if let Ok(Some(_)) = self.brc20_db.get_ticker(&ticker) {
+                if let Ok(Some(_)) = get_brc20_database().lock().await.get_ticker(&ticker) {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is already deployed",
                         transfer.inscription_id,
@@ -691,13 +725,16 @@ impl Brc20Indexer {
                     is_self_mint,
                     &mut block_events_buffer,
                     transfer,
-                )?;
+                )
+                .await?;
 
                 continue;
             }
 
             if operation == OPERATION_MINT && transfer.old_satpoint.is_none() {
-                let Ok(Some(mut deployed_ticker)) = self.brc20_db.get_ticker(&ticker) else {
+                let Ok(Some(mut deployed_ticker)) =
+                    get_brc20_database().lock().await.get_ticker(&ticker)
+                else {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is not deployed",
                         transfer.inscription_id,
@@ -732,7 +769,9 @@ impl Brc20Indexer {
             }
 
             if operation == OPERATION_TRANSFER {
-                let Ok(Some(mut deployed_ticker)) = self.brc20_db.get_ticker(&ticker) else {
+                let Ok(Some(mut deployed_ticker)) =
+                    get_brc20_database().lock().await.get_ticker(&ticker)
+                else {
                     tracing::debug!(
                         "Skipping transfer {} as ticker {} is not deployed",
                         transfer.inscription_id,
@@ -791,9 +830,15 @@ impl Brc20Indexer {
             continue;
         }
 
-        self.brc20_db.flush_queries_to_db().await?;
+        get_brc20_database()
+            .lock()
+            .await
+            .flush_queries_to_db()
+            .await?;
 
-        if self.config.brc20_prog_enabled && block_height >= self.config.first_brc20_prog_phase_one_height {
+        if self.config.brc20_prog_enabled
+            && block_height >= self.config.first_brc20_prog_phase_one_height
+        {
             self.brc20_prog_client
                 .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
                 .await?;
@@ -809,7 +854,11 @@ impl Brc20Indexer {
 
     pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
         tracing::debug!("Reorganizing BRC20 indexer to last synced block height...");
-        let mut last_brc20_block_height = self.brc20_db.get_current_block_height().await?;
+        let mut last_brc20_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
         let last_opi_block_height = self.main_db.get_current_block_height().await?;
         let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled {
             self.config.first_brc20_prog_phase_one_height
@@ -862,7 +911,9 @@ impl Brc20Indexer {
                     "BRC20 Prog is behind BRC20, reorging BRC20 to current BRC20 prog height: {}",
                     last_brc20_prog_block_height
                 );
-                self.brc20_db
+                get_brc20_database()
+                    .lock()
+                    .await
                     .reorg(last_brc20_prog_block_height as i32)
                     .await?;
 
@@ -882,7 +933,11 @@ impl Brc20Indexer {
                 .into());
             }
 
-            let brc20_block_hash = self.brc20_db.get_block_hash(current_brc20_height).await?;
+            let brc20_block_hash = get_brc20_database()
+                .lock()
+                .await
+                .get_block_hash(current_brc20_height)
+                .await?;
             let opi_block_hash = self.main_db.get_block_hash(current_brc20_height).await?;
             let brc20_prog_block_hash = if !self.config.brc20_prog_enabled
                 || current_brc20_height < self.config.first_brc20_prog_phase_one_height
@@ -919,7 +974,11 @@ impl Brc20Indexer {
                     // Last block is synced, no need to reorg
                     break;
                 }
-                self.brc20_db.reorg(current_brc20_height).await?;
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .reorg(current_brc20_height)
+                    .await?;
                 if self.config.brc20_prog_enabled {
                     self.brc20_prog_client
                         .brc20_reorg(current_brc20_prog_height as u64)
@@ -934,7 +993,11 @@ impl Brc20Indexer {
                     self.config.first_brc20_height
                 );
                 // We reached the first inscription height, reorg everyone to their first heights
-                self.brc20_db.reorg(self.config.first_brc20_height).await?;
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .reorg(self.config.first_brc20_height)
+                    .await?;
                 if self.config.brc20_prog_enabled {
                     self.brc20_prog_client
                         .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
@@ -949,7 +1012,7 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    pub fn brc20_prog_deploy_inscribe(
+    async fn brc20_prog_deploy_inscribe(
         &mut self,
         block_height: i32,
         data: Option<&str>,
@@ -962,7 +1025,7 @@ impl Brc20Indexer {
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -973,12 +1036,14 @@ impl Brc20Indexer {
         )?;
         block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
         Ok(())
     }
 
-    pub async fn brc20_prog_deploy_transfer(
+    async fn brc20_prog_deploy_transfer(
         &mut self,
         block_height: i32,
         data: Option<&str>,
@@ -989,8 +1054,9 @@ impl Brc20Indexer {
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
     ) -> Result<(), Box<dyn Error>> {
-        let TransferValidity::Valid = self
-            .brc20_db
+        let TransferValidity::Valid = get_brc20_database()
+            .lock()
+            .await
             .get_transfer_validity(
                 &transfer.inscription_id,
                 Brc20ProgDeployInscribeEvent::event_id(),
@@ -1004,8 +1070,9 @@ impl Brc20Indexer {
             );
             return Err("Transfer is not valid")?;
         };
-        let Some(inscribe_event) = self
-            .brc20_db
+        let Some(inscribe_event) = get_brc20_database()
+            .lock()
+            .await
             .get_event_with_type::<Brc20ProgDeployInscribeEvent>(&transfer.inscription_id)
             .await?
         else {
@@ -1022,7 +1089,9 @@ impl Brc20Indexer {
             );
             return Err("New pk script is not brc20_prog op return pk script")?;
         }
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
 
         let event = Brc20ProgDeployTransferEvent {
@@ -1032,7 +1101,7 @@ impl Brc20Indexer {
             base64_data: base64_data.map(|b| b.to_string()),
             byte_len: transfer.byte_len as i32,
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1074,8 +1143,9 @@ impl Brc20Indexer {
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
     ) -> Result<(), Box<dyn Error>> {
-        let TransferValidity::Valid = self
-            .brc20_db
+        let TransferValidity::Valid = get_brc20_database()
+            .lock()
+            .await
             .get_transfer_validity(
                 &transfer.inscription_id,
                 Brc20ProgCallInscribeEvent::event_id(),
@@ -1089,8 +1159,9 @@ impl Brc20Indexer {
             );
             return Err("Transfer is not valid")?;
         };
-        let Some(inscribe_event) = self
-            .brc20_db
+        let Some(inscribe_event) = get_brc20_database()
+            .lock()
+            .await
             .get_event_with_type::<Brc20ProgCallInscribeEvent>(&transfer.inscription_id)
             .await?
         else {
@@ -1107,7 +1178,9 @@ impl Brc20Indexer {
             );
             return Err("New pk script is not brc20_prog op return pk script")?;
         }
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
 
         let event = Brc20ProgCallTransferEvent {
@@ -1119,7 +1192,7 @@ impl Brc20Indexer {
             contract_address: contract_address.map(|s| s.to_string()),
             contract_inscription_id: contract_inscription_id.map(|s| s.to_string()),
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1155,7 +1228,7 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    fn brc20_prog_call_inscribe(
+    async fn brc20_prog_call_inscribe(
         &mut self,
         block_height: i32,
         contract_address: Option<&str>,
@@ -1174,7 +1247,7 @@ impl Brc20Indexer {
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1185,7 +1258,9 @@ impl Brc20Indexer {
         )?;
         block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
         Ok(())
     }
@@ -1203,7 +1278,7 @@ impl Brc20Indexer {
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1214,7 +1289,9 @@ impl Brc20Indexer {
         )?;
         block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
         block_events_buffer.push_str(EVENT_SEPARATOR);
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
         Ok(())
     }
@@ -1230,8 +1307,9 @@ impl Brc20Indexer {
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
     ) -> Result<u64, Box<dyn Error>> {
-        let TransferValidity::Valid = self
-            .brc20_db
+        let TransferValidity::Valid = get_brc20_database()
+            .lock()
+            .await
             .get_transfer_validity(
                 &transfer.inscription_id,
                 Brc20ProgTransactInscribeEvent::event_id(),
@@ -1245,8 +1323,9 @@ impl Brc20Indexer {
             );
             return Err("Transfer is not valid")?;
         };
-        let Some(inscribe_event) = self
-            .brc20_db
+        let Some(inscribe_event) = get_brc20_database()
+            .lock()
+            .await
             .get_event_with_type::<Brc20ProgTransactInscribeEvent>(&transfer.inscription_id)
             .await?
         else {
@@ -1263,7 +1342,9 @@ impl Brc20Indexer {
             );
             return Err("New pk script is not brc20_prog op return pk script")?;
         }
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
 
         let event = Brc20ProgTransactTransferEvent {
@@ -1273,7 +1354,7 @@ impl Brc20Indexer {
             base64_data: base64_data.map(|b| b.to_string()),
             byte_len: transfer.byte_len as i32,
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1312,8 +1393,9 @@ impl Brc20Indexer {
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
     ) -> Result<(), Box<dyn Error>> {
-        let TransferValidity::Valid = self
-            .brc20_db
+        let TransferValidity::Valid = get_brc20_database()
+            .lock()
+            .await
             .get_transfer_validity(
                 &transfer.inscription_id,
                 Brc20ProgWithdrawInscribeEvent::event_id(),
@@ -1323,14 +1405,17 @@ impl Brc20Indexer {
         else {
             return Err("Transfer is not valid")?;
         };
-        let Some(inscribe_event) = self
-            .brc20_db
+        let Some(inscribe_event) = get_brc20_database()
+            .lock()
+            .await
             .get_event_with_type::<Brc20ProgWithdrawInscribeEvent>(&transfer.inscription_id)
             .await?
         else {
             return Err("Inscribe event not found")?;
         };
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
 
         let event = Brc20ProgWithdrawTransferEvent {
@@ -1342,7 +1427,7 @@ impl Brc20Indexer {
             original_ticker: original_ticker.to_string(),
             amount,
         };
-        let event_id = self.brc20_db.add_event(
+        let event_id = get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1382,8 +1467,9 @@ impl Brc20Indexer {
                 &transfer.new_wallet
             };
 
-            let mut brc20_prog_balance = self
-                .brc20_db
+            let mut brc20_prog_balance = get_brc20_database()
+                .lock()
+                .await
                 .get_balance(&ticker.ticker, &BRC20_PROG_OP_RETURN_PKSCRIPT)
                 .await?;
 
@@ -1391,7 +1477,7 @@ impl Brc20Indexer {
             brc20_prog_balance.available_balance -= amount;
 
             // Reduce balance in the BRC20PROG module
-            self.brc20_db.update_balance(
+            get_brc20_database().lock().await.update_balance(
                 &ticker.ticker,
                 &BRC20_PROG_OP_RETURN_PKSCRIPT,
                 NO_WALLET,
@@ -1403,15 +1489,16 @@ impl Brc20Indexer {
                 event_id,
             )?;
 
-            let mut target_balance = self
-                .brc20_db
+            let mut target_balance = get_brc20_database()
+                .lock()
+                .await
                 .get_balance(&ticker.ticker, &withdraw_to_pkscript)
                 .await?;
 
             target_balance.overall_balance += amount;
             target_balance.available_balance += amount;
 
-            self.brc20_db.update_balance(
+            get_brc20_database().lock().await.update_balance(
                 &ticker.ticker,
                 withdraw_to_pkscript,
                 withdraw_to_wallet,
@@ -1426,7 +1513,7 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    fn brc20_prog_withdraw_inscribe(
+    async fn brc20_prog_withdraw_inscribe(
         &mut self,
         block_height: i32,
         ticker: &Ticker,
@@ -1442,7 +1529,7 @@ impl Brc20Indexer {
             original_ticker: original_ticker.to_string(),
             amount,
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1451,7 +1538,9 @@ impl Brc20Indexer {
             &transfer.txid,
             &event,
         )?;
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
         block_events_buffer
             .push_str(&event.get_event_str(&transfer.inscription_id, ticker.decimals));
@@ -1459,7 +1548,7 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    fn brc20_deploy_inscribe(
+    async fn brc20_deploy_inscribe(
         &mut self,
         block_height: i32,
         ticker: &str,
@@ -1481,7 +1570,7 @@ impl Brc20Indexer {
             decimals,
             is_self_mint,
         };
-        self.brc20_db.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1505,7 +1594,7 @@ impl Brc20Indexer {
             burned_supply: 0,
             deploy_block_height: block_height,
         };
-        self.brc20_db.add_ticker(&new_ticker)?;
+        get_brc20_database().lock().await.add_ticker(&new_ticker)?;
 
         Ok(())
     }
@@ -1576,7 +1665,7 @@ impl Brc20Indexer {
                 .map(|x| x.to_string())
                 .unwrap_or_default(),
         };
-        let event_id = self.brc20_db.add_event(
+        let event_id = get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1590,17 +1679,21 @@ impl Brc20Indexer {
         block_events_buffer.push_str(EVENT_SEPARATOR);
 
         deployed_ticker.remaining_supply -= amount;
-        self.brc20_db.update_ticker(deployed_ticker.clone())?;
+        get_brc20_database()
+            .lock()
+            .await
+            .update_ticker(deployed_ticker.clone())?;
 
-        let mut balance = self
-            .brc20_db
+        let mut balance = get_brc20_database()
+            .lock()
+            .await
             .get_balance(&deployed_ticker.ticker, &transfer.new_pkscript)
             .await?;
 
         balance.overall_balance += amount;
         balance.available_balance += amount;
 
-        self.brc20_db.update_balance(
+        get_brc20_database().lock().await.update_balance(
             deployed_ticker.ticker.as_str(),
             &transfer.new_pkscript,
             &transfer.new_wallet,
@@ -1621,8 +1714,9 @@ impl Brc20Indexer {
         block_events_buffer: &mut String,
         transfer: &BRC20Tx,
     ) -> Result<(), Box<dyn Error>> {
-        let mut balance = self
-            .brc20_db
+        let mut balance = get_brc20_database()
+            .lock()
+            .await
             .get_balance(&ticker.ticker, &transfer.new_pkscript)
             .await?;
 
@@ -1637,7 +1731,9 @@ impl Brc20Indexer {
             return Ok(());
         }
 
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
 
         let event = TransferInscribeEvent {
@@ -1648,7 +1744,7 @@ impl Brc20Indexer {
             amount,
         };
 
-        let event_id = self.brc20_db.add_event(
+        let event_id = get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1663,7 +1759,7 @@ impl Brc20Indexer {
 
         balance.available_balance -= amount;
 
-        self.brc20_db.update_balance(
+        get_brc20_database().lock().await.update_balance(
             &ticker.ticker,
             &transfer.new_pkscript,
             &transfer.new_wallet,
@@ -1698,8 +1794,9 @@ impl Brc20Indexer {
             transfer.sent_as_fee,
             transfer.tx_id
         );
-        let Some(inscribe_event) = self
-            .brc20_db
+        let Some(inscribe_event) = get_brc20_database()
+            .lock()
+            .await
             .get_event_with_type::<TransferInscribeEvent>(&transfer.inscription_id)
             .await?
         else {
@@ -1710,8 +1807,9 @@ impl Brc20Indexer {
             return Err("Inscribe event not found")?;
         };
 
-        let TransferValidity::Valid = self
-            .brc20_db
+        let TransferValidity::Valid = get_brc20_database()
+            .lock()
+            .await
             .get_transfer_validity(
                 &transfer.inscription_id,
                 TransferInscribeEvent::event_id(),
@@ -1745,7 +1843,7 @@ impl Brc20Indexer {
             tx_id: transfer.tx_id.clone(),
         };
 
-        let event_id = self.brc20_db.add_event(
+        let event_id = get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
             &transfer.inscription_number,
@@ -1764,14 +1862,15 @@ impl Brc20Indexer {
         // If sent to BRC20_PROG_OP_RETURN_PKSCRIPT, send to brc20_prog
         // If sent to OP_RETURN, update burned supply
         // If sent to a wallet, update the wallet balance
-        let mut source_balance = self
-            .brc20_db
+        let mut source_balance = get_brc20_database()
+            .lock()
+            .await
             .get_balance(&ticker.ticker, &inscribe_event.source_pk_script)
             .await?;
         if transfer.sent_as_fee {
             source_balance.available_balance += amount;
 
-            self.brc20_db.update_balance(
+            get_brc20_database().lock().await.update_balance(
                 &ticker.ticker,
                 &inscribe_event.source_pk_script,
                 &inscribe_event.source_wallet,
@@ -1787,7 +1886,7 @@ impl Brc20Indexer {
             {
                 // Burn tokens if BRC20 Prog is not enabled for this ticker yet
                 source_balance.overall_balance -= amount;
-                self.brc20_db.update_balance(
+                get_brc20_database().lock().await.update_balance(
                     &ticker.ticker,
                     &inscribe_event.source_pk_script,
                     &inscribe_event.source_wallet,
@@ -1797,13 +1896,16 @@ impl Brc20Indexer {
                 )?;
 
                 ticker.burned_supply += amount;
-                self.brc20_db.update_ticker(ticker.clone())?;
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .update_ticker(ticker.clone())?;
 
                 Err("Burning tokens, BRC20 Prog is not enabled yet")?;
             } else {
                 source_balance.overall_balance -= amount;
 
-                self.brc20_db.update_balance(
+                get_brc20_database().lock().await.update_balance(
                     &ticker.ticker,
                     &inscribe_event.source_pk_script,
                     &inscribe_event.source_wallet,
@@ -1812,15 +1914,16 @@ impl Brc20Indexer {
                     event_id,
                 )?;
 
-                let mut brc20_prog_balance = self
-                    .brc20_db
+                let mut brc20_prog_balance = get_brc20_database()
+                    .lock()
+                    .await
                     .get_balance(&ticker.ticker, BRC20_PROG_OP_RETURN_PKSCRIPT)
                     .await?;
 
                 brc20_prog_balance.available_balance += amount;
                 brc20_prog_balance.overall_balance += amount;
 
-                self.brc20_db.update_balance(
+                get_brc20_database().lock().await.update_balance(
                     &ticker.ticker,
                     BRC20_PROG_OP_RETURN_PKSCRIPT,
                     NO_WALLET,
@@ -1841,14 +1944,15 @@ impl Brc20Indexer {
                     .await?;
             }
         } else if transfer.new_pkscript == OP_RETURN {
-            let mut source_balance = self
-                .brc20_db
+            let mut source_balance = get_brc20_database()
+                .lock()
+                .await
                 .get_balance(&ticker.ticker, &inscribe_event.source_pk_script)
                 .await?;
 
             source_balance.overall_balance -= amount;
 
-            self.brc20_db.update_balance(
+            get_brc20_database().lock().await.update_balance(
                 &ticker.ticker,
                 &inscribe_event.source_pk_script,
                 &inscribe_event.source_wallet,
@@ -1859,16 +1963,20 @@ impl Brc20Indexer {
 
             // Update burned supply
             ticker.burned_supply += amount;
-            self.brc20_db.update_ticker(ticker.clone())?;
+            get_brc20_database()
+                .lock()
+                .await
+                .update_ticker(ticker.clone())?;
         } else {
-            let mut source_balance = self
-                .brc20_db
+            let mut source_balance = get_brc20_database()
+                .lock()
+                .await
                 .get_balance(&ticker.ticker, &inscribe_event.source_pk_script)
                 .await?;
 
             source_balance.overall_balance -= amount;
 
-            self.brc20_db.update_balance(
+            get_brc20_database().lock().await.update_balance(
                 &ticker.ticker,
                 &inscribe_event.source_pk_script,
                 &inscribe_event.source_wallet,
@@ -1877,15 +1985,16 @@ impl Brc20Indexer {
                 event_id,
             )?;
 
-            let mut target_balance = self
-                .brc20_db
+            let mut target_balance = get_brc20_database()
+                .lock()
+                .await
                 .get_balance(&ticker.ticker, &transfer.new_pkscript)
                 .await?;
 
             target_balance.available_balance += amount;
             target_balance.overall_balance += amount;
 
-            self.brc20_db.update_balance(
+            get_brc20_database().lock().await.update_balance(
                 &ticker.ticker,
                 &transfer.new_pkscript,
                 &transfer.new_wallet,
@@ -1894,7 +2003,9 @@ impl Brc20Indexer {
                 -event_id, // Negate to create a unique event ID
             )?;
         }
-        self.brc20_db
+        get_brc20_database()
+            .lock()
+            .await
             .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
 
         Ok(())

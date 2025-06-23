@@ -1,12 +1,14 @@
 use core::panic;
-use std::{collections::HashMap, error::Error, time::Instant, vec};
+use std::{collections::HashMap, error::Error, sync::Arc, time::Instant, vec};
 
 use brc20_index::types::events;
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
+use once_cell::sync::OnceCell;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
+use tokio::sync::Mutex;
 
 use crate::{
     config::{Brc20IndexerConfig, EVENT_SEPARATOR},
@@ -78,6 +80,21 @@ pub struct BalanceUpdateData {
     pub available_balance: u128,
     pub block_height: i32,
     pub event_id: i64,
+}
+
+pub static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
+
+pub fn get_brc20_database() -> Arc<Mutex<Brc20Database>> {
+    BRC20_DATABASE
+        .get()
+        .cloned()
+        .expect("Brc20Database not initialized")
+}
+
+pub fn set_brc20_database(database: Arc<Mutex<Brc20Database>>) {
+    BRC20_DATABASE
+        .set(database)
+        .expect("Brc20Database already initialized");
 }
 
 #[derive(Debug, Clone)]

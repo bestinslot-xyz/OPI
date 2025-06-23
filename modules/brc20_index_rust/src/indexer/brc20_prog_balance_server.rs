@@ -3,23 +3,19 @@ use std::error::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use crate::config::Brc20IndexerConfig;
-use crate::database::Brc20Database;
+use crate::database::get_brc20_database;
 
-// Use tokio to run the balance server
 pub async fn run_balance_server(
-    config: Brc20IndexerConfig,
+    balance_server_url: String,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing::info!(
         "BRC20 Prog Balance Server running on {}",
-        config.brc20_prog_balance_server_url
+        balance_server_url
     );
-    let listener = TcpListener::bind(config.brc20_prog_balance_server_url.clone()).await?;
-    let database = Brc20Database::new(&config);
+    let listener = TcpListener::bind(balance_server_url).await?;
 
     loop {
         let (mut socket, _) = listener.accept().await?;
-        let database = database.clone();
         tokio::spawn(async move {
             let mut buffer = [0; 1024];
             // Read get parameters pkscript and ticker from the socket
@@ -73,7 +69,9 @@ pub async fn run_balance_server(
                     }
 
                     // Call the balance function
-                    let Ok(balance) = database
+                    let Ok(balance) = get_brc20_database()
+                        .lock()
+                        .await
                         .get_balance_nonmutable(ticker.as_str(), pkscript)
                         .await
                     else {

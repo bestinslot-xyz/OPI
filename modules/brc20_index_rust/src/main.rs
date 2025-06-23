@@ -6,10 +6,17 @@ mod types;
 use std::{
     error::Error,
     io::{self, Write},
+    sync::Arc,
 };
 
 use indexer::Brc20Indexer;
+use tokio::sync::Mutex;
 use tracing::Level;
+
+use crate::{
+    config::Brc20IndexerConfig,
+    database::{Brc20Database, set_brc20_database},
+};
 
 struct Args {
     is_setup: bool,
@@ -126,7 +133,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // TODO - Implement setup logic
         return Ok(());
     }
-    let mut brc20_indexer = Brc20Indexer::new(Default::default());
+    let config = Brc20IndexerConfig::default();
+    set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
+    let mut brc20_indexer = Brc20Indexer::new(config);
     if let Some(reorg_height) = args.reorg_height {
         if confirm(
             "Are you sure you want to reorg the indexer? This will reset the state to the specified height.",

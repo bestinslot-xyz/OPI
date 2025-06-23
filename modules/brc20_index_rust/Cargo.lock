@@ -1010,6 +1010,7 @@ dependencies = [
  "jsonrpsee",
  "lazy_static",
  "num-traits",
+ "once_cell",
  "reqwest",
  "rust-embed",
  "serde",
