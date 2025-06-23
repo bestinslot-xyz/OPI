@@ -97,7 +97,7 @@ pub fn set_brc20_database(database: Arc<Mutex<Brc20Database>>) {
         .expect("Brc20Database already initialized");
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Brc20Database {
     pub client: Pool<Postgres>,
     pub first_inscription_height: i32,
