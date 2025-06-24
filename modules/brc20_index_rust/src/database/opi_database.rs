@@ -11,6 +11,7 @@ impl OpiDatabase {
     pub fn new(url: String) -> Self {
         OpiDatabase {
             client: HttpClient::builder()
+                .max_response_size(100 * 1024 * 1024) // 100 MB
                 .build(url)
                 .expect("Failed to create HTTP client"),
         }
