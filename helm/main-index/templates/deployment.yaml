@@ -47,34 +47,43 @@ spec:
           image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - "--bitcoin-rpc-url"
-            - "$(BITCOIN_RPC_URL)"
-            - "--bitcoin-rpc-username"
-            - "$(BITCOIN_RPC_USERNAME)"
-            - "--bitcoin-rpc-password"
-            - "$(BITCOIN_RPC_PASSWORD)"
-            - "--data-dir"
-            - "$(DATA_DIR)"
             - "index"
             - "run"
           env:
-          - name: BITCOIN_RPC_USERNAME
+          - name: RUST_LOG
+            value: "trace"
+          - name: ORD_BITCOIN_RPC_USERNAME
             valueFrom:
               configMapKeyRef:
                 name: bis-config
                 key: rpc.user
-          - name: BITCOIN_RPC_PASSWORD
+          - name: ORD_BITCOIN_RPC_PASSWORD
             valueFrom:
               secretKeyRef:
                 name: rpc-credentials
                 key: password
-          - name: BITCOIN_RPC_URL
+          - name: ORD_BITCOIN_RPC_URL
             valueFrom:
               configMapKeyRef:
                 name: bis-config
                 key: rpc.host
-          - name: DATA_DIR
+          - name: ORD_CHAIN
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: networkType
+          - name: ORD_DATA_DIR
             value: "/ord"
+          - name: ORD_SAVEPOINT_INTERVAL
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: savepointInterval
+          - name: ORD_MAX_SAVEPOINTS
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: maxSavepoints
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
@@ -84,8 +93,13 @@ spec:
           image: "{{ .Values.dbReaderImage.registry }}/{{ .Values.dbReaderImage.repository }}:{{ .Values.dbReaderImage.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.dbReaderImage.pullPolicy }}
           env:
+            - name: BITCOIN_NETWORK
+              valueFrom:
+                configMapKeyRef:
+                  name: bis-config
+                  key: networkType
             - name: INDEX_PATH
-              value: "/ord"
+              value: "/ord/$(BITCOIN_NETWORK)/dbs"
           resources:
             {{- toYaml .Values.dbReaderResources | nindent 12 }}
           volumeMounts:
