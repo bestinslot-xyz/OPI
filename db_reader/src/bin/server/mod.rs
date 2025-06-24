@@ -824,7 +824,7 @@ pub async fn start_rpc_server(db: &Arc<DB>, api_url: &Option<String>) -> Result<
     let module = RpcServer { db: db.clone() }.into_rpc();
 
     let server_config = jsonrpsee::server::ServerConfig::builder()
-        .max_request_body_size(1024 * 1024 * 10) // 10 MB
+        .max_request_body_size(1024 * 1024 * 100) // 100 MB
         .max_response_body_size(1024 * 1024 * 1024) // 1 GB
         .build();
 
