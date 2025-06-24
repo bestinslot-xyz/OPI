@@ -141,23 +141,41 @@ python3 -m pip install json5 stdiomask;
 
 **Setup .env files and DBs**
 
-Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
+Run `reset_init.py` in each module folder to initialise .env file, databases and set other necessary files.
 
 # Run
 
-**Main Meta-Protocol Indexer**
+First, run ordinals indexer to fill the inscription database:
+
+**Main Meta-Protocol Indexer / Ord and DB Server**
 ```bash
-cd modules/main_index;
-node index.js;
+cd ord/target/release;
+./ord --data-dir . index run
 ```
+
+> [!NOTE]
+> For ord to reach the bitcoin rpc server correctly, pass `--bitcoin-rpc-url`, `--bitcoin-rpc-username` and `--bitcoin-rpc-password` parameters before `index run`. To run on signet, add `--signet` as well.
+
+To set up the server for the inscription database in a separate process, run:
+
+```bash
+cd db_reader;
+cargo build --release;
+cd target/release;
+./db_reader
+```
+
+> [!NOTE]
+> `db_reader` accepts a `--db-path` parameter that can be used to pass the database path, if you used a different `--data-dir` when running ord, use the same directory. If you're running on signet, add `--signet` as well.
 
 **BRC-20 Indexer**
 
-If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running BRC-20 indexer.
 
 ```bash
-cd modules/brc20_index;
-python3 brc20_index.py;
+cd modules/brc20_index_rust;
+cargo build --release;
+./target/release/brc20-index;
 ```
 
 **BRC-20 API**

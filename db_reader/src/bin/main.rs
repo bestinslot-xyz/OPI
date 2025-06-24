@@ -57,7 +57,9 @@ fn parse_args() -> Args {
                 println!("  --testnet4 Use the Testnet4 network.");
                 println!("  --regtest  Use the Regtest network.");
                 println!("  --db-path <path>  Specify the path to the database.");
-                println!("  --api-url <url>    Specify the API Host and Port to bind to (default: 127.0.0.1:11030).");
+                println!(
+                    "  --api-url <url>    Specify the API Host and Port to bind to (default: 127.0.0.1:11030)."
+                );
                 println!("  -h, --help  Show this help message.");
                 std::process::exit(0);
             }
@@ -82,7 +84,15 @@ async fn main() {
     let args = parse_args();
 
     let index_path = if args.db_path.is_some() {
-        args.db_path.unwrap()
+        args.db_path.unwrap().join(PathBuf::from(
+            match args.chain {
+                Chain::Mainnet => "/mainnet".to_string(),
+                Chain::Testnet => "/testnet".to_string(),
+                Chain::Testnet4 => "/testnet4".to_string(),
+                Chain::Signet => "/signet".to_string(),
+                Chain::Regtest => "/regtest".to_string(),
+            } + "dbs",
+        ))
     } else {
         match args.chain {
             Chain::Mainnet => PathBuf::from("../../../ord/target/release/dbs"),
