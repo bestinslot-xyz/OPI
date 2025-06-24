@@ -524,14 +524,18 @@ impl Brc20Indexer {
                 continue;
             }
 
-            if original_ticker.as_bytes().len() != 4
-                && original_ticker.as_bytes().len() != 5
-                && (original_ticker.as_bytes().len() == 6
-                    && block_height < self.config.first_brc20_prog_phase_one_height)
+            let ticker_length = original_ticker.as_bytes().len();
+
+            if !(ticker_length == 4
+                || ticker_length == 5
+                || (ticker_length == 6
+                    && block_height >= self.config.first_brc20_prog_phase_one_height))
             {
                 tracing::debug!(
-                    "Skipping transfer {} as ticker length is not 4 or 5 bytes",
-                    transfer.inscription_id
+                    "Skipping transfer {} as ticker length {} is not valid at block height {}",
+                    transfer.inscription_id,
+                    ticker_length,
+                    block_height
                 );
                 continue;
             }
