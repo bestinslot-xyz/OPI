@@ -65,6 +65,8 @@ impl Brc20Indexer {
     }
 
     async fn init(&mut self) -> Result<(), Box<dyn Error>> {
+        get_brc20_database().lock().await.init().await?;
+
         let db_version = get_brc20_database().lock().await.get_db_version().await?;
         if db_version != DB_VERSION {
             return Err(format!(
