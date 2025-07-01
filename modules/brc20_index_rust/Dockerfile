@@ -16,8 +16,11 @@ COPY Cargo.toml Cargo.lock ./
 # Copy the source code
 COPY src ./src
 
-# Build the application in release mode
-# Create a dummy .env file if your application expects one during build, otherwise remove this line
+# Copy .sqlx directory for offline mode
+COPY .sqlx ./.sqlx
+
+# Build the application in release mode with offline sqlx
+ENV SQLX_OFFLINE=true
 RUN cargo build --release
 
 # Stage 2: Create a small final image
