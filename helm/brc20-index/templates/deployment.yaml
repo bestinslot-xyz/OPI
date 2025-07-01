@@ -54,28 +54,6 @@ spec:
               secretKeyRef:
                 name: metadb-app
                 key: password
-          - name: DB_METAPROTOCOL_USER
-            valueFrom:
-              configMapKeyRef:
-                name: bis-config
-                key: metaDb.user
-          - name: DB_METAPROTOCOL_HOST
-            valueFrom:
-              configMapKeyRef:
-                name: bis-config
-                key: metaDb.host
-          - name: DB_METAPROTOCOL_PORT
-            value: "5432"
-          - name: DB_METAPROTOCOL_DATABASE
-            valueFrom:
-              configMapKeyRef:
-                name: bis-config
-                key: metaDb.database
-          - name: DB_METAPROTOCOL_PASSWD
-            valueFrom:
-              secretKeyRef:
-                name: metadb-app
-                key: password
           - name: REPORT_TO_INDEXER
             value: "false"
           - name: REPORT_URL

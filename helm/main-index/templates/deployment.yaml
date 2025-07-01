@@ -50,8 +50,6 @@ spec:
             - "index"
             - "run"
           env:
-          - name: RUST_LOG
-            value: "trace"
           - name: ORD_BITCOIN_RPC_USERNAME
             valueFrom:
               configMapKeyRef:

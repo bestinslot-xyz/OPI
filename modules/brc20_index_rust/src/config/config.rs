@@ -49,6 +49,9 @@ pub const DB_PASSWORD_DEFAULT: &str = "";
 pub const DB_DATABASE_KEY: &str = "DB_DATABASE";
 pub const DB_DATABASE_DEFAULT: &str = "postgres";
 
+pub const META_DB_URL_KEY: &str = "META_DB_URL";
+pub const META_DB_URL_DEFAULT: &str = "http://localhost:11030";
+
 pub const DB_SSL_KEY: &str = "DB_SSL";
 pub const DB_SSL_DEFAULT: &str = "false";
 
@@ -150,6 +153,8 @@ pub struct Brc20IndexerConfig {
     pub db_database: String,
     pub db_ssl: bool,
 
+    pub meta_db_url: String,
+
     pub report_to_indexer: bool,
     pub report_url: String,
     pub report_retries: i32,
@@ -226,6 +231,9 @@ impl Default for Brc20IndexerConfig {
 
             brc20_prog_balance_server_url: std::env::var(BRC20_PROG_BALANCE_SERVER_URL_KEY)
                 .unwrap_or_else(|_| BRC20_PROG_BALANCE_SERVER_URL_DEFAULT.to_string()),
+
+            meta_db_url: std::env::var(META_DB_URL_KEY)
+                .unwrap_or_else(|_| META_DB_URL_DEFAULT.to_string()),
         }
     }
 }

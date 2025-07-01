@@ -1,19 +1,36 @@
-# Python tabanlı bir imaj kullan
-FROM python:3.11-slim
+# Stage 1: Build the Rust application
+FROM rust:1.86.0-bookworm AS builder
 
-# Çalışma dizinini ayarla
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    clang \
+    libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory
+WORKDIR /usr/src/app
+COPY db_reader /usr/db_reader
+# Copy the Cargo.toml and Cargo.lock files
+COPY Cargo.toml Cargo.lock ./
+
+# Copy the source code
+COPY src ./src
+
+# Build the application in release mode
+# Create a dummy .env file if your application expects one during build, otherwise remove this line
+RUN cargo build --release
+
+# Stage 2: Create a small final image
+FROM gcr.io/distroless/cc-debian12
+
+# Set the working directory
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    libpq-dev gcc python3-dev build-essential --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/*
+# Copy the compiled binary from the builder stage
+COPY --from=builder /usr/src/app/target/release/brc20-index .
 
-# Gereksinim dosyasını kopyala ve bağımlılıkları yükle
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Expose any necessary ports (if your application listens on a port)
+# EXAMPLE: EXPOSE 8080
 
-# Uygulama kodunu kopyala
-COPY . .
-
-# Uygulamayı çalıştır
-CMD ["python", "brc20_index.py"]
+# Command to run the application
+ENTRYPOINT ["brc20-index"]
