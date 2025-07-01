@@ -45,22 +45,24 @@ echo "Initializing database schema..."
 docker exec -i postgres-brc20-build psql -U postgres -d brc20_index < src/database/sql/db_init.sql
 
 # Get the host IP for database connection
-# For buildx in container mode, we need the host gateway
-HOST_IP="host.docker.internal"
-if [[ "$OSTYPE" != "darwin"* ]]; then
-    # For Linux, use host-gateway which buildx understands
-    HOST_IP="host-gateway"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - get the host IP that Docker Desktop uses
+    HOST_IP=$(docker run --rm alpine getent hosts host.docker.internal | awk '{print $1}')
+else
+    # Linux - get the docker0 interface IP
+    HOST_IP=$(ip -4 addr show docker0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "172.17.0.1")
 fi
+
+echo "Using host IP: ${HOST_IP}"
 
 # Build the Docker image with buildx
 echo "Building Docker image for linux/amd64..."
 docker buildx build \
     --platform linux/amd64 \
     --build-arg DATABASE_URL="postgres://postgres:postgres@${HOST_IP}:54322/brc20_index" \
-    --add-host=host.docker.internal:host-gateway \
-    --add-host=host-gateway:host-gateway \
+    --add-host=postgres-host:${HOST_IP} \
     -t brc20-index \
-    --push \
+    --load \
     .
 
 # Clean up PostgreSQL container
