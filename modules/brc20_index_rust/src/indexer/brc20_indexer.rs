@@ -529,6 +529,7 @@ impl Brc20Indexer {
             if !(ticker_length == 4
                 || ticker_length == 5
                 || (ticker_length == 6
+                    && is_alphanumerical_or_dash(&ticker)
                     && block_height >= self.config.first_brc20_prog_phase_one_height))
             {
                 tracing::debug!(
@@ -2016,6 +2017,12 @@ impl Brc20Indexer {
 
         Ok(())
     }
+}
+
+fn is_alphanumerical_or_dash(ticker: &str) -> bool {
+    ticker
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 fn parse_hex_number(eth_number: &str) -> Result<i32, Box<dyn Error>> {
