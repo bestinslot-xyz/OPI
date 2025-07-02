@@ -1910,7 +1910,7 @@ impl Brc20Indexer {
             )?;
         } else if transfer.new_pkscript == BRC20_PROG_OP_RETURN_PKSCRIPT {
             if (block_height < self.config.first_brc20_prog_all_tickers_height
-                && ticker_length < 6)
+                && original_ticker.as_bytes().len() < 6)
                 || block_height < self.config.first_brc20_prog_phase_one_height
                 || !self.config.brc20_prog_enabled
             {
