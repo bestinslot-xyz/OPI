@@ -142,7 +142,7 @@ pub const SELF_MINT_ENABLE_HEIGHT: i32 = 837090;
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 6;
 pub const EVENT_HASH_VERSION: i32 = 3;
-pub const BRC20_PROG_VERSION: &str = "0.8.2";
+pub const BRC20_PROG_VERSION: &str = "0.9.0";
 pub const INDEXER_VERSION: &str = "opi-brc20-full-node v0.5.0";
 
 fn get_bitcoin_network_type(network_type: &str) -> Network {
