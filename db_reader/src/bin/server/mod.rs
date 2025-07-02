@@ -222,6 +222,7 @@ struct TransferInfo {
 }
 
 fn get_transfer_info_from_raw(raw: Vec<u8>) -> TransferInfo {
+    println!("Raw transfer data: {:?}", raw);
     let inscription_id = load_inscription_id(&raw[0..36]).unwrap();
     let old_satpoint = load_satpoint(&raw[36..80]);
     let new_satpoint = load_satpoint(&raw[80..124]).unwrap();
