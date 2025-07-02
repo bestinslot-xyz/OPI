@@ -27,8 +27,8 @@ FROM gcr.io/distroless/cc-debian12
 # Set the working directory
 WORKDIR /app
 
-# Copy the compiled binary from the builder stage
-COPY --from=builder /usr/src/app/target/release/brc20-index .
+# Copy the compiled binary from the builder stage to a location in PATH
+COPY --from=builder /usr/src/app/target/release/brc20-index /usr/local/bin/brc20-index
 
 # Expose any necessary ports (if your application listens on a port)
 # EXAMPLE: EXPOSE 8080
