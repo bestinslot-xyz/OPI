@@ -680,7 +680,7 @@ impl Brc20Indexer {
                 let mut limit_per_mint = limit_per_mint_res?;
 
                 let mut is_self_mint = false;
-                if original_ticker.as_bytes().len() == 5 {
+                if ticker_length == 5 {
                     if block_height < SELF_MINT_ENABLE_HEIGHT {
                         tracing::debug!(
                             "Skipping transfer {} as self mint is not enabled yet",
@@ -710,6 +710,29 @@ impl Brc20Indexer {
                         max_supply = MAX_AMOUNT;
                         if limit_per_mint == 0 {
                             limit_per_mint = MAX_AMOUNT;
+                        }
+                    }
+                } else if ticker_length == 6 {
+                    if block_height < self.config.first_brc20_prog_phase_one_height {
+                        tracing::debug!(
+                            "Skipping transfer {} as 6-byte tickers are not enabled yet",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+                    if let Some(self_mint) =
+                        transfer.content.get(SELF_MINT_KEY).and_then(|s| s.as_str())
+                    {
+                        is_self_mint = self_mint == "true";
+                    } else {
+                        is_self_mint = false;
+                    }
+                    if is_self_mint {
+                        if max_supply == 0 {
+                            max_supply = MAX_AMOUNT;
+                            if limit_per_mint == 0 {
+                                limit_per_mint = MAX_AMOUNT;
+                            }
                         }
                     }
                 }
@@ -1887,7 +1910,7 @@ impl Brc20Indexer {
             )?;
         } else if transfer.new_pkscript == BRC20_PROG_OP_RETURN_PKSCRIPT {
             if (block_height < self.config.first_brc20_prog_all_tickers_height
-                && original_ticker.as_bytes().len() < 6)
+                && ticker_length < 6)
                 || block_height < self.config.first_brc20_prog_phase_one_height
                 || !self.config.brc20_prog_enabled
             {
