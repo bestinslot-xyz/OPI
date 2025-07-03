@@ -1,4 +1,3 @@
-#[tokio::main]
-async fn main() {
+fn main() {
   ord::main();
 }

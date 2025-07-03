@@ -17,6 +17,7 @@ use {
     ColumnFamilyDescriptor, IteratorMode, Options, DB,
   },
   std::collections::HashMap,
+  tokio::runtime::Runtime,
 };
 
 pub use updater::get_tx_limits;
@@ -232,7 +233,7 @@ impl Index {
 
     let chain = settings.chain();
     let db_path = path.clone();
-    tokio::spawn(async move {
+    Runtime::new()?.block_on(async move {
       println!("Starting RPC server for index at {}", db_path.display());
       start_rpc_server(Config {
         network: match chain {
