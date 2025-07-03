@@ -1,5 +1,11 @@
 use core::panic;
-use std::{collections::HashMap, error::Error, sync::Arc, time::Instant, vec};
+use std::{
+    collections::HashMap,
+    error::Error,
+    sync::Arc,
+    time::{Duration, Instant},
+    vec,
+};
 
 use brc20_index::types::events;
 use lazy_static::lazy_static;
@@ -122,6 +128,7 @@ impl Brc20Database {
         };
         let client = PgPoolOptions::new()
             .max_connections(5)
+            .acquire_slow_threshold(Duration::from_secs(10))
             .connect_lazy(&format!(
                 "postgres://{}:{}@{}:{}/{}{}",
                 config
