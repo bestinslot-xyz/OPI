@@ -132,6 +132,7 @@ pub struct Index {
   unrecoverably_reorged: AtomicBool,
   write_options: rocksdb::WriteOptions,
   pub(crate) path: PathBuf,
+  _runtime: Runtime,
 }
 
 impl Index {
@@ -233,7 +234,8 @@ impl Index {
 
     let chain = settings.chain();
     let db_path = path.clone();
-    Runtime::new()?.block_on(async move {
+    let runtime = Runtime::new()?;
+    runtime.spawn(async move {
       println!("Starting RPC server for index at {}", db_path.display());
       start_rpc_server(Config {
         network: match chain {
@@ -260,6 +262,7 @@ impl Index {
       unrecoverably_reorged: AtomicBool::new(false),
       path,
       write_options,
+      _runtime: runtime,
     })
   }
 
