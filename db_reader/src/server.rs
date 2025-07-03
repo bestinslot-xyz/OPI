@@ -2,23 +2,29 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-use db_reader::{
+use crate::{
     BRC20Tx, BitmapInscription, BlockInfo, Brc20ApiServer, IndexTimes, InscriptionEntry,
     InscriptionInfo, InscriptionInformation, SNSInscription, UTXOInfo,
 };
+use bitcoin::Network::{Bitcoin, Regtest, Signet, Testnet, Testnet4};
 use hyper::Method;
 use jsonrpsee::core::middleware::RpcServiceBuilder;
 use jsonrpsee::core::{RpcResult, async_trait};
-use jsonrpsee::server::{Server, ServerHandle};
+use jsonrpsee::server::Server;
 use jsonrpsee::types::{ErrorObject, ErrorObjectOwned};
-use rocksdb::{DB, IteratorMode};
+use rocksdb::{ColumnFamilyDescriptor, DB, IteratorMode, Options};
+use signal_hook::consts::SIGINT;
+use signal_hook::iterator::Signals;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::Config;
+
 struct RpcServer {
-    db: Arc<DB>,
+    db: Arc<Mutex<DB>>,
 }
 
 fn wrap_rpc_error(error: Box<dyn Error>) -> ErrorObject<'static> {
@@ -390,15 +396,15 @@ fn get_outpoint_key(outpoint: &str) -> Vec<u8> {
 #[async_trait]
 impl Brc20ApiServer for RpcServer {
     async fn get_block_index_times(&self, block_height: u32) -> RpcResult<Option<IndexTimes>> {
-        let ord_index_stats = self.db.cf_handle("ord_index_stats").ok_or_else(|| {
+        let db = self.db.lock().expect("DB Error");
+        let ord_index_stats = db.cf_handle("ord_index_stats").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_index_stats' not found",
             )))
         })?;
 
-        Ok(self
-            .db
+        Ok(db
             .get_cf(ord_index_stats, &block_height.to_be_bytes())
             .map(|time| get_times_from_raw(time))
             .unwrap())
@@ -408,13 +414,14 @@ impl Brc20ApiServer for RpcServer {
         let mut inscription_info_map = std::collections::HashMap::new();
         let mut invalid_brc20_map = std::collections::HashMap::new();
 
-        let ord_transfers = self.db.cf_handle("ord_transfers").ok_or_else(|| {
+        let db = self.db.lock().expect("DB Error");
+        let ord_transfers = db.cf_handle("ord_transfers").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_transfers' not found",
             )))
         })?;
-        let ord_inscription_info = self.db.cf_handle("ord_inscription_info").ok_or_else(|| {
+        let ord_inscription_info = db.cf_handle("ord_inscription_info").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_inscription_info' not found",
@@ -424,7 +431,7 @@ impl Brc20ApiServer for RpcServer {
         // scan ord_transfers from block_height.0u32 to (block_height+1).0u32
         let start_key = block_height.to_be_bytes();
         let end_key = (block_height + 1).to_be_bytes();
-        let mut iter = self.db.raw_iterator_cf(ord_transfers);
+        let mut iter = db.raw_iterator_cf(ord_transfers);
         iter.seek(start_key);
         let mut txes = Vec::new();
         while iter.valid() && compare_be_arrays(iter.key().unwrap(), &end_key) == Ordering::Less {
@@ -441,8 +448,7 @@ impl Brc20ApiServer for RpcServer {
                 inscription_info_map.get(&inscription_id).unwrap()
             } else {
                 let inscription_id_key = get_inscription_id_key(&inscription_id);
-                let raw_info = self
-                    .db
+                let raw_info = db
                     .get_cf(ord_inscription_info, &inscription_id_key)
                     .unwrap()
                     .unwrap();
@@ -489,16 +495,16 @@ impl Brc20ApiServer for RpcServer {
     }
 
     async fn get_block_hash_and_ts(&self, block_height: u32) -> RpcResult<Option<BlockInfo>> {
-        let height_to_block_header =
-            self.db.cf_handle("height_to_block_header").ok_or_else(|| {
-                wrap_rpc_error(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Column family 'height_to_block_header' not found",
-                )))
-            })?;
+        let db = self.db.lock().expect("DB Error");
+        let height_to_block_header = db.cf_handle("height_to_block_header").ok_or_else(|| {
+            wrap_rpc_error(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Column family 'height_to_block_header' not found",
+            )))
+        })?;
 
         let key = block_height.to_be_bytes();
-        if let Some(raw) = self.db.get_cf(height_to_block_header, &key).unwrap() {
+        if let Some(raw) = db.get_cf(height_to_block_header, &key).unwrap() {
             let header: bitcoin::block::Header =
                 bitcoin::consensus::encode::deserialize(&raw).unwrap();
             let hash = header.block_hash().to_string();
@@ -513,16 +519,15 @@ impl Brc20ApiServer for RpcServer {
     }
 
     async fn get_latest_block_height(&self) -> RpcResult<Option<u32>> {
-        let height_to_block_header =
-            self.db.cf_handle("height_to_block_header").ok_or_else(|| {
-                wrap_rpc_error(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Column family 'height_to_block_header' not found",
-                )))
-            })?;
+        let db = self.db.lock().expect("DB Error");
+        let height_to_block_header = db.cf_handle("height_to_block_header").ok_or_else(|| {
+            wrap_rpc_error(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Column family 'height_to_block_header' not found",
+            )))
+        })?;
 
-        let block_height = self
-            .db
+        let block_height = db
             .iterator_cf(height_to_block_header, IteratorMode::End)
             .next()
             .transpose()
@@ -536,23 +541,22 @@ impl Brc20ApiServer for RpcServer {
         &self,
         inscription_id: String,
     ) -> RpcResult<Option<InscriptionInformation>> {
-        let ord_inscription_info = self.db.cf_handle("ord_inscription_info").ok_or_else(|| {
+        let db = self.db.lock().expect("DB Error");
+        let ord_inscription_info = db.cf_handle("ord_inscription_info").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_inscription_info' not found",
             )))
         })?;
-        let inscription_id_to_sequence_number = self
-            .db
+        let inscription_id_to_sequence_number = db
             .cf_handle("inscription_id_to_sequence_number")
             .ok_or_else(|| {
-                wrap_rpc_error(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Column family 'inscription_id_to_sequence_number' not found",
-                )))
-            })?;
-        let sequence_number_to_inscription_entry = self
-            .db
+            wrap_rpc_error(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Column family 'inscription_id_to_sequence_number' not found",
+            )))
+        })?;
+        let sequence_number_to_inscription_entry = db
             .cf_handle("sequence_number_to_inscription_entry")
             .ok_or_else(|| {
                 wrap_rpc_error(Box::new(std::io::Error::new(
@@ -563,8 +567,7 @@ impl Brc20ApiServer for RpcServer {
 
         let inscription_id_key = get_inscription_id_key(&inscription_id);
         // Check if the inscription_id exists in the inscription_id_to_sequence_number column family
-        let sequence_number_raw = self
-            .db
+        let sequence_number_raw = db
             .get_cf(inscription_id_to_sequence_number, &inscription_id_key)
             .unwrap();
         if sequence_number_raw.is_none() {
@@ -576,6 +579,8 @@ impl Brc20ApiServer for RpcServer {
         // Now check if the sequence_number exists in the sequence_number_to_inscription_entry column family
         let entry_raw = self
             .db
+            .lock()
+            .expect("DB Error")
             .get_cf(
                 sequence_number_to_inscription_entry,
                 &sequence_number.to_be_bytes(),
@@ -587,8 +592,7 @@ impl Brc20ApiServer for RpcServer {
         // If both checks passed, we can retrieve the inscription info
         let entry = get_inscription_entry_from_raw(entry_raw.unwrap().to_vec());
 
-        if let Some(raw) = self
-            .db
+        if let Some(raw) = db
             .get_cf(ord_inscription_info, &inscription_id_key)
             .unwrap()
         {
@@ -601,21 +605,17 @@ impl Brc20ApiServer for RpcServer {
     }
 
     async fn get_utxo_info(&self, outpoint: String) -> RpcResult<Option<UTXOInfo>> {
-        let outpoint_to_utxo_entry =
-            self.db.cf_handle("outpoint_to_utxo_entry").ok_or_else(|| {
-                wrap_rpc_error(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Column family 'outpoint_to_utxo_entry' not found",
-                )))
-            })?;
+        let db = self.db.lock().expect("DB Error");
+        let outpoint_to_utxo_entry = db.cf_handle("outpoint_to_utxo_entry").ok_or_else(|| {
+            wrap_rpc_error(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Column family 'outpoint_to_utxo_entry' not found",
+            )))
+        })?;
 
         let outpoint_key = get_outpoint_key(&outpoint);
 
-        if let Some(raw) = self
-            .db
-            .get_cf(outpoint_to_utxo_entry, &outpoint_key)
-            .unwrap()
-        {
+        if let Some(raw) = db.get_cf(outpoint_to_utxo_entry, &outpoint_key).unwrap() {
             let utxo_info = get_utxo_entry_from_raw(raw.to_vec());
             Ok(Some(utxo_info))
         } else {
@@ -627,14 +627,14 @@ impl Brc20ApiServer for RpcServer {
         &self,
         sequence_number: u32,
     ) -> RpcResult<Option<InscriptionInformation>> {
-        let ord_inscription_info = self.db.cf_handle("ord_inscription_info").ok_or_else(|| {
+        let db = self.db.lock().expect("DB Error");
+        let ord_inscription_info = db.cf_handle("ord_inscription_info").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_inscription_info' not found",
             )))
         })?;
-        let sequence_number_to_inscription_entry = self
-            .db
+        let sequence_number_to_inscription_entry = db
             .cf_handle("sequence_number_to_inscription_entry")
             .ok_or_else(|| {
                 wrap_rpc_error(Box::new(std::io::Error::new(
@@ -643,8 +643,7 @@ impl Brc20ApiServer for RpcServer {
                 )))
             })?;
 
-        let entry_raw = self
-            .db
+        let entry_raw = db
             .get_cf(
                 sequence_number_to_inscription_entry,
                 &sequence_number.to_be_bytes(),
@@ -658,6 +657,8 @@ impl Brc20ApiServer for RpcServer {
         let inscription_id_key = get_inscription_id_key(&entry.id);
         if let Some(raw) = self
             .db
+            .lock()
+            .expect("DB Error")
             .get_cf(ord_inscription_info, &inscription_id_key)
             .unwrap()
         {
@@ -673,13 +674,14 @@ impl Brc20ApiServer for RpcServer {
         &self,
         block_height: u32,
     ) -> RpcResult<Option<Vec<BitmapInscription>>> {
-        let ord_transfers = self.db.cf_handle("ord_transfers").ok_or_else(|| {
+        let db = self.db.lock().expect("DB Error");
+        let ord_transfers = db.cf_handle("ord_transfers").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_transfers' not found",
             )))
         })?;
-        let ord_inscription_info = self.db.cf_handle("ord_inscription_info").ok_or_else(|| {
+        let ord_inscription_info = db.cf_handle("ord_inscription_info").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_inscription_info' not found",
@@ -689,7 +691,7 @@ impl Brc20ApiServer for RpcServer {
         // scan ord_transfers from block_height.0u32 to (block_height+1).0u32
         let start_key = block_height.to_be_bytes();
         let end_key = (block_height + 1).to_be_bytes();
-        let mut iter = self.db.raw_iterator_cf(ord_transfers);
+        let mut iter = db.raw_iterator_cf(ord_transfers);
         iter.seek(start_key);
         let mut bitmap_inscrs = Vec::new();
         while iter.valid() && compare_be_arrays(iter.key().unwrap(), &end_key) == Ordering::Less {
@@ -705,8 +707,7 @@ impl Brc20ApiServer for RpcServer {
             let inscription_id = transfer_info.inscription_id.clone();
 
             let inscription_id_key = get_inscription_id_key(&inscription_id);
-            let raw_info = self
-                .db
+            let raw_info = db
                 .get_cf(ord_inscription_info, &inscription_id_key)
                 .unwrap()
                 .unwrap();
@@ -743,13 +744,14 @@ impl Brc20ApiServer for RpcServer {
         &self,
         block_height: u32,
     ) -> RpcResult<Option<Vec<SNSInscription>>> {
-        let ord_transfers = self.db.cf_handle("ord_transfers").ok_or_else(|| {
+        let db = self.db.lock().expect("DB Error");
+        let ord_transfers = db.cf_handle("ord_transfers").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_transfers' not found",
             )))
         })?;
-        let ord_inscription_info = self.db.cf_handle("ord_inscription_info").ok_or_else(|| {
+        let ord_inscription_info = db.cf_handle("ord_inscription_info").ok_or_else(|| {
             wrap_rpc_error(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Column family 'ord_inscription_info' not found",
@@ -759,7 +761,7 @@ impl Brc20ApiServer for RpcServer {
         // scan ord_transfers from block_height.0u32 to (block_height+1).0u32
         let start_key = block_height.to_be_bytes();
         let end_key = (block_height + 1).to_be_bytes();
-        let mut iter = self.db.raw_iterator_cf(ord_transfers);
+        let mut iter = db.raw_iterator_cf(ord_transfers);
         iter.seek(start_key);
         let mut sns_inscrs = Vec::new();
         while iter.valid() && compare_be_arrays(iter.key().unwrap(), &end_key) == Ordering::Less {
@@ -775,8 +777,7 @@ impl Brc20ApiServer for RpcServer {
             let inscription_id = transfer_info.inscription_id.clone();
 
             let inscription_id_key = get_inscription_id_key(&inscription_id);
-            let raw_info = self
-                .db
+            let raw_info = db
                 .get_cf(ord_inscription_info, &inscription_id_key)
                 .unwrap()
                 .unwrap();
@@ -811,7 +812,47 @@ impl Brc20ApiServer for RpcServer {
     }
 }
 
-pub async fn start_rpc_server(db: &Arc<DB>, api_url: &Option<String>) -> Result<ServerHandle, Box<dyn Error>> {
+pub async fn start_rpc_server(config: Config) -> Result<(), Box<dyn Error>> {
+    let mut signals = Signals::new([SIGINT]).expect("Failed to create signal handler");
+
+    let index_path = if let Some(db_path) = config.db_path {
+        db_path
+    } else {
+        match config.network {
+            Bitcoin => PathBuf::from("../../../ord/target/release/dbs"),
+            Testnet => PathBuf::from("../../../ord/target/release/testnet/dbs"),
+            Testnet4 => PathBuf::from("../../../ord/target/release/testnet4/dbs"),
+            Signet => PathBuf::from("../../../ord/target/release/signet/dbs"),
+            Regtest => PathBuf::from("../../../ord/target/release/regtest/dbs"),
+            _ => {
+                eprintln!("Unsupported network specified.");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let column_families = vec![
+        ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),
+        ColumnFamilyDescriptor::new("inscription_id_to_sequence_number", Options::default()),
+        ColumnFamilyDescriptor::new("sequence_number_to_inscription_entry", Options::default()),
+        ColumnFamilyDescriptor::new("outpoint_to_utxo_entry", Options::default()),
+        ColumnFamilyDescriptor::new("ord_transfers", Options::default()),
+        ColumnFamilyDescriptor::new("ord_inscription_info", Options::default()),
+        ColumnFamilyDescriptor::new("ord_index_stats", Options::default()),
+    ];
+
+    let db_path = index_path.join("index.db");
+    let sec_db_path = index_path.join("secondary.db");
+    let db = Arc::new(Mutex::new(
+        DB::open_cf_descriptors_as_secondary(
+            &Options::default(),
+            &db_path,
+            &sec_db_path,
+            column_families,
+        )
+        .expect("Failed to open database"),
+    ));
+
     let cors = CorsLayer::new()
         // Allow `POST` when accessing the resource
         .allow_methods([Method::POST])
@@ -828,7 +869,10 @@ pub async fn start_rpc_server(db: &Arc<DB>, api_url: &Option<String>) -> Result<
         .max_response_body_size(1024 * 1024 * 1024) // 1 GB
         .build();
 
-    let url = api_url.clone().unwrap_or_else(|| "127.0.0.1:11030".into());
+    let url = config
+        .api_url
+        .clone()
+        .unwrap_or_else(|| "127.0.0.1:11030".into());
     let handle = Server::builder()
         .set_http_middleware(http_middleware)
         .set_rpc_middleware(rpc_middleware)
@@ -839,5 +883,26 @@ pub async fn start_rpc_server(db: &Arc<DB>, api_url: &Option<String>) -> Result<
 
     println!("RPC server started at http://{}", url);
 
-    Ok(handle)
+    tokio::spawn(handle.stopped());
+
+    // The server will run indefinitely, handling requests.
+    // You can add more functionality or shutdown logic as needed.
+    // For now, we just keep the main function running.
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        if signals.pending().next().is_some() {
+            println!("Received SIGINT, stopping RPC server...");
+            break; // Exit the loop on SIGINT
+        }
+
+        db.lock()
+            .expect("DB Error")
+            .try_catch_up_with_primary()
+            .map_err(|e| eprintln!("Failed to catch up with primary: {}", e))
+            .ok();
+    }
+
+    println!("RPC server stopped.");
+    Ok(())
 }
