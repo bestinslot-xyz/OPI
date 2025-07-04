@@ -156,18 +156,6 @@ cd ord/target/release;
 > [!NOTE]
 > For ord to reach the bitcoin rpc server correctly, pass `--bitcoin-rpc-url`, `--bitcoin-rpc-username` and `--bitcoin-rpc-password` parameters before `index run`. To run on signet, add `--signet` as well.
 
-To set up the server for the inscription database in a separate process, run:
-
-```bash
-cd db_reader;
-cargo build --release;
-cd target/release;
-./db_reader
-```
-
-> [!NOTE]
-> `db_reader` accepts a `--db-path` parameter that can be used to pass the database path, if you used a different `--data-dir` when running ord, use the same directory. If you're running on signet, add `--signet` as well.
-
 **BRC-20 Indexer**
 
 If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running BRC-20 indexer.
