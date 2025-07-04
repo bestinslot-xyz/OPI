@@ -50,12 +50,7 @@ pub struct Brc20Indexer {
 
 impl Brc20Indexer {
     pub fn new(config: Brc20IndexerConfig) -> Self {
-<<<<<<< HEAD:modules/brc20_index_rust/src/indexer/brc20_indexer.rs
-        let brc20_db = Brc20Database::new(&config);
         let main_db = OpiDatabase::new(config.meta_db_url.clone());
-=======
-        let main_db = OpiDatabase::new("http://localhost:11030".to_string());
->>>>>>> origin/experimental-rust-version:modules/brc20_index/src/indexer/brc20_indexer.rs
 
         let brc20_prog_client = build_brc20_prog_http_client(&config);
         let brc20_reporter = Brc20Reporter::new(&config);
