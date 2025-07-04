@@ -16,7 +16,7 @@ dbReaderImage:
   repository: db-reader
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.0.1"
+  tag: "0.0.3"
 
 imagePullSecrets:
   - name: bispullsecret
@@ -46,6 +46,10 @@ securityContext: {}
   # runAsUser: 1000
 
 service:
+  dbReader:
+    port: 11030
+    type: ClusterIP
+  # If true, the service will be created with a ClusterIP type.
   type: ClusterIP
   port: 80
 

@@ -11,5 +11,11 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+  {{- if .Values.service.dbReader }}
+    - port: {{ .Values.service.dbReader.port }}
+      targetPort: {{ .Values.service.dbReader.port }}
+      protocol: TCP
+      name: db-reader
+  {{- end }}
   selector:
     {{- include "main-index.selectorLabels" . | nindent 4 }}

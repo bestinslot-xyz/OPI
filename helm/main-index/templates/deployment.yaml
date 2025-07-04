@@ -97,7 +97,14 @@ spec:
                   name: bis-config
                   key: networkType
             - name: INDEX_PATH
-              value: "/ord/$(BITCOIN_NETWORK)/dbs"
+              valueFrom:
+                configMapKeyRef:
+                  name: bis-config
+                  key: indexPath
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.dbReader.port }}
+              protocol: TCP
           resources:
             {{- toYaml .Values.dbReaderResources | nindent 12 }}
           volumeMounts:
