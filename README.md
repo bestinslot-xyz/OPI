@@ -107,9 +107,8 @@ cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 
 For detailed installation guides:
 - Ubuntu: [installation guide](INSTALL.ubuntu.md)
-- Windows: [installation guide](INSTALL.windows.md)
 
-OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
+Modules use PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
 
 **Build ord:**
 ```bash
@@ -118,25 +117,16 @@ cd ord; cargo build --release;
 
 **Install node modules**
 ```bash
-cd modules/main_index; npm install;
-cd ../brc20_api; npm install;
+cd modules/brc20_api; npm install;
 cd ../bitmap_api; npm install;
 ```
-*Optional:*
-Remove the following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
-```js
-if (pubkey && pubkey.length) {
-  if (!(0, ecc_lib_1.getEccLib)().isXOnlyPoint(pubkey))
-    throw new TypeError('Invalid pubkey for p2tr');
-}
-```
-Otherwise, it cannot decode some addresses such as `512057cd4cfa03f27f7b18c2fe45fe2c2e0f7b5ccb034af4dec098977c28562be7a2`
 
-**Install python libraries**
+**Create a virtual environment and install python libraries**
 ```bash
-pip3 install python-dotenv;
-pip3 install psycopg2-binary;
-python3 -m pip install json5 stdiomask;
+cd modules;
+python3 -m venv .env;
+source .env/bin/activate;
+pip3 install -r requirements.txt;
 ```
 
 **Setup .env files and DBs**
