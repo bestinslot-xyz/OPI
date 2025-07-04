@@ -1,16 +1,23 @@
 use {
   self::{
-    entry::{
-      Entry, InscriptionEntry,
-      SatRange,
-    },
+    entry::{Entry, InscriptionEntry, SatRange},
     event::Event,
     reorg::Reorg,
     updater::Updater,
     utxo_entry::{ParsedUtxoEntry, UtxoEntryBuf},
-  }, super::*, bitcoin::block::Header, bitcoincore_rpc::Client, indicatif::{ProgressBar, ProgressStyle}, log::log_enabled
-  , rocksdb::{backup::{BackupEngine, BackupEngineOptions}, ColumnFamilyDescriptor, IteratorMode, Options, DB}
-  , std::collections::HashMap
+  },
+  super::*,
+  bitcoin::block::Header,
+  bitcoincore_rpc::Client,
+  db_reader::{start_rpc_server, Config},
+  indicatif::{ProgressBar, ProgressStyle},
+  log::log_enabled,
+  rocksdb::{
+    backup::{BackupEngine, BackupEngineOptions},
+    ColumnFamilyDescriptor, IteratorMode, Options, DB,
+  },
+  std::collections::HashMap,
+  tokio::runtime::Runtime,
 };
 
 pub use updater::get_tx_limits;
@@ -125,6 +132,7 @@ pub struct Index {
   unrecoverably_reorged: AtomicBool,
   write_options: rocksdb::WriteOptions,
   pub(crate) path: PathBuf,
+  _runtime: Runtime,
 }
 
 impl Index {
@@ -167,9 +175,9 @@ impl Index {
       write_options
     };
 
-    rlimit::Resource::NOFILE.set(4096, 8192)?;
+    rlimit::Resource::NOFILE.set(65536, 131072)?;
 
-    let column_families = vec! [
+    let column_families = vec![
       ColumnFamilyDescriptor::new("height_to_block_header", cf_opts.clone()),
       ColumnFamilyDescriptor::new("height_to_last_sequence_number", cf_opts.clone()),
       ColumnFamilyDescriptor::new("outpoint_to_utxo_entry", cf_opts.clone()),
@@ -185,7 +193,8 @@ impl Index {
 
     let db_path = path.join("index.db");
     let db = DB::open_cf_descriptors(&opts, &db_path, column_families)?;
-    let statistic_to_count = db.cf_handle("statistic_to_count")
+    let statistic_to_count = db
+      .cf_handle("statistic_to_count")
       .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?;
 
     let schema_version = db.get_cf(statistic_to_count, &Statistic::Schema.key().to_be_bytes());
@@ -223,6 +232,26 @@ impl Index {
 
     let first_index_height = settings.first_inscription_height();
 
+    let chain = settings.chain();
+    let db_path = path.clone();
+    let runtime = Runtime::new()?;
+    runtime.spawn(async move {
+      println!("Starting RPC server for index at {}", db_path.display());
+      start_rpc_server(Config {
+        network: match chain {
+          Chain::Mainnet => bitcoin::Network::Bitcoin,
+          Chain::Testnet => bitcoin::Network::Testnet,
+          Chain::Testnet4 => bitcoin::Network::Testnet4,
+          Chain::Signet => bitcoin::Network::Signet,
+          Chain::Regtest => bitcoin::Network::Regtest,
+        },
+        db_path: Some(db_path.canonicalize().unwrap()),
+        api_url: std::env::var("DB_READER_API_URL").ok(),
+      })
+      .await
+      .unwrap()
+    });
+
     Ok(Self {
       client,
       db,
@@ -233,6 +262,7 @@ impl Index {
       unrecoverably_reorged: AtomicBool::new(false),
       path,
       write_options,
+      _runtime: runtime,
     })
   }
 
@@ -255,10 +285,14 @@ impl Index {
         return Ok(());
       }
 
-      let height_to_block_header = self.db.cf_handle("height_to_block_header")
+      let height_to_block_header = self
+        .db
+        .cf_handle("height_to_block_header")
         .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
-      let blocks_indexed = self.db.iterator_cf(height_to_block_header, IteratorMode::End)
+      let blocks_indexed = self
+        .db
+        .iterator_cf(height_to_block_header, IteratorMode::End)
         .next()
         .transpose()?
         .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()) + 1)
@@ -275,12 +309,15 @@ impl Index {
       match updater.update_index() {
         Ok(_ok) => {
           thread::sleep(Duration::from_secs(5));
-        },
+        }
         Err(err) => {
           log::info!("{err}");
 
           match err.downcast_ref() {
-            Some(&reorg::Error::Recoverable { height: _, depth: _ }) => {
+            Some(&reorg::Error::Recoverable {
+              height: _,
+              depth: _,
+            }) => {
               return Err(err); // Reorg::handle_reorg(self, height, depth)?;
             }
             Some(&reorg::Error::Unrecoverable) => {
@@ -297,10 +334,14 @@ impl Index {
   }
 
   pub fn block_count(&self) -> Result<u32> {
-      let height_to_block_header = self.db.cf_handle("height_to_block_header")
-        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+    let height_to_block_header = self
+      .db
+      .cf_handle("height_to_block_header")
+      .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
-      let blocks_indexed = self.db.iterator_cf(height_to_block_header, IteratorMode::End)
+    let blocks_indexed = self
+      .db
+      .iterator_cf(height_to_block_header, IteratorMode::End)
       .next()
       .transpose()?
       .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()) + 1)
@@ -310,10 +351,14 @@ impl Index {
   }
 
   pub fn block_height(&self) -> Result<Option<Height>> {
-      let height_to_block_header = self.db.cf_handle("height_to_block_header")
-        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+    let height_to_block_header = self
+      .db
+      .cf_handle("height_to_block_header")
+      .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
-      let block_height = self.db.iterator_cf(height_to_block_header, IteratorMode::End)
+    let block_height = self
+      .db
+      .iterator_cf(height_to_block_header, IteratorMode::End)
       .next()
       .transpose()?
       .map(|(height, _header)| Height(u32::from_be_bytes((*height).try_into().unwrap())));
@@ -322,13 +367,20 @@ impl Index {
   }
 
   pub fn block_hash(&self, height: Option<u32>) -> Result<Option<BlockHash>> {
-    let height_to_block_header = self.db.cf_handle("height_to_block_header")
+    let height_to_block_header = self
+      .db
+      .cf_handle("height_to_block_header")
       .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
     Ok(
       match height {
-        Some(height) => self.db.get_cf(height_to_block_header, &height.to_be_bytes()).unwrap(),
-        None => self.db.iterator_cf(height_to_block_header, IteratorMode::End)
+        Some(height) => self
+          .db
+          .get_cf(height_to_block_header, &height.to_be_bytes())
+          .unwrap(),
+        None => self
+          .db
+          .iterator_cf(height_to_block_header, IteratorMode::End)
           .next()
           .transpose()?
           .map(|(_height, header)| (*header).to_vec()),
@@ -338,16 +390,23 @@ impl Index {
   }
 
   pub fn blocks(&self, take: usize) -> Result<Vec<(u32, BlockHash)>> {
-    let height_to_block_header = self.db.cf_handle("height_to_block_header")
+    let height_to_block_header = self
+      .db
+      .cf_handle("height_to_block_header")
       .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
     let mut blocks = Vec::with_capacity(take);
 
-    for next in self.db.iterator_cf(height_to_block_header, IteratorMode::End)
+    for next in self
+      .db
+      .iterator_cf(height_to_block_header, IteratorMode::End)
       .take(take)
     {
       let next = next?;
-      blocks.push((u32::from_be_bytes((*next.0).try_into().unwrap()), Header::load((*next.1).try_into().unwrap()).block_hash()));
+      blocks.push((
+        u32::from_be_bytes((*next.0).try_into().unwrap()),
+        Header::load((*next.1).try_into().unwrap()).block_hash(),
+      ));
     }
 
     Ok(blocks)
@@ -357,7 +416,9 @@ impl Index {
     &self,
     inscription_id: InscriptionId,
   ) -> Result<Option<InscriptionEntry>> {
-    let inscription_id_to_sequence_number = self.db.cf_handle("inscription_id_to_sequence_number")
+    let inscription_id_to_sequence_number = self
+      .db
+      .cf_handle("inscription_id_to_sequence_number")
       .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_sequence_number'"))?;
 
     let Some(sequence_number) = self
@@ -368,12 +429,19 @@ impl Index {
       return Ok(None);
     };
 
-    let sequence_number_to_inscription_entry = self.db.cf_handle("sequence_number_to_inscription_entry")
-      .ok_or_else(|| anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'"))?;
+    let sequence_number_to_inscription_entry = self
+      .db
+      .cf_handle("sequence_number_to_inscription_entry")
+      .ok_or_else(|| {
+        anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'")
+      })?;
 
     let entry = self
       .db
-      .get_cf(sequence_number_to_inscription_entry, &sequence_number.to_be_bytes())?
+      .get_cf(
+        sequence_number_to_inscription_entry,
+        &sequence_number.to_be_bytes(),
+      )?
       .map(|value| InscriptionEntry::load(value.try_into().unwrap()));
     Ok(entry)
   }

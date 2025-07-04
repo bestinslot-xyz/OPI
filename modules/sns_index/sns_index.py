@@ -14,8 +14,8 @@ import requests
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-INDEXER_VERSION = "opi-sns-names-full-node v0.3.0"
-DB_VERSION = 3
+INDEXER_VERSION = "opi-sns-names-full-node v1.0.0"
+DB_VERSION = 4
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -32,6 +32,7 @@ db_port = int(os.getenv("DB_PORT") or "5432")
 db_database = os.getenv("DB_DATABASE") or "postgres"
 db_password = os.getenv("DB_PASSWD")
 network_type = os.getenv("NETWORK_TYPE") or "mainnet"
+db_reader_url = os.getenv("DB_READER_API_URL") or "http://localhost:11030/"
 
 first_inscription_heights = {
   'mainnet': 767430,
@@ -72,14 +73,14 @@ cur = conn.cursor()
 
 
 def get_block_hash_by_height(block_height):
-  url = "http://localhost:11030/"
+  global db_reader_url
   data = {
     "jsonrpc": "2.0",
     "id": 1,
     "method": "getBlockHashAndTs",
     "params": [block_height]
   }
-  r = requests.post(url, json=data)
+  r = requests.post(db_reader_url, json=data)
   if r.status_code != 200:
     print("Error while getting block hash by height: " + str(r.status_code))
     raise Exception("Error while getting block hash by height: " + str(r.status_code))
@@ -96,13 +97,13 @@ def get_block_hash_by_height(block_height):
   return js['result']['block_hash']
 
 def get_ord_block_height():
-  url = "http://localhost:11030/"
+  global db_reader_url
   data = {
     "jsonrpc": "2.0",
     "id": 1,
     "method": "getLatestBlockHeight"
   }
-  r = requests.post(url, json=data)
+  r = requests.post(db_reader_url, json=data)
   if r.status_code != 200:
     print("Error while getting ord block height: " + str(r.status_code))
     raise Exception("Error while getting ord block height: " + str(r.status_code))
@@ -116,14 +117,14 @@ def get_ord_block_height():
   return js['result']
 
 def get_sns_inscrs(block_height):
-  url = "http://localhost:11030/"
+  global db_reader_url
   data = {
     "jsonrpc": "2.0",
     "id": 1,
     "method": "getBlockSNSInscrs",
     "params": [block_height]
   }
-  r = requests.post(url, json=data)
+  r = requests.post(db_reader_url, json=data)
   if r.status_code != 200:
     print("Error while getting ord bitmap inscrs: " + str(r.status_code))
     raise Exception("Error while getting ord bitmap inscrs: " + str(r.status_code))

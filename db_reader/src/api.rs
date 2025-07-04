@@ -19,9 +19,8 @@ pub struct BRC20Tx {
     pub new_pkscript: String,
     pub new_wallet: String,
     pub sent_as_fee: bool,
-    pub content_hex: String,
+    pub content: serde_json::Value,
     pub byte_len: u32,
-    pub content_type_hex: String,
     pub parent_id: Option<String>,
 }
 
