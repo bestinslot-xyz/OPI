@@ -82,34 +82,17 @@ spec:
               configMapKeyRef:
                 name: bis-config
                 key: maxSavepoints
+          - name: DB_READER_API_URL
+            value: "0.0.0.0:{{ .Values.service.port }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: opi-main-index
               mountPath: /ord
-        - name: db-reader
-          image: "{{ .Values.dbReaderImage.registry }}/{{ .Values.dbReaderImage.repository }}:{{ .Values.dbReaderImage.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.dbReaderImage.pullPolicy }}
-          env:
-            - name: BITCOIN_NETWORK
-              valueFrom:
-                configMapKeyRef:
-                  name: bis-config
-                  key: networkType
-            - name: INDEX_PATH
-              valueFrom:
-                configMapKeyRef:
-                  name: bis-config
-                  key: indexPath
           ports:
             - name: http
-              containerPort: {{ .Values.service.dbReader.port }}
+              containerPort: {{ .Values.service.port }}
               protocol: TCP
-          resources:
-            {{- toYaml .Values.dbReaderResources | nindent 12 }}
-          volumeMounts:
-            - name: opi-main-index
-              mountPath: /ord
       volumes:
         - name: opi-main-index
           persistentVolumeClaim:

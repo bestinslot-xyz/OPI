@@ -9,7 +9,7 @@ image:
   repository: main-opi-ord
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.0.4"
+  tag: "0.0.5"
 
 dbReaderImage:
   registry: registry.bestinslot.xyz
@@ -46,9 +46,6 @@ securityContext: {}
   # runAsUser: 1000
 
 service:
-  dbReader:
-    port: 11030
-    type: ClusterIP
   # If true, the service will be created with a ClusterIP type.
   type: ClusterIP
   port: 80
