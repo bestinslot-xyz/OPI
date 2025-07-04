@@ -151,7 +151,7 @@ cd ord/target/release;
 If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running BRC-20 indexer.
 
 ```bash
-cd modules/brc20_index_rust;
+cd modules/brc20_index;
 cargo build --release;
 ./target/release/brc20-index;
 ```

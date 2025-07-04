@@ -179,7 +179,7 @@ ord --data-dir . index run;
 > BRC2.0 needs to be running before starting the brc20 indexer. When running `reset_init.py`, enable BRC2.0 by setting the variable to true when asked.
 
 ```bash
-cd modules/brc20_index_rust;
+cd modules/brc20_index;
 cargo build --release;
 cd target/release;
 ./brc20-index;
