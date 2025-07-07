@@ -954,7 +954,7 @@ impl Brc20Indexer {
         let mut current_brc20_height = last_brc20_block_height;
         let mut current_brc20_prog_height = last_brc20_prog_block_height;
         let max_recoverable_reorg_depth =
-          (max_savepoints - 1) * savepoint_interval + current_brc20_height % savepoint_interval;
+          (self.config.max_savepoints - 1) * self.config.savepoint_interval + current_brc20_height % self.config.savepoint_interval;
         loop {
             if current_brc20_height < last_brc20_block_height - max_recoverable_reorg_depth {
                 // If the difference is greater than 10, we don't support reorg
