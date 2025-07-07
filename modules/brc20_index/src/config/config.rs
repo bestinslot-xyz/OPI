@@ -92,6 +92,12 @@ pub const BRC20_PROG_RPC_PASSWORD_KEY: &str = "BRC20_PROG_RPC_PASSWORD";
 pub const BRC20_PROG_BALANCE_SERVER_URL_KEY: &str = "BRC20_PROG_BALANCE_SERVER_URL";
 pub const BRC20_PROG_BALANCE_SERVER_URL_DEFAULT: &str = "127.0.0.1:18546";
 
+pub const SAVEPOINT_INTERVAL_KEY: &str = "SAVEPOINT_INTERVAL";
+pub const SAVEPOINT_INTERVAL_DEFAULT: i32 = 10;
+
+pub const MAX_SAVEPOINTS_KEY: &str = "MAX_SAVEPOINTS";
+pub const MAX_SAVEPOINTS_DEFAULT: i32 = 2;
+
 pub const PROTOCOL_KEY: &str = "p";
 pub const PROTOCOL_BRC20: &str = "brc-20";
 pub const PROTOCOL_BRC20_PROG: &str = "brc20-prog";
@@ -189,6 +195,9 @@ pub struct Brc20IndexerConfig {
     pub brc20_prog_rpc_password: Option<String>,
 
     pub brc20_prog_balance_server_url: String,
+
+    pub savepoint_interval: i32,
+    pub max_savepoints: i32,
 }
 
 impl Default for Brc20IndexerConfig {
@@ -254,6 +263,16 @@ impl Default for Brc20IndexerConfig {
 
             meta_db_url: std::env::var(META_DB_URL_KEY)
                 .unwrap_or_else(|_| META_DB_URL_DEFAULT.to_string()),
+
+            savepoint_interval: std::env::var(SAVEPOINT_INTERVAL_KEY)
+                .unwrap_or_else(|_| SAVEPOINT_INTERVAL_DEFAULT.to_string())
+                .parse::<i32>()
+                .unwrap_or(SAVEPOINT_INTERVAL_DEFAULT),
+            
+            max_savepoints: std::env::var(MAX_SAVEPOINTS_KEY)
+                .unwrap_or_else(|_| MAX_SAVEPOINTS_DEFAULT.to_string())
+                .parse::<i32>()
+                .unwrap_or(MAX_SAVEPOINTS_DEFAULT),
         }
     }
 }
