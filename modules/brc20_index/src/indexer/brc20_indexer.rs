@@ -811,9 +811,19 @@ impl Brc20Indexer {
                         continue;
                     };
 
-                    let salted_ticker = ticker.as_bytes()
+                    let Ok(pkscript_bytes) = hex::decode(transfer.new_pkscript.as_str()) else {
+                        tracing::debug!(
+                            "Skipping transfer {} as pkscript is not a valid hex string",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let salted_ticker = ticker
+                        .as_bytes()
                         .iter()
                         .chain(salt_bytes.iter())
+                        .chain(pkscript_bytes.iter())
                         .cloned()
                         .collect::<Vec<u8>>();
 
