@@ -803,9 +803,21 @@ impl Brc20Indexer {
                         continue;
                     }
 
-                    if predeploy_event.hash
-                        != sha256::digest(sha256::digest(format!("{}{}", ticker, salt)))
-                    {
+                    let Ok(salt_bytes) = hex::decode(salt) else {
+                        tracing::debug!(
+                            "Skipping transfer {} as salt is not a valid hex string",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let salted_ticker = ticker.as_bytes()
+                        .iter()
+                        .chain(salt_bytes.iter())
+                        .cloned()
+                        .collect::<Vec<u8>>();
+
+                    if predeploy_event.hash != sha256::digest(sha256::digest(&salted_ticker)) {
                         tracing::debug!(
                             "Skipping transfer {} as ticker hash does not match predeploy hash",
                             transfer.inscription_id
