@@ -16,7 +16,7 @@ pub struct PreDeployInscribeEvent {
 
 impl Event for PreDeployInscribeEvent {
     fn event_name() -> String {
-        "pre-deploy-inscribe".to_string()
+        "predeploy-inscribe".to_string()
     }
 
     fn event_id() -> i32 {
