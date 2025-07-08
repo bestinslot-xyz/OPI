@@ -12,13 +12,14 @@ use crate::{
     config::{
         AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT,
         BRC20_PROG_VERSION, Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION,
-        DECIMALS_KEY, EVENT_SEPARATOR, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT,
-        MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
+        DECIMALS_KEY, EVENT_SEPARATOR, HASH_KEY, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY,
+        MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
         OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
         OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_BRC20_PROG_TRANSACT,
         OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
-        OPERATION_TRANSFER, OPERATION_WITHDRAW, PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE,
-        PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
+        OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW, PREDEPLOY_BLOCK_HEIGHT_DELAY,
+        PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
+        SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
     },
     database::{Brc20Balance, OpiDatabase, TransferValidity, get_brc20_database},
     indexer::{
@@ -35,7 +36,7 @@ use crate::{
             Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
             Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
             Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
-            TransferInscribeEvent, TransferTransferEvent,
+            PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent,
         },
     },
 };
@@ -619,6 +620,49 @@ impl Brc20Indexer {
                 continue;
             }
 
+            if operation == OPERATION_PREDEPLOY && transfer.old_satpoint.is_none() {
+                if block_height
+                    < self.config.first_brc20_prog_phase_one_height - PREDEPLOY_BLOCK_HEIGHT_DELAY
+                {
+                    tracing::debug!(
+                        "Skipping transfer {} as block height {} is too early",
+                        transfer.inscription_id,
+                        block_height
+                    );
+                    continue;
+                }
+
+                let Some(hash) = transfer.content.get(HASH_KEY).and_then(|h| h.as_str()) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as hash is not present",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                let predeploy_event = PreDeployInscribeEvent {
+                    deployer_pk_script: transfer.new_pkscript.clone(),
+                    deployer_wallet: transfer.new_wallet.clone(),
+                    hash: hash.to_string(),
+                    block_height: block_height,
+                };
+
+                block_events_buffer
+                    .push_str(&predeploy_event.get_event_str(&transfer.inscription_id, 0));
+                block_events_buffer.push_str(EVENT_SEPARATOR);
+
+                get_brc20_database().lock().await.add_event(
+                    block_height,
+                    &transfer.inscription_id,
+                    &transfer.inscription_number,
+                    &transfer.old_satpoint,
+                    &transfer.new_satpoint,
+                    &transfer.txid,
+                    &predeploy_event,
+                )?;
+                continue;
+            }
+
             if operation == OPERATION_DEPLOY && transfer.old_satpoint.is_none() {
                 if let Ok(Some(_)) = get_brc20_database().lock().await.get_ticker(&ticker) {
                     tracing::debug!(
@@ -720,6 +764,55 @@ impl Brc20Indexer {
                         );
                         continue;
                     }
+
+                    let Some(salt) = transfer.content.get(SALT_KEY).and_then(|s| s.as_str()) else {
+                        tracing::debug!(
+                            "Skipping transfer {} as salt is not present or invalid",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let Some(parent_id) = transfer.parent_id.as_ref() else {
+                        tracing::debug!(
+                            "Skipping transfer {} as parent ID is not present",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let Some(predeploy_event) = get_brc20_database()
+                        .lock()
+                        .await
+                        .get_event_with_type::<PreDeployInscribeEvent>(parent_id)
+                        .await?
+                    else {
+                        tracing::debug!(
+                            "Skipping transfer {} as predeploy event is not present",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    if predeploy_event.block_height > block_height - PREDEPLOY_BLOCK_HEIGHT_DELAY {
+                        tracing::debug!(
+                            "Skipping transfer {} as predeploy block height {} is too recent",
+                            transfer.inscription_id,
+                            predeploy_event.block_height
+                        );
+                        continue;
+                    }
+
+                    if predeploy_event.hash
+                        != sha256::digest(sha256::digest(format!("{}{}", ticker, salt)))
+                    {
+                        tracing::debug!(
+                            "Skipping transfer {} as ticker hash does not match predeploy hash",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+
                     if let Some(self_mint) =
                         transfer.content.get(SELF_MINT_KEY).and_then(|s| s.as_str())
                     {

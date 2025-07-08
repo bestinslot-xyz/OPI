@@ -105,6 +105,8 @@ pub const OPERATION_KEY: &str = "op";
 pub const MODULE_KEY: &str = "module";
 pub const TICKER_KEY: &str = "tick";
 pub const SELF_MINT_KEY: &str = "self_mint";
+pub const SALT_KEY: &str = "salt";
+pub const HASH_KEY: &str = "hash";
 
 // BRC20 prog specific keys
 pub const DATA_KEY: &str = "d";
@@ -113,6 +115,7 @@ pub const CONTRACT_ADDRESS_KEY: &str = "c";
 pub const INSCRIPTION_ID_KEY: &str = "i";
 
 pub const OPERATION_DEPLOY: &str = "deploy";
+pub const OPERATION_PREDEPLOY: &str = "predeploy";
 pub const OPERATION_WITHDRAW: &str = "withdraw";
 pub const OPERATION_MINT: &str = "mint";
 pub const OPERATION_TRANSFER: &str = "transfer";
@@ -133,6 +136,8 @@ pub const NO_WALLET: &str = "";
 
 pub const MAX_DECIMALS: u8 = 18;
 pub const MAX_AMOUNT: u128 = (2u128.pow(64) - 1) * 10u128.pow(18);
+
+pub const PREDEPLOY_BLOCK_HEIGHT_DELAY: i32 = 3;
 
 pub const EVENT_SEPARATOR: &str = "|";
 

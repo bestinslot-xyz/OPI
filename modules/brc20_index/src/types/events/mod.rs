@@ -4,6 +4,9 @@ pub use event::{Event, number_string_with_full_decimals};
 mod deploy_inscribe;
 pub use deploy_inscribe::DeployInscribeEvent;
 
+mod predeploy_inscribe;
+pub use predeploy_inscribe::PreDeployInscribeEvent;
+
 mod mint_inscribe;
 pub use mint_inscribe::MintInscribeEvent;
 
