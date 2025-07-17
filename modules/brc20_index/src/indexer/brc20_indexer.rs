@@ -505,6 +505,49 @@ impl Brc20Indexer {
                 continue;
             }
 
+            if operation == OPERATION_PREDEPLOY && transfer.old_satpoint.is_none() {
+                if block_height
+                    < self.config.first_brc20_prog_phase_one_height - PREDEPLOY_BLOCK_HEIGHT_DELAY
+                {
+                    tracing::debug!(
+                        "Skipping transfer {} as block height {} is too early",
+                        transfer.inscription_id,
+                        block_height
+                    );
+                    continue;
+                }
+
+                let Some(hash) = transfer.content.get(HASH_KEY).and_then(|h| h.as_str()) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as hash is not present",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                let predeploy_event = PreDeployInscribeEvent {
+                    deployer_pk_script: transfer.new_pkscript.clone(),
+                    deployer_wallet: transfer.new_wallet.clone(),
+                    hash: hash.to_string(),
+                    block_height: block_height,
+                };
+
+                block_events_buffer
+                    .push_str(&predeploy_event.get_event_str(&transfer.inscription_id, 0));
+                block_events_buffer.push_str(EVENT_SEPARATOR);
+
+                get_brc20_database().lock().await.add_event(
+                    block_height,
+                    &transfer.inscription_id,
+                    &transfer.inscription_number,
+                    &transfer.old_satpoint,
+                    &transfer.new_satpoint,
+                    &transfer.txid,
+                    &predeploy_event,
+                )?;
+                continue;
+            }
+
             let Some(original_ticker) = transfer.content.get(TICKER_KEY).and_then(|ot| ot.as_str())
             else {
                 tracing::debug!(
@@ -617,49 +660,6 @@ impl Brc20Indexer {
                     )
                     .await?;
                 }
-                continue;
-            }
-
-            if operation == OPERATION_PREDEPLOY && transfer.old_satpoint.is_none() {
-                if block_height
-                    < self.config.first_brc20_prog_phase_one_height - PREDEPLOY_BLOCK_HEIGHT_DELAY
-                {
-                    tracing::debug!(
-                        "Skipping transfer {} as block height {} is too early",
-                        transfer.inscription_id,
-                        block_height
-                    );
-                    continue;
-                }
-
-                let Some(hash) = transfer.content.get(HASH_KEY).and_then(|h| h.as_str()) else {
-                    tracing::debug!(
-                        "Skipping transfer {} as hash is not present",
-                        transfer.inscription_id
-                    );
-                    continue;
-                };
-
-                let predeploy_event = PreDeployInscribeEvent {
-                    deployer_pk_script: transfer.new_pkscript.clone(),
-                    deployer_wallet: transfer.new_wallet.clone(),
-                    hash: hash.to_string(),
-                    block_height: block_height,
-                };
-
-                block_events_buffer
-                    .push_str(&predeploy_event.get_event_str(&transfer.inscription_id, 0));
-                block_events_buffer.push_str(EVENT_SEPARATOR);
-
-                get_brc20_database().lock().await.add_event(
-                    block_height,
-                    &transfer.inscription_id,
-                    &transfer.inscription_number,
-                    &transfer.old_satpoint,
-                    &transfer.new_satpoint,
-                    &transfer.txid,
-                    &predeploy_event,
-                )?;
                 continue;
             }
 
@@ -819,13 +819,11 @@ impl Brc20Indexer {
                         continue;
                     };
 
-                    let salted_ticker = ticker
-                        .as_bytes()
-                        .iter()
-                        .chain(salt_bytes.iter())
-                        .chain(pkscript_bytes.iter())
-                        .cloned()
-                        .collect::<Vec<u8>>();
+                    let salted_ticker = [
+                        original_ticker.as_bytes(),
+                        &salt_bytes,
+                        &pkscript_bytes,
+                    ].concat();
 
                     if predeploy_event.hash != sha256::digest(sha256::digest(&salted_ticker)) {
                         tracing::debug!(
