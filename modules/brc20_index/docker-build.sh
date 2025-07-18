@@ -57,6 +57,7 @@ echo "Using host IP: ${HOST_IP}"
 
 # Build the Docker image with buildx
 echo "Building Docker image for linux/amd64..."
+cp -R ../../ord/db_reader/ ./db_reader
 docker buildx build \
     --platform linux/amd64 \
     --build-arg DATABASE_URL="postgres://postgres:postgres@${HOST_IP}:54322/brc20_index" \
