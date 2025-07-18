@@ -10,34 +10,24 @@ use tokio::task::JoinHandle;
 
 use crate::{
     config::{
-        AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT,
-        BRC20_PROG_VERSION, Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION,
-        DECIMALS_KEY, EVENT_SEPARATOR, HASH_KEY, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY,
-        MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
-        OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
-        OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_BRC20_PROG_TRANSACT,
-        OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
-        OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW, PREDEPLOY_BLOCK_HEIGHT_DELAY,
-        PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
-        SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
+        Brc20IndexerConfig, AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY, EVENT_SEPARATOR, HASH_KEY, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OPERATION_BRC20_PROG_CALL, OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY, OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_BRC20_PROG_TRANSACT, OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT, OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW, OP_RETURN, PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY, SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY
     },
-    database::{Brc20Balance, OpiDatabase, TransferValidity, get_brc20_database},
+    database::{get_brc20_database, Brc20Balance, OpiDatabase, TransferValidity},
     indexer::{
         brc20_prog_balance_server::run_balance_server,
         brc20_prog_client::build_brc20_prog_http_client,
         brc20_reporter::Brc20Reporter,
-        utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
+        utils::{get_amount_value, get_decimals_value, ALLOW_ZERO, DISALLOW_ZERO},
     },
     no_default,
     types::{
-        Ticker,
         events::{
             Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
             Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
             Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
             Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
             PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent,
-        },
+        }, Ticker
     },
 };
 
@@ -507,7 +497,7 @@ impl Brc20Indexer {
 
             if operation == OPERATION_PREDEPLOY && transfer.old_satpoint.is_none() {
                 if block_height
-                    < self.config.first_brc20_prog_phase_one_height - PREDEPLOY_BLOCK_HEIGHT_DELAY
+                    < self.config.first_brc20_prog_phase_one_height - PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY
                 {
                     tracing::debug!(
                         "Skipping transfer {} as block height {} is too early",
