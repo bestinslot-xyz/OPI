@@ -811,7 +811,9 @@ impl Brc20Indexer {
                         continue;
                     };
 
-                    let Ok(pkscript_bytes) = hex::decode(transfer.new_pkscript.as_str()) else {
+                    let Ok(pkscript_bytes) =
+                        hex::decode(predeploy_event.deployer_pk_script.as_str())
+                    else {
                         tracing::debug!(
                             "Skipping transfer {} as pkscript is not a valid hex string",
                             transfer.inscription_id
@@ -819,13 +821,12 @@ impl Brc20Indexer {
                         continue;
                     };
 
-                    let salted_ticker = [
-                        original_ticker.as_bytes(),
-                        &salt_bytes,
-                        &pkscript_bytes,
-                    ].concat();
+                    let salted_ticker =
+                        [original_ticker.as_bytes(), &salt_bytes, &pkscript_bytes].concat();
 
-                    if predeploy_event.hash != sha256::digest(hex::decode(sha256::digest(&salted_ticker))?) {
+                    if predeploy_event.hash
+                        != sha256::digest(hex::decode(sha256::digest(&salted_ticker))?)
+                    {
                         tracing::debug!(
                             "Skipping transfer {} as ticker hash does not match predeploy hash",
                             transfer.inscription_id
