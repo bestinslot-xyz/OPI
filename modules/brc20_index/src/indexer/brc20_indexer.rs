@@ -825,7 +825,7 @@ impl Brc20Indexer {
                         &pkscript_bytes,
                     ].concat();
 
-                    if predeploy_event.hash != sha256::digest(sha256::digest(&salted_ticker)) {
+                    if predeploy_event.hash != sha256::digest(hex::decode(sha256::digest(&salted_ticker))?) {
                         tracing::debug!(
                             "Skipping transfer {} as ticker hash does not match predeploy hash",
                             transfer.inscription_id
