@@ -526,8 +526,8 @@ impl Brc20Indexer {
                 };
 
                 let predeploy_event = PreDeployInscribeEvent {
-                    deployer_pk_script: transfer.new_pkscript.clone(),
-                    deployer_wallet: transfer.new_wallet.clone(),
+                    predeployer_pk_script: transfer.new_pkscript.clone(),
+                    predeployer_wallet: transfer.new_wallet.clone(),
                     hash: hash.to_string(),
                     block_height: block_height,
                 };
@@ -812,7 +812,7 @@ impl Brc20Indexer {
                     };
 
                     let Ok(pkscript_bytes) =
-                        hex::decode(predeploy_event.deployer_pk_script.as_str())
+                        hex::decode(predeploy_event.predeployer_pk_script.as_str())
                     else {
                         tracing::debug!(
                             "Skipping transfer {} as pkscript is not a valid hex string",
