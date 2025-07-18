@@ -69,6 +69,21 @@ spec:
               configMapKeyRef:
                 name: bis-config
                 key: networkType
+          - name: META_DB_URL
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: dbReader.url
+          - name: SAVEPOINT_INTERVAL
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: savepointInterval
+          - name: MAX_SAVEPOINTS
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: maxSavepoints
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

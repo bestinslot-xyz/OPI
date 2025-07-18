@@ -7,7 +7,11 @@ edition = "2024"
 base64 = "0.22.1"
 bitcoin = "0.32.6"
 brc20-prog = "0.8.2"
+<<<<<<< HEAD
 db_reader = { path = "./db_reader", default-features = false }
+=======
+db_reader = { path = "../../ord/db_reader", default-features = false }
+>>>>>>> origin/experimental-rust-version
 dotenvy = "0.15.7"
 hex = "0.4.3"
 jsonrpsee = { version = "0.25.1", features = ["client", "http-client", "tokio"] }

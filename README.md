@@ -34,13 +34,17 @@ for event in block_events:
     ## if sent as fee, sent_pkscript is empty
     block_str += 'transfer-transfer;<inscr_id>;<source_pkscript>;<sent_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
   if event is 'brc20prog-deploy-inscribe':
-    block_str += 'brc20prog-deploy-inscribe;<inscr_id>;<source_pkscript>;<data>' + EVENT_SEPARATOR
+    block_str += 'brc20prog-deploy-inscribe;<inscr_id>;<source_pkscript>;<data>;<base64_data>' + EVENT_SEPARATOR
   if event is 'brc20prog-deploy-transfer':
-    block_str += 'brc20prog-deploy-transfer;<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<byte_len>' + EVENT_SEPARATOR
+    block_str += 'brc20prog-deploy-transfer;<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
   if event is 'brc20prog-call-inscribe':
-    block_str += '<inscr_id>;<source_pkscript>;<contract_address>;<contract_inscription_id>;<data>' + EVENT_SEPARATOR
+    block_str += '<inscr_id>;<source_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>' + EVENT_SEPARATOR
   if event is 'brc20prog-call-transfer':
-    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<contract_address>;<contract_inscription_id>;<data>' + EVENT_SEPARATOR
+    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-transact-inscribe':
+    block_str += '<inscr_id>;<source_pkscript>;<data>;<base64_data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-transact-transfer':
+    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
   if event is 'brc20prog-withdraw-inscribe':
     block_str += '<inscr_id>;<source_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
   if event is 'brc20prog-withdraw-transfer':

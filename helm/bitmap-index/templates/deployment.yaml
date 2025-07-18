@@ -81,6 +81,11 @@ spec:
               configMapKeyRef:
                 name: bis-config
                 key: networkType
+          - name: DB_READER_API_URL
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: dbReader.url
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

@@ -59,7 +59,7 @@ clap = { version = "4.4.2", features = ["derive", "env"] }
 colored.workspace = true
 ctrlc = { version = "3.2.1", features = ["termination"] }
 derive_more.workspace = true
-db_reader = { path = "./db_reader" }
+db_reader = { path = "db_reader" }
 dirs = "6.0.0"
 env_logger = "0.11.0"
 futures = "0.3.21"
