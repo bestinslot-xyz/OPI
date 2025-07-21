@@ -33,4 +33,4 @@ CREATE TABLE public.bitmap_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT bitmap_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.bitmap_indexer_version (indexer_version, db_version) VALUES ('opi-bitmap-full-node v0.3.0', 3);
+INSERT INTO public.bitmap_indexer_version (indexer_version, db_version) VALUES ('opi-bitmap-full-node v1.0.0', 4);
