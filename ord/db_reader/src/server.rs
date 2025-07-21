@@ -205,8 +205,8 @@ fn load_satpoint(raw: &[u8]) -> Option<String> {
   if txid == "0000000000000000000000000000000000000000000000000000000000000000" {
     return None;
   }
-  let vout = u32::from_be_bytes(raw[32..36].try_into().unwrap());
-  let sat = u64::from_be_bytes(raw[36..44].try_into().unwrap());
+  let vout = u32::from_le_bytes(raw[32..36].try_into().unwrap());
+  let sat = u64::from_le_bytes(raw[36..44].try_into().unwrap());
   Some(format!("{}:{}:{}", txid, vout, sat))
 }
 
