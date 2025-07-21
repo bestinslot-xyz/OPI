@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM pg_tables WHERE tablename = 'brc20_block_hashes' LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schemaname",
+        "type_info": "Name"
+      },
+      {
+        "ordinal": 1,
+        "name": "tablename",
+        "type_info": "Name"
+      },
+      {
+        "ordinal": 2,
+        "name": "tableowner",
+        "type_info": "Name"
+      },
+      {
+        "ordinal": 3,
+        "name": "tablespace",
+        "type_info": "Name"
+      },
+      {
+        "ordinal": 4,
+        "name": "hasindexes",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "hasrules",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "hastriggers",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "rowsecurity",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "3a09e524962ae77054fa0fd2aebaf3e3e055e5c7fcd47302823f54a8082580e6"
+}

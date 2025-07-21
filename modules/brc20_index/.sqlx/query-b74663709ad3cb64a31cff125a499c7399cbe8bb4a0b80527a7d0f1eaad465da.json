@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)\n                    VALUES ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Numeric",
+        "Numeric",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b74663709ad3cb64a31cff125a499c7399cbe8bb4a0b80527a7d0f1eaad465da"
+}

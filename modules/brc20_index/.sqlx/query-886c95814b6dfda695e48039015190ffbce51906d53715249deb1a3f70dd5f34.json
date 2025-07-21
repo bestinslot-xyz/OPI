@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max_event_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "886c95814b6dfda695e48039015190ffbce51906d53715249deb1a3f70dd5f34"
+}
