@@ -24,6 +24,8 @@ EVENT_SEPARATOR = '|'
 ## ticker_lowercase = lower(ticker)
 ## ticker_original is the ticker on inscription
 for event in block_events:
+  if event is 'predeploy-inscribe':
+    block_str += 'predeploy-inscribe;<inscr_id>;<predeployer_pkscript>;<hash>;<block_height>' + EVENT_SEPARATOR
   if event is 'deploy-inscribe':
     block_str += 'deploy-inscribe;<inscr_id>;<deployer_pkscript>;<ticker_lowercase>;<ticker_original>;<max_supply>;<decimals>;<limit_per_mint>;<is_self_mint("true" or "false")>' + EVENT_SEPARATOR
   if event is 'mint-inscribe':
