@@ -100,11 +100,10 @@ impl Brc20Indexer {
             let brc20_prog_block_height =
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
 
-            if brc20_prog_block_height == 0 {
-                self.brc20_prog_client
-                    .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
-                    .await?;
-            }
+            self.brc20_prog_client
+                .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
+                .await?;
+
             if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height - 1 {
                 let mut current_prog_height = brc20_prog_block_height;
                 while current_prog_height < self.config.first_brc20_prog_phase_one_height - 1 {
@@ -118,9 +117,9 @@ impl Brc20Indexer {
                     self.brc20_prog_client
                         .brc20_mine((next_prog_height - current_prog_height) as u64, 0)
                         .await?;
+                    self.brc20_prog_client.brc20_commit_to_database().await?;
                     current_prog_height = next_prog_height;
                 }
-                self.brc20_prog_client.brc20_commit_to_database().await?;
             }
         }
 
