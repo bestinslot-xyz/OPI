@@ -140,6 +140,8 @@ pub const MAX_AMOUNT: u128 = (2u128.pow(64) - 1) * 10u128.pow(18);
 pub const PREDEPLOY_BLOCK_HEIGHT_DELAY: i32 = 3;
 pub const PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY: i32 = 10;
 
+pub const BRC20_PROG_MINE_BATCH_SIZE: i32 = 50000;
+
 pub const EVENT_SEPARATOR: &str = "|";
 
 pub const SELF_MINT_ENABLE_HEIGHT: i32 = 837090;
