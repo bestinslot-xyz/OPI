@@ -1,14 +1,14 @@
 # OPI - Open Protocol Indexer
 
 Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** for **meta-protocols** on Bitcoin.
-OPI uses a fork of **ord 0.14.0** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind. The main indexer indexes all text/json inscriptions and modules can extend it with different meta-protocols.
+OPI uses a fork of **ord 0.23.2** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind.
 All modules in OPI have been built with **reorg protection**.
 
 Currently OPI has modules for **BRC-20**, **Bitmap** and **SNS**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
 
-## Main Meta-Protocol Indexer
+## Main Meta-Protocol Indexer / OPI-ord
 
-**Meta-Protocol indexer** sits in the core of OPI. It indexes **all json/text inscriptions** and their **first 2 transfers**.
+**OPI-ord** sits in the core of OPI. It indexes **all json/text inscriptions** and their **first 2 transfers**.
 Transfer limit can be changed via `INDEX_TX_LIMIT` variable in ord fork. This limit has been added since there are some UTXO's with a lot of inscription content and their movement floods transfers tables. Also, base indexing of most protocols only needs the first two transfers. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time.
 
 ## BRC-20 Indexer / API
