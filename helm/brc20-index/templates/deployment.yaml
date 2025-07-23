@@ -84,6 +84,32 @@ spec:
               configMapKeyRef:
                 name: bis-config
                 key: maxSavepoints
+          - name: BRC20_PROG_ENABLED
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: brc20Prog.enabled
+          - name: BRC20_PROG_RPC_URL
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: brc20Prog.rpcServerUrl
+          - name: BRC20_PROG_RPC_USER
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: brc20Prog.rpcServerUser
+          - name: BRC20_PROG_RPC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: brc20-prog-rpc-server-credentials
+                key: password
+          - name: BRC20_PROG_BALANCE_SERVER_URL
+            value: "0.0.0.0:{{ .Values.service.port }}"
+          - name: RUST_BACKTRACE
+            value: "full"
+          - name: RUST_LOG
+            value: "TRACE"
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

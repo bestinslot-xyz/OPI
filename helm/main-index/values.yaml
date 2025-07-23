@@ -8,8 +8,6 @@ image:
   registry: registry.bestinslot.xyz
   repository: main-opi-ord
   pullPolicy: Always
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.0.5"
 
 dbReaderImage:
   registry: registry.bestinslot.xyz
