@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_tickers (tick, original_tick, max_supply, remaining_supply, burned_supply, limit_per_mint, decimals, is_self_mint, deploy_inscription_id, block_height) SELECT * FROM UNNEST\n                ($1::text[], $2::text[], $3::numeric(40)[], $4::numeric(40)[], $5::numeric(40)[], $6::numeric(40)[], $7::int4[], $8::boolean[], $9::text[], $10::int4[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "NumericArray",
+        "NumericArray",
+        "NumericArray",
+        "NumericArray",
+        "Int4Array",
+        "BoolArray",
+        "TextArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5361a1730a972d23d8724fb96477c10279aa6279a6af1ff773b3f1146d0f4287"
+}

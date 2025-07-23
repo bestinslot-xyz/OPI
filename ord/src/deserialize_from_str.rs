@@ -1,6 +1,7 @@
 use super::*;
 
-pub(crate) struct DeserializeFromStr<T: FromStr>(pub(crate) T);
+#[derive(Debug)]
+pub struct DeserializeFromStr<T: FromStr>(pub T);
 
 impl<'de, T: FromStr> Deserialize<'de> for DeserializeFromStr<T>
 where

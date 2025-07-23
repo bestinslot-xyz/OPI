@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)\n                    SELECT pkscript, tick, overall_balance, available_balance, wallet, block_height\n                    FROM brc20_historic_balances\n                    WHERE pkscript = $1 AND tick = $2\n                    ORDER BY block_height DESC LIMIT 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "725584997b88770a3d2c596785ed4b978c070a80dd9964b5499853e4cf0c63df"
+}

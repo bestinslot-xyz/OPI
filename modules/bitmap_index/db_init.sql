@@ -9,6 +9,7 @@ CREATE UNIQUE INDEX bitmap_block_hashes_block_height_idx ON public.bitmap_block_
 CREATE TABLE public.bitmaps (
 	id bigserial NOT NULL,
 	inscription_id text NOT NULL,
+	inscription_number int4 NOT NULL,
 	bitmap_number int4 NOT NULL,
 	block_height int4 NOT NULL,
 	CONSTRAINT bitmaps_pk PRIMARY KEY (id)
@@ -32,4 +33,4 @@ CREATE TABLE public.bitmap_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT bitmap_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.bitmap_indexer_version (indexer_version, db_version) VALUES ('opi-bitmap-full-node v0.3.0', 3);
+INSERT INTO public.bitmap_indexer_version (indexer_version, db_version) VALUES ('opi-bitmap-full-node v1.0.0', 4);

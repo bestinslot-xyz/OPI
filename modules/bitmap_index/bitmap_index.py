@@ -12,8 +12,8 @@ import requests
 in_commit = False
 block_events_str = ""
 EVENT_SEPARATOR = "|"
-INDEXER_VERSION = "opi-bitmap-full-node v0.3.0"
-DB_VERSION = 3
+INDEXER_VERSION = "opi-bitmap-full-node v1.0.0"
+DB_VERSION = 4
 
 ## psycopg2 doesn't get decimal size from postgres and defaults to 28 which is not enough for brc-20 so we use long which is infinite for integers
 DEC2LONG = psycopg2.extensions.new_type(
@@ -29,16 +29,13 @@ db_host = os.getenv("DB_HOST") or "localhost"
 db_port = int(os.getenv("DB_PORT") or "5432")
 db_database = os.getenv("DB_DATABASE") or "postgres"
 db_password = os.getenv("DB_PASSWD")
-db_metaprotocol_user = os.getenv("DB_METAPROTOCOL_USER") or "postgres"
-db_metaprotocol_host = os.getenv("DB_METAPROTOCOL_HOST") or "localhost"
-db_metaprotocol_port = int(os.getenv("DB_METAPROTOCOL_PORT") or "5432")
-db_metaprotocol_database = os.getenv("DB_METAPROTOCOL_DATABASE") or "postgres"
-db_metaprotocol_password = os.getenv("DB_METAPROTOCOL_PASSWD")
 network_type = os.getenv("NETWORK_TYPE") or "mainnet"
+db_reader_url = os.getenv("DB_READER_API_URL") or "http://localhost:11030/"
 
 first_inscription_heights = {
   'mainnet': 767430,
   'testnet': 2413343,
+  'testnet4': 0,
   'signet': 112402,
   'regtest': 0,
 }
@@ -63,41 +60,74 @@ conn = psycopg2.connect(
 conn.autocommit = True
 cur = conn.cursor()
 
-conn_metaprotocol = psycopg2.connect(
-  host=db_metaprotocol_host,
-  port=db_metaprotocol_port,
-  database=db_metaprotocol_database,
-  user=db_metaprotocol_user,
-  password=db_metaprotocol_password)
-conn_metaprotocol.autocommit = True
-cur_metaprotocol = conn_metaprotocol.cursor()
 
-cur_metaprotocol.execute('SELECT network_type from ord_network_type LIMIT 1;')
-if cur_metaprotocol.rowcount == 0:
-  print("ord_network_type not found, main db needs to be recreated from scratch or fixed with index.js, please run index.js or main_index")
-  sys.exit(1)
+def get_block_hash_by_height(block_height):
+  global db_reader_url
+  data = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getBlockHashAndTs",
+    "params": [block_height]
+  }
+  r = requests.post(db_reader_url, json=data)
+  if r.status_code != 200:
+    print("Error while getting block hash by height: " + str(r.status_code))
+    raise Exception("Error while getting block hash by height: " + str(r.status_code))
+  js = r.json()
+  if 'error' in js:
+    print("Error while getting block hash by height: " + str(js['error']))
+    raise Exception("Error while getting block hash by height: " + str(js['error']))
+  if 'result' not in js:
+    print("Error while getting block hash by height: no result in response")
+    raise Exception("Error while getting block hash by height: no result in response")
+  if 'block_hash' not in js['result']:
+    print("Error while getting block hash by height: no block_hash in result")
+    raise Exception("Error while getting block hash by height: no block_hash in result")
+  return js['result']['block_hash']
 
-network_type_db = cur_metaprotocol.fetchone()[0]
-if network_type_db != network_type:
-  print("network_type mismatch between main index and bitmap index")
-  sys.exit(1)
+def get_ord_block_height():
+  global db_reader_url
+  data = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getLatestBlockHeight"
+  }
+  r = requests.post(db_reader_url, json=data)
+  if r.status_code != 200:
+    print("Error while getting ord block height: " + str(r.status_code))
+    raise Exception("Error while getting ord block height: " + str(r.status_code))
+  js = r.json()
+  if 'error' in js:
+    print("Error while getting ord block height: " + str(js['error']))
+    raise Exception("Error while getting ord block height: " + str(js['error']))
+  if 'result' not in js:
+    print("Error while getting ord block height: no result in response")
+    raise Exception("Error while getting ord block height: no result in response")
+  return js['result']
 
-cur_metaprotocol.execute('SELECT event_type, max_transfer_cnt from ord_transfer_counts;')
-if cur_metaprotocol.rowcount == 0:
-  print("ord_transfer_counts not found, please run index.js in main_index to fix db")
-  sys.exit(1)
-
-default_max_transfer_cnt = 0
-tx_limits = cur_metaprotocol.fetchall()
-for tx_limit in tx_limits:
-  if tx_limit[0] == 'default':
-    default_max_transfer_cnt = tx_limit[1]
-    break
-
-if default_max_transfer_cnt < 1:
-  print("default max_transfer_cnt is less than 1, bitmap_indexer requires at least 1, please recreate db from scratch and rerun ord with default tx limit set to 1 or more")
-  sys.exit(1)
-
+def get_bitmap_inscrs(block_height):
+  global db_reader_url
+  data = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getBlockBitmapInscrs",
+    "params": [block_height]
+  }
+  r = requests.post(db_reader_url, json=data)
+  if r.status_code != 200:
+    print("Error while getting ord bitmap inscrs: " + str(r.status_code))
+    raise Exception("Error while getting ord bitmap inscrs: " + str(r.status_code))
+  js = r.json()
+  if 'error' in js:
+    print("Error while getting ord bitmap inscrs: " + str(js['error']))
+    raise Exception("Error while getting ord bitmap inscrs: " + str(js['error']))
+  if 'result' not in js:
+    print("Error while getting ord bitmap inscrs: no result in response")
+    raise Exception("Error while getting ord bitmap inscrs: no result in response")
+  res = []
+  for inscr in js['result']:
+    res.append((inscr['inscription_id'], inscr['content_hex'], inscr['inscription_number']))
+  return res
 
 ## helper functions
 def get_bitmap_number(content_hex):
@@ -147,14 +177,14 @@ def index_block(block_height, current_block_hash):
   block_events_str = ""
   
   ## get text/plain inscrs from ord
-  cur_metaprotocol.execute('''SELECT oc.inscription_id, oc.text_content
-                              FROM ord_content oc
-                              LEFT JOIN ord_number_to_id onti on oc.inscription_id = onti.inscription_id
-                              WHERE oc.block_height = %s AND oc.text_content is not null AND
-                                    oc.content_type LIKE '746578742f706c61696e%%' AND
-                                    onti.inscription_number >= 0
-                              ORDER BY onti.inscription_number asc;''', (block_height,))
-  inscrs = cur_metaprotocol.fetchall()
+  # cur_metaprotocol.execute('''SELECT oc.inscription_id, oc.text_content
+  #                             FROM ord_content oc
+  #                             LEFT JOIN ord_number_to_id onti on oc.inscription_id = onti.inscription_id
+  #                             WHERE oc.block_height = %s AND oc.text_content is not null AND
+  #                                   oc.content_type LIKE '746578742f706c61696e%%' AND
+  #                                   onti.inscription_number >= 0
+  #                             ORDER BY onti.inscription_number asc;''', (block_height,))
+  inscrs = get_bitmap_inscrs(block_height)
   if len(inscrs) == 0:
     print("No new inscrs found for block " + str(block_height))
     update_event_hashes(block_height)
@@ -167,14 +197,15 @@ def index_block(block_height, current_block_hash):
     idx += 1
     if idx % 1000 == 0:
       print(idx, '/', len(inscrs))
-    inscr_id, content_hex = inscr
+    inscr_id, content_hex, inscr_num = inscr
     bitmap_number = get_bitmap_number(content_hex)
     if bitmap_number is None: continue
     if bitmap_number > block_height: 
       print("bitmap_number > block_height: " + str(bitmap_number) + " > " + str(block_height))
       continue
-    cur.execute('''INSERT INTO bitmaps (inscription_id, bitmap_number, block_height) VALUES (%s, %s, %s) ON CONFLICT (bitmap_number) DO NOTHING RETURNING id;''', 
-                (inscr_id, bitmap_number, block_height))
+    cur.execute('''INSERT INTO bitmaps (inscription_id, inscription_number, bitmap_number, block_height) VALUES (%s, %s, %s, %s) ON CONFLICT (bitmap_number) 
+                    DO NOTHING RETURNING id;''', 
+                (inscr_id, inscr_num, bitmap_number, block_height))
     if cur.rowcount == 0: 
       print("bitmap_number already exists: " + str(bitmap_number))
       continue
@@ -195,17 +226,15 @@ def check_for_reorg():
   if cur.rowcount == 0: return None ## nothing indexed yet
   last_block = cur.fetchone()
 
-  cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (last_block[0],))
-  last_block_ord = cur_metaprotocol.fetchone()
-  if last_block_ord[1] == last_block[1]: return None ## last block hashes are the same, no reorg
+  last_block_ord = get_block_hash_by_height(last_block[0])
+  if last_block_ord == last_block[1]: return None ## last block hashes are the same, no reorg
 
   print("REORG DETECTED!!")
   cur.execute('select block_height, block_hash from bitmap_block_hashes order by block_height desc limit 10;')
   hashes = cur.fetchall() ## get last 10 hashes
   for h in hashes:
-    cur_metaprotocol.execute('select block_height, block_hash from block_hashes where block_height = %s;', (h[0],))
-    block = cur_metaprotocol.fetchone()
-    if block[1] == h[1]: ## found reorg height by a matching hash
+    block = get_block_hash_by_height(h[0])
+    if block == h[1]: ## found reorg height by a matching hash
       print("REORG HEIGHT FOUND: " + str(h[0]))
       return h[0]
   
@@ -300,8 +329,7 @@ check_if_there_is_residue_from_last_run()
 while True:
   check_if_there_is_residue_from_last_run()
   ## check if a new block is indexed
-  cur_metaprotocol.execute('''SELECT coalesce(max(block_height), -1) as max_height from block_hashes;''')
-  max_block_of_metaprotocol_db = cur_metaprotocol.fetchone()[0]
+  max_block_of_metaprotocol_db = get_ord_block_height()
   cur.execute('''select max(block_height) from bitmap_block_hashes;''')
   row = cur.fetchone()
   current_block = None
@@ -313,8 +341,7 @@ while True:
     continue
   
   print("Processing block %s" % current_block)
-  cur_metaprotocol.execute('select block_hash from block_hashes where block_height = %s;', (current_block,))
-  current_block_hash = cur_metaprotocol.fetchone()[0]
+  current_block_hash = get_block_hash_by_height(current_block)
   reorg_height = check_for_reorg()
   if reorg_height is not None:
     print("Rolling back to ", reorg_height)

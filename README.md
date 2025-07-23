@@ -24,6 +24,8 @@ EVENT_SEPARATOR = '|'
 ## ticker_lowercase = lower(ticker)
 ## ticker_original is the ticker on inscription
 for event in block_events:
+  if event is 'predeploy-inscribe':
+    block_str += 'predeploy-inscribe;<inscr_id>;<predeployer_pkscript>;<hash>;<block_height>' + EVENT_SEPARATOR
   if event is 'deploy-inscribe':
     block_str += 'deploy-inscribe;<inscr_id>;<deployer_pkscript>;<ticker_lowercase>;<ticker_original>;<max_supply>;<decimals>;<limit_per_mint>;<is_self_mint("true" or "false")>' + EVENT_SEPARATOR
   if event is 'mint-inscribe':
@@ -33,6 +35,22 @@ for event in block_events:
   if event is 'transfer-transfer':
     ## if sent as fee, sent_pkscript is empty
     block_str += 'transfer-transfer;<inscr_id>;<source_pkscript>;<sent_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
+  if event is 'brc20prog-deploy-inscribe':
+    block_str += 'brc20prog-deploy-inscribe;<inscr_id>;<source_pkscript>;<data>;<base64_data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-deploy-transfer':
+    block_str += 'brc20prog-deploy-transfer;<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
+  if event is 'brc20prog-call-inscribe':
+    block_str += '<inscr_id>;<source_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-call-transfer':
+    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-transact-inscribe':
+    block_str += '<inscr_id>;<source_pkscript>;<data>;<base64_data>' + EVENT_SEPARATOR
+  if event is 'brc20prog-transact-transfer':
+    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
+  if event is 'brc20prog-withdraw-inscribe':
+    block_str += '<inscr_id>;<source_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
+  if event is 'brc20prog-withdraw-transfer':
+    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
 
 if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
 block_hash = sha256_hex(block_str)
@@ -95,9 +113,8 @@ cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
 
 For detailed installation guides:
 - Ubuntu: [installation guide](INSTALL.ubuntu.md)
-- Windows: [installation guide](INSTALL.windows.md)
 
-OPI uses PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
+Modules use PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
 
 **Build ord:**
 ```bash
@@ -106,64 +123,43 @@ cd ord; cargo build --release;
 
 **Install node modules**
 ```bash
-cd modules/main_index; npm install;
-cd ../brc20_api; npm install;
+cd modules/brc20_api; npm install;
 cd ../bitmap_api; npm install;
 ```
-*Optional:*
-Remove the following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
-```js
-if (pubkey && pubkey.length) {
-  if (!(0, ecc_lib_1.getEccLib)().isXOnlyPoint(pubkey))
-    throw new TypeError('Invalid pubkey for p2tr');
-}
-```
-Otherwise, it cannot decode some addresses such as `512057cd4cfa03f27f7b18c2fe45fe2c2e0f7b5ccb034af4dec098977c28562be7a2`
 
-**Install python libraries**
+**Create a virtual environment and install python libraries**
 ```bash
-pip3 install python-dotenv;
-pip3 install psycopg2-binary;
-python3 -m pip install json5 stdiomask;
+cd modules;
+python3 -m venv .venv;
+source .venv/bin/activate;
+pip3 install -r requirements.txt;
 ```
 
 **Setup .env files and DBs**
 
-Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
-
-# (Optional) Restore from an online backup for faster initial sync
-
-1) Install dependencies: (pbzip2 is optional but greatly impoves decompress speed)
-
-```bash
-sudo apt update
-sudo apt install postgresql-client-common
-sudo apt install postgresql-client-14
-sudo apt install pbzip2
-
-python3 -m pip install boto3
-python3 -m pip install tqdm
-```
-
-2) Run `restore.py`
-
-```bash
-cd modules/;
-python3 restore.py;
-```
+Run `reset_init.py` in each module folder to initialise .env file, databases and set other necessary files.
 
 # Run
 
-**Main Meta-Protocol Indexer**
+First, run ordinals indexer to fill the inscription database:
+
+**Main Meta-Protocol Indexer / Ord and DB Server**
 ```bash
-cd modules/main_index;
-node index.js;
+cd ord/target/release;
+./ord --data-dir . index run
 ```
 
+> [!NOTE]
+> For ord to reach the bitcoin rpc server correctly, pass `--bitcoin-rpc-url`, `--bitcoin-rpc-username` and `--bitcoin-rpc-password` parameters before `index run`. To run on signet, add `--signet` as well.
+
 **BRC-20 Indexer**
+
+If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running BRC-20 indexer.
+
 ```bash
 cd modules/brc20_index;
-python3 brc20_index.py;
+cargo build --release;
+./target/release/brc20-index;
 ```
 
 **BRC-20 API**
@@ -202,4 +198,3 @@ node api.js;
 - Update the repo (`git pull`)
 - Recompile ord (`cd ord; cargo build --release;`)
 - Re-run all indexers and apis
-- If rebuild is needed, you can run `restore.py` for faster initial sync

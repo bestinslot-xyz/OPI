@@ -21,7 +21,6 @@ if init_env:
   DB_PASSWD=""
   DB_SSL="true"
   DB_MAX_CONNECTIONS=10
-  USE_EXTRA_TABLES="true"
   API_HOST="127.0.0.1"
   API_PORT="8000"
   API_TRUSTED_PROXY_CNT="0"
@@ -40,7 +39,6 @@ if init_env:
     DB_PORT = env.get("DB_PORT") or "5432"
     DB_DATABASE = env.get("DB_DATABASE") or "postgres"
     DB_PASSWD = env.get("DB_PASSWD")
-    USE_EXTRA_TABLES = env.get("CREATE_EXTRA_TABLES") or "false"
   else:
     res = input("BRC20 Postgres DB username (Default: postgres): ")
     if res != '':
@@ -56,9 +54,6 @@ if init_env:
       DB_DATABASE = res
     res = stdiomask.getpass("BRC20 Postgres DB password: ")
     DB_PASSWD = res
-    res = input("Use extra tables (Default: true): ")
-    if res != '':
-      USE_EXTRA_TABLES = res
   res = input("BRC20 Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':
     DB_SSL = res
@@ -82,7 +77,6 @@ if init_env:
   f.write("DB_PASSWD=\"" + DB_PASSWD + "\"\n")
   f.write("DB_SSL=\"" + DB_SSL + "\"\n")
   f.write("DB_MAX_CONNECTIONS=" + str(DB_MAX_CONNECTIONS) + "\n")
-  f.write("USE_EXTRA_TABLES=\"" + USE_EXTRA_TABLES + "\"\n")
   f.write("API_HOST=\"" + API_HOST + "\"\n")
   f.write("API_PORT=\"" + API_PORT + "\"\n")
   f.write("API_TRUSTED_PROXY_CNT=\"" + API_TRUSTED_PROXY_CNT + "\"\n")

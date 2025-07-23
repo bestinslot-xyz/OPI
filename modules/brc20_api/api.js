@@ -20,8 +20,6 @@ var db_pool = new Pool({
   ssl: process.env.DB_SSL == 'true' ? true : false
 })
 
-var use_extra_tables = process.env.USE_EXTRA_TABLES == 'true' ? true : false
-
 const api_port = parseInt(process.env.API_PORT || "8000")
 const api_host = process.env.API_HOST || '127.0.0.1'
 
@@ -200,45 +198,23 @@ app.get('/v1/brc20/get_current_balance_of_wallet', async (request, response) => 
     let tick = request.query.ticker.toLowerCase()
 
     let current_block_height = await get_block_height_of_db()
-    let balance = null
-    if (!use_extra_tables) {
-      let query = ` select overall_balance, available_balance
-                    from brc20_historic_balances
-                    where pkscript = $1
-                      and tick = $2
-                    order by id desc
-                    limit 1;`
-      let params = [pkscript, tick]
-      if (address != '') {
-        query = query.replace('pkscript', 'wallet')
-        params = [address, tick]
-      }
-
-      let res = await query_db(query, params)
-      if (res.rows.length == 0) {
-        response.status(400).send({ error: 'no balance found', result: null })
-        return
-      }
-      balance = res.rows[0]
-    } else {
-      let query = ` select overall_balance, available_balance
-                    from brc20_current_balances
-                    where pkscript = $1
-                      and tick = $2
-                    limit 1;`
-      let params = [pkscript, tick]
-      if (address != '') {
-        query = query.replace('pkscript', 'wallet')
-        params = [address, tick]
-      }
-
-      let res = await query_db(query, params)
-      if (res.rows.length == 0) {
-        response.status(400).send({ error: 'no balance found', result: null })
-        return
-      }
-      balance = res.rows[0]
+    let query = ` select overall_balance, available_balance
+                  from brc20_current_balances
+                  where pkscript = $1
+                    and tick = $2
+                  limit 1;`
+    let params = [pkscript, tick]
+    if (address != '') {
+      query = query.replace('pkscript', 'wallet')
+      params = [address, tick]
     }
+
+    let res = await query_db(query, params)
+    if (res.rows.length == 0) {
+      response.status(400).send({ error: 'no balance found', result: null })
+      return
+    }
+    let balance = res.rows[0]
 
     balance.block_height = current_block_height
     response.send({ error: null, result: balance })
@@ -251,10 +227,6 @@ app.get('/v1/brc20/get_current_balance_of_wallet', async (request, response) => 
 app.get('/v1/brc20/get_valid_tx_notes_of_wallet', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
-    if (!use_extra_tables) {
-      response.status(400).send({ error: 'not supported', result: null })
-      return
-    }
 
     let address = request.query.address || ''
     let pkscript = request.query.pkscript || ''
@@ -290,10 +262,6 @@ app.get('/v1/brc20/get_valid_tx_notes_of_wallet', async (request, response) => {
 app.get('/v1/brc20/get_valid_tx_notes_of_ticker', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
-    if (!use_extra_tables) {
-      response.status(400).send({ error: 'not supported', result: null })
-      return
-    }
 
     let tick = request.query.ticker.toLowerCase() || ''
 
@@ -324,10 +292,6 @@ app.get('/v1/brc20/get_valid_tx_notes_of_ticker', async (request, response) => {
 app.get('/v1/brc20/holders', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
-    if (!use_extra_tables) {
-      response.status(400).send({ error: 'not supported', result: null })
-      return
-    }
 
     let tick = request.query.ticker.toLowerCase() || ''
 
@@ -401,81 +365,38 @@ app.get('/v1/brc20/get_hash_of_all_current_balances', async (request, response) 
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
     let current_block_height = await get_block_height_of_db()
-    let hash_hex = null
-    if (!use_extra_tables) {
-      let query = ` with tempp as (
-                      select max(id) as id
-                      from brc20_historic_balances
-                      where block_height <= $1
-                      group by pkscript, tick
-                    )
-                    select bhb.pkscript, bhb.tick, bhb.overall_balance, bhb.available_balance
-                    from tempp t
-                    left join brc20_historic_balances bhb on bhb.id = t.id
-                    order by bhb.pkscript asc, bhb.tick asc;`
-      let params = [current_block_height]
+    let query = ` select pkscript, tick, overall_balance, available_balance
+                  from brc20_current_balances
+                  order by pkscript asc, tick asc;`
+    let params = []
 
-      let res = await query_db(query, params)
-      res.rows.sort((a, b) => {
-        if (a.pkscript < b.pkscript) {
+    let res = await query_db(query, params)
+    res.rows.sort((a, b) => {
+      if (a.pkscript < b.pkscript) {
+        return -1
+      } else if (a.pkscript > b.pkscript) {
+        return 1
+      } else {
+        if (a.tick < b.tick) {
           return -1
-        } else if (a.pkscript > b.pkscript) {
+        } else if (a.tick > b.tick) {
           return 1
         } else {
-          if (a.tick < b.tick) {
-            return -1
-          } else if (a.tick > b.tick) {
-            return 1
-          } else {
-            return 0
-          }
+          return 0
         }
-      })
-      let whole_str = ''
-      res.rows.forEach((row) => {
-        if (parseInt(row.overall_balance) != 0) {
-          whole_str += row.pkscript + ';' + row.tick + ';' + row.overall_balance + ';' + row.available_balance + EVENT_SEPARATOR
-        }
-      })
-      whole_str = whole_str.slice(0, -1)
-      // get sha256 hash hex of the whole string
-      const hash = crypto.createHash('sha256');
-      hash.update(whole_str);
-      hash_hex = hash.digest('hex');
-    } else {
-      let query = ` select pkscript, tick, overall_balance, available_balance
-                    from brc20_current_balances
-                    order by pkscript asc, tick asc;`
-      let params = []
-
-      let res = await query_db(query, params)
-      res.rows.sort((a, b) => {
-        if (a.pkscript < b.pkscript) {
-          return -1
-        } else if (a.pkscript > b.pkscript) {
-          return 1
-        } else {
-          if (a.tick < b.tick) {
-            return -1
-          } else if (a.tick > b.tick) {
-            return 1
-          } else {
-            return 0
-          }
-        }
-      })
-      let whole_str = ''
-      res.rows.forEach((row) => {
-        if (parseInt(row.overall_balance) != 0) {
-          whole_str += row.pkscript + ';' + row.tick + ';' + row.overall_balance + ';' + row.available_balance + EVENT_SEPARATOR
-        }
-      })
-      whole_str = whole_str.slice(0, -1)
-      // get sha256 hash hex of the whole string
-      const hash = crypto.createHash('sha256');
-      hash.update(whole_str);
-      hash_hex = hash.digest('hex');
-    }
+      }
+    })
+    let whole_str = ''
+    res.rows.forEach((row) => {
+      if (parseInt(row.overall_balance) != 0) {
+        whole_str += row.pkscript + ';' + row.tick + ';' + row.overall_balance + ';' + row.available_balance + EVENT_SEPARATOR
+      }
+    })
+    whole_str = whole_str.slice(0, -1)
+    // get sha256 hash hex of the whole string
+    const hash = crypto.createHash('sha256');
+    hash.update(whole_str);
+    let hash_hex = hash.digest('hex');
 
     let res2 = await query_db('select indexer_version from brc20_indexer_version;')
     let indexer_version = res2.rows[0].indexer_version

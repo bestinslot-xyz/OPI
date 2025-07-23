@@ -159,7 +159,7 @@ impl Batch {
       );
     }
 
-    let minimum = Rune::minimum_at_height(wallet.chain().into(), Height(reveal_height));
+    let minimum = Rune::minimum_at_height(wallet.chain().into(), wallet.chain() == Chain::Testnet4, Height(reveal_height));
 
     ensure!(
       rune >= minimum,

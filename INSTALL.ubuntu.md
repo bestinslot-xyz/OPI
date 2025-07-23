@@ -16,6 +16,9 @@ mkdir -p /mnt/HC_Volume/bitcoin_chain
 bitcoin-core.daemon -txindex=1 -datadir="/mnt/HC_Volume/bitcoin_chain" -rest
 ```
 
+> [!WARNING]
+> If running on Signet, add `-signet` to `bitcoin-core.daemon` command, if you're planning on running BRC2.0 Programmable Module, also enable RPC authentication by adding `-rpcuser=<USER>` and `-rpcpassword=<PASSWORD>`.
+
 ## Installing PostgreSQL
 
 1) First install and run postgresql binaries.
@@ -111,105 +114,78 @@ rustup update stable
 ## Cloning the repository
 
 ```bash
-git clone https://github.com/bestinslot-xyz/OPI.git
+git clone https://github.com/bestinslot-xyz/OPI.git && cd OPI
 ```
+
+> [!WARNING]
+> If running on Signet with BRC2.0, clone the experimental signet branch by using:
+> ```
+> git clone -b experimental-signet-brc20-prog https://github.com/bestinslot-xyz/OPI.git && cd OPI
+> ```
 
 All next shell script groups assumes that you are in OPI folder cloned by above command.
 
 ## Installing node modules
 ```bash
-cd modules/main_index; npm install;
-cd ../brc20_api; npm install;
+cd modules/brc20_api; npm install;
 cd ../bitmap_api; npm install;
 cd ../pow20_api; npm install;
 cd ../sns_api; npm install;
+cd ../..;
 ```
-*(Optional):*
-Remove the following from `modules/main_index/node_modules/bitcoinjs-lib/src/payments/p2tr.js`
-```js
-if (pubkey && pubkey.length) {
-  if (!(0, ecc_lib_1.getEccLib)().isXOnlyPoint(pubkey))
-    throw new TypeError('Invalid pubkey for p2tr');
-}
-```
-Otherwise, it cannot decode some addresses such as `512057cd4cfa03f27f7b18c2fe45fe2c2e0f7b5ccb034af4dec098977c28562be7a2`
 
 ## Installing python libraries
 
-1) If you don't have pip installed, start by installing pip. [guide](https://pip.pypa.io/en/stable/installation/).
-
+**Create a virtual environment and install python libraries**
 ```bash
-wget https://bootstrap.pypa.io/get-pip.py
-python3 get-pip.py
-rm get-pip.py
-```
-
-or
-
-```sh
-sudo apt install python3-pip
-```
-
-2) Install dependencies
-
-```bash
-python3 -m pip install python-dotenv;
-python3 -m pip install psycopg2-binary;
-python3 -m pip install json5;
-python3 -m pip install stdiomask;
-python3 -m pip install requests;
+sudo apt install python3.12-venv -y;
+cd modules;
+python3 -m venv .venv;
+source .venv/bin/activate;
+pip3 install -r requirements.txt;
+cd ..;
 ```
 
 ## Build ord:
 
 ```bash
-sudo apt install build-essential;
+sudo apt install build-essential libssl-dev pkg-config clang -y;
 cd ord; cargo build --release;
 ```
-
-**Do not run ord binary directly. Main indexer will run ord periodically**
 
 ## Initialise .env configuration and databases
 
 Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
 
-# (Optional) Restore from an online backup for faster initial sync
-
-1) Install dependencies: (pbzip2 is optional but greatly impoves decompress speed)
-
-```bash
-sudo apt update
-sudo apt install postgresql-client-common
-sudo apt install postgresql-client-14
-sudo apt install pbzip2
-
-python3 -m pip install boto3
-python3 -m pip install tqdm
-```
-
-2) Run `restore.py`
-
-```bash
-cd modules/;
-python3 restore.py;
-```
-
 # Run
 
 Postgres will auto run on system start. \
 Bitcoind needs to be run with `-txindex=1` flag before running main indexer. \
-**Do not run ord binary directly. Main indexer will run ord periodically**
+**Here, we run the ord binary directly. Ord also serves an RPC server.**
 
 **Main Meta-Protocol Indexer**
 ```bash
-cd modules/main_index;
-node index.js;
+cd ord/target/release;
+ord --data-dir . index run;
 ```
 
+> [!NOTE]
+> For ord to reach the bitcoin rpc server correctly, pass `--bitcoin-rpc-url`, `--bitcoin-rpc-username` and `--bitcoin-rpc-password` parameters before `index run`. To run on signet, add `--signet` as well.
+
 **BRC-20 Indexer**
+
+> [!WARNING]
+> If running BRC2.0, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+> 
+> BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`.
+> 
+> BRC2.0 needs to be running before starting the brc20 indexer. When running `reset_init.py`, enable BRC2.0 by setting the variable to true when asked.
+
 ```bash
 cd modules/brc20_index;
-python3 brc20_index.py;
+cargo build --release;
+cd target/release;
+./brc20-index;
 ```
 
 **BRC-20 API**
@@ -272,4 +248,3 @@ node api.js;
 - Update the repo (`git pull`)
 - Recompile ord (`cd ord; cargo build --release;`)
 - Re-run all indexers and apis
-- If rebuild is needed, you can run `restore.py` for faster initial sync

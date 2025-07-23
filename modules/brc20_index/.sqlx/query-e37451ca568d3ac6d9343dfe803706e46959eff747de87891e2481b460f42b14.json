@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE brc20_tickers SET remaining_supply = remaining_supply + $1 WHERE tick = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Numeric",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e37451ca568d3ac6d9343dfe803706e46959eff747de87891e2481b460f42b14"
+}

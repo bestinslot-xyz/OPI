@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n                overall_balance, available_balance\n                FROM brc20_historic_balances\n                WHERE pkscript = $1 AND tick = $2\n                ORDER BY block_height DESC, id DESC LIMIT 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "overall_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 1,
+        "name": "available_balance",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "077c325dcb6887bd5b4edbdf2a7ba9aa7ebaf03ebc0835d2c3460ba6ea0cf336"
+}

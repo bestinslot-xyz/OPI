@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tick, original_tick, max_supply, remaining_supply, burned_supply, limit_per_mint, decimals, is_self_mint, deploy_inscription_id, block_height FROM brc20_tickers",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tick",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "original_tick",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "max_supply",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 3,
+        "name": "remaining_supply",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "burned_supply",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "limit_per_mint",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "decimals",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_self_mint",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "deploy_inscription_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "block_height",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2c2b917d0555a11b2b9817f8065c4a9cb74d7dabc398ab0b1027a91dd54b0a1b"
+}

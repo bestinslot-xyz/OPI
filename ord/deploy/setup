@@ -10,36 +10,9 @@ BRANCH=$3
 COMMIT=$4
 REVISION="ord-$BRANCH-$COMMIT"
 
-case $CHAIN in
-  main)
-    CSP_ORIGIN=ordinals.com
-    ;;
-  regtest)
-    CSP_ORIGIN=regtest.ordinals.com
-    ;;
-  signet)
-    CSP_ORIGIN=signet.ordinals.com
-    ;;
-  test)
-    CSP_ORIGIN=testnet.ordinals.com
-    ;;
-  *)
-    echo "Unknown chain: $CHAIN"
-    exit 1
-    ;;
-esac
+export DEBIAN_FRONTEND=noninteractive
 
 touch ~/.hushlogin
-
-sed -i -E 's/#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-
-mkdir -p \
-  /etc/systemd/system/bitcoind.service.d \
-  /etc/systemd/system/ord.service.d
-
-printf "[Service]\nEnvironment=CHAIN=%s\nEnvironment=CSP_ORIGIN=%s\n" $CHAIN $CSP_ORIGIN \
-  | tee /etc/systemd/system/bitcoind.service.d/override.conf \
-  > /etc/systemd/system/ord.service.d/override.conf
 
 hostnamectl set-hostname $DOMAIN
 
@@ -54,6 +27,8 @@ apt-get install --yes \
   ufw \
   vim
 
+apt-get remove --yes --auto-remove
+
 ufw default allow outgoing
 ufw default deny incoming
 
@@ -64,22 +39,55 @@ ufw allow ssh
 
 case $CHAIN in
   main)
+    COOKIE_FILE_DIR=/var/lib/bitcoind
+    CSP_ORIGIN=ordinals.com
     ufw allow 8333
     ;;
   regtest)
+    COOKIE_FILE_DIR=/var/lib/bitcoind/regtest
+    CSP_ORIGIN=regtest.ordinals.com
     ufw allow 18444
     ;;
   signet)
+    COOKIE_FILE_DIR=/var/lib/bitcoind/signet
+    CSP_ORIGIN=signet.ordinals.com
     ufw allow 38333
     ;;
   test)
+    COOKIE_FILE_DIR=/var/lib/bitcoind/testnet3
+    CSP_ORIGIN=testnet.ordinals.com
     ufw allow 18333
+    ;;
+  testnet4)
+    COOKIE_FILE_DIR=/var/lib/bitcoind/testnet4
+    CSP_ORIGIN=testnet4.ordinals.com
+    ufw allow 48333
     ;;
   *)
     echo "Unknown chain: $CHAIN"
     exit 1
     ;;
 esac
+
+mkdir -p \
+  /etc/systemd/system/bitcoind.service.d \
+  /etc/systemd/system/ord.service.d
+
+OVERRIDE=/etc/systemd/system/ord.service.d/override.conf
+
+echo '[Service]' > $OVERRIDE
+echo "Environment=CHAIN=$CHAIN" >> $OVERRIDE
+echo "Environment=CSP_ORIGIN=$CSP_ORIGIN" >> $OVERRIDE
+
+if [[ $CHAIN == main && $DOMAIN != charlie.ordinals.net ]]; then
+  echo Environment=ORD_SERVER_DISABLE_JSON_API=true >> $OVERRIDE
+fi
+
+cp $OVERRIDE /etc/systemd/system/bitcoind.service.d/override.conf
+
+sed -i -E 's/#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+sshd -t
+systemctl restart sshd
 
 ufw --force enable
 
@@ -88,6 +96,8 @@ if ! which bitcoind; then
 fi
 
 bitcoind --version
+
+rm -f /var/lib/bitcoind/settings.json
 
 if [[ ! -e ~/.cargo/env ]]; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -116,25 +126,6 @@ fi
 systemctl daemon-reload
 systemctl enable bitcoind
 systemctl restart bitcoind
-
-case $CHAIN in
-  main)
-    COOKIE_FILE_DIR=/var/lib/bitcoind
-    ;;
-  regtest)
-    COOKIE_FILE_DIR=/var/lib/bitcoind/regtest
-    ;;
-  signet)
-    COOKIE_FILE_DIR=/var/lib/bitcoind/signet
-    ;;
-  test)
-    COOKIE_FILE_DIR=/var/lib/bitcoind/testnet3
-    ;;
-  *)
-    echo "Unknown chain: $CHAIN"
-    exit 1
-    ;;
-esac
 
 while [[ ! -f $COOKIE_FILE_DIR/.cookie ]]; do
   echo "Waiting for bitcoind…"

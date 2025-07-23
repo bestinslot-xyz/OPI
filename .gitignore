@@ -2,3 +2,7 @@
 ._.DS_Store
 **/.DS_Store
 **/._.DS_Store
+.venv
+**/venv/**
+**/__pycache__/**
+.env

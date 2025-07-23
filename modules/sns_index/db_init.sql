@@ -49,4 +49,4 @@ CREATE TABLE public.sns_names_indexer_version (
 	db_version int4 NOT NULL,
 	CONSTRAINT sns_names_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.sns_names_indexer_version (indexer_version, db_version) VALUES ('opi-sns-names-open-source v0.3.0', 3);
+INSERT INTO public.sns_names_indexer_version (indexer_version, db_version) VALUES ('opi-sns-names-full-node v1.0.0', 4);
