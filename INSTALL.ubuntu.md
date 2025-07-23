@@ -146,7 +146,7 @@ pip3 install -r requirements.txt;
 ## Build ord:
 
 ```bash
-sudo apt install build-essential;
+sudo apt install build-essential libssl-dev pkg-config clang -y;
 cd ord; cargo build --release;
 ```
 
