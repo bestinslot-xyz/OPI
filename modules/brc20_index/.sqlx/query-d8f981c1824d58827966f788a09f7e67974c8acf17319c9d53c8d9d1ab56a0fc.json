@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_current_balances (pkscript, wallet, tick, overall_balance, available_balance, block_height) VALUES ($1, $2, $3, $4, $5, $6)\n                     ON CONFLICT (pkscript, tick) \n                     DO UPDATE SET overall_balance = EXCLUDED.overall_balance\n                                , available_balance = EXCLUDED.available_balance\n                                , block_height = EXCLUDED.block_height;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Numeric",
+        "Numeric",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d8f981c1824d58827966f788a09f7e67974c8acf17319c9d53c8d9d1ab56a0fc"
+}

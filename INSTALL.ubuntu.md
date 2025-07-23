@@ -131,22 +131,25 @@ cd modules/brc20_api; npm install;
 cd ../bitmap_api; npm install;
 cd ../pow20_api; npm install;
 cd ../sns_api; npm install;
+cd ../..;
 ```
 
 ## Installing python libraries
 
 **Create a virtual environment and install python libraries**
 ```bash
+sudo apt install python3.12-venv -y;
 cd modules;
 python3 -m venv .venv;
 source .venv/bin/activate;
 pip3 install -r requirements.txt;
+cd ..;
 ```
 
 ## Build ord:
 
 ```bash
-sudo apt install build-essential;
+sudo apt install build-essential libssl-dev pkg-config clang -y;
 cd ord; cargo build --release;
 ```
 

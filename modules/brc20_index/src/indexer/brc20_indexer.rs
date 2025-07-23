@@ -10,15 +10,16 @@ use tokio::task::JoinHandle;
 
 use crate::{
     config::{
-        AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_OP_RETURN_PKSCRIPT,
-        BRC20_PROG_VERSION, Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION,
-        DECIMALS_KEY, EVENT_SEPARATOR, HASH_KEY, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY,
-        MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET, OP_RETURN, OPERATION_BRC20_PROG_CALL,
-        OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
-        OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_BRC20_PROG_TRANSACT,
-        OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
-        OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW, PREDEPLOY_BLOCK_HEIGHT_DELAY,
-        PROTOCOL_BRC20, PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
+        AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_MINE_BATCH_SIZE,
+        BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION, Brc20IndexerConfig,
+        CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY, EVENT_SEPARATOR, HASH_KEY,
+        INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET,
+        OP_RETURN, OPERATION_BRC20_PROG_CALL, OPERATION_BRC20_PROG_CALL_SHORT,
+        OPERATION_BRC20_PROG_DEPLOY, OPERATION_BRC20_PROG_DEPLOY_SHORT,
+        OPERATION_BRC20_PROG_TRANSACT, OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY,
+        OPERATION_KEY, OPERATION_MINT, OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
+        PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20,
+        PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
         SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
     },
     database::{Brc20Balance, OpiDatabase, TransferValidity, get_brc20_database},
@@ -99,21 +100,26 @@ impl Brc20Indexer {
             let brc20_prog_block_height =
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
 
-            if brc20_prog_block_height == 0 {
-                self.brc20_prog_client
-                    .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
-                    .await?;
-            }
-            if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height {
-                self.brc20_prog_client
-                    .brc20_mine(
-                        (self.config.first_brc20_prog_phase_one_height
-                            - brc20_prog_block_height
-                            - 1) as u64,
-                        0,
-                    )
-                    .await?;
-                self.brc20_prog_client.brc20_commit_to_database().await?;
+            self.brc20_prog_client
+                .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
+                .await?;
+
+            if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height - 1 {
+                let mut current_prog_height = brc20_prog_block_height;
+                while current_prog_height < self.config.first_brc20_prog_phase_one_height - 1 {
+                    let next_prog_height = (current_prog_height + BRC20_PROG_MINE_BATCH_SIZE)
+                        .min(self.config.first_brc20_prog_phase_one_height - 1);
+                    tracing::info!(
+                        "BRC20 Prog initialising from block height {} to {}",
+                        current_prog_height,
+                        next_prog_height
+                    );
+                    self.brc20_prog_client
+                        .brc20_mine((next_prog_height - current_prog_height) as u64, 0)
+                        .await?;
+                    self.brc20_prog_client.brc20_commit_to_database().await?;
+                    current_prog_height = next_prog_height;
+                }
             }
         }
 
@@ -507,7 +513,8 @@ impl Brc20Indexer {
 
             if operation == OPERATION_PREDEPLOY && transfer.old_satpoint.is_none() {
                 if block_height
-                    < self.config.first_brc20_prog_phase_one_height - PREDEPLOY_BLOCK_HEIGHT_DELAY
+                    < self.config.first_brc20_prog_phase_one_height
+                        - PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY
                 {
                     tracing::debug!(
                         "Skipping transfer {} as block height {} is too early",
@@ -526,8 +533,8 @@ impl Brc20Indexer {
                 };
 
                 let predeploy_event = PreDeployInscribeEvent {
-                    deployer_pk_script: transfer.new_pkscript.clone(),
-                    deployer_wallet: transfer.new_wallet.clone(),
+                    predeployer_pk_script: transfer.new_pkscript.clone(),
+                    predeployer_wallet: transfer.new_wallet.clone(),
                     hash: hash.to_string(),
                     block_height: block_height,
                 };
@@ -811,7 +818,9 @@ impl Brc20Indexer {
                         continue;
                     };
 
-                    let Ok(pkscript_bytes) = hex::decode(transfer.new_pkscript.as_str()) else {
+                    let Ok(pkscript_bytes) =
+                        hex::decode(predeploy_event.predeployer_pk_script.as_str())
+                    else {
                         tracing::debug!(
                             "Skipping transfer {} as pkscript is not a valid hex string",
                             transfer.inscription_id
@@ -819,13 +828,12 @@ impl Brc20Indexer {
                         continue;
                     };
 
-                    let salted_ticker = [
-                        original_ticker.as_bytes(),
-                        &salt_bytes,
-                        &pkscript_bytes,
-                    ].concat();
+                    let salted_ticker =
+                        [original_ticker.as_bytes(), &salt_bytes, &pkscript_bytes].concat();
 
-                    if predeploy_event.hash != sha256::digest(sha256::digest(&salted_ticker)) {
+                    if predeploy_event.hash
+                        != sha256::digest(hex::decode(sha256::digest(&salted_ticker))?)
+                    {
                         tracing::debug!(
                             "Skipping transfer {} as ticker hash does not match predeploy hash",
                             transfer.inscription_id

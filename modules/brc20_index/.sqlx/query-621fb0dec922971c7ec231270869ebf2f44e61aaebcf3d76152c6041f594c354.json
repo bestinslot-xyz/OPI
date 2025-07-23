@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM brc20_unused_txes WHERE inscription_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "621fb0dec922971c7ec231270869ebf2f44e61aaebcf3d76152c6041f594c354"
+}

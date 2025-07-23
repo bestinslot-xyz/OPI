@@ -147,6 +147,9 @@ pub const MAX_DECIMALS: u8 = 18;
 pub const MAX_AMOUNT: u128 = (2u128.pow(64) - 1) * 10u128.pow(18);
 
 pub const PREDEPLOY_BLOCK_HEIGHT_DELAY: i32 = 3;
+pub const PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY: i32 = 10;
+
+pub const BRC20_PROG_MINE_BATCH_SIZE: i32 = 50000;
 
 pub const EVENT_SEPARATOR: &str = "|";
 
@@ -156,7 +159,7 @@ pub const SELF_MINT_ENABLE_HEIGHT: i32 = 837090;
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 6;
 pub const EVENT_HASH_VERSION: i32 = 3;
-pub const BRC20_PROG_VERSION: &str = "0.9.0";
+pub const BRC20_PROG_VERSION: &str = "0.10.1";
 pub const INDEXER_VERSION: &str = "opi-brc20-full-node v0.5.0";
 
 fn get_bitcoin_network_type(network_type: &str) -> Network {

@@ -6,9 +6,9 @@ use super::Event;
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PreDeployInscribeEvent {
-    #[serde(rename = "deployer_pkScript")]
-    pub deployer_pk_script: String,
-    pub deployer_wallet: String,
+    #[serde(rename = "predeployer_pkScript")]
+    pub predeployer_pk_script: String,
+    pub predeployer_wallet: String,
     pub hash: String,
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub block_height: i32,
@@ -28,7 +28,7 @@ impl Event for PreDeployInscribeEvent {
             "{};{};{};{};{}",
             Self::event_name(),
             inscription_id,
-            self.deployer_pk_script,
+            self.predeployer_pk_script,
             self.hash,
             self.block_height,
         )

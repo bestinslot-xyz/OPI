@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_unused_txes (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)\n                        VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (inscription_id) DO NOTHING;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Numeric",
+        "Text",
+        "Text",
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b21a8c5b1ce76dfebae23f5c99b38031a72a10e32eb651f37938cbb26bc6ea98"
+}
