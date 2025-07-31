@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 base64 = "0.22.1"
 bitcoin = "0.32.6"
-brc20-prog = "0.10.1"
+brc20-prog = "0.10.2"
 db_reader = { path = "../../ord/db_reader", default-features = false }
 dotenvy = "0.15.7"
 hex = "0.4.3"
