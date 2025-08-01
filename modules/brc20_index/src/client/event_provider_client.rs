@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Brc20IndexerConfig, EVENT_HASH_VERSION, OPI_URL};
@@ -7,6 +9,8 @@ pub struct EventProviderClient {
     event_providers: Vec<EventProvider>,
     network_type: String,
 }
+
+const RETRY_COUNT: i32 = 10;
 
 impl EventProviderClient {
     pub fn new(config: &Brc20IndexerConfig) -> Result<Self, Box<dyn std::error::Error>> {
@@ -37,7 +41,26 @@ impl EventProviderClient {
         Ok(())
     }
 
-    pub async fn get_block_info(
+    pub async fn get_block_info_with_retries(
+        &mut self,
+        block_height: i32,
+    ) -> Result<BlockData, Box<dyn Error>> {
+        let mut retries = 0;
+        loop {
+            match self.get_block_info(block_height).await {
+                Ok(data) => return Ok(data),
+                Err(e) => {
+                    if retries >= RETRY_COUNT {
+                        return Err(e.into());
+                    }
+                    retries += 1;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+
+    async fn get_block_info(
         &mut self,
         block_height: i32,
     ) -> Result<BlockData, Box<dyn std::error::Error>> {
@@ -59,7 +82,25 @@ impl EventProviderClient {
         response.data.ok_or("Block data not found".into())
     }
 
-    pub async fn get_best_verified_block(&mut self) -> Result<i32, Box<dyn std::error::Error>> {
+    pub async fn get_best_verified_block_with_retries(
+        &mut self,
+    ) -> Result<i32, Box<dyn Error>> {
+        let mut retries = 0;
+        loop {
+            match self.get_best_verified_block().await {
+                Ok(block) => return Ok(block),
+                Err(e) => {
+                    if retries >= RETRY_COUNT {
+                        return Err(e);
+                    }
+                    retries += 1;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+
+    async fn get_best_verified_block(&mut self) -> Result<i32, Box<dyn std::error::Error>> {
         let response = self
             .client
             .get(format!(
@@ -87,7 +128,7 @@ impl EventProviderClient {
         &mut self,
         block_height: i64,
     ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
-        for _ in 0..10 {
+        for _ in 0..RETRY_COUNT {
             let event_provider = self
                 .event_providers
                 .get((rand::random::<u16>() % self.event_providers.len() as u16) as usize)
@@ -106,13 +147,13 @@ impl EventProviderClient {
                 Ok(resp) => match resp.json().await {
                     Ok(data) => data,
                     Err(e) => {
-                        eprintln!("Error parsing JSON response: {}", e);
+                        tracing::error!("Error parsing JSON response: {}", e);
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         continue; // Retry on parse error
                     }
                 },
                 Err(e) => {
-                    eprintln!("Error fetching events: {}", e);
+                    tracing::error!("Error fetching events: {}", e);
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     continue; // Retry on error
                 }

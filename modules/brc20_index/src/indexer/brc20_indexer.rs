@@ -188,7 +188,7 @@ impl Brc20Indexer {
 
             // Check if a new block is available
             let last_opi_block = if self.config.light_client_mode {
-                self.event_provider_client.get_best_verified_block().await?
+                self.event_provider_client.get_best_verified_block_with_retries().await?
             } else {
                 self.main_db.get_current_block_height().await?
             };
@@ -221,7 +221,7 @@ impl Brc20Indexer {
                 if self.config.light_client_mode {
                     let block_info = self
                         .event_provider_client
-                        .get_block_info(next_brc20_block)
+                        .get_block_info_with_retries(next_brc20_block)
                         .await?;
                     (
                         block_info.best_block_hash,
@@ -335,7 +335,7 @@ impl Brc20Indexer {
             }
 
             // Start reporting after 10 blocks left to full sync
-            if next_brc20_block >= self.event_provider_client.get_best_verified_block().await? - 10
+            if next_brc20_block >= self.event_provider_client.get_best_verified_block_with_retries().await? - 10
             {
                 self.brc20_reporter
                     .report(
@@ -1477,7 +1477,7 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
         let last_opi_block_height = if self.config.light_client_mode {
-            self.event_provider_client.get_best_verified_block().await?
+            self.event_provider_client.get_best_verified_block_with_retries().await?
         } else {
             self.main_db.get_current_block_height().await?
         };
@@ -1559,7 +1559,7 @@ impl Brc20Indexer {
                 .await?;
             let opi_block_hash = if self.config.light_client_mode {
                 self.event_provider_client
-                    .get_block_info(current_brc20_height)
+                    .get_block_info_with_retries(current_brc20_height)
                     .await?
                     .best_block_hash
             } else {
