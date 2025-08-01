@@ -42,6 +42,20 @@ CREATE INDEX brc20_events_event_type_idx ON public.brc20_events USING btree (eve
 CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree (inscription_id);
 CREATE INDEX brc20_events_ticker_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)));
 
+CREATE TABLE public.brc20_light_events (
+	id bigserial NOT NULL,
+	event_type int4 NOT NULL,
+	block_height int4 NOT NULL,
+	inscription_id text NOT NULL,
+	"event" jsonb NOT NULL,
+	CONSTRAINT light_events_pk PRIMARY KEY (id)
+);
+CREATE UNIQUE INDEX brc20_light_events_event_type_inscription_id_idx ON public.brc20_light_events USING btree (event_type, inscription_id);
+CREATE INDEX brc20_light_events_block_height_idx ON public.brc20_light_events USING btree (block_height);
+CREATE INDEX brc20_light_events_event_type_idx ON public.brc20_light_events USING btree (event_type);
+CREATE INDEX brc20_light_events_inscription_id_idx ON public.brc20_light_events USING btree (inscription_id);
+CREATE INDEX brc20_light_events_ticker_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)));
+
 CREATE TABLE public.brc20_tickers (
 	id bigserial NOT NULL,
 	original_tick text NOT NULL,
@@ -100,7 +114,7 @@ CREATE TABLE public.brc20_indexer_version (
 	event_hash_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-full-node v0.5.0', 6, 2);
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-full-node v0.5.0', 6, 3);
 
 CREATE TABLE public.brc20_current_balances (
 	id bigserial NOT NULL,

@@ -3,13 +3,13 @@ use std::error::Error;
 use db_reader::{BRC20Tx, Brc20ApiClient};
 use jsonrpsee::http_client::HttpClient;
 
-pub struct OpiDatabase {
+pub struct OpiClient {
     client: HttpClient,
 }
 
-impl OpiDatabase {
+impl OpiClient {
     pub fn new(url: String) -> Self {
-        OpiDatabase {
+        OpiClient {
             client: HttpClient::builder()
                 .max_response_size(100 * 1024 * 1024) // 100 MB
                 .build(url)
@@ -36,11 +36,11 @@ impl OpiDatabase {
     pub async fn get_block_hash_and_time(
         &self,
         block_height: i32,
-    ) -> Result<(String, i64), Box<dyn Error>> {
+    ) -> Result<(String, i64, String), Box<dyn Error>> {
         self.client
             .get_block_hash_and_ts(block_height as u32)
             .await?
-            .map(|res| (res.block_hash, res.timestamp as i64))
+            .map(|res| (res.block_hash, res.timestamp as i64, "".to_string()))
             .ok_or("Block hash and time not found".into())
     }
 

@@ -1,3 +1,4 @@
+mod client;
 mod config;
 mod database;
 mod indexer;
@@ -162,8 +163,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     brc20_indexer
         .run()
-        .await
-        .expect("Error running the indexer");
+        .await?;
 
     Ok(())
 }

@@ -146,12 +146,19 @@ pub const EVENT_SEPARATOR: &str = "|";
 
 pub const SELF_MINT_ENABLE_HEIGHT: i32 = 837090;
 
+pub const OPERATION_MODE_KEY: &str = "OPERATION_MODE";
+pub const OPERATION_MODE_FULL: &str = "full";
+pub const OPERATION_MODE_LIGHT: &str = "light";
+
 // Versions used for database migrations and version checks
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 6;
-pub const EVENT_HASH_VERSION: i32 = 3;
+pub const EVENT_HASH_VERSION: i32 = 2;
 pub const BRC20_PROG_VERSION: &str = "0.10.2";
 pub const INDEXER_VERSION: &str = "opi-brc20-full-node v0.5.0";
+pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-light-node v0.5.0";
+
+pub const OPI_URL: &str = "https://api.opi.network";
 
 fn get_bitcoin_network_type(network_type: &str) -> Network {
     match network_type {
@@ -165,6 +172,8 @@ fn get_bitcoin_network_type(network_type: &str) -> Network {
 }
 
 pub struct Brc20IndexerConfig {
+    pub light_client_mode: bool,
+
     pub db_host: String,
     pub db_port: String,
     pub db_user: String,
@@ -254,6 +263,9 @@ impl Default for Brc20IndexerConfig {
 
             brc20_prog_balance_server_url: std::env::var(BRC20_PROG_BALANCE_SERVER_URL_KEY)
                 .unwrap_or_else(|_| BRC20_PROG_BALANCE_SERVER_URL_DEFAULT.to_string()),
+            light_client_mode: std::env::var(OPERATION_MODE_KEY)
+                .unwrap_or_else(|_| OPERATION_MODE_FULL.to_string())
+                == OPERATION_MODE_LIGHT,
         }
     }
 }

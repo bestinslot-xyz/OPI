@@ -20,7 +20,7 @@ var db_pool = new Pool({
   ssl: process.env.DB_SSL == 'true' ? true : false
 })
 
-const api_port = parseInt(process.env.API_PORT || "8000")
+const api_port = parseInt(process.env.API_PORT || "8001")
 const api_host = process.env.API_HOST || '127.0.0.1'
 
 const rate_limit_enabled = process.env.RATE_LIMIT_ENABLE || 'false'

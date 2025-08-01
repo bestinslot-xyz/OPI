@@ -65,7 +65,16 @@ pub struct TickerUpdateData {
 }
 
 #[derive(Debug, Clone)]
-pub struct EventInsertData {
+pub struct LightEventRecord {
+    pub event_id: i64,
+    pub event_type_id: i32,
+    pub block_height: i32,
+    pub inscription_id: String,
+    pub event: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventRecord {
     pub event_id: i64,
     pub event_type_id: i32,
     pub block_height: i32,
@@ -115,8 +124,11 @@ pub struct Brc20Database {
 
     pub new_tickers: Vec<Ticker>,
     pub ticker_updates: HashMap<String, TickerUpdateData>,
-    pub event_inserts: Vec<EventInsertData>,
+    pub light_event_inserts: Vec<LightEventRecord>,
+    pub event_inserts: Vec<EventRecord>,
+    pub block_event_strings: HashMap<i32, String>,
     pub balance_updates: Vec<BalanceUpdateData>,
+    pub light_client_mode: bool,
 }
 
 impl Brc20Database {
@@ -163,7 +175,10 @@ impl Brc20Database {
             new_tickers: Vec::new(),
             ticker_updates: HashMap::new(),
             event_inserts: Vec::new(),
+            light_event_inserts: Vec::new(),
             balance_updates: Vec::new(),
+            block_event_strings: HashMap::new(),
+            light_client_mode: config.light_client_mode,
         }
     }
 
@@ -178,13 +193,7 @@ impl Brc20Database {
                 .await?;
         };
 
-        self.current_event_id =
-            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
-                .fetch_optional(&self.client)
-                .await?
-                .map(|row| row.max_event_id.unwrap_or(-1))
-                .unwrap_or(-1)
-                + 1;
+        self.fetch_current_event_id().await?;
 
         let start_time = Instant::now();
         for ticker in self.get_tickers().await? {
@@ -199,8 +208,29 @@ impl Brc20Database {
         Ok(())
     }
 
+    pub async fn fetch_current_event_id(
+        &mut self
+    ) -> Result<(), Box<dyn Error>> {
+        self.current_event_id = if self.light_client_mode {
+            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_light_events")
+                .fetch_optional(&self.client)
+                .await?
+                .map(|row| row.max_event_id.unwrap_or(-1))
+                .unwrap_or(-1)
+                + 1
+        } else {
+            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
+                .fetch_optional(&self.client)
+                .await?
+                .map(|row| row.max_event_id.unwrap_or(-1))
+                .unwrap_or(-1)
+                + 1
+        };
+        Ok(())
+    }
+
     pub async fn set_block_hash(
-        &self,
+        &mut self,
         block_height: i32,
         block_hash: &str,
     ) -> Result<(), Box<dyn Error>> {
@@ -209,10 +239,36 @@ impl Brc20Database {
             block_height,
             block_hash
         );
+
+        // Set block hash for the given block height
         sqlx::query!(
             "INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES ($1, $2)",
             block_height,
             block_hash
+        )
+        .execute(&self.client)
+        .await?;
+
+        // Set cumulative event hashes for the block
+        let block_events_hash = sha256::digest(
+            self.block_event_strings
+                .get(&block_height)
+                .unwrap_or(&String::new())
+                .trim_end_matches(EVENT_SEPARATOR),
+        );
+        let cumulative_event_hash = self.get_cumulative_events_hash(block_height - 1).await?;
+        let cumulative_event_hash = match cumulative_event_hash {
+            Some(hash) => sha256::digest(hash + &block_events_hash),
+            None => block_events_hash.clone(),
+        };
+
+        self.block_event_strings.remove(&block_height);
+
+        sqlx::query!(
+            "INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) VALUES ($1, $2, $3)",
+            block_height,
+            block_events_hash,
+            cumulative_event_hash
         )
         .execute(&self.client)
         .await?;
@@ -466,7 +522,7 @@ impl Brc20Database {
     pub async fn index_extra_tables(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         let mut tx = self.client.begin().await?;
 
-        tracing::info!("Indexing extra tables for block height {}", block_height);
+        tracing::debug!("Indexing extra tables for block height {}", block_height);
 
         let balance_changes = sqlx::query(
             "select pkscript, wallet, tick, overall_balance, available_balance 
@@ -764,13 +820,7 @@ impl Brc20Database {
 
         tracing::info!("Reorg completed up to block height {}", block_height);
 
-        self.current_event_id =
-            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
-                .fetch_optional(&self.client)
-                .await?
-                .map(|row| row.max_event_id.unwrap_or(-1))
-                .unwrap_or(-1)
-                + 1;
+        self.fetch_current_event_id().await?;
 
         self.tickers.clear();
         self.cached_events.clear();
@@ -788,7 +838,7 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn get_cumulative_hash(
+    pub async fn get_cumulative_events_hash(
         &self,
         block_height: i32,
     ) -> Result<Option<String>, Box<dyn Error>> {
@@ -800,27 +850,17 @@ impl Brc20Database {
         .await?.map(|r| r.cumulative_event_hash))
     }
 
-    pub async fn update_cumulative_hash(
+    pub async fn get_block_events_hash(
         &self,
         block_height: i32,
-        block_events: &str,
-    ) -> Result<(String, String), Box<dyn Error>> {
-        let block_events_hash = sha256::digest(block_events.trim_end_matches(EVENT_SEPARATOR));
-        let cumulative_event_hash = self.get_cumulative_hash(block_height - 1).await?;
-        let cumulative_event_hash = match cumulative_event_hash {
-            Some(hash) => sha256::digest(hash + &block_events_hash),
-            None => block_events_hash.clone(),
-        };
-
-        sqlx::query!(
-            "INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) VALUES ($1, $2, $3)",
-            block_height,
-            block_events_hash,
-            cumulative_event_hash
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        Ok(sqlx::query!(
+            "SELECT block_event_hash FROM brc20_cumulative_event_hashes WHERE block_height = $1",
+            block_height
         )
-        .execute(&self.client)
-        .await?;
-        Ok((block_events_hash, cumulative_event_hash))
+        .fetch_optional(&self.client)
+        .await?
+        .map(|r| r.block_event_hash))
     }
 
     pub fn get_event_key<T>(&self, inscription_id: &str) -> String
@@ -872,34 +912,14 @@ impl Brc20Database {
         new_satpoint: &String,
         txid: &String,
         event: &T,
+        decimals: Option<u8>,
     ) -> Result<i64, Box<dyn Error>>
     where
         T: Event + Serialize + std::fmt::Debug,
     {
-        tracing::debug!(
-            "Adding event for inscription_id: {}, event_type: {}, block_height: {}, event: {:?}",
-            inscription_id,
-            T::event_name(),
-            block_height,
-            event
-        );
-        if self
-            .cached_events
-            .contains_key(&self.get_event_key::<T>(inscription_id))
-        {
-            return Err(format!(
-                "Event for inscription_id {} and event_type {} already exists",
-                inscription_id,
-                T::event_name()
-            )
-            .into());
-        }
-        self.cached_events.insert(
-            self.get_event_key::<T>(inscription_id),
-            serde_json::to_value(event)?,
-        );
+        self.cache_event(block_height, inscription_id, event, decimals.unwrap_or(0))?;
 
-        self.event_inserts.push(EventInsertData {
+        self.event_inserts.push(EventRecord {
             event_id: self.current_event_id,
             event_type_id: T::event_id(),
             block_height,
@@ -913,6 +933,76 @@ impl Brc20Database {
 
         self.current_event_id += 1;
         Ok(self.current_event_id - 1)
+    }
+
+    pub fn add_light_event<T>(
+        &mut self,
+        block_height: i32,
+        inscription_id: &str,
+        event: &T,
+        decimals: u8,
+    ) -> Result<i64, Box<dyn Error>>
+    where
+        T: Event + Serialize + std::fmt::Debug,
+    {
+        self.cache_event(block_height, inscription_id, event, decimals)?;
+
+        self.light_event_inserts.push(LightEventRecord {
+            block_height,
+            event_id: self.current_event_id,
+            event_type_id: T::event_id(),
+            inscription_id: inscription_id.to_string(),
+            event: serde_json::to_value(event)?,
+        });
+
+        self.current_event_id += 1;
+        Ok(self.current_event_id - 1)
+    }
+
+    pub fn cache_event<T>(
+        &mut self,
+        block_height: i32,
+        inscription_id: &str,
+        event: &T,
+        decimals: u8,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        T: Event + Serialize + std::fmt::Debug,
+    {
+        tracing::debug!(
+            "Storing event string for inscription_id: {}, block_height: {}, event: {:?}",
+            inscription_id,
+            block_height,
+            event
+        );
+
+        if self
+            .cached_events
+            .contains_key(&self.get_event_key::<T>(inscription_id))
+        {
+            return Err(format!(
+                "Light event for inscription_id {} and event_type {} already exists",
+                inscription_id,
+                T::event_name()
+            )
+            .into());
+        }
+
+        self.block_event_strings
+            .entry(block_height)
+            .or_insert_with(String::new)
+            .push_str(&format!(
+                "{}{}",
+                event.get_event_str(inscription_id, decimals),
+                EVENT_SEPARATOR
+            ));
+
+        self.cached_events.insert(
+            self.get_event_key::<T>(inscription_id),
+            serde_json::to_value(event)?,
+        );
+
+        Ok(())
     }
 
     pub async fn get_transfer_validity(
@@ -1167,6 +1257,34 @@ impl Brc20Database {
             .await?;
 
             self.event_inserts.clear();
+        }
+
+        if !self.light_event_inserts.is_empty() {
+            let mut all_event_ids = Vec::new();
+            let mut all_event_type_ids = Vec::new();
+            let mut all_block_heights = Vec::new();
+            let mut all_inscription_ids = Vec::new();
+            let mut all_events = Vec::new();
+            for event_data in &self.light_event_inserts {
+                all_event_ids.push(event_data.event_id);
+                all_event_type_ids.push(event_data.event_type_id);
+                all_block_heights.push(event_data.block_height);
+                all_inscription_ids.push(event_data.inscription_id.clone());
+                all_events.push(event_data.event.clone());
+            }
+            sqlx::query!(
+                "INSERT INTO brc20_light_events (id, event_type, block_height, inscription_id, event) SELECT * FROM UNNEST
+                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::jsonb[])",
+                &all_event_ids,
+                &all_event_type_ids,
+                &all_block_heights,
+                &all_inscription_ids,
+                &all_events
+            )
+            .execute(&self.client)
+            .await?;
+
+            self.light_event_inserts.clear();
         }
 
         if !self.balance_updates.is_empty() {

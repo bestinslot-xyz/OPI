@@ -20,6 +20,7 @@ if init_env:
   DB_DATABASE="postgres"
   DB_PASSWD=""
   DB_SSL="false"
+  OPERATION_MODE="full"
   NETWORK_TYPE="mainnet"
   REPORT_TO_INDEXER="true"
   REPORT_URL="https://api.opi.network/report_block"
@@ -65,6 +66,9 @@ if init_env:
     res = input("BRC20 Postgres DB SSL (Default: false) options: true, false: ")
     if res != '':
       DB_SSL = res
+  res = input("Operation mode (Default: full) options: full, light: ")
+  if res != '':
+    OPERATION_MODE = res
   res = input("Network type (Default: mainnet) options: mainnet, testnet, testnet4, signet, regtest: ")
   if res != '':
     NETWORK_TYPE = res
@@ -109,6 +113,7 @@ if init_env:
   f.write('DB_DATABASE="' + DB_DATABASE + '"\n')
   f.write('DB_PASSWD="' + DB_PASSWD + '"\n')
   f.write('DB_SSL="' + DB_SSL + '"\n')
+  f.write('OPERATION_MODE="' + OPERATION_MODE + '"\n')
   f.write('NETWORK_TYPE="' + NETWORK_TYPE + '"\n')
   f.write('REPORT_TO_INDEXER="' + REPORT_TO_INDEXER + '"\n')
   f.write('REPORT_URL="' + REPORT_URL + '"\n')
