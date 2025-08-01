@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{serde_as, DefaultOnNull};
 
 use crate::types::events::number_string_with_full_decimals;
 
@@ -10,7 +10,7 @@ use super::Event;
 pub struct MintInscribeEvent {
     #[serde(rename = "minted_pkScript")]
     pub minted_pk_script: String,
-    #[serde(default)]
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub minted_wallet: String,
     #[serde(rename = "tick")]
     pub ticker: String,

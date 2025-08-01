@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{serde_as, DefaultOnNull};
 
 use crate::types::events::number_string_with_full_decimals;
 
@@ -10,6 +10,7 @@ use super::Event;
 pub struct Brc20ProgWithdrawInscribeEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub source_wallet: String,
     #[serde(rename = "tick")]
     pub ticker: String,

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{serde_as, DefaultOnNull};
 
 use crate::types::events::number_string_with_full_decimals;
 
@@ -12,6 +12,7 @@ pub struct DeployInscribeEvent {
     pub decimals: u8,
     #[serde(rename = "deployer_pkScript")]
     pub deployer_pk_script: String,
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub deployer_wallet: String,
     #[serde(rename = "tick")]
     pub ticker: String,

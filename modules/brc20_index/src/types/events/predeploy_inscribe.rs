@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{serde_as, DefaultOnNull};
 
 use super::Event;
 
@@ -8,6 +8,7 @@ use super::Event;
 pub struct PreDeployInscribeEvent {
     #[serde(rename = "predeployer_pkScript")]
     pub predeployer_pk_script: String,
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub predeployer_wallet: String,
     pub hash: String,
     #[serde_as(as = "serde_with::DisplayFromStr")]
