@@ -188,7 +188,9 @@ impl Brc20Indexer {
 
             // Check if a new block is available
             let last_opi_block = if self.config.light_client_mode {
-                self.event_provider_client.get_best_verified_block_with_retries().await?
+                self.event_provider_client
+                    .get_best_verified_block_with_retries()
+                    .await?
             } else {
                 self.main_db.get_current_block_height().await?
             };
@@ -335,7 +337,12 @@ impl Brc20Indexer {
             }
 
             // Start reporting after 10 blocks left to full sync
-            if next_brc20_block >= self.event_provider_client.get_best_verified_block_with_retries().await? - 10
+            if next_brc20_block
+                >= self
+                    .event_provider_client
+                    .get_best_verified_block_with_retries()
+                    .await?
+                    - 10
             {
                 self.brc20_reporter
                     .report(
@@ -416,17 +423,17 @@ impl Brc20Indexer {
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &load_event::<Brc20ProgDeployInscribeEvent>(event_type_id, &event_record)?,
+                    &mut load_event::<Brc20ProgDeployInscribeEvent>(event_type_id, &event_record)?,
                     0,
                 )?;
                 EventProcessor::brc20_prog_deploy_inscribe(&inscription_id).await?;
             } else if event_type_id == Brc20ProgDeployTransferEvent::event_id() {
-                let event =
+                let mut event =
                     load_event::<Brc20ProgDeployTransferEvent>(event_type_id, &event_record)?;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &event,
+                    &mut event,
                     0,
                 )?;
                 EventProcessor::brc20_prog_deploy_transfer(
@@ -443,16 +450,17 @@ impl Brc20Indexer {
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &load_event::<Brc20ProgCallInscribeEvent>(event_type_id, &event_record)?,
+                    &mut load_event::<Brc20ProgCallInscribeEvent>(event_type_id, &event_record)?,
                     0,
                 )?;
                 EventProcessor::brc20_prog_call_inscribe(&inscription_id).await?;
             } else if event_type_id == Brc20ProgCallTransferEvent::event_id() {
-                let event = load_event::<Brc20ProgCallTransferEvent>(event_type_id, &event_record)?;
+                let mut event =
+                    load_event::<Brc20ProgCallTransferEvent>(event_type_id, &event_record)?;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &event,
+                    &mut event,
                     0,
                 )?;
                 EventProcessor::brc20_prog_call_transfer(
@@ -461,27 +469,27 @@ impl Brc20Indexer {
                     block_hash,
                     brc20_prog_tx_idx,
                     &inscription_id,
-                    &event,
+                    &mut event,
                 )
                 .await?;
                 brc20_prog_tx_idx += 1;
             } else if event_type_id == Brc20ProgTransactInscribeEvent::event_id() {
-                let event =
+                let mut event =
                     load_event::<Brc20ProgTransactInscribeEvent>(event_type_id, &event_record)?;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &event,
+                    &mut event,
                     0,
                 )?;
                 EventProcessor::brc20_prog_transact_inscribe(&inscription_id).await?;
             } else if event_type_id == Brc20ProgTransactTransferEvent::event_id() {
-                let event =
+                let mut event =
                     load_event::<Brc20ProgTransactTransferEvent>(event_type_id, &event_record)?;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &event,
+                    &mut event,
                     0,
                 )?;
                 match EventProcessor::brc20_prog_transact_transfer(
@@ -506,12 +514,15 @@ impl Brc20Indexer {
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &load_event::<Brc20ProgWithdrawInscribeEvent>(event_type_id, &event_record)?,
+                    &mut load_event::<Brc20ProgWithdrawInscribeEvent>(
+                        event_type_id,
+                        &event_record,
+                    )?,
                     0,
                 )?;
                 EventProcessor::brc20_prog_withdraw_inscribe(&inscription_id).await?;
             } else if event_type_id == Brc20ProgWithdrawTransferEvent::event_id() {
-                let event =
+                let mut event =
                     load_event::<Brc20ProgWithdrawTransferEvent>(event_type_id, &event_record)?;
                 let ticker = get_brc20_database()
                     .lock()
@@ -526,7 +537,7 @@ impl Brc20Indexer {
                 let event_id = get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
-                    &event,
+                    &mut event,
                     ticker.decimals,
                 )?;
                 match EventProcessor::brc20_prog_withdraw_transfer(
@@ -550,17 +561,18 @@ impl Brc20Indexer {
                     }
                 }
             } else if event_type_id == DeployInscribeEvent::event_id() {
-                let event = load_event::<DeployInscribeEvent>(event_type_id, &event_record)?;
+                let mut event = load_event::<DeployInscribeEvent>(event_type_id, &event_record)?;
+                let decimals = event.decimals;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     &inscription_id,
-                    &event,
-                    event.decimals,
+                    &mut event,
+                    decimals,
                 )?;
                 EventProcessor::brc20_deploy_inscribe(block_height, &inscription_id, &event)
                     .await?;
             } else if event_type_id == MintInscribeEvent::event_id() {
-                let event = load_event::<MintInscribeEvent>(event_type_id, &event_record)?;
+                let mut event = load_event::<MintInscribeEvent>(event_type_id, &event_record)?;
                 let ticker = get_brc20_database()
                     .lock()
                     .await
@@ -571,21 +583,21 @@ impl Brc20Indexer {
                 let event_id = get_brc20_database().lock().await.add_light_event(
                     block_height,
                     &inscription_id,
-                    &event,
+                    &mut event,
                     ticker.decimals,
                 )?;
                 EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
             } else if event_type_id == PreDeployInscribeEvent::event_id() {
-                let event = load_event::<PreDeployInscribeEvent>(event_type_id, &event_record)?;
+                let mut event = load_event::<PreDeployInscribeEvent>(event_type_id, &event_record)?;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     &inscription_id,
-                    &event,
+                    &mut event,
                     0,
                 )?;
                 // PreDeployInscribeEvent is not processed here, it is handled already in the transfer processing
             } else if event_type_id == TransferInscribeEvent::event_id() {
-                let event = load_event::<TransferInscribeEvent>(event_type_id, &event_record)?;
+                let mut event = load_event::<TransferInscribeEvent>(event_type_id, &event_record)?;
                 let ticker = get_brc20_database()
                     .lock()
                     .await
@@ -599,12 +611,12 @@ impl Brc20Indexer {
                 let event_id = get_brc20_database().lock().await.add_light_event(
                     block_height,
                     &inscription_id,
-                    &event,
+                    &mut event,
                     ticker.decimals,
                 )?;
                 EventProcessor::brc20_transfer_inscribe(block_height, event_id, &event).await?;
             } else if event_type_id == TransferTransferEvent::event_id() {
-                let event = load_event::<TransferTransferEvent>(event_type_id, &event_record)?;
+                let mut event = load_event::<TransferTransferEvent>(event_type_id, &event_record)?;
                 let ticker = get_brc20_database()
                     .lock()
                     .await
@@ -618,7 +630,7 @@ impl Brc20Indexer {
                 let event_id = get_brc20_database().lock().await.add_light_event(
                     block_height,
                     &inscription_id,
-                    &event,
+                    &mut event,
                     ticker.decimals,
                 )?;
                 EventProcessor::brc20_transfer_transfer(
@@ -1477,7 +1489,9 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
         let last_opi_block_height = if self.config.light_client_mode {
-            self.event_provider_client.get_best_verified_block_with_retries().await?
+            self.event_provider_client
+                .get_best_verified_block_with_retries()
+                .await?
         } else {
             self.main_db.get_current_block_height().await?
         };

@@ -434,7 +434,8 @@ impl EventProcessor {
 
                 tracing::warn!(
                     "Burning {} tokens for ticker {} as BRC20 Prog is not enabled yet",
-                    event.amount, event.ticker
+                    event.amount,
+                    event.ticker
                 );
                 return Ok(());
             } else {

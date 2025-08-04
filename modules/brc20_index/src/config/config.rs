@@ -186,6 +186,7 @@ pub struct Brc20IndexerConfig {
     pub report_retries: i32,
     pub report_name: String,
 
+    pub network_type: Network,
     pub network_type_string: String,
 
     pub first_inscription_height: i32,
@@ -234,6 +235,7 @@ impl Default for Brc20IndexerConfig {
             report_name: std::env::var(REPORT_NAME_KEY)
                 .unwrap_or_else(|_| REPORT_NAME_DEFAULT.to_string()),
 
+            network_type,
             network_type_string: network_type_string.to_string(),
 
             first_inscription_height: *FIRST_INSCRIPTION_HEIGHTS

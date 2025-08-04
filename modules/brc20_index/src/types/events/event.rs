@@ -1,3 +1,5 @@
+use bitcoin::Network;
+
 use crate::types::events::{
     Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
     Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent, Brc20ProgTransactTransferEvent,
@@ -9,6 +11,7 @@ pub trait Event {
     fn event_name() -> String;
     fn event_id() -> i32;
     fn get_event_str(&self, inscription_id: &str, decimals: u8) -> String;
+    fn calculate_wallets(&mut self, network: Network);
 }
 
 pub fn number_string_with_full_decimals(number: u128, decimals: u8) -> String {
@@ -75,6 +78,17 @@ pub fn event_name_to_id(event_name: &str) -> i32 {
     } else {
         -1 // Unknown event
     }
+}
+
+pub fn get_wallet_from_pk_script(pk_script: &str, network: bitcoin::Network) -> Option<String> {
+    let Ok(pk_script_bytes) = hex::decode(pk_script) else {
+        return None;
+    };
+    let script = bitcoin::Script::from_bytes(pk_script_bytes.as_slice());
+    let Ok(address) = bitcoin::Address::from_script(&script, network) else {
+        return None;
+    };
+    Some(address.to_string())
 }
 
 #[cfg(test)]

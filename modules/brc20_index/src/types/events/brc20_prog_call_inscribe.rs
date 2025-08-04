@@ -1,12 +1,17 @@
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+
+use crate::types::events::event::get_wallet_from_pk_script;
 
 use super::Event;
 
 #[derive(Serialize, Deserialize, Debug)]
-
+#[serde_as]
 pub struct Brc20ProgCallInscribeEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
+    #[serde_as(deserialize_as = "DefaultOnNull")]
+    pub source_wallet: String,
     pub contract_address: String,
     pub contract_inscription_id: String,
     pub data: Option<String>,
@@ -33,5 +38,14 @@ impl Event for Brc20ProgCallInscribeEvent {
             self.data.clone().unwrap_or_default(),
             self.base64_data.clone().unwrap_or_default()
         )
+    }
+
+    fn calculate_wallets(&mut self, network: bitcoin::Network) {
+        // Calculate the wallet address from the source_pk_script
+        if let Some(wallet) = get_wallet_from_pk_script(&self.source_pk_script, network) {
+            self.source_wallet = wallet;
+        } else {
+            self.source_wallet = String::new();
+        }
     }
 }

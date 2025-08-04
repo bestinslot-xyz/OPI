@@ -7,6 +7,7 @@ use std::{
     vec,
 };
 
+use bitcoin::Network;
 use brc20_index::types::events;
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
@@ -115,6 +116,7 @@ pub fn set_brc20_database(database: Arc<Mutex<Brc20Database>>) {
 #[derive(Debug)]
 pub struct Brc20Database {
     pub client: Pool<Postgres>,
+    pub network: Network,
     pub first_inscription_height: i32,
     pub transfer_validity_cache: HashMap<String, TransferValidity>,
     pub current_event_id: i64,
@@ -165,6 +167,7 @@ impl Brc20Database {
             .expect("Failed to connect to the database");
         Brc20Database {
             client,
+            network: config.network_type,
             first_inscription_height: config.first_inscription_height,
             transfer_validity_cache: HashMap::new(),
             current_event_id: 0,
@@ -208,9 +211,7 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn fetch_current_event_id(
-        &mut self
-    ) -> Result<(), Box<dyn Error>> {
+    pub async fn fetch_current_event_id(&mut self) -> Result<(), Box<dyn Error>> {
         self.current_event_id = if self.light_client_mode {
             sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_light_events")
                 .fetch_optional(&self.client)
@@ -939,12 +940,16 @@ impl Brc20Database {
         &mut self,
         block_height: i32,
         inscription_id: &str,
-        event: &T,
+        event: &mut T,
         decimals: u8,
     ) -> Result<i64, Box<dyn Error>>
     where
         T: Event + Serialize + std::fmt::Debug,
     {
+        // Wallet types are not trusted, as they are not part of the event hash data.
+        // Re-calculation helps us ensure that the wallet data is accurate.
+        event.calculate_wallets(self.network);
+
         self.cache_event(block_height, inscription_id, event, decimals)?;
 
         self.light_event_inserts.push(LightEventRecord {

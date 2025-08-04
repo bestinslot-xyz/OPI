@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DefaultOnNull};
+use serde_with::{DefaultOnNull, serde_as};
 
-use crate::types::events::number_string_with_full_decimals;
+use crate::types::events::{event::get_wallet_from_pk_script, number_string_with_full_decimals};
 
 use super::Event;
 
@@ -39,5 +39,13 @@ impl Event for Brc20ProgWithdrawInscribeEvent {
             self.original_ticker,
             number_string_with_full_decimals(self.amount, decimals)
         )
+    }
+
+    fn calculate_wallets(&mut self, network: bitcoin::Network) {
+        if let Some(wallet) = get_wallet_from_pk_script(&self.source_pk_script, network) {
+            self.source_wallet = wallet;
+        } else {
+            self.source_wallet = String::new();
+        }
     }
 }

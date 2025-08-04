@@ -28,6 +28,7 @@ impl EventGenerator {
     ) -> Result<Brc20ProgDeployInscribeEvent, Box<dyn Error>> {
         let event = Brc20ProgDeployInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
+            source_wallet: transfer.new_wallet.to_string().into(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
         };
@@ -92,6 +93,7 @@ impl EventGenerator {
 
         let event = Brc20ProgDeployTransferEvent {
             source_pk_script: inscribe_event.source_pk_script.clone(),
+            source_wallet: inscribe_event.source_wallet.to_string(),
             spent_pk_script: transfer.new_pkscript.to_string(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
@@ -157,6 +159,7 @@ impl EventGenerator {
 
         let event = Brc20ProgCallTransferEvent {
             source_pk_script: inscribe_event.source_pk_script.clone(),
+            source_wallet: inscribe_event.source_wallet.to_string(),
             spent_pk_script: transfer.new_pkscript.to_string().into(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
@@ -188,6 +191,7 @@ impl EventGenerator {
     ) -> Result<Brc20ProgCallInscribeEvent, Box<dyn Error>> {
         let event = Brc20ProgCallInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
+            source_wallet: transfer.new_wallet.to_string().into(),
             contract_address: contract_address.map(|s| s.to_string()).unwrap_or_default(),
             contract_inscription_id: contract_inscription_id
                 .map(|s| s.to_string())
@@ -217,6 +221,7 @@ impl EventGenerator {
     ) -> Result<Brc20ProgTransactInscribeEvent, Box<dyn Error>> {
         let event = Brc20ProgTransactInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
+            source_wallet: transfer.new_wallet.to_string().into(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
         };
@@ -277,6 +282,7 @@ impl EventGenerator {
 
         let event = Brc20ProgTransactTransferEvent {
             source_pk_script: inscribe_event.source_pk_script.clone(),
+            source_wallet: inscribe_event.source_wallet.to_string(),
             spent_pk_script: transfer.new_pkscript.to_string().into(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),

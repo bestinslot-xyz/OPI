@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DefaultOnNull};
+use serde_with::{DefaultOnNull, serde_as};
 
-use crate::types::events::number_string_with_full_decimals;
+use crate::types::events::{event::get_wallet_from_pk_script, number_string_with_full_decimals};
 
 use super::Event;
 
@@ -48,5 +48,13 @@ impl Event for DeployInscribeEvent {
             number_string_with_full_decimals(self.limit_per_mint, self.decimals),
             self.is_self_mint
         )
+    }
+
+    fn calculate_wallets(&mut self, network: bitcoin::Network) {
+        if let Some(wallet) = get_wallet_from_pk_script(&self.deployer_pk_script, network) {
+            self.deployer_wallet = wallet;
+        } else {
+            self.deployer_wallet = String::new();
+        }
     }
 }
