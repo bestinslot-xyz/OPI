@@ -126,10 +126,15 @@ impl EventProviderClient {
         &mut self,
         block_height: i64,
     ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
-        for _ in 0..RETRY_COUNT {
+        let mut random_order = Vec::new();
+        for i in 0..RETRY_COUNT {
+            random_order.push(i);
+        }
+        random_order.shuffle(&mut rand::thread_rng());
+        for i in 0..RETRY_COUNT {
             let event_provider = self
                 .event_providers
-                .get((rand::random::<u16>() % self.event_providers.len() as u16) as usize)
+                .get(random_order[i] % self.event_providers.len())
                 .ok_or("No event providers available")?;
 
             let response = self
