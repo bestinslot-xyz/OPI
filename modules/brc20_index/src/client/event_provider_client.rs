@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Brc20IndexerConfig, EVENT_HASH_VERSION, OPI_URL};
@@ -128,13 +129,13 @@ impl EventProviderClient {
     ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
         let mut random_order = Vec::new();
         for i in 0..RETRY_COUNT {
-            random_order.push(i);
+            random_order.push(i as usize);
         }
-        random_order.shuffle(&mut rand::thread_rng());
+        random_order.shuffle(&mut rand::rng());
         for i in 0..RETRY_COUNT {
             let event_provider = self
                 .event_providers
-                .get(random_order[i] % self.event_providers.len())
+                .get(random_order[i as usize] % self.event_providers.len())
                 .ok_or("No event providers available")?;
 
             let response = self
