@@ -13,6 +13,7 @@ pub struct TransferTransferEvent {
     #[serde_as(deserialize_as = "DefaultOnNull")]
     pub source_wallet: String,
     #[serde(rename = "spent_pkScript")]
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub spent_pk_script: Option<String>,
     #[serde_as(deserialize_as = "DefaultOnNull")]
     pub spent_wallet: Option<String>,
