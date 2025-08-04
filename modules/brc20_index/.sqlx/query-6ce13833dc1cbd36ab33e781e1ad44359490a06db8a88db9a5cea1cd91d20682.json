@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT event FROM brc20_light_events WHERE inscription_id = $1 AND event_type = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6ce13833dc1cbd36ab33e781e1ad44359490a06db8a88db9a5cea1cd91d20682"
+}
