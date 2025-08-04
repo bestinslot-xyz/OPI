@@ -82,9 +82,7 @@ impl EventProviderClient {
         response.data.ok_or("Block data not found".into())
     }
 
-    pub async fn get_best_verified_block_with_retries(
-        &mut self,
-    ) -> Result<i32, Box<dyn Error>> {
+    pub async fn get_best_verified_block_with_retries(&mut self) -> Result<i32, Box<dyn Error>> {
         let mut retries = 0;
         loop {
             match self.get_best_verified_block().await {
@@ -159,7 +157,8 @@ impl EventProviderClient {
                 }
             };
 
-            if response.error.unwrap_or(false) {
+            if let Some(error) = response.error {
+                tracing::error!("Error in response: {}", error);
                 continue; // Retry if there's an error
             }
 
@@ -195,7 +194,7 @@ pub struct BlockData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockActivityResponse {
-    pub error: Option<bool>,
+    pub error: Option<String>,
     pub result: Option<Vec<serde_json::Value>>,
 }
 
