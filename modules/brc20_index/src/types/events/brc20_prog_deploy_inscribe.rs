@@ -1,12 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_with::{DefaultOnNull, serde_as};
 
-use crate::types::events::event::get_wallet_from_pk_script;
+use crate::types::events::{Event, event::get_wallet_from_pk_script};
 
-use super::Event;
-
-#[derive(Serialize, Deserialize, Debug)]
 #[serde_as]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Brc20ProgDeployInscribeEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
