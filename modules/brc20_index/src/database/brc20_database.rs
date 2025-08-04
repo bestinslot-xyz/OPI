@@ -27,6 +27,7 @@ lazy_static! {
         "brc20_tickers",
         "brc20_historic_balances",
         "brc20_events",
+        "brc20_light_events",
         "brc20_cumulative_event_hashes",
         "brc20_block_hashes",
         "brc20_unused_txes",
@@ -131,6 +132,7 @@ pub struct Brc20Database {
     pub block_event_strings: HashMap<i32, String>,
     pub balance_updates: Vec<BalanceUpdateData>,
     pub light_client_mode: bool,
+    pub events_table: String,
 }
 
 impl Brc20Database {
@@ -182,6 +184,11 @@ impl Brc20Database {
             balance_updates: Vec::new(),
             block_event_strings: HashMap::new(),
             light_client_mode: config.light_client_mode,
+            events_table: if config.light_client_mode {
+                "brc20_light_events".to_string()
+            } else {
+                "brc20_events".to_string()
+            },
         }
     }
 
@@ -414,21 +421,22 @@ impl Brc20Database {
 
         tracing::info!("Selecting unused txes");
 
-        let unused_txes = sqlx::query(
+        let unused_txes = sqlx::query(&format!(
             "with tempp as (
                   select inscription_id, event, id, block_height
-                  from brc20_events
+                  from {}
                   where event_type = $1
                 ), tempp2 as (
                   select inscription_id, event
-                  from brc20_events
+                  from {}
                   where event_type = $2
                 )
                 select t.event, t.id, t.block_height, t.inscription_id
                 from tempp t
                 left join tempp2 t2 on t.inscription_id = t2.inscription_id
                 where t2.inscription_id is null;",
-        )
+            self.events_table, self.events_table
+        ))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
         .fetch_all(&mut *tx)
@@ -567,11 +575,12 @@ impl Brc20Database {
             .await?;
         }
 
-        let events = sqlx::query(
+        let events = sqlx::query(&format!(
             "select event, id, event_type, inscription_id 
-                 from brc20_events where block_height = $1 and (event_type = $2 or event_type = $3) 
+                 from {} where block_height = $1 and (event_type = $2 or event_type = $3) 
                  order by id asc;",
-        )
+            self.events_table
+        ))
         .bind(block_height)
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
@@ -654,9 +663,10 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        let res = sqlx::query(
-            "SELECT event FROM brc20_events WHERE event_type = $1 AND block_height > $2",
-        )
+        let res = sqlx::query(&format!(
+            "SELECT event FROM {} WHERE event_type = $1 AND block_height > $2",
+            self.events_table
+        ))
         .bind(crate::types::events::MintInscribeEvent::event_id())
         .bind(block_height)
         .fetch_all(&mut *tx)
@@ -693,6 +703,11 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM brc20_light_events WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query("DELETE FROM brc20_cumulative_event_hashes WHERE block_height > $1")
             .bind(block_height)
             .execute(&mut *tx)
@@ -714,6 +729,11 @@ impl Brc20Database {
             .await?;
 
         sqlx::query("SELECT setval('brc20_events_id_seq', max(id)) from brc20_events;")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_light_events_id_seq', max(id)) from brc20_light_events;")
             .bind(block_height)
             .execute(&mut *tx)
             .await?;
@@ -770,21 +790,22 @@ impl Brc20Database {
 
         tracing::info!("Selecting unused txes");
 
-        let unused_txes = sqlx::query(
+        let unused_txes = sqlx::query(&format!(
             "with tempp as (
                   select inscription_id, event, id, block_height
-                  from brc20_events
+                  from {}
                   where event_type = $1
                 ), tempp2 as (
                   select inscription_id, event
-                  from brc20_events
+                  from {}
                   where event_type = $2
                 )
                 select t.event, t.id, t.block_height, t.inscription_id
                 from tempp t
                 left join tempp2 t2 on t.inscription_id = t2.inscription_id
                 where t2.inscription_id is null;",
-        )
+            self.events_table, self.events_table
+        ))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
         .fetch_all(&mut *tx)
@@ -887,19 +908,36 @@ impl Brc20Database {
                 .map_err(|e| e.into());
         }
 
-        let row = sqlx::query!(
-            "SELECT event FROM brc20_events WHERE inscription_id = $1 AND event_type = $2",
-            inscription_id,
-            T::event_id()
-        )
-        .fetch_optional(&self.client)
-        .await?;
+        if self.light_client_mode {
+            let row = sqlx::query!(
+                "SELECT event FROM brc20_light_events WHERE inscription_id = $1 AND event_type = $2",
+                inscription_id,
+                T::event_id()
+            )
+            .fetch_optional(&self.client)
+            .await?;
 
-        if let Some(row) = row {
-            let event: T = serde_json::from_value(row.event)?;
-            Ok(Some(event))
+            if let Some(row) = row {
+                let event: T = serde_json::from_value(row.event)?;
+                Ok(Some(event))
+            } else {
+                Ok(None)
+            }
         } else {
-            Ok(None)
+            let row = sqlx::query!(
+                "SELECT event FROM brc20_events WHERE inscription_id = $1 AND event_type = $2",
+                inscription_id,
+                T::event_id()
+            )
+            .fetch_optional(&self.client)
+            .await?;
+
+            if let Some(row) = row {
+                let event: T = serde_json::from_value(row.event)?;
+                Ok(Some(event))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -1020,7 +1058,29 @@ impl Brc20Database {
             return Ok(validity.clone());
         }
 
-        let row = sqlx::query!(
+        let validity = if self.light_client_mode {
+            let row = sqlx::query!(
+            "SELECT COALESCE(SUM(CASE WHEN event_type = $1 THEN 1 ELSE 0 END), 0) AS inscr_cnt,
+                        COALESCE(SUM(CASE WHEN event_type = $2 THEN 1 ELSE 0 END), 0) AS transfer_cnt
+                        FROM brc20_light_events WHERE inscription_id = $3"
+        ,inscribe_event_id, transfer_event_id, inscription_id)
+        .fetch_optional(&self.client)
+        .await?;
+
+            match row {
+                Some(row) => {
+                    if row.inscr_cnt != Some(1) {
+                        TransferValidity::Invalid
+                    } else if row.transfer_cnt != Some(0) {
+                        TransferValidity::Used
+                    } else {
+                        TransferValidity::Valid
+                    }
+                }
+                None => TransferValidity::Invalid,
+            }
+        } else {
+            let row = sqlx::query!(
             "SELECT COALESCE(SUM(CASE WHEN event_type = $1 THEN 1 ELSE 0 END), 0) AS inscr_cnt,
                         COALESCE(SUM(CASE WHEN event_type = $2 THEN 1 ELSE 0 END), 0) AS transfer_cnt
                         FROM brc20_events WHERE inscription_id = $3"
@@ -1028,17 +1088,18 @@ impl Brc20Database {
         .fetch_optional(&self.client)
         .await?;
 
-        let validity = match row {
-            Some(row) => {
-                if row.inscr_cnt != Some(1) {
-                    TransferValidity::Invalid
-                } else if row.transfer_cnt != Some(0) {
-                    TransferValidity::Used
-                } else {
-                    TransferValidity::Valid
+            match row {
+                Some(row) => {
+                    if row.inscr_cnt != Some(1) {
+                        TransferValidity::Invalid
+                    } else if row.transfer_cnt != Some(0) {
+                        TransferValidity::Used
+                    } else {
+                        TransferValidity::Valid
+                    }
                 }
+                None => TransferValidity::Invalid,
             }
-            None => TransferValidity::Invalid,
         };
 
         self.transfer_validity_cache
