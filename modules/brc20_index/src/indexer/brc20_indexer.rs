@@ -41,7 +41,7 @@ use crate::{
 pub struct Brc20Indexer {
     main_db: OpiClient,
     event_provider_client: EventProviderClient,
-    last_reported_block: i32,
+    last_opi_block: i32,
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
     brc20_reporter: Brc20Reporter,
@@ -60,7 +60,7 @@ impl Brc20Indexer {
         Brc20Indexer {
             main_db,
             config,
-            last_reported_block: 0,
+            last_opi_block: 0,
             brc20_prog_client,
             brc20_reporter,
             event_provider_client,
@@ -73,7 +73,7 @@ impl Brc20Indexer {
 
         self.event_provider_client.load_providers().await?;
 
-        self.last_reported_block = self
+        self.last_opi_block = self
             .event_provider_client
             .get_best_verified_block_with_retries()
             .await?;
@@ -192,9 +192,10 @@ impl Brc20Indexer {
         loop {
             // This doesn't always reorg, but it will reorg if the last block is not the same
             self.reorg_to_last_synced_block_height().await?;
+            self.clear_caches().await?;
 
             // Check if a new block is available
-            let last_opi_block = self.get_opi_block_height().await?;
+            let last_opi_block = self.last_opi_block;
 
             let next_block = get_brc20_database()
                 .lock()
@@ -203,6 +204,7 @@ impl Brc20Indexer {
                 .await?;
             if next_block > last_opi_block {
                 tracing::info!("Waiting for new blocks...");
+                self.last_opi_block = self.get_opi_block_height().await.unwrap_or(last_opi_block);
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 continue;
             }
@@ -346,7 +348,7 @@ impl Brc20Indexer {
                     tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
                     tracing::error!(
                         "OPI cumulative traces hash: {:?}",
-                        opi_cumulative_traces_hash
+                        opi_cumulative_traces_hash.unwrap_or_default()
                     );
                     tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
                     return Err("Cumulative hash mismatch, please check your OPI client".into());
@@ -354,7 +356,7 @@ impl Brc20Indexer {
             }
 
             // Start reporting after 10 blocks left to full sync
-            if self.config.report_to_indexer && next_block >= self.last_reported_block - 10 {
+            if self.config.report_to_indexer && next_block >= self.last_opi_block - 10 {
                 self.brc20_reporter
                     .report(
                         next_block,
@@ -370,7 +372,7 @@ impl Brc20Indexer {
                         cumulative_traces_hash.clone(),
                     )
                     .await?;
-                self.last_reported_block = self
+                self.last_opi_block = self
                     .event_provider_client
                     .get_best_verified_block_with_retries()
                     .await?;
@@ -1515,7 +1517,7 @@ impl Brc20Indexer {
             .await
             .get_current_block_height()
             .await?;
-        let last_opi_block_height = self.get_opi_block_height().await?;
+        let last_opi_block_height = self.last_opi_block;
         let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled {
             self.config.first_brc20_prog_phase_one_height
         } else {
