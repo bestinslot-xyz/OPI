@@ -195,7 +195,7 @@ struct BlockResponse {
 pub struct BlockData {
     pub best_block_hash: String,
     pub best_cumulative_hash: String,
-    pub best_cumulative_traces_hash: Option<String>,
+    pub best_cumulative_trace_hash: Option<String>,
     pub block_time: Option<i64>,
 }
 

@@ -219,7 +219,7 @@ impl Brc20Indexer {
                 tracing::info!("Processing block: {}", next_block);
             }
 
-            let (block_hash, block_time, opi_cumulative_events_hash, opi_cumulative_traces_hash) =
+            let (block_hash, block_time, opi_cumulative_event_hash, opi_cumulative_trace_hash) =
                 if self.config.light_client_mode {
                     let block_info = self
                         .event_provider_client
@@ -229,7 +229,7 @@ impl Brc20Indexer {
                         block_info.best_block_hash,
                         block_info.block_time.unwrap_or(0) as i64, // Default to 0 if not available
                         block_info.best_cumulative_hash,
-                        block_info.best_cumulative_traces_hash,
+                        block_info.best_cumulative_trace_hash,
                     )
                 } else {
                     let (block_hash, block_time) =
@@ -328,9 +328,10 @@ impl Brc20Indexer {
 
             if self.config.light_client_mode {
                 // Validate cumulative hash with OPI client
-                if cumulative_events_hash != opi_cumulative_events_hash
-                    || cumulative_traces_hash
-                        != opi_cumulative_traces_hash.clone().unwrap_or_default()
+                if cumulative_events_hash != opi_cumulative_event_hash
+                    || (self.config.brc20_prog_enabled
+                        && cumulative_traces_hash
+                            != opi_cumulative_trace_hash.clone().unwrap_or_default())
                 {
                     // Reorg the last block if cumulative events hash mismatch
                     get_brc20_database()
@@ -344,13 +345,15 @@ impl Brc20Indexer {
                             .await?;
                     }
                     tracing::error!("Cumulative event hash mismatch!!");
-                    tracing::error!("OPI cumulative event hash: {}", opi_cumulative_events_hash);
+                    tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
                     tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
-                    tracing::error!(
-                        "OPI cumulative traces hash: {:?}",
-                        opi_cumulative_traces_hash.unwrap_or_default()
-                    );
-                    tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
+                    if self.config.brc20_prog_enabled {
+                        tracing::error!(
+                            "OPI cumulative traces hash: {:?}",
+                            opi_cumulative_trace_hash.unwrap_or_default()
+                        );
+                        tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
+                    }
                     return Err("Cumulative hash mismatch, please check your OPI client".into());
                 }
             }
