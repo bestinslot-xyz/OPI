@@ -23,6 +23,7 @@ use crate::{
     indexer::{
         EventGenerator, EventProcessor,
         brc20_prog_balance_server::run_balance_server,
+        brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
         brc20_prog_client::{build_brc20_prog_http_client, calculate_brc20_prog_traces_hash},
         brc20_reporter::Brc20Reporter,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
@@ -45,7 +46,8 @@ pub struct Brc20Indexer {
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
     brc20_reporter: Brc20Reporter,
-    server_handle: Option<JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>>,
+    server_handle: Option<JoinHandle<()>>,
+    bitcoin_proxy_server_handle: Option<JoinHandle<()>>,
 }
 
 impl Brc20Indexer {
@@ -65,6 +67,7 @@ impl Brc20Indexer {
             brc20_reporter,
             event_provider_client,
             server_handle: None,
+            bitcoin_proxy_server_handle: None,
         }
     }
 
@@ -72,11 +75,7 @@ impl Brc20Indexer {
         get_brc20_database().lock().await.init().await?;
 
         self.event_provider_client.load_providers().await?;
-
-        self.last_opi_block = self
-            .event_provider_client
-            .get_best_verified_block_with_retries()
-            .await?;
+        self.last_opi_block = self.get_opi_block_height().await?;
 
         let db_version = get_brc20_database().lock().await.get_db_version().await?;
         if db_version != DB_VERSION {
@@ -103,7 +102,16 @@ impl Brc20Indexer {
             self.server_handle = Some(tokio::spawn(
                 async move { run_balance_server(url_clone).await },
             ));
-            // Wait for the server to start
+            if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
+                let bitcoin_rpc_proxy_addr_clone =
+                    self.config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
+                let bitcoin_rpc_url_clone = self.config.bitcoin_rpc_url.clone();
+                self.bitcoin_proxy_server_handle = Some(tokio::spawn(async move {
+                    run_bitcoin_proxy_server(bitcoin_rpc_url_clone, bitcoin_rpc_proxy_addr_clone)
+                        .await
+                }));
+            }
+            // Wait for the servers to start
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
             let brc20_prog_block_height =
@@ -192,7 +200,6 @@ impl Brc20Indexer {
         loop {
             // This doesn't always reorg, but it will reorg if the last block is not the same
             self.reorg_to_last_synced_block_height().await?;
-            self.clear_caches().await?;
 
             // Check if a new block is available
             let last_opi_block = self.last_opi_block;
@@ -375,10 +382,7 @@ impl Brc20Indexer {
                         cumulative_traces_hash.clone(),
                     )
                     .await?;
-                self.last_opi_block = self
-                    .event_provider_client
-                    .get_best_verified_block_with_retries()
-                    .await?;
+                self.last_opi_block = self.get_opi_block_height().await?;
             }
         }
     }

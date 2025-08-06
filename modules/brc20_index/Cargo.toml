@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = "0.8.4"
+axum-server = "0.7.2"
 base64 = "0.22.1"
 bitcoin = "0.32.6"
 brc20-prog = "0.10.2"

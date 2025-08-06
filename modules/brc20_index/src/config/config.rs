@@ -96,6 +96,15 @@ pub const PROTOCOL_BRC20_MODULE: &str = "brc20-module";
 
 pub const BRC20_MODULE_BRC20PROG: &str = "BRC20PROG";
 
+pub const BITCOIN_RPC_PROXY_SERVER_ENABLED: &str = "BITCOIN_RPC_PROXY_SERVER_ENABLED";
+pub const BITCOIN_RPC_PROXY_SERVER_ENABLED_DEFAULT: &str = "false";
+
+pub const BITCOIN_RPC_PROXY_SERVER_ADDR_KEY: &str = "BITCOIN_RPC_PROXY_SERVER_ADDR";
+pub const BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18547";
+
+pub const BITCOIN_RPC_URL_KEY: &str = "BITCOIN_RPC_URL";
+pub const BITCOIN_RPC_URL_DEFAULT: &str = "http://localhost:38332";
+
 // BRC20 specific keys
 pub const LIMIT_PER_MINT_KEY: &str = "lim";
 pub const MAX_SUPPLY_KEY: &str = "max";
@@ -202,6 +211,11 @@ pub struct Brc20IndexerConfig {
     pub brc20_prog_rpc_password: Option<String>,
 
     pub brc20_prog_balance_server_url: String,
+
+    pub brc20_prog_bitcoin_rpc_proxy_server_enabled: bool,
+    pub brc20_prog_bitcoin_rpc_proxy_server_addr: String,
+
+    pub bitcoin_rpc_url: String,
 }
 
 impl Default for Brc20IndexerConfig {
@@ -268,6 +282,19 @@ impl Default for Brc20IndexerConfig {
             light_client_mode: std::env::var(OPERATION_MODE_KEY)
                 .unwrap_or_else(|_| OPERATION_MODE_FULL.to_string())
                 == OPERATION_MODE_LIGHT,
+
+            brc20_prog_bitcoin_rpc_proxy_server_enabled: std::env::var(
+                BITCOIN_RPC_PROXY_SERVER_ENABLED,
+            )
+            .unwrap_or_else(|_| BITCOIN_RPC_PROXY_SERVER_ENABLED_DEFAULT.to_string())
+                == "true",
+            brc20_prog_bitcoin_rpc_proxy_server_addr: std::env::var(
+                BITCOIN_RPC_PROXY_SERVER_ADDR_KEY,
+            )
+            .unwrap_or_else(|_| BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT.to_string()),
+
+            bitcoin_rpc_url: std::env::var(BITCOIN_RPC_URL_KEY)
+                .unwrap_or_else(|_| BITCOIN_RPC_URL_DEFAULT.to_string()),
         };
 
         if config.brc20_prog_enabled && config.light_client_mode {

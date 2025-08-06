@@ -152,13 +152,13 @@ impl EventProviderClient {
                     Ok(data) => data,
                     Err(e) => {
                         tracing::error!("Error parsing JSON response: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         continue; // Retry on parse error
                     }
                 },
                 Err(e) => {
                     tracing::error!("Error fetching events: {}", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue; // Retry on error
                 }
             };
