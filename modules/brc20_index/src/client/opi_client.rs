@@ -36,11 +36,11 @@ impl OpiClient {
     pub async fn get_block_hash_and_time(
         &self,
         block_height: i32,
-    ) -> Result<(String, i64, String), Box<dyn Error>> {
+    ) -> Result<(String, i64), Box<dyn Error>> {
         self.client
             .get_block_hash_and_ts(block_height as u32)
             .await?
-            .map(|res| (res.block_hash, res.timestamp as i64, "".to_string()))
+            .map(|res| (res.block_hash, res.timestamp as i64))
             .ok_or("Block hash and time not found".into())
     }
 

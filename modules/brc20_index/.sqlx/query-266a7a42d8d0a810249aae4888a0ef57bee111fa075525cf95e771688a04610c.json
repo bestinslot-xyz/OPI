@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash, block_trace_hash, cumulative_trace_hash) VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "266a7a42d8d0a810249aae4888a0ef57bee111fa075525cf95e771688a04610c"
+}

@@ -78,6 +78,8 @@ CREATE TABLE public.brc20_cumulative_event_hashes (
 	block_height int4 NOT NULL,
 	block_event_hash text NOT NULL,
 	cumulative_event_hash text NOT NULL,
+	block_trace_hash text NOT NULL,
+	cumulative_trace_hash text NOT NULL,
 	CONSTRAINT brc20_cumulative_event_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_cumulative_event_hashes_block_height_idx ON public.brc20_cumulative_event_hashes USING btree (block_height);

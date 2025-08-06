@@ -237,10 +237,11 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn set_block_hash(
+    pub async fn set_block_hashes(
         &mut self,
         block_height: i32,
         block_hash: &str,
+        block_traces_hash: &str,
     ) -> Result<(), Box<dyn Error>> {
         tracing::debug!(
             "Setting block hash for height {}: {}",
@@ -270,13 +271,23 @@ impl Brc20Database {
             None => block_events_hash.clone(),
         };
 
+        let previous_cumulative_trace_hash =
+            self.get_cumulative_traces_hash(block_height - 1).await?;
+        let cumulative_trace_hash = if !block_traces_hash.is_empty() {
+            sha256::digest(previous_cumulative_trace_hash.unwrap_or_default() + block_traces_hash)
+        } else {
+            String::new()
+        };
+
         self.block_event_strings.remove(&block_height);
 
         sqlx::query!(
-            "INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) VALUES ($1, $2, $3)",
+            "INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash, block_trace_hash, cumulative_trace_hash) VALUES ($1, $2, $3, $4, $5)",
             block_height,
             block_events_hash,
-            cumulative_event_hash
+            cumulative_event_hash,
+            block_traces_hash,
+            cumulative_trace_hash
         )
         .execute(&self.client)
         .await?;
@@ -870,6 +881,18 @@ impl Brc20Database {
         )
         .fetch_optional(&self.client)
         .await?.map(|r| r.cumulative_event_hash))
+    }
+
+    pub async fn get_cumulative_traces_hash(
+        &self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        Ok(sqlx::query!(
+            "SELECT cumulative_trace_hash FROM brc20_cumulative_event_hashes WHERE block_height = $1",
+            block_height
+        )
+        .fetch_optional(&self.client)
+        .await?.map(|r| r.cumulative_trace_hash))
     }
 
     pub async fn get_block_events_hash(

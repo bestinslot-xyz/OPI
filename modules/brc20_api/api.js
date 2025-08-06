@@ -131,7 +131,7 @@ app.get('/v1/brc20/balance_on_block', async (request, response) => {
       return
     }
 
-    let query =  `select overall_balance, available_balance
+    let query = `select overall_balance, available_balance
                   from brc20_historic_balances
                   where block_height < $1
                     and pkscript = $2
@@ -168,7 +168,7 @@ app.get('/v1/brc20/activity_on_block', async (request, response) => {
       event_type_id_to_name[row.event_type_id] = row.event_type_name
     })
 
-    let query =  `select event, event_type, inscription_id
+    let query = `select event, event_type, inscription_id
                   from brc20_events
                   where block_height = $1
                   order by id asc;`
@@ -330,29 +330,34 @@ app.get('/v1/brc20/get_hash_of_all_activity', async (request, response) => {
   try {
     console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
     let block_height = request.query.block_height
-  
+
     let current_block_height = await get_block_height_of_db()
     if (block_height > current_block_height) {
       response.status(400).send({ error: 'block not indexed yet', result: null })
       return
     }
 
-    let query =  `select cumulative_event_hash, block_event_hash
+    let query = `select cumulative_event_hash, block_event_hash, cumulative_trace_hash, block_trace_hash
                   from brc20_cumulative_event_hashes
                   where block_height = $1;`
     let res = await query_db(query, [block_height])
     let cumulative_event_hash = res.rows[0].cumulative_event_hash
     let block_event_hash = res.rows[0].block_event_hash
-  
+    let cumulative_trace_hash = res.rows[0].cumulative_trace_hash
+    let block_trace_hash = res.rows[0].block_trace_hash
+
     let res2 = await query_db('select indexer_version from brc20_indexer_version;')
     let indexer_version = res2.rows[0].indexer_version
-  
-    response.send({ error: null, result: {
+
+    response.send({
+      error: null, result: {
         cumulative_event_hash: cumulative_event_hash,
         block_event_hash: block_event_hash,
+        cumulative_trace_hash: cumulative_trace_hash,
+        block_trace_hash: block_trace_hash,
         indexer_version: indexer_version,
         block_height: block_height
-      } 
+      }
     })
   } catch (err) {
     console.log(err)
@@ -401,7 +406,8 @@ app.get('/v1/brc20/get_hash_of_all_current_balances', async (request, response) 
     let res2 = await query_db('select indexer_version from brc20_indexer_version;')
     let indexer_version = res2.rows[0].indexer_version
 
-    response.send({ error: null, result: {
+    response.send({
+      error: null, result: {
         current_balances_hash: hash_hex,
         indexer_version: indexer_version,
         block_height: current_block_height
@@ -425,12 +431,12 @@ app.get('/v1/brc20/event', async (request, response) => {
     })
 
     let inscription_id = request.query.inscription_id;
-    if(!inscription_id) {
+    if (!inscription_id) {
       response.status(400).send({ error: 'inscription_id is required', result: null })
       return
     }
 
-    let query =  `select event, event_type, inscription_id block_height
+    let query = `select event, event_type, inscription_id block_height
                   from brc20_events
                   where inscription_id = $1
                   order by id asc;`

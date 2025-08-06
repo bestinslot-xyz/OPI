@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT cumulative_trace_hash FROM brc20_cumulative_event_hashes WHERE block_height = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cumulative_trace_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "636d43b3cc78574c8c08e658e49fc9cd11dd4bf1746226fda34c55765dee2b78"
+}

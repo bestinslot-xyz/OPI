@@ -43,7 +43,7 @@ impl EventProviderClient {
     }
 
     pub async fn get_block_info_with_retries(
-        &mut self,
+        &self,
         block_height: i32,
     ) -> Result<BlockData, Box<dyn Error>> {
         let mut retries = 0;
@@ -62,7 +62,7 @@ impl EventProviderClient {
     }
 
     async fn get_block_info(
-        &mut self,
+        &self,
         block_height: i32,
     ) -> Result<BlockData, Box<dyn std::error::Error>> {
         let response = self
@@ -83,7 +83,7 @@ impl EventProviderClient {
         response.data.ok_or("Block data not found".into())
     }
 
-    pub async fn get_best_verified_block_with_retries(&mut self) -> Result<i32, Box<dyn Error>> {
+    pub async fn get_best_verified_block_with_retries(&self) -> Result<i32, Box<dyn Error>> {
         let mut retries = 0;
         loop {
             match self.get_best_verified_block().await {
@@ -99,7 +99,7 @@ impl EventProviderClient {
         }
     }
 
-    async fn get_best_verified_block(&mut self) -> Result<i32, Box<dyn std::error::Error>> {
+    async fn get_best_verified_block(&self) -> Result<i32, Box<dyn std::error::Error>> {
         let response = self
             .client
             .get(format!(
@@ -124,7 +124,7 @@ impl EventProviderClient {
     }
 
     pub async fn get_events(
-        &mut self,
+        &self,
         block_height: i64,
     ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
         let mut random_order = Vec::new();
@@ -195,6 +195,7 @@ struct BlockResponse {
 pub struct BlockData {
     pub best_block_hash: String,
     pub best_cumulative_hash: String,
+    pub best_cumulative_traces_hash: Option<String>,
     pub block_time: Option<i64>,
 }
 

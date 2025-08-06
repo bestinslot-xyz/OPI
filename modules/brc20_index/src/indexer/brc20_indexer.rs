@@ -23,7 +23,7 @@ use crate::{
     indexer::{
         EventGenerator, EventProcessor,
         brc20_prog_balance_server::run_balance_server,
-        brc20_prog_client::build_brc20_prog_http_client,
+        brc20_prog_client::{build_brc20_prog_http_client, calculate_brc20_prog_traces_hash},
         brc20_reporter::Brc20Reporter,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
@@ -41,6 +41,7 @@ use crate::{
 pub struct Brc20Indexer {
     main_db: OpiClient,
     event_provider_client: EventProviderClient,
+    last_reported_block: i32,
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
     brc20_reporter: Brc20Reporter,
@@ -59,6 +60,7 @@ impl Brc20Indexer {
         Brc20Indexer {
             main_db,
             config,
+            last_reported_block: 0,
             brc20_prog_client,
             brc20_reporter,
             event_provider_client,
@@ -70,6 +72,11 @@ impl Brc20Indexer {
         get_brc20_database().lock().await.init().await?;
 
         self.event_provider_client.load_providers().await?;
+
+        self.last_reported_block = self
+            .event_provider_client
+            .get_best_verified_block_with_retries()
+            .await?;
 
         let db_version = get_brc20_database().lock().await.get_db_version().await?;
         if db_version != DB_VERSION {
@@ -187,60 +194,52 @@ impl Brc20Indexer {
             self.reorg_to_last_synced_block_height().await?;
 
             // Check if a new block is available
-            let last_opi_block = if self.config.light_client_mode {
-                self.event_provider_client
-                    .get_best_verified_block_with_retries()
-                    .await?
-            } else {
-                self.main_db.get_current_block_height().await?
-            };
+            let last_opi_block = self.get_opi_block_height().await?;
 
-            let next_brc20_block = get_brc20_database()
+            let next_block = get_brc20_database()
                 .lock()
                 .await
                 .get_next_block_height()
                 .await?;
-            if next_brc20_block > last_opi_block {
+            if next_block > last_opi_block {
                 tracing::info!("Waiting for new blocks...");
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 continue;
             }
 
-            let is_synced = next_brc20_block == last_opi_block;
+            let is_synced = next_block == last_opi_block;
 
-            if next_brc20_block % 1000 == 0 {
-                tracing::info!(
-                    "Clearing brc20 db caches at block height {}",
-                    next_brc20_block
-                );
+            if next_block % 1000 == 0 {
+                tracing::info!("Clearing brc20 db caches at block height {}", next_block);
                 get_brc20_database().lock().await.clear_caches();
             }
-            if is_synced || next_brc20_block % 1000 == 0 {
-                tracing::info!("Processing block: {}", next_brc20_block);
+            if is_synced || next_block % 1000 == 0 {
+                tracing::info!("Processing block: {}", next_block);
             }
 
-            let (block_hash, block_time, opi_cumulative_events_hash) =
+            let (block_hash, block_time, opi_cumulative_events_hash, opi_cumulative_traces_hash) =
                 if self.config.light_client_mode {
                     let block_info = self
                         .event_provider_client
-                        .get_block_info_with_retries(next_brc20_block)
+                        .get_block_info_with_retries(next_block)
                         .await?;
                     (
                         block_info.best_block_hash,
                         block_info.block_time.unwrap_or(0) as i64, // Default to 0 if not available
                         block_info.best_cumulative_hash,
+                        block_info.best_cumulative_traces_hash,
                     )
                 } else {
-                    self.main_db
-                        .get_block_hash_and_time(next_brc20_block)
-                        .await?
+                    let (block_hash, block_time) =
+                        self.main_db.get_block_hash_and_time(next_block).await?;
+                    (block_hash, block_time, "".to_string(), None)
                 };
 
-            if next_brc20_block < self.config.first_brc20_height {
-                if next_brc20_block % 1000 == 0 {
+            if next_block < self.config.first_brc20_height {
+                if next_block % 1000 == 0 {
                     tracing::info!(
                         "Block height {} is less than first_brc20_height {}, skipping",
-                        next_brc20_block,
+                        next_block,
                         self.config.first_brc20_height
                     );
                 }
@@ -248,10 +247,10 @@ impl Brc20Indexer {
                 if self.config.light_client_mode {
                     let events = self
                         .event_provider_client
-                        .get_events(next_brc20_block as i64)
+                        .get_events(next_block as i64)
                         .await?;
                     self.process_events(
-                        next_brc20_block,
+                        next_block,
                         &block_hash,
                         block_time as u64,
                         is_synced,
@@ -260,7 +259,7 @@ impl Brc20Indexer {
                     .await?;
                 } else {
                     self.generate_and_process_events(
-                        next_brc20_block,
+                        next_block,
                         &block_hash,
                         block_time as u64,
                         is_synced,
@@ -269,84 +268,96 @@ impl Brc20Indexer {
                 }
             }
 
-            if next_brc20_block >= self.config.first_brc20_height
+            if next_block >= self.config.first_brc20_height
                 && get_brc20_database()
                     .lock()
                     .await
-                    .should_index_extras(next_brc20_block, last_opi_block)
+                    .should_index_extras(next_block, last_opi_block)
                     .await?
             {
                 // Index extras if synced or close to sync
                 get_brc20_database()
                     .lock()
                     .await
-                    .index_extra_tables(next_brc20_block)
+                    .index_extra_tables(next_block)
                     .await?;
             }
+
+            let block_traces_hash = if self.config.brc20_prog_enabled
+                && next_block >= self.config.first_brc20_prog_phase_one_height
+            {
+                calculate_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
+            } else {
+                String::new()
+            };
 
             get_brc20_database()
                 .lock()
                 .await
-                .set_block_hash(next_brc20_block, &block_hash)
+                .set_block_hashes(next_block, &block_hash, block_traces_hash.as_str())
                 .await?;
 
             let Some(block_events_hash) = get_brc20_database()
                 .lock()
                 .await
-                .get_block_events_hash(next_brc20_block)
+                .get_block_events_hash(next_block)
                 .await?
             else {
-                tracing::warn!("Block events hash not found for block {}", next_brc20_block);
+                tracing::warn!("Block events hash not found for block {}", next_block);
                 return Ok(());
             };
 
             let Some(cumulative_events_hash) = get_brc20_database()
                 .lock()
                 .await
-                .get_cumulative_events_hash(next_brc20_block)
+                .get_cumulative_events_hash(next_block)
                 .await?
             else {
-                tracing::warn!(
-                    "Cumulative events hash not found for block {}",
-                    next_brc20_block
-                );
+                tracing::warn!("Cumulative events hash not found for block {}", next_block);
                 return Ok(());
             };
 
+            let cumulative_traces_hash = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_traces_hash(next_block)
+                .await?
+                .unwrap_or_default();
+
             if self.config.light_client_mode {
-                // Validate cumulative events hash with OPI client
-                if cumulative_events_hash != opi_cumulative_events_hash {
+                // Validate cumulative hash with OPI client
+                if cumulative_events_hash != opi_cumulative_events_hash
+                    || cumulative_traces_hash
+                        != opi_cumulative_traces_hash.clone().unwrap_or_default()
+                {
                     // Reorg the last block if cumulative events hash mismatch
                     get_brc20_database()
                         .lock()
                         .await
-                        .reorg(next_brc20_block - 1)
+                        .reorg(next_block - 1)
                         .await?;
                     if self.config.brc20_prog_enabled {
                         self.brc20_prog_client
-                            .brc20_reorg((next_brc20_block - 1) as u64)
+                            .brc20_reorg((next_block - 1) as u64)
                             .await?;
                     }
                     tracing::error!("Cumulative event hash mismatch!!");
                     tracing::error!("OPI cumulative event hash: {}", opi_cumulative_events_hash);
                     tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
-                    return Err(
-                        "Cumulative event hash mismatch, please check your OPI client".into(),
+                    tracing::error!(
+                        "OPI cumulative traces hash: {:?}",
+                        opi_cumulative_traces_hash
                     );
+                    tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
+                    return Err("Cumulative hash mismatch, please check your OPI client".into());
                 }
             }
 
             // Start reporting after 10 blocks left to full sync
-            if next_brc20_block
-                >= self
-                    .event_provider_client
-                    .get_best_verified_block_with_retries()
-                    .await?
-                    - 10
-            {
+            if self.config.report_to_indexer && next_block >= self.last_reported_block - 10 {
                 self.brc20_reporter
                     .report(
-                        next_brc20_block,
+                        next_block,
                         block_hash.to_string(),
                         if block_time == 0 {
                             None
@@ -355,7 +366,13 @@ impl Brc20Indexer {
                         },
                         block_events_hash.clone(),
                         cumulative_events_hash.clone(),
+                        block_traces_hash.clone(),
+                        cumulative_traces_hash.clone(),
                     )
+                    .await?;
+                self.last_reported_block = self
+                    .event_provider_client
+                    .get_best_verified_block_with_retries()
                     .await?;
             }
         }
@@ -1481,6 +1498,16 @@ impl Brc20Indexer {
         Ok(())
     }
 
+    pub async fn get_opi_block_height(&self) -> Result<i32, Box<dyn Error>> {
+        if self.config.light_client_mode {
+            self.event_provider_client
+                .get_best_verified_block_with_retries()
+                .await
+        } else {
+            self.main_db.get_current_block_height().await
+        }
+    }
+
     pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
         tracing::debug!("Reorganizing BRC20 indexer to last synced block height...");
         let mut last_brc20_block_height = get_brc20_database()
@@ -1488,13 +1515,7 @@ impl Brc20Indexer {
             .await
             .get_current_block_height()
             .await?;
-        let last_opi_block_height = if self.config.light_client_mode {
-            self.event_provider_client
-                .get_best_verified_block_with_retries()
-                .await?
-        } else {
-            self.main_db.get_current_block_height().await?
-        };
+        let last_opi_block_height = self.get_opi_block_height().await?;
         let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled {
             self.config.first_brc20_prog_phase_one_height
         } else {
