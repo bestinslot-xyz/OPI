@@ -117,6 +117,9 @@ pub const SELF_MINT_KEY: &str = "self_mint";
 pub const SALT_KEY: &str = "salt";
 pub const HASH_KEY: &str = "hash";
 
+pub const OPI_DB_URL_KEY: &str = "OPI_DB_URL";
+pub const OPI_DB_URL_DEFAULT: &str = "http://localhost:11030";
+
 // BRC20 prog specific keys
 pub const DATA_KEY: &str = "d";
 pub const BASE64_DATA_KEY: &str = "b";
@@ -190,6 +193,8 @@ pub struct Brc20IndexerConfig {
     pub db_database: String,
     pub db_ssl: bool,
 
+    pub opi_db_url: String,
+
     pub report_to_indexer: bool,
     pub report_url: String,
     pub report_retries: i32,
@@ -234,6 +239,9 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| DB_DATABASE_DEFAULT.to_string()),
             db_ssl: std::env::var(DB_SSL_KEY).unwrap_or_else(|_| DB_SSL_DEFAULT.to_string())
                 == "true",
+
+            opi_db_url: std::env::var(OPI_DB_URL_KEY)
+                .unwrap_or_else(|_| OPI_DB_URL_DEFAULT.to_string()),
 
             report_to_indexer: std::env::var(REPORT_TO_INDEXER_KEY)
                 .unwrap_or_else(|_| REPORT_TO_INDEXER_DEFAULT.to_string())
