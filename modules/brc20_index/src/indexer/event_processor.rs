@@ -341,6 +341,16 @@ impl EventProcessor {
             .get_balance(&event.ticker, &event.source_pk_script)
             .await?;
 
+        if balance.available_balance < event.amount {
+            tracing::error!(
+                "Insufficient balance for transfer {}: available {}, required {}",
+                event.ticker,
+                balance.available_balance,
+                event.amount
+            );
+            return Err("Insufficient balance for transfer")?;
+        }
+
         balance.available_balance -= event.amount;
 
         get_brc20_database().lock().await.update_balance(
