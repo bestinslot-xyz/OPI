@@ -151,20 +151,20 @@ impl EventProviderClient {
                 Ok(resp) => match resp.json().await {
                     Ok(data) => data,
                     Err(e) => {
-                        tracing::error!("Error parsing JSON response: {}", e);
+                        tracing::error!("Error parsing JSON response from {}: {}", event_provider.url, e);
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         continue; // Retry on parse error
                     }
                 },
                 Err(e) => {
-                    tracing::error!("Error fetching events: {}", e);
+                    tracing::error!("Error fetching events from {}: {}", event_provider.url, e);
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue; // Retry on error
                 }
             };
 
             if let Some(error) = response.error {
-                tracing::error!("Error in response: {}", error);
+                tracing::error!("Error in response from {}: {}", event_provider.url, error);
                 continue; // Retry if there's an error
             }
 
