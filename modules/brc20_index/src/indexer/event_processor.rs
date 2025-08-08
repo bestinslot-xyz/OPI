@@ -63,6 +63,14 @@ impl EventProcessor {
         Ok(())
     }
 
+    pub async fn brc20_prog_call_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        Ok(())
+    }
+
     pub async fn brc20_prog_call_transfer(
         prog_client: &HttpClient,
         block_time: u64,
@@ -107,14 +115,6 @@ impl EventProcessor {
         Ok(())
     }
 
-    pub async fn brc20_prog_call_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(inscription_id, TransferValidity::Valid);
-        Ok(())
-    }
-
     pub async fn brc20_prog_transact_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
         get_brc20_database()
             .lock()
@@ -153,6 +153,14 @@ impl EventProcessor {
             .expect("Failed to run transact, please check your brc20_prog node");
 
         Ok(transact_result.len() as u64)
+    }
+
+    pub async fn brc20_prog_withdraw_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        Ok(())
     }
 
     pub async fn brc20_prog_withdraw_transfer(
@@ -255,14 +263,6 @@ impl EventProcessor {
         Ok(true)
     }
 
-    pub async fn brc20_prog_withdraw_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(inscription_id, TransferValidity::Valid);
-        Ok(())
-    }
-
     pub async fn brc20_deploy_inscribe(
         block_height: i32,
         inscription_id: &str,
@@ -327,8 +327,14 @@ impl EventProcessor {
     pub async fn brc20_transfer_inscribe(
         block_height: i32,
         event_id: i64,
+        inscription_id: &str,
         event: &TransferInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(&inscription_id, TransferValidity::Valid);
+
         let mut balance = get_brc20_database()
             .lock()
             .await

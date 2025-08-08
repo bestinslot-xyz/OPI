@@ -653,7 +653,7 @@ impl Brc20Indexer {
                     &mut event,
                     ticker.decimals,
                 )?;
-                EventProcessor::brc20_transfer_inscribe(block_height, event_id, &event).await?;
+                EventProcessor::brc20_transfer_inscribe(block_height, event_id, &inscription_id, &event).await?;
             } else if event_type_id == TransferTransferEvent::event_id() {
                 let mut event = load_event::<TransferTransferEvent>(event_type_id, &event_record)?;
                 let ticker = get_brc20_database()
@@ -1486,8 +1486,13 @@ impl Brc20Indexer {
                     .await
                     {
                         Ok((event_id, event)) => {
-                            EventProcessor::brc20_transfer_inscribe(block_height, event_id, &event)
-                                .await?;
+                            EventProcessor::brc20_transfer_inscribe(
+                                block_height,
+                                event_id,
+                                &transfer.inscription_id,
+                                &event,
+                            )
+                            .await?;
                         }
                         Err(e) => {
                             tracing::warn!(
