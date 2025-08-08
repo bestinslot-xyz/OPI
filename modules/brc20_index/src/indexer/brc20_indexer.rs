@@ -429,8 +429,6 @@ impl Brc20Indexer {
         is_synced: bool,
         events: Vec<serde_json::Value>,
     ) -> Result<(), Box<dyn Error>> {
-        tracing::info!("Processing events for block {}", block_height);
-
         if events.is_empty() {
             self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
                 .await?;
