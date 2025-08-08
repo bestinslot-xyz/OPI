@@ -254,10 +254,23 @@ impl Brc20Indexer {
                 }
             } else {
                 if self.config.light_client_mode {
-                    let events = self
+                    let events = match self
                         .event_provider_client
                         .get_events(next_block as i64)
-                        .await?;
+                        .await
+                    {
+                        Ok(events) => events,
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to get events for block {}: {}",
+                                next_block,
+                                err
+                            );
+                            tracing::error!("Retrying in 5 seconds...");
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    };
                     self.process_events(
                         next_block,
                         &block_hash,
