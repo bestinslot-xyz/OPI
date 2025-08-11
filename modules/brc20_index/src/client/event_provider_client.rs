@@ -123,6 +123,60 @@ impl EventProviderClient {
             .unwrap_or(0))
     }
 
+    pub async fn get_bitcoin_rpc_results(
+        &self,
+        block_height: i64,
+    ) -> Result<Vec<BitcoinRpcResult>, Box<dyn std::error::Error>> {
+        let mut random_order = Vec::new();
+        for i in 0..RETRY_COUNT {
+            random_order.push(i as usize);
+        }
+        random_order.shuffle(&mut rand::rng());
+        for i in 0..RETRY_COUNT {
+            let event_provider = self
+                .event_providers
+                .get(random_order[i as usize] % self.event_providers.len())
+                .ok_or("No event providers available")?;
+
+            let response = self
+                .client
+                .get(format!(
+                    "{}/v1/brc20/bitcoin_rpc_results?block_height={}",
+                    event_provider.url, block_height
+                ))
+                .send()
+                .await;
+
+            let response: BitcoinRpcResultResponse = match response {
+                Ok(resp) => match resp.json().await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        tracing::error!(
+                            "Error parsing JSON response from {}: {}",
+                            event_provider.url,
+                            e
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue; // Retry on parse error
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Error fetching Bitcoin RPC results from {}: {}", event_provider.url, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue; // Retry on error
+                }
+            };
+
+            if let Some(error) = response.error {
+                tracing::error!("Error in response from {}: {}", event_provider.url, error);
+                continue; // Retry if there's an error
+            }
+
+            return response.result.ok_or("Bitcoin RPC results not found".into());
+        }
+        return Err("Failed to fetch Bitcoin RPC results after retries".into());
+    }
+
     pub async fn get_events(
         &self,
         block_height: i64,
@@ -201,6 +255,19 @@ pub struct BlockData {
     pub best_cumulative_hash: String,
     pub best_cumulative_trace_hash: Option<String>,
     pub block_time: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinRpcResult {
+    pub method: String,
+    pub request: serde_json::Value,
+    pub response: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinRpcResultResponse {
+    pub error: Option<String>,
+    pub result: Option<Vec<BitcoinRpcResult>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

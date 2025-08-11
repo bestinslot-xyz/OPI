@@ -104,7 +104,6 @@ pub struct BalanceUpdateData {
 #[derive(Debug, Clone)]
 pub struct BitcoinRpcResultRecord {
     pub method: String,
-    pub request: serde_json::Value,
     pub response: serde_json::Value,
     pub block_height: i32,
 }
@@ -140,7 +139,7 @@ pub struct Brc20Database {
     pub ticker_updates: HashMap<String, TickerUpdateData>,
     pub light_event_inserts: Vec<LightEventRecord>,
     pub event_inserts: Vec<EventRecord>,
-    pub bitcoin_rpc_inserts: Vec<BitcoinRpcResultRecord>,
+    pub bitcoin_rpc_inserts: HashMap<serde_json::Value, BitcoinRpcResultRecord>,
     pub block_event_strings: HashMap<i32, String>,
     pub balance_updates: Vec<BalanceUpdateData>,
     pub light_client_mode: bool,
@@ -194,7 +193,7 @@ impl Brc20Database {
             ticker_updates: HashMap::new(),
             event_inserts: Vec::new(),
             light_event_inserts: Vec::new(),
-            bitcoin_rpc_inserts: Vec::new(),
+            bitcoin_rpc_inserts: HashMap::new(),
             balance_updates: Vec::new(),
             block_event_strings: HashMap::new(),
             light_client_mode: config.light_client_mode,
@@ -728,7 +727,6 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-
         sqlx::query("DELETE FROM brc20_events WHERE block_height > $1")
             .bind(block_height)
             .execute(&mut *tx)
@@ -1129,7 +1127,15 @@ impl Brc20Database {
             .and_then(|m| m.as_str())
             .ok_or("Bitcoin RPC request does not contain a method")?;
 
-        let Some(response_without_id) = sqlx::query!(
+        let response_without_id = self
+            .bitcoin_rpc_inserts
+            .get(&request_json_without_id)
+            .and_then(|x| Some(x.response.clone()));
+
+        let response_without_id = if let Some(response_without_id) = response_without_id {
+            response_without_id
+        } else {
+            let Some(response_without_id) = sqlx::query!(
             "SELECT response FROM brc20_bitcoin_rpc_result_cache WHERE method = $1 AND request = $2 LIMIT 1",
             request_method,
             request_json_without_id
@@ -1138,19 +1144,17 @@ impl Brc20Database {
         .await? else {
             return Ok(None);
         };
+            response_without_id.response
+        };
 
         let response_bytes = if let Some(id) = request_id {
-            let mut response_with_id = response_without_id.response.clone();
+            let mut response_with_id = response_without_id.clone();
             if let Some(obj) = response_with_id.as_object_mut() {
                 obj.insert("id".to_string(), id.clone());
             }
-            serde_json::to_vec(&response_with_id)
+            serde_json::to_vec(&response_with_id)?
         } else {
-            serde_json::to_vec(&response_without_id.response)
-        };
-
-        let Ok(response_bytes) = response_bytes else {
-            return Err("Failed to serialize Bitcoin RPC response".into());
+            serde_json::to_vec(&response_without_id)?
         };
 
         return Ok(Some(Bytes::from(response_bytes)));
@@ -1198,12 +1202,14 @@ impl Brc20Database {
             })
             .unwrap_or(response_json);
 
-        self.bitcoin_rpc_inserts.push(BitcoinRpcResultRecord {
-            block_height: self.get_current_block_height().await?,
-            method: request_method.to_string(),
-            request: request_json_without_id,
-            response: response_json_without_id,
-        });
+        self.bitcoin_rpc_inserts.insert(
+            request_json_without_id.clone(),
+            BitcoinRpcResultRecord {
+                block_height: self.get_current_block_height().await?,
+                method: request_method.to_string(),
+                response: response_json_without_id,
+            },
+        );
 
         Ok(())
     }
@@ -1518,11 +1524,11 @@ impl Brc20Database {
             let mut all_requests = Vec::new();
             let mut all_responses = Vec::new();
             let mut all_block_heights = Vec::new();
-            for insert in &self.bitcoin_rpc_inserts {
-                all_methods.push(insert.method.clone());
-                all_requests.push(insert.request.clone());
-                all_responses.push(insert.response.clone());
-                all_block_heights.push(insert.block_height);
+            for (request, result) in &self.bitcoin_rpc_inserts {
+                all_requests.push(request.clone());
+                all_methods.push(result.method.clone());
+                all_responses.push(result.response.clone());
+                all_block_heights.push(result.block_height);
             }
             sqlx::query!(
                 "INSERT INTO brc20_bitcoin_rpc_result_cache (method, request, response, block_height) SELECT * FROM UNNEST

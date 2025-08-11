@@ -254,6 +254,39 @@ impl Brc20Indexer {
                 }
             } else {
                 if self.config.light_client_mode {
+                    if self.config.brc20_prog_enabled {
+                        let bitcoin_rpc_results = match self
+                            .event_provider_client
+                            .get_bitcoin_rpc_results(next_block as i64)
+                            .await
+                        {
+                            Ok(results) => results,
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to get Bitcoin RPC results for block {}: {}",
+                                    next_block,
+                                    err
+                                );
+                                tracing::error!("Retrying in 5 seconds...");
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        };
+                        for response in bitcoin_rpc_results {
+                            let request_bytes =
+                                serde_json_canonicalizer::to_vec(&response.request)?;
+                            let response_bytes =
+                                serde_json_canonicalizer::to_vec(&response.response)?.into();
+                            get_brc20_database()
+                                .lock()
+                                .await
+                                .cache_bitcoin_rpc_request(
+                                    request_bytes.as_slice(),
+                                    &response_bytes,
+                                )
+                                .await?;
+                        }
+                    }
                     let events = match self
                         .event_provider_client
                         .get_events(next_block as i64)
