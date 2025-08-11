@@ -151,7 +151,11 @@ impl EventProviderClient {
                 Ok(resp) => match resp.json().await {
                     Ok(data) => data,
                     Err(e) => {
-                        tracing::error!("Error parsing JSON response from {}: {}", event_provider.url, e);
+                        tracing::error!(
+                            "Error parsing JSON response from {}: {}",
+                            event_provider.url,
+                            e
+                        );
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         continue; // Retry on parse error
                     }
