@@ -96,6 +96,15 @@ pub const PROTOCOL_BRC20_MODULE: &str = "brc20-module";
 
 pub const BRC20_MODULE_BRC20PROG: &str = "BRC20PROG";
 
+pub const BITCOIN_RPC_PROXY_SERVER_ENABLED: &str = "BITCOIN_RPC_PROXY_SERVER_ENABLED";
+pub const BITCOIN_RPC_PROXY_SERVER_ENABLED_DEFAULT: &str = "false";
+
+pub const BITCOIN_RPC_PROXY_SERVER_ADDR_KEY: &str = "BITCOIN_RPC_PROXY_SERVER_ADDR";
+pub const BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18547";
+
+pub const BITCOIN_RPC_URL_KEY: &str = "BITCOIN_RPC_URL";
+pub const BITCOIN_RPC_URL_DEFAULT: &str = "http://localhost:38332";
+
 // BRC20 specific keys
 pub const LIMIT_PER_MINT_KEY: &str = "lim";
 pub const MAX_SUPPLY_KEY: &str = "max";
@@ -107,6 +116,9 @@ pub const TICKER_KEY: &str = "tick";
 pub const SELF_MINT_KEY: &str = "self_mint";
 pub const SALT_KEY: &str = "salt";
 pub const HASH_KEY: &str = "hash";
+
+pub const OPI_DB_URL_KEY: &str = "OPI_DB_URL";
+pub const OPI_DB_URL_DEFAULT: &str = "http://localhost:11030";
 
 // BRC20 prog specific keys
 pub const DATA_KEY: &str = "d";
@@ -146,12 +158,19 @@ pub const EVENT_SEPARATOR: &str = "|";
 
 pub const SELF_MINT_ENABLE_HEIGHT: i32 = 837090;
 
+pub const OPERATION_MODE_KEY: &str = "OPERATION_MODE";
+pub const OPERATION_MODE_FULL: &str = "full";
+pub const OPERATION_MODE_LIGHT: &str = "light";
+
 // Versions used for database migrations and version checks
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 6;
-pub const EVENT_HASH_VERSION: i32 = 3;
+pub const EVENT_HASH_VERSION: i32 = 2;
 pub const BRC20_PROG_VERSION: &str = "0.10.2";
 pub const INDEXER_VERSION: &str = "opi-brc20-full-node v0.5.0";
+pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-light-node v0.5.0";
+
+pub const OPI_URL: &str = "https://api.opi.network";
 
 fn get_bitcoin_network_type(network_type: &str) -> Network {
     match network_type {
@@ -165,6 +184,8 @@ fn get_bitcoin_network_type(network_type: &str) -> Network {
 }
 
 pub struct Brc20IndexerConfig {
+    pub light_client_mode: bool,
+
     pub db_host: String,
     pub db_port: String,
     pub db_user: String,
@@ -172,11 +193,14 @@ pub struct Brc20IndexerConfig {
     pub db_database: String,
     pub db_ssl: bool,
 
+    pub opi_db_url: String,
+
     pub report_to_indexer: bool,
     pub report_url: String,
     pub report_retries: i32,
     pub report_name: String,
 
+    pub network_type: Network,
     pub network_type_string: String,
 
     pub first_inscription_height: i32,
@@ -192,6 +216,11 @@ pub struct Brc20IndexerConfig {
     pub brc20_prog_rpc_password: Option<String>,
 
     pub brc20_prog_balance_server_url: String,
+
+    pub brc20_prog_bitcoin_rpc_proxy_server_enabled: bool,
+    pub brc20_prog_bitcoin_rpc_proxy_server_addr: String,
+
+    pub bitcoin_rpc_url: String,
 }
 
 impl Default for Brc20IndexerConfig {
@@ -200,7 +229,7 @@ impl Default for Brc20IndexerConfig {
             &std::env::var(NETWORK_TYPE_KEY).unwrap_or_else(|_| NETWORK_TYPE_DEFAULT.to_string());
         let network_type = get_bitcoin_network_type(&network_type_string);
 
-        Brc20IndexerConfig {
+        let config = Brc20IndexerConfig {
             db_host: std::env::var(DB_HOST_KEY).unwrap_or_else(|_| DB_HOST_DEFAULT.to_string()),
             db_port: std::env::var(DB_PORT_KEY).unwrap_or_else(|_| DB_PORT_DEFAULT.to_string()),
             db_user: std::env::var(DB_USER_KEY).unwrap_or_else(|_| DB_USER_DEFAULT.to_string()),
@@ -210,6 +239,9 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| DB_DATABASE_DEFAULT.to_string()),
             db_ssl: std::env::var(DB_SSL_KEY).unwrap_or_else(|_| DB_SSL_DEFAULT.to_string())
                 == "true",
+
+            opi_db_url: std::env::var(OPI_DB_URL_KEY)
+                .unwrap_or_else(|_| OPI_DB_URL_DEFAULT.to_string()),
 
             report_to_indexer: std::env::var(REPORT_TO_INDEXER_KEY)
                 .unwrap_or_else(|_| REPORT_TO_INDEXER_DEFAULT.to_string())
@@ -225,6 +257,7 @@ impl Default for Brc20IndexerConfig {
             report_name: std::env::var(REPORT_NAME_KEY)
                 .unwrap_or_else(|_| REPORT_NAME_DEFAULT.to_string()),
 
+            network_type,
             network_type_string: network_type_string.to_string(),
 
             first_inscription_height: *FIRST_INSCRIPTION_HEIGHTS
@@ -254,6 +287,28 @@ impl Default for Brc20IndexerConfig {
 
             brc20_prog_balance_server_url: std::env::var(BRC20_PROG_BALANCE_SERVER_URL_KEY)
                 .unwrap_or_else(|_| BRC20_PROG_BALANCE_SERVER_URL_DEFAULT.to_string()),
+            light_client_mode: std::env::var(OPERATION_MODE_KEY)
+                .unwrap_or_else(|_| OPERATION_MODE_FULL.to_string())
+                == OPERATION_MODE_LIGHT,
+
+            brc20_prog_bitcoin_rpc_proxy_server_enabled: std::env::var(
+                BITCOIN_RPC_PROXY_SERVER_ENABLED,
+            )
+            .unwrap_or_else(|_| BITCOIN_RPC_PROXY_SERVER_ENABLED_DEFAULT.to_string())
+                == "true",
+            brc20_prog_bitcoin_rpc_proxy_server_addr: std::env::var(
+                BITCOIN_RPC_PROXY_SERVER_ADDR_KEY,
+            )
+            .unwrap_or_else(|_| BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT.to_string()),
+
+            bitcoin_rpc_url: std::env::var(BITCOIN_RPC_URL_KEY)
+                .unwrap_or_else(|_| BITCOIN_RPC_URL_DEFAULT.to_string()),
+        };
+
+        if config.brc20_prog_enabled && config.light_client_mode {
+            panic!("BRC20 Prog mode is not supported in light client mode yet.");
         }
+
+        config
     }
 }

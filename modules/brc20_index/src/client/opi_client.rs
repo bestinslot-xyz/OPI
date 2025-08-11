@@ -3,13 +3,13 @@ use std::error::Error;
 use db_reader::{BRC20Tx, Brc20ApiClient};
 use jsonrpsee::http_client::HttpClient;
 
-pub struct OpiDatabase {
+pub struct OpiClient {
     client: HttpClient,
 }
 
-impl OpiDatabase {
+impl OpiClient {
     pub fn new(url: String) -> Self {
-        OpiDatabase {
+        OpiClient {
             client: HttpClient::builder()
                 .max_response_size(100 * 1024 * 1024) // 100 MB
                 .build(url)
