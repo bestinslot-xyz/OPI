@@ -192,6 +192,38 @@ app.get('/v1/brc20/activity_on_block', async (request, response) => {
   }
 });
 
+// get all bitcoin rpc results for a given block height
+app.get('/v1/brc20/bitcoin_rpc_results_on_block', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let block_height = request.query.block_height
+
+    let current_block_height = await get_block_height_of_db()
+    if (block_height > current_block_height) {
+      response.status(400).send({ error: 'block not indexed yet', result: null })
+      return
+    }
+
+    let query = `select 
+                  method, request, response
+                  from brc20_bitcoin_rpc_result_cache
+                  where block_height = $1
+                  order by id asc;`
+    let res = await query_db(query, [block_height])
+    let result = []
+    for (const row of res.rows) {
+      let method = row.method
+      let request = row.request
+      let response = row.response
+      result.push({ method, request, response })
+    }
+    response.send({ error: null, result: result })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
 
 app.get('/v1/brc20/get_current_balance_of_wallet', async (request, response) => {
   try {

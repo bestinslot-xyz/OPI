@@ -7,6 +7,9 @@ use axum::{
 };
 use reqwest::Client;
 use std::net::SocketAddr;
+use std::sync::LazyLock;
+
+use crate::database::get_brc20_database;
 
 pub async fn run_bitcoin_proxy_server(bitcoin_rpc_url: String, bitcoin_rpc_proxy_addr: String) {
     let app = Router::new().route(
@@ -34,15 +37,10 @@ async fn proxy(
     req: Request,
     bitcoin_rpc_url: String,
 ) -> Response {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| Client::new());
     if method != Method::POST {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
-
-    let target_uri = format!(
-        "{}{}",
-        bitcoin_rpc_url,
-        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("")
-    );
 
     let headers = req.headers().clone();
     let body = req.into_body();
@@ -52,10 +50,35 @@ async fn proxy(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let client = Client::new();
-    let forwarded = client
+    match get_brc20_database()
+        .lock()
+        .await
+        .get_bitcoin_rpc_request(&body)
+        .await
+    {
+        Ok(Some(response)) => {
+            let mut response = Response::new(response.into());
+            *response.status_mut() = StatusCode::OK;
+            return response;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("Failed to get cached Bitcoin RPC request: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    // Forward if not cached
+
+    let target_uri = format!(
+        "{}{}",
+        bitcoin_rpc_url,
+        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("")
+    );
+
+    let forwarded = CLIENT
         .post(&target_uri)
-        .body(body)
+        .body(body.clone())
         .headers(headers)
         .send()
         .await;
@@ -64,7 +87,19 @@ async fn proxy(
         Ok(resp) => {
             let status = resp.status().clone();
             let headers = resp.headers().clone();
-            let mut response = Response::new(resp.bytes().await.unwrap().into());
+            let response_bytes = resp.bytes().await.unwrap();
+
+            if let Err(_) = get_brc20_database()
+                .lock()
+                .await
+                .cache_bitcoin_rpc_request(&body, &response_bytes)
+                .await
+            {
+                tracing::error!("Failed to cache Bitcoin RPC request");
+                return StatusCode::BAD_GATEWAY.into_response();
+            }
+
+            let mut response = Response::new(response_bytes.into());
             *response.status_mut() = status;
             for (key, value) in headers {
                 response.headers_mut().insert(key.unwrap(), value);

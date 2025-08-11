@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT response FROM brc20_bitcoin_rpc_result_cache WHERE method = $1 AND request = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "response",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "85ce36e8a5b71c2d39bb23bffc7b86fb95a8862e8d9a8d45dff54d4e438b7e45"
+}

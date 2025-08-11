@@ -116,7 +116,7 @@ CREATE TABLE public.brc20_indexer_version (
 	event_hash_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-full-node v0.5.0', 6, 3);
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-rs-node v0.1.0', 7, 2);
 
 CREATE TABLE public.brc20_current_balances (
 	id bigserial NOT NULL,
@@ -150,3 +150,14 @@ CREATE UNIQUE INDEX brc20_unused_txes_inscription_id_idx ON public.brc20_unused_
 CREATE INDEX brc20_unused_txes_tick_idx ON public.brc20_unused_txes USING btree (tick);
 CREATE INDEX brc20_unused_txes_pkscript_idx ON public.brc20_unused_txes USING btree (current_holder_pkscript);
 CREATE INDEX brc20_unused_txes_wallet_idx ON public.brc20_unused_txes USING btree (current_holder_wallet);
+
+CREATE TABLE public.brc20_bitcoin_rpc_result_cache (
+	id bigserial NOT NULL,
+	method text NOT NULL,
+	request jsonb NOT NULL,
+	response jsonb NOT NULL,
+	block_height int4 NOT NULL,
+	CONSTRAINT brc20_bitcoin_rpc_result_cache_pk PRIMARY KEY (id)
+);
+CREATE INDEX brc20_bitcoin_rpc_result_cache_request_idx ON public.brc20_bitcoin_rpc_result_cache USING btree (request);
+CREATE INDEX brc20_bitcoin_rpc_result_cache_block_height_idx ON public.brc20_bitcoin_rpc_result_cache USING btree (block_height);

@@ -96,6 +96,9 @@ pub const PROTOCOL_BRC20_MODULE: &str = "brc20-module";
 
 pub const BRC20_MODULE_BRC20PROG: &str = "BRC20PROG";
 
+pub const BITCOIN_RPC_CACHE_ENABLED_KEY: &str = "BITCOIN_RPC_CACHE_ENABLED";
+pub const BITCOIN_RPC_CACHE_ENABLED_DEFAULT: &str = "false";
+
 pub const BITCOIN_RPC_PROXY_SERVER_ENABLED: &str = "BITCOIN_RPC_PROXY_SERVER_ENABLED";
 pub const BITCOIN_RPC_PROXY_SERVER_ENABLED_DEFAULT: &str = "false";
 
@@ -164,11 +167,11 @@ pub const OPERATION_MODE_LIGHT: &str = "light";
 
 // Versions used for database migrations and version checks
 // These should be updated when the database schema changes
-pub const DB_VERSION: i32 = 6;
+pub const DB_VERSION: i32 = 7;
 pub const EVENT_HASH_VERSION: i32 = 2;
 pub const BRC20_PROG_VERSION: &str = "0.10.2";
-pub const INDEXER_VERSION: &str = "opi-brc20-full-node v0.5.0";
-pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-light-node v0.5.0";
+pub const INDEXER_VERSION: &str = "opi-brc20-rs-node v0.1.0";
+pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-rs-node-light v0.1.0";
 
 pub const OPI_URL: &str = "https://api.opi.network";
 
@@ -220,6 +223,7 @@ pub struct Brc20IndexerConfig {
     pub brc20_prog_bitcoin_rpc_proxy_server_enabled: bool,
     pub brc20_prog_bitcoin_rpc_proxy_server_addr: String,
 
+    pub bitcoin_rpc_cache_enabled: bool,
     pub bitcoin_rpc_url: String,
 }
 
@@ -303,6 +307,9 @@ impl Default for Brc20IndexerConfig {
 
             bitcoin_rpc_url: std::env::var(BITCOIN_RPC_URL_KEY)
                 .unwrap_or_else(|_| BITCOIN_RPC_URL_DEFAULT.to_string()),
+            bitcoin_rpc_cache_enabled: std::env::var(BITCOIN_RPC_CACHE_ENABLED_KEY)
+                .unwrap_or_else(|_| BITCOIN_RPC_CACHE_ENABLED_DEFAULT.to_string())
+                == "true",
         };
 
         if config.brc20_prog_enabled && config.light_client_mode {
