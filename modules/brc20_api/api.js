@@ -168,8 +168,11 @@ app.get('/v1/brc20/activity_on_block', async (request, response) => {
       event_type_id_to_name[row.event_type_id] = row.event_type_name
     })
 
-    let query = `select event, event_type, inscription_id
+    let query = `select id, event, event_type, inscription_id
                   from brc20_events
+                  where block_height = $1
+                  union select id, event, event_type, inscription_id
+                  from brc20_light_events
                   where block_height = $1
                   order by id asc;`
     let res = await query_db(query, [block_height])
@@ -436,8 +439,11 @@ app.get('/v1/brc20/event', async (request, response) => {
       return
     }
 
-    let query = `select event, event_type, inscription_id block_height
+    let query = `select id, event, event_type, inscription_id
                   from brc20_events
+                  where inscription_id = $1
+                  union select id, event, event_type, inscription_id
+                  from brc20_light_events
                   where inscription_id = $1
                   order by id asc;`
     let res = await query_db(query, [inscription_id])
