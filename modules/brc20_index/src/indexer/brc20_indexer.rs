@@ -260,6 +260,14 @@ impl Brc20Indexer {
                     (block_hash, block_time, "".to_string(), None)
                 };
 
+            if block_time == 0 && self.config.brc20_prog_enabled && next_block >= self.config.first_brc20_prog_phase_one_height {
+                tracing::error!(
+                    "Block time is 0 for block {}, this may cause issues with BRC2.0 events. Stopping indexing.",
+                    next_block
+                );
+                return Err("Block time is 0".into());
+            }
+
             if next_block < self.config.first_brc20_height {
                 if next_block % 1000 == 0 {
                     tracing::info!(
