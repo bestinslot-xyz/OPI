@@ -31,8 +31,8 @@ impl EventProviderClient {
         let response: EventProvidersResponse = self
             .client
             .get(format!(
-                "{}/lc/get_verified_event_providers?event_hash_version=2",
-                OPI_URL
+                "{}/lc/get_verified_event_providers?event_hash_version={}",
+                OPI_URL, EVENT_HASH_VERSION
             ))
             .send()
             .await?
@@ -68,8 +68,8 @@ impl EventProviderClient {
         let response = self
             .client
             .get(format!(
-                "{}/lc/get_best_hashes_for_block/{}?event_hash_version={}",
-                OPI_URL, block_height, EVENT_HASH_VERSION
+                "{}/lc/get_best_hashes_for_block/{}?network_type={}&event_hash_version={}",
+                OPI_URL, block_height, self.network_type, EVENT_HASH_VERSION
             ))
             .send()
             .await?;
@@ -123,7 +123,7 @@ impl EventProviderClient {
             .unwrap_or(0))
     }
 
-    pub async fn get_bitcoin_rpc_results(
+    pub async fn get_bitcoin_rpc_results_with_retries(
         &self,
         block_height: i64,
     ) -> Result<Vec<BitcoinRpcResult>, Box<dyn std::error::Error>> {
@@ -141,7 +141,7 @@ impl EventProviderClient {
             let response = self
                 .client
                 .get(format!(
-                    "{}/v1/brc20/bitcoin_rpc_results?block_height={}",
+                    "{}/v1/brc20/bitcoin_rpc_results_on_block?block_height={}",
                     event_provider.url, block_height
                 ))
                 .send()
@@ -254,7 +254,7 @@ pub struct BlockData {
     pub best_block_hash: String,
     pub best_cumulative_hash: String,
     pub best_cumulative_trace_hash: Option<String>,
-    pub block_time: Option<i64>,
+    pub best_block_time: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -312,10 +312,6 @@ impl Default for Brc20IndexerConfig {
                 == "true",
         };
 
-        if config.brc20_prog_enabled && config.light_client_mode {
-            panic!("BRC20 Prog mode is not supported in light client mode yet.");
-        }
-
         config
     }
 }

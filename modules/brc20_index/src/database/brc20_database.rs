@@ -1169,7 +1169,9 @@ impl Brc20Database {
             return Ok(());
         }
 
-        let Ok(request_json) = serde_json::from_slice::<serde_json::Value>(request) else {
+        let Ok(request_json) =
+            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(request))
+        else {
             return Err("Failed to parse Bitcoin RPC request as JSON".into());
         };
 
@@ -1189,7 +1191,9 @@ impl Brc20Database {
             return Err("Bitcoin RPC request does not contain a method".into());
         };
 
-        let Ok(response_json) = serde_json::from_slice::<serde_json::Value>(&response) else {
+        let Ok(response_json) =
+            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(&response))
+        else {
             return Err("Failed to parse Bitcoin RPC response as JSON".into());
         };
 

@@ -43,6 +43,7 @@ pub struct Brc20Indexer {
     main_db: OpiClient,
     event_provider_client: EventProviderClient,
     last_opi_block: i32,
+    last_reported_block: i32,
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
     brc20_reporter: Brc20Reporter,
@@ -63,6 +64,7 @@ impl Brc20Indexer {
             main_db,
             config,
             last_opi_block: 0,
+            last_reported_block: 0,
             brc20_prog_client,
             brc20_reporter,
             event_provider_client,
@@ -76,6 +78,10 @@ impl Brc20Indexer {
 
         self.event_provider_client.load_providers().await?;
         self.last_opi_block = self.get_opi_block_height().await?;
+        self.last_reported_block = self
+            .event_provider_client
+            .get_best_verified_block_with_retries()
+            .await?;
 
         let db_version = get_brc20_database().lock().await.get_db_version().await?;
         if db_version != DB_VERSION {
@@ -116,6 +122,16 @@ impl Brc20Indexer {
 
             let brc20_prog_block_height =
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
+
+            if self.config.light_client_mode {
+                let current_block_height = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_current_block_height()
+                    .await?;
+                self.pre_fill_rpc_results_cache(current_block_height)
+                    .await?;
+            }
 
             self.brc20_prog_client
                 .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
@@ -218,7 +234,7 @@ impl Brc20Indexer {
 
             let is_synced = next_block == last_opi_block;
 
-            if next_block % 1000 == 0 {
+            if next_block % 1000 == 0 && next_block >= self.config.first_brc20_height {
                 tracing::info!("Clearing brc20 db caches at block height {}", next_block);
                 get_brc20_database().lock().await.clear_caches();
             }
@@ -234,7 +250,7 @@ impl Brc20Indexer {
                         .await?;
                     (
                         block_info.best_block_hash,
-                        block_info.block_time.unwrap_or(0) as i64, // Default to 0 if not available
+                        block_info.best_block_time.unwrap_or(0) as i64, // Default to 0 if not available
                         block_info.best_cumulative_hash,
                         block_info.best_cumulative_trace_hash,
                     )
@@ -254,13 +270,9 @@ impl Brc20Indexer {
                 }
             } else {
                 if self.config.light_client_mode {
-                    if self.config.brc20_prog_enabled {
-                        let bitcoin_rpc_results = match self
-                            .event_provider_client
-                            .get_bitcoin_rpc_results(next_block as i64)
-                            .await
-                        {
-                            Ok(results) => results,
+                    if next_block > self.config.first_brc20_prog_phase_one_height {
+                        match self.pre_fill_rpc_results_cache(next_block).await {
+                            Ok(_) => {}
                             Err(err) => {
                                 tracing::error!(
                                     "Failed to get Bitcoin RPC results for block {}: {}",
@@ -272,20 +284,6 @@ impl Brc20Indexer {
                                 continue;
                             }
                         };
-                        for response in bitcoin_rpc_results {
-                            let request_bytes =
-                                serde_json_canonicalizer::to_vec(&response.request)?;
-                            let response_bytes =
-                                serde_json_canonicalizer::to_vec(&response.response)?.into();
-                            get_brc20_database()
-                                .lock()
-                                .await
-                                .cache_bitcoin_rpc_request(
-                                    request_bytes.as_slice(),
-                                    &response_bytes,
-                                )
-                                .await?;
-                        }
                     }
                     let events = match self
                         .event_provider_client
@@ -412,7 +410,7 @@ impl Brc20Indexer {
             }
 
             // Start reporting after 10 blocks left to full sync
-            if self.config.report_to_indexer && next_block >= self.last_opi_block - 10 {
+            if self.config.report_to_indexer && next_block >= self.last_reported_block - 10 {
                 self.brc20_reporter
                     .report(
                         next_block,
@@ -428,9 +426,43 @@ impl Brc20Indexer {
                         cumulative_traces_hash.clone(),
                     )
                     .await?;
-                self.last_opi_block = self.get_opi_block_height().await?;
+                self.last_reported_block = self
+                    .event_provider_client
+                    .get_best_verified_block_with_retries()
+                    .await?;
             }
         }
+    }
+
+    pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
+        if self.config.brc20_prog_enabled {
+            let bitcoin_rpc_results = match self
+                .event_provider_client
+                .get_bitcoin_rpc_results_with_retries(next_block as i64)
+                .await
+            {
+                Ok(results) => results,
+                Err(error) => {
+                    return Err(error);
+                }
+            };
+            tracing::debug!(
+                "Found {} Bitcoin RPC results for block {}",
+                bitcoin_rpc_results.len(),
+                next_block
+            );
+            for response in bitcoin_rpc_results {
+                let request_bytes = serde_json::to_string(&response.request)?;
+                let response_bytes = serde_json::to_string(&response.response)?.into();
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .cache_bitcoin_rpc_request(request_bytes.as_bytes(), &response_bytes)
+                    .await?;
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn finalise_block_for_brc20_prog(
@@ -468,7 +500,7 @@ impl Brc20Indexer {
             return Ok(());
         }
 
-        tracing::info!("Found {} events for block {}", events.len(), block_height);
+        tracing::info!("Found {} event(s) for block {}", events.len(), block_height);
 
         let mut brc20_prog_tx_idx = 0;
         for event_record in events {
@@ -581,6 +613,18 @@ impl Brc20Indexer {
                     }
                 }
             } else if event_type_id == Brc20ProgWithdrawInscribeEvent::event_id() {
+                let event =
+                    load_event::<Brc20ProgWithdrawInscribeEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for Brc20ProgWithdrawInscribeEvent",
+                            event.ticker
+                        )
+                    })?;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
@@ -588,7 +632,7 @@ impl Brc20Indexer {
                         event_type_id,
                         &event_record,
                     )?,
-                    0,
+                    ticker.decimals,
                 )?;
                 EventProcessor::brc20_prog_withdraw_inscribe(&inscription_id).await?;
             } else if event_type_id == Brc20ProgWithdrawTransferEvent::event_id() {
@@ -770,9 +814,9 @@ impl Brc20Indexer {
         }
 
         tracing::info!(
-            "Transfers found in block {}: {}",
+            "Found {} transfer(s) for block {}",
+            transfers.len(),
             block_height,
-            transfers.len()
         );
 
         for index in 0..transfers.len() {

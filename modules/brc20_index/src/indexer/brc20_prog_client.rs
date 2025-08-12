@@ -33,18 +33,18 @@ pub async fn calculate_brc20_prog_traces_hash(
 ) -> Result<String, Box<dyn Error>> {
     let mut traces_hash_str = String::new();
     let block = client
-        .eth_get_block_by_number(format!("{}", block_height), Some(false))
+        .eth_get_block_by_number(format!("{}", block_height), Some(true))
         .await?;
-    tracing::debug!("Calculating traces for block {}: {:?}", block_height, block);
-    if block.transactions.is_right() {
-        if block.transactions.right().unwrap_or_default().is_empty() {
+    if block.transactions.is_left() {
+        if block.transactions.left().unwrap_or_default().is_empty() {
             tracing::debug!("No traces in block {}", block_height);
         } else {
             return Err(format!("Unexpected transaction format in block {}", block_height).into());
         }
-    } else if let Some(txes) = block.transactions.left() {
+    } else if let Some(mut txes) = block.transactions.right() {
+        txes.sort_by_key(|tx| tx.transaction_index);
         for tx in txes {
-            let Some(trace) = client.debug_trace_transaction(tx).await? else {
+            let Some(trace) = client.debug_trace_transaction(tx.hash).await? else {
                 tracing::warn!(
                     "No trace found for transaction {:?} in block {}",
                     tx,
