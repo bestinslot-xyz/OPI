@@ -170,4 +170,3 @@ CREATE TABLE public.brc20_logs (
 );
 
 CREATE INDEX brc20_logs_block_height ON public.brc20_logs (block_height DESC);
-CREATE INDEX brc20_logs_log_data ON public.brc20_logs USING gin (log_data jsonb_path_ops);
