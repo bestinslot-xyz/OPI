@@ -8,7 +8,10 @@ use jsonrpsee::http_client::HttpClient;
 
 use crate::{
     config::{BRC20_PROG_OP_RETURN_PKSCRIPT, Brc20IndexerConfig, NO_WALLET, OP_RETURN},
-    database::{Brc20Balance, TransferValidity, get_brc20_database},
+    database::{
+        Brc20Balance, TransferValidity, get_brc20_database,
+        timer::{start_timer, stop_timer},
+    },
     types::{
         Ticker,
         events::{
@@ -19,14 +22,18 @@ use crate::{
     },
 };
 
+static SPAN: &str = "EventProcessor";
+
 pub struct EventProcessor;
 
 impl EventProcessor {
     pub async fn brc20_prog_deploy_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe");
         get_brc20_database()
             .lock()
             .await
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -38,6 +45,7 @@ impl EventProcessor {
         inscription_id: &str,
         event: &Brc20ProgDeployTransferEvent,
     ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_transfer");
         get_brc20_database()
             .lock()
             .await
@@ -60,14 +68,17 @@ impl EventProcessor {
             .await
             .expect("Failed to deploy smart contract, please check your brc20_prog node");
 
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
     pub async fn brc20_prog_call_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe");
         get_brc20_database()
             .lock()
             .await
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -79,6 +90,7 @@ impl EventProcessor {
         inscription_id: &str,
         event: &Brc20ProgCallTransferEvent,
     ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_call_transfer");
         get_brc20_database()
             .lock()
             .await
@@ -112,14 +124,17 @@ impl EventProcessor {
             .await
             .expect("Failed to call smart contract, please check your brc20_prog node");
 
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
     pub async fn brc20_prog_transact_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe");
         get_brc20_database()
             .lock()
             .await
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -131,6 +146,7 @@ impl EventProcessor {
         brc20_prog_tx_idx: u64,
         event: &Brc20ProgTransactTransferEvent,
     ) -> Result<u64, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_transfer");
         get_brc20_database()
             .lock()
             .await
@@ -152,14 +168,17 @@ impl EventProcessor {
             .await
             .expect("Failed to run transact, please check your brc20_prog node");
 
+        stop_timer(&function_timer).await;
         Ok(transact_result.len() as u64)
     }
 
     pub async fn brc20_prog_withdraw_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe");
         get_brc20_database()
             .lock()
             .await
             .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -173,6 +192,7 @@ impl EventProcessor {
         event_id: i64,
         event: &Brc20ProgWithdrawTransferEvent,
     ) -> Result<bool, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer");
         if event
             .spent_pk_script
             .as_ref()
@@ -260,6 +280,8 @@ impl EventProcessor {
                 -event_id, // Negate to create a unique event ID
             )?;
         }
+
+        stop_timer(&function_timer).await;
         Ok(true)
     }
 
@@ -268,6 +290,8 @@ impl EventProcessor {
         inscription_id: &str,
         event: &DeployInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_deploy_inscribe");
+
         let new_ticker = Ticker {
             ticker: event.ticker.to_string(),
             remaining_supply: event.max_supply,
@@ -282,6 +306,7 @@ impl EventProcessor {
         };
         get_brc20_database().lock().await.add_ticker(&new_ticker)?;
 
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -290,6 +315,8 @@ impl EventProcessor {
         event_id: i64,
         event: &MintInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_mint_inscribe");
+
         let mut deployed_ticker = get_brc20_database()
             .lock()
             .await
@@ -321,6 +348,7 @@ impl EventProcessor {
             event_id,
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -330,6 +358,8 @@ impl EventProcessor {
         inscription_id: &str,
         event: &TransferInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_transfer_inscribe");
+
         get_brc20_database()
             .lock()
             .await
@@ -362,6 +392,7 @@ impl EventProcessor {
             event_id,
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -376,6 +407,8 @@ impl EventProcessor {
         event: &TransferTransferEvent,
         config: &Brc20IndexerConfig,
     ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_transfer_transfer");
+
         let TransferValidity::Valid = get_brc20_database()
             .lock()
             .await
@@ -568,6 +601,7 @@ impl EventProcessor {
             .await
             .set_transfer_validity(&inscription_id, TransferValidity::Used);
 
+        stop_timer(&function_timer).await;
         Ok(())
     }
 }

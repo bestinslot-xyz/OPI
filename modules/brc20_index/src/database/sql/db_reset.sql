@@ -9,3 +9,4 @@ drop table if exists brc20_indexer_version;
 drop table if exists brc20_current_balances;
 drop table if exists brc20_unused_txes;
 drop table if exists brc20_bitcoin_rpc_result_cache;
+drop table if exists brc20_logs;

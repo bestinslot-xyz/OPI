@@ -161,3 +161,13 @@ CREATE TABLE public.brc20_bitcoin_rpc_result_cache (
 );
 CREATE INDEX brc20_bitcoin_rpc_result_cache_request_idx ON public.brc20_bitcoin_rpc_result_cache USING btree (request);
 CREATE INDEX brc20_bitcoin_rpc_result_cache_block_height_idx ON public.brc20_bitcoin_rpc_result_cache USING btree (block_height);
+
+CREATE TABLE public.brc20_logs (
+	id bigserial NOT NULL,
+	block_height int4 NOT NULL,
+	log_data jsonb NOT NULL,
+	CONSTRAINT brc20_logs_pk PRIMARY KEY (id)
+);
+
+CREATE INDEX brc20_logs_block_height ON public.brc20_logs (block_height DESC);
+CREATE INDEX brc20_logs_log_data ON public.brc20_logs USING gin (log_data jsonb_path_ops);

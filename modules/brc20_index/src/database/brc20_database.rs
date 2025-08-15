@@ -15,6 +15,7 @@ use num_traits::ToPrimitive;
 use once_cell::sync::OnceCell;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
@@ -34,6 +35,7 @@ lazy_static! {
         "brc20_block_hashes",
         "brc20_unused_txes",
         "brc20_current_balances",
+        "brc20_logs",
     ];
 }
 
@@ -140,6 +142,7 @@ pub struct Brc20Database {
     pub light_event_inserts: Vec<LightEventRecord>,
     pub event_inserts: Vec<EventRecord>,
     pub bitcoin_rpc_inserts: HashMap<serde_json::Value, BitcoinRpcResultRecord>,
+    pub log_timer_inserts: HashMap<i32, HashMap<String, Vec<u128>>>,
     pub block_event_strings: HashMap<i32, String>,
     pub balance_updates: Vec<BalanceUpdateData>,
     pub light_client_mode: bool,
@@ -192,6 +195,7 @@ impl Brc20Database {
             new_tickers: Vec::new(),
             ticker_updates: HashMap::new(),
             event_inserts: Vec::new(),
+            log_timer_inserts: HashMap::new(),
             light_event_inserts: Vec::new(),
             bitcoin_rpc_inserts: HashMap::new(),
             balance_updates: Vec::new(),
@@ -366,6 +370,17 @@ impl Brc20Database {
                 original_ticker: row.original_tick,
             })
             .collect())
+    }
+
+    pub async fn log_timer(&mut self, label: String, duration: u128) -> Result<(), Box<dyn Error>> {
+        let block_height = self.get_next_block_height().await?;
+        self.log_timer_inserts
+            .entry(block_height)
+            .or_insert_with(HashMap::new)
+            .entry(label)
+            .or_insert_with(Vec::new)
+            .push(duration);
+        Ok(())
     }
 
     pub async fn get_db_version(&self) -> Result<i32, Box<dyn Error>> {
@@ -1398,6 +1413,32 @@ impl Brc20Database {
     }
 
     pub async fn flush_queries_to_db(&mut self) -> Result<(), Box<dyn Error>> {
+        if !self.log_timer_inserts.is_empty() {
+            let mut all_log_data = Vec::new();
+            let mut all_log_block_heights = Vec::new();
+            for (block_height, logs) in &self.log_timer_inserts {
+                for (label, durations_ns) in logs {
+                    all_log_block_heights.push(*block_height);
+                    all_log_data.push(json!({
+                        "label": label,
+                        "total_duration_ns": durations_ns.iter().sum::<u128>(),
+                        "count": durations_ns.len()
+                    }));
+                }
+            }
+
+            sqlx::query!(
+                "INSERT INTO brc20_logs (block_height, log_data) SELECT * FROM UNNEST
+                ($1::int4[], $2::jsonb[])",
+                &all_log_block_heights,
+                &all_log_data,
+            )
+            .execute(&self.client)
+            .await?;
+
+            self.log_timer_inserts.clear();
+        }
+
         if !self.new_tickers.is_empty() {
             let mut all_tickers = Vec::new();
             let mut all_original_tickers = Vec::new();

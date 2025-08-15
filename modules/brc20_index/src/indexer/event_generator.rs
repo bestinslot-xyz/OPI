@@ -4,7 +4,10 @@ use db_reader::BRC20Tx;
 
 use crate::{
     config::BRC20_PROG_OP_RETURN_PKSCRIPT,
-    database::{TransferValidity, get_brc20_database},
+    database::{
+        TransferValidity, get_brc20_database,
+        timer::{start_timer, stop_timer},
+    },
     types::{
         Ticker,
         events::{
@@ -17,6 +20,8 @@ use crate::{
     },
 };
 
+static SPAN: &str = "EventGenerator";
+
 pub struct EventGenerator;
 
 impl EventGenerator {
@@ -26,6 +31,7 @@ impl EventGenerator {
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
     ) -> Result<Brc20ProgDeployInscribeEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe");
         let event = Brc20ProgDeployInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
             source_wallet: transfer.new_wallet.to_string().into(),
@@ -42,6 +48,7 @@ impl EventGenerator {
             &event,
             None,
         )?;
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -51,6 +58,7 @@ impl EventGenerator {
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
     ) -> Result<Brc20ProgDeployTransferEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_transfer");
         let TransferValidity::Valid = get_brc20_database()
             .lock()
             .await
@@ -110,6 +118,7 @@ impl EventGenerator {
             None,
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -121,6 +130,7 @@ impl EventGenerator {
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
     ) -> Result<Brc20ProgCallTransferEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_call_transfer");
         let TransferValidity::Valid = get_brc20_database()
             .lock()
             .await
@@ -178,6 +188,7 @@ impl EventGenerator {
             None,
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -189,6 +200,7 @@ impl EventGenerator {
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
     ) -> Result<Brc20ProgCallInscribeEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe");
         let event = Brc20ProgCallInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
             source_wallet: transfer.new_wallet.to_string().into(),
@@ -210,6 +222,7 @@ impl EventGenerator {
             None,
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -219,6 +232,7 @@ impl EventGenerator {
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
     ) -> Result<Brc20ProgTransactInscribeEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe");
         let event = Brc20ProgTransactInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
             source_wallet: transfer.new_wallet.to_string().into(),
@@ -235,6 +249,8 @@ impl EventGenerator {
             &event,
             None,
         )?;
+
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -244,6 +260,7 @@ impl EventGenerator {
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
     ) -> Result<Brc20ProgTransactTransferEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_transfer");
         let TransferValidity::Valid = get_brc20_database()
             .lock()
             .await
@@ -299,6 +316,7 @@ impl EventGenerator {
             None,
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -309,6 +327,7 @@ impl EventGenerator {
         amount: u128,
         transfer: &BRC20Tx,
     ) -> Result<(i64, Brc20ProgWithdrawTransferEvent), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer");
         let TransferValidity::Valid = get_brc20_database()
             .lock()
             .await
@@ -357,6 +376,8 @@ impl EventGenerator {
             &event,
             Some(deployed_ticker.decimals),
         )?;
+
+        stop_timer(&function_timer).await;
         Ok((event_id, event))
     }
 
@@ -367,6 +388,7 @@ impl EventGenerator {
         amount: u128,
         transfer: &BRC20Tx,
     ) -> Result<Brc20ProgWithdrawInscribeEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe");
         let event = Brc20ProgWithdrawInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
             source_wallet: transfer.new_wallet.to_string().into(),
@@ -384,6 +406,7 @@ impl EventGenerator {
             &event,
             Some(deployed_ticker.decimals),
         )?;
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -392,6 +415,7 @@ impl EventGenerator {
         hash: &str,
         transfer: &BRC20Tx,
     ) -> Result<PreDeployInscribeEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_predeploy_inscribe");
         let predeploy_event = PreDeployInscribeEvent {
             predeployer_pk_script: transfer.new_pkscript.clone(),
             predeployer_wallet: transfer.new_wallet.clone(),
@@ -410,6 +434,7 @@ impl EventGenerator {
             None,
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(predeploy_event)
     }
 
@@ -423,6 +448,7 @@ impl EventGenerator {
         is_self_mint: bool,
         transfer: &BRC20Tx,
     ) -> Result<DeployInscribeEvent, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_deploy_inscribe");
         let event = DeployInscribeEvent {
             deployer_pk_script: transfer.new_pkscript.to_string(),
             deployer_wallet: transfer.new_wallet.to_string(),
@@ -444,6 +470,7 @@ impl EventGenerator {
             Some(decimals),
         )?;
 
+        stop_timer(&function_timer).await;
         Ok(event)
     }
 
@@ -454,6 +481,7 @@ impl EventGenerator {
         mut amount: u128,
         transfer: &BRC20Tx,
     ) -> Result<(i64, MintInscribeEvent), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_mint_inscribe");
         if deployed_ticker.is_self_mint {
             let Some(parent_id) = transfer.parent_id.as_ref() else {
                 // Skip if parent id is not present
@@ -522,6 +550,7 @@ impl EventGenerator {
             Some(deployed_ticker.decimals),
         )?;
 
+        stop_timer(&function_timer).await;
         Ok((event_id, event))
     }
 
@@ -532,6 +561,7 @@ impl EventGenerator {
         amount: u128,
         transfer: &BRC20Tx,
     ) -> Result<(i64, TransferInscribeEvent), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_transfer_inscribe");
         let balance = get_brc20_database()
             .lock()
             .await
@@ -568,6 +598,7 @@ impl EventGenerator {
             Some(deployed_ticker.decimals),
         )?;
 
+        stop_timer(&function_timer).await;
         Ok((event_id, event))
     }
 
@@ -578,6 +609,7 @@ impl EventGenerator {
         amount: u128,
         transfer: &BRC20Tx,
     ) -> Result<(i64, TransferTransferEvent), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_transfer_transfer");
         tracing::debug!(
             "Processing transfer for inscription ID: {}, new pk script: {}, new wallet: {:?}, ticker: {}, original ticker: {}, amount: {}, sent as fee: {}, tx_id: {}",
             transfer.inscription_id,
@@ -649,6 +681,7 @@ impl EventGenerator {
             Some(ticker.decimals),
         )?;
 
+        stop_timer(&function_timer).await;
         Ok((event_id, event))
     }
 }
