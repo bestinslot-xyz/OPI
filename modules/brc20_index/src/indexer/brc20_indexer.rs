@@ -997,7 +997,7 @@ impl Brc20Indexer {
                                 brc20_prog_tx_idx += 1;
                             }
                             Err(e) => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     "Failed to generate BRC20 Prog deploy transfer event: {}",
                                     e
                                 );
@@ -1121,7 +1121,7 @@ impl Brc20Indexer {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     "Failed to generate BRC20 Prog transact transfer event: {}",
                                     e
                                 );
@@ -1557,7 +1557,7 @@ impl Brc20Indexer {
                         EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
                     }
                     Err(_) => {
-                        tracing::warn!(
+                        tracing::debug!(
                             "Failed to generate BRC20 mint inscribe event for transfer {}",
                             transfer.inscription_id
                         );
@@ -1623,7 +1623,7 @@ impl Brc20Indexer {
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(
+                                    tracing::debug!(
                                         "Failed to process Brc20TransferTransferEvent: {}",
                                         e
                                     );
@@ -1631,7 +1631,7 @@ impl Brc20Indexer {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(
+                            tracing::debug!(
                                 "Failed to generate BRC20 transfer transfer event for transfer {}: {}",
                                 transfer.inscription_id,
                                 e
@@ -1659,7 +1659,7 @@ impl Brc20Indexer {
                             .await?;
                         }
                         Err(e) => {
-                            tracing::warn!(
+                            tracing::debug!(
                                 "Failed to generate BRC20 transfer inscribe event for transfer {}: {}",
                                 transfer.inscription_id,
                                 e
