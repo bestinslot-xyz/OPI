@@ -27,8 +27,8 @@ static SPAN: &str = "EventProcessor";
 pub struct EventProcessor;
 
 impl EventProcessor {
-    pub async fn brc20_prog_deploy_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe");
+    pub async fn brc20_prog_deploy_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -39,13 +39,14 @@ impl EventProcessor {
 
     pub async fn brc20_prog_deploy_transfer(
         prog_client: &HttpClient,
+        block_height: i32,
         block_time: u64,
         block_hash: &str,
         brc20_prog_tx_idx: u64,
         inscription_id: &str,
         event: &Brc20ProgDeployTransferEvent,
     ) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_deploy_transfer");
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_transfer", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -72,8 +73,8 @@ impl EventProcessor {
         Ok(())
     }
 
-    pub async fn brc20_prog_call_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe");
+    pub async fn brc20_prog_call_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -84,13 +85,14 @@ impl EventProcessor {
 
     pub async fn brc20_prog_call_transfer(
         prog_client: &HttpClient,
+        block_height: i32,
         block_time: u64,
         block_hash: &str,
         brc20_prog_tx_idx: u64,
         inscription_id: &str,
         event: &Brc20ProgCallTransferEvent,
     ) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_call_transfer");
+        let function_timer = start_timer(SPAN, "brc20_prog_call_transfer", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -128,8 +130,8 @@ impl EventProcessor {
         Ok(())
     }
 
-    pub async fn brc20_prog_transact_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe");
+    pub async fn brc20_prog_transact_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -140,13 +142,14 @@ impl EventProcessor {
 
     pub async fn brc20_prog_transact_transfer(
         prog_client: &HttpClient,
+        block_height: i32,
         block_hash: &str,
         inscription_id: &str,
         block_time: u64,
         brc20_prog_tx_idx: u64,
         event: &Brc20ProgTransactTransferEvent,
     ) -> Result<u64, Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_transact_transfer");
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_transfer", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -172,8 +175,8 @@ impl EventProcessor {
         Ok(transact_result.len() as u64)
     }
 
-    pub async fn brc20_prog_withdraw_inscribe(inscription_id: &str) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe");
+    pub async fn brc20_prog_withdraw_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -192,7 +195,7 @@ impl EventProcessor {
         event_id: i64,
         event: &Brc20ProgWithdrawTransferEvent,
     ) -> Result<bool, Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer");
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer", block_height);
         if event
             .spent_pk_script
             .as_ref()
@@ -290,7 +293,7 @@ impl EventProcessor {
         inscription_id: &str,
         event: &DeployInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_deploy_inscribe");
+        let function_timer = start_timer(SPAN, "brc20_deploy_inscribe", block_height);
 
         let new_ticker = Ticker {
             ticker: event.ticker.to_string(),
@@ -315,7 +318,7 @@ impl EventProcessor {
         event_id: i64,
         event: &MintInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_mint_inscribe");
+        let function_timer = start_timer(SPAN, "brc20_mint_inscribe", block_height);
 
         let mut deployed_ticker = get_brc20_database()
             .lock()
@@ -358,7 +361,7 @@ impl EventProcessor {
         inscription_id: &str,
         event: &TransferInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_transfer_inscribe");
+        let function_timer = start_timer(SPAN, "brc20_transfer_inscribe", block_height);
 
         get_brc20_database()
             .lock()
@@ -407,7 +410,7 @@ impl EventProcessor {
         event: &TransferTransferEvent,
         config: &Brc20IndexerConfig,
     ) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "brc20_transfer_transfer");
+        let function_timer = start_timer(SPAN, "brc20_transfer_transfer", block_height);
 
         let TransferValidity::Valid = get_brc20_database()
             .lock()

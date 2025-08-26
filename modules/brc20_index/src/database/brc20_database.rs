@@ -372,8 +372,7 @@ impl Brc20Database {
             .collect())
     }
 
-    pub async fn log_timer(&mut self, label: String, duration: u128) -> Result<(), Box<dyn Error>> {
-        let block_height = self.get_next_block_height().await?;
+    pub async fn log_timer(&mut self, label: String, duration: u128, block_height: i32) -> Result<(), Box<dyn Error>> {
         self.log_timer_inserts
             .entry(block_height)
             .or_insert_with(HashMap::new)

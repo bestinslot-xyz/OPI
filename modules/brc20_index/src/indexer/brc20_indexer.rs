@@ -165,16 +165,17 @@ impl Brc20Indexer {
     }
 
     pub async fn clear_caches(&mut self) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "clear_caches");
-        if self.config.brc20_prog_enabled {
-            self.brc20_prog_client.brc20_clear_caches().await?;
-        }
-
         let current_block_height = get_brc20_database()
             .lock()
             .await
             .get_current_block_height()
             .await?;
+
+        let function_timer = start_timer(SPAN, "clear_caches", current_block_height);
+
+        if self.config.brc20_prog_enabled {
+            self.brc20_prog_client.brc20_clear_caches().await?;
+        }
 
         if get_brc20_database()
             .lock()
@@ -222,18 +223,22 @@ impl Brc20Indexer {
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         self.init().await?;
         loop {
-            let loop_timer = start_timer(SPAN, "run_single_block");
-            // This doesn't always reorg, but it will reorg if the last block is not the same
-            self.reorg_to_last_synced_block_height().await?;
-
-            // Check if a new block is available
-            let last_opi_block = self.last_opi_block;
-
             let next_block = get_brc20_database()
                 .lock()
                 .await
                 .get_next_block_height()
                 .await?;
+
+            let loop_timer = start_timer(SPAN, "run_single_block", next_block);
+
+            // This doesn't always reorg, but it will reorg if the last block is not the same
+            let reorg_to_last_synced_block_height_timer =
+                start_timer(SPAN, "reorg_to_last_synced_block_height", next_block);
+            self.reorg_to_last_synced_block_height().await?;
+            stop_timer(&reorg_to_last_synced_block_height_timer).await;
+
+            // Check if a new block is available
+            let last_opi_block = self.last_opi_block;
             if next_block > last_opi_block {
                 tracing::info!("Waiting for new blocks...");
                 self.last_opi_block = self.get_opi_block_height().await.unwrap_or(last_opi_block);
@@ -245,12 +250,15 @@ impl Brc20Indexer {
 
             if next_block % 1000 == 0 && next_block >= self.config.first_brc20_height {
                 tracing::info!("Clearing brc20 db caches at block height {}", next_block);
+                let clear_caches_timer = start_timer(SPAN, "clear_brc20_caches", next_block);
                 get_brc20_database().lock().await.clear_caches();
+                stop_timer(&clear_caches_timer).await;
             }
             if is_synced || next_block % 1000 == 0 {
                 tracing::info!("Processing block: {}", next_block);
             }
 
+            let get_block_info_timer = start_timer(SPAN, "get_block_info", next_block);
             let (block_hash, block_time, opi_cumulative_event_hash, opi_cumulative_trace_hash) =
                 if self.config.light_client_mode {
                     let block_info = self
@@ -268,6 +276,7 @@ impl Brc20Indexer {
                         self.main_db.get_block_hash_and_time(next_block).await?;
                     (block_hash, block_time, "".to_string(), None)
                 };
+            stop_timer(&get_block_info_timer).await;
 
             if block_time == 0
                 && self.config.brc20_prog_enabled
@@ -305,6 +314,7 @@ impl Brc20Indexer {
                             }
                         };
                     }
+                    let get_events_timer = start_timer(SPAN, "get_events", next_block);
                     let events = match self
                         .event_provider_client
                         .get_events(next_block as i64)
@@ -322,6 +332,7 @@ impl Brc20Indexer {
                             continue;
                         }
                     };
+                    stop_timer(&get_events_timer).await;
                     self.process_events(
                         next_block,
                         &block_hash,
@@ -341,6 +352,7 @@ impl Brc20Indexer {
                 }
             }
 
+            let index_extras_timer = start_timer(SPAN, "index_extra_tables", next_block);
             if next_block >= self.config.first_brc20_height
                 && get_brc20_database()
                     .lock()
@@ -355,7 +367,10 @@ impl Brc20Indexer {
                     .index_extra_tables(next_block)
                     .await?;
             }
+            stop_timer(&index_extras_timer).await;
 
+            let trace_hash_timer =
+                start_timer(SPAN, "calculate_brc20_prog_traces_hash", next_block);
             let block_traces_hash = if self.config.brc20_prog_enabled
                 && next_block >= self.config.first_brc20_prog_phase_one_height
             {
@@ -363,12 +378,15 @@ impl Brc20Indexer {
             } else {
                 String::new()
             };
+            stop_timer(&trace_hash_timer).await;
 
+            let set_block_hashes_timer = start_timer(SPAN, "set_block_hashes", next_block);
             get_brc20_database()
                 .lock()
                 .await
                 .set_block_hashes(next_block, &block_hash, block_traces_hash.as_str())
                 .await?;
+            stop_timer(&set_block_hashes_timer).await;
 
             let Some(block_events_hash) = get_brc20_database()
                 .lock()
@@ -431,6 +449,7 @@ impl Brc20Indexer {
 
             // Start reporting after 10 blocks left to full sync
             if self.config.report_to_indexer && next_block >= self.last_reported_block - 10 {
+                let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
                 self.brc20_reporter
                     .report(
                         next_block,
@@ -450,6 +469,7 @@ impl Brc20Indexer {
                     .event_provider_client
                     .get_best_verified_block_with_retries()
                     .await?;
+                stop_timer(&report_timer).await;
             }
             stop_timer(&loop_timer).await;
         }
@@ -457,7 +477,7 @@ impl Brc20Indexer {
 
     pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
         if self.config.brc20_prog_enabled {
-            let function_timer = start_timer(SPAN, "pre_fill_rpc_results_cache");
+            let function_timer = start_timer(SPAN, "pre_fill_rpc_results_cache", next_block);
             let bitcoin_rpc_results = match self
                 .event_provider_client
                 .get_bitcoin_rpc_results_with_retries(next_block as i64)
@@ -498,7 +518,7 @@ impl Brc20Indexer {
         if self.config.brc20_prog_enabled
             && block_height >= self.config.first_brc20_prog_phase_one_height
         {
-            let function_timer = start_timer(SPAN, "finalise_block_for_brc20_prog");
+            let function_timer = start_timer(SPAN, "finalise_block_for_brc20_prog", block_height);
             self.brc20_prog_client
                 .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
                 .await?;
@@ -519,7 +539,7 @@ impl Brc20Indexer {
         events: Vec<serde_json::Value>,
     ) -> Result<(), Box<dyn Error>> {
         static METHOD_SPAN: &str = "process_events";
-        let function_timer = start_timer(SPAN, METHOD_SPAN);
+        let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
         if events.is_empty() {
             self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
                 .await?;
@@ -537,7 +557,7 @@ impl Brc20Indexer {
                 .ok_or_else(|| {
                     format!("Event name not found in event record: {:?}", event_record)
                 })?;
-            let single_event_timer = start_timer(METHOD_SPAN, event_name);
+            let single_event_timer = start_timer(METHOD_SPAN, event_name, block_height);
             let event_type_id = event_name_to_id(&event_name);
             let inscription_id = event_record
                 .get("inscription_id")
@@ -555,7 +575,7 @@ impl Brc20Indexer {
                     &mut load_event::<Brc20ProgDeployInscribeEvent>(event_type_id, &event_record)?,
                     0,
                 )?;
-                EventProcessor::brc20_prog_deploy_inscribe(&inscription_id).await?;
+                EventProcessor::brc20_prog_deploy_inscribe(block_height, &inscription_id).await?;
             } else if event_type_id == Brc20ProgDeployTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgDeployTransferEvent>(event_type_id, &event_record)?;
@@ -567,6 +587,7 @@ impl Brc20Indexer {
                 )?;
                 EventProcessor::brc20_prog_deploy_transfer(
                     &self.brc20_prog_client,
+                    block_height,
                     block_time,
                     block_hash,
                     brc20_prog_tx_idx,
@@ -582,7 +603,7 @@ impl Brc20Indexer {
                     &mut load_event::<Brc20ProgCallInscribeEvent>(event_type_id, &event_record)?,
                     0,
                 )?;
-                EventProcessor::brc20_prog_call_inscribe(&inscription_id).await?;
+                EventProcessor::brc20_prog_call_inscribe(block_height, &inscription_id).await?;
             } else if event_type_id == Brc20ProgCallTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgCallTransferEvent>(event_type_id, &event_record)?;
@@ -594,6 +615,7 @@ impl Brc20Indexer {
                 )?;
                 EventProcessor::brc20_prog_call_transfer(
                     &self.brc20_prog_client,
+                    block_height,
                     block_time,
                     block_hash,
                     brc20_prog_tx_idx,
@@ -611,7 +633,7 @@ impl Brc20Indexer {
                     &mut event,
                     0,
                 )?;
-                EventProcessor::brc20_prog_transact_inscribe(&inscription_id).await?;
+                EventProcessor::brc20_prog_transact_inscribe(block_height, &inscription_id).await?;
             } else if event_type_id == Brc20ProgTransactTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgTransactTransferEvent>(event_type_id, &event_record)?;
@@ -623,6 +645,7 @@ impl Brc20Indexer {
                 )?;
                 match EventProcessor::brc20_prog_transact_transfer(
                     &self.brc20_prog_client,
+                    block_height,
                     block_hash,
                     &inscription_id,
                     block_time,
@@ -661,7 +684,7 @@ impl Brc20Indexer {
                     )?,
                     ticker.decimals,
                 )?;
-                EventProcessor::brc20_prog_withdraw_inscribe(&inscription_id).await?;
+                EventProcessor::brc20_prog_withdraw_inscribe(block_height, &inscription_id).await?;
             } else if event_type_id == Brc20ProgWithdrawTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgWithdrawTransferEvent>(event_type_id, &event_record)?;
@@ -806,7 +829,7 @@ impl Brc20Indexer {
             stop_timer(&single_event_timer).await;
         }
 
-        let flush_timer = start_timer(SPAN, "flush_queries_to_db");
+        let flush_timer = start_timer(SPAN, "flush_queries_to_db", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -836,7 +859,7 @@ impl Brc20Indexer {
         is_synced: bool,
     ) -> Result<(), Box<dyn Error>> {
         static METHOD_SPAN: &str = "generate_and_process_events";
-        let function_timer = start_timer(SPAN, METHOD_SPAN);
+        let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
         let mut brc20_prog_tx_idx: u64 = 0;
 
         let transfers = self.main_db.get_transfers(block_height).await?;
@@ -857,9 +880,9 @@ impl Brc20Indexer {
             last_transfer_timer = match last_transfer_timer {
                 Some(timer) => {
                     stop_timer(&timer).await;
-                    Some(start_timer(METHOD_SPAN, format!("transfer")))
+                    Some(start_timer(METHOD_SPAN, format!("transfer"), block_height))
                 }
-                None => Some(start_timer(METHOD_SPAN, format!("transfer"))),
+                None => Some(start_timer(METHOD_SPAN, format!("transfer"), block_height)),
             };
             let transfer = &transfers[index];
             if index % 100 == 0 && transfers.len() > 100 {
@@ -961,6 +984,7 @@ impl Brc20Indexer {
                             Ok(event) => {
                                 EventProcessor::brc20_prog_deploy_transfer(
                                     &self.brc20_prog_client,
+                                    block_height,
                                     block_time,
                                     block_hash,
                                     brc20_prog_tx_idx,
@@ -986,8 +1010,11 @@ impl Brc20Indexer {
                             transfer,
                         )
                         .await?;
-                        EventProcessor::brc20_prog_deploy_inscribe(&transfer.inscription_id)
-                            .await?;
+                        EventProcessor::brc20_prog_deploy_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
+                        )
+                        .await?;
                     }
                 } else if operation == OPERATION_BRC20_PROG_CALL
                     || operation == OPERATION_BRC20_PROG_CALL_SHORT
@@ -1021,6 +1048,7 @@ impl Brc20Indexer {
                             Ok(event) => {
                                 EventProcessor::brc20_prog_call_transfer(
                                     &self.brc20_prog_client,
+                                    block_height,
                                     block_time,
                                     block_hash,
                                     brc20_prog_tx_idx,
@@ -1054,7 +1082,11 @@ impl Brc20Indexer {
                             transfer,
                         )
                         .await?;
-                        EventProcessor::brc20_prog_call_inscribe(&transfer.inscription_id).await?;
+                        EventProcessor::brc20_prog_call_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
+                        )
+                        .await?;
                     }
                 } else if operation == OPERATION_BRC20_PROG_TRANSACT
                     || operation == OPERATION_BRC20_PROG_TRANSACT_SHORT
@@ -1071,6 +1103,7 @@ impl Brc20Indexer {
                             Ok(event) => {
                                 match EventProcessor::brc20_prog_transact_transfer(
                                     &self.brc20_prog_client,
+                                    block_height,
                                     block_hash,
                                     &transfer.inscription_id,
                                     block_time,
@@ -1101,8 +1134,11 @@ impl Brc20Indexer {
                             transfer,
                         )
                         .await?;
-                        EventProcessor::brc20_prog_transact_inscribe(&transfer.inscription_id)
-                            .await?;
+                        EventProcessor::brc20_prog_transact_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
+                        )
+                        .await?;
                     }
                 }
                 continue;
@@ -1255,7 +1291,11 @@ impl Brc20Indexer {
                         transfer,
                     )
                     .await?;
-                    EventProcessor::brc20_prog_withdraw_inscribe(&transfer.inscription_id).await?;
+                    EventProcessor::brc20_prog_withdraw_inscribe(
+                        block_height,
+                        &transfer.inscription_id,
+                    )
+                    .await?;
                 }
                 continue;
             }
@@ -1632,7 +1672,7 @@ impl Brc20Indexer {
             stop_timer(&timer).await;
         }
 
-        let flush_timer = start_timer(SPAN, "flush_queries_to_db");
+        let flush_timer = start_timer(SPAN, "flush_queries_to_db", block_height);
         get_brc20_database()
             .lock()
             .await
@@ -1654,7 +1694,6 @@ impl Brc20Indexer {
     }
 
     pub async fn get_opi_block_height(&self) -> Result<i32, Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "get_opi_block_height");
         let result = if self.config.light_client_mode {
             self.event_provider_client
                 .get_best_verified_block_with_retries()
@@ -1662,12 +1701,10 @@ impl Brc20Indexer {
         } else {
             self.main_db.get_current_block_height().await
         };
-        stop_timer(&function_timer).await;
         result
     }
 
     pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
-        let function_timer = start_timer(SPAN, "reorg_to_last_synced_block_height");
         tracing::debug!("Reorganizing BRC20 indexer to last synced block height...");
         let mut last_brc20_block_height = get_brc20_database()
             .lock()
@@ -1690,7 +1727,6 @@ impl Brc20Indexer {
                     .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
                     .await?;
             }
-            stop_timer(&function_timer).await;
             return Ok(());
         }
 
@@ -1830,7 +1866,6 @@ impl Brc20Indexer {
             current_brc20_prog_height -= 1;
         }
 
-        stop_timer(&function_timer).await;
         Ok(())
     }
 }
