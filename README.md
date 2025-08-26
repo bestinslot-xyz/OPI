@@ -15,7 +15,12 @@ Transfer limit can be changed via `INDEX_TX_LIMIT` variable in ord fork. This li
 
 **BRC-20 Indexer** is the first module of OPI. It follows the official protocol rules hosted [here](https://layer1.gitbook.io/layer1-foundation/protocols/brc-20/indexing). BRC-20 Indexer saves all historical balance changes and all BRC-20 events.
 
-In addition to indexing all events, it also calculates a block hash and cumulative hash of all events for easier db comparison. Here's the pseudocode for hash calculation:
+In addition to indexing all events, it also calculates a block hash and cumulative hash of all events for easier db comparison.
+
+It also calculates a hash of all BRC-20 programmable module traces in the current block, and a cumulative hash of the traces.
+
+Here's the pseudocode for hash calculation:
+
 ```python
 ## Calculation starts at block 767430 which is the first inscription block
 
@@ -56,6 +61,19 @@ if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
 block_hash = sha256_hex(block_str)
 ## for first block last_cumulative_hash is empty
 cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
+```
+
+To calculate the trace hashes in a stable way, the JSON string representation of an EVM trace uses the suggested schema at RFC 8785, which has implementations in both Rust and Python:
+
+```python
+  ### Calculation starts at block 912690, which is the first BRC2.0 block
+  traces_str = ""
+  for tx in block_txes:
+    trace_str = rfc8785.dumps(brc20_prog_client.debug_traceTransaction(tx).result)
+    traces_str += trace_str + EVENT_SEPARATOR
+  if traces_str.last is EVENT_SEPARATOR: traces_str.remove_last()
+  traces_hash = sha256_hex(traces_str)
+  cumulative_traces_hash = sha256_hex(last_cumulative_traces_hash + traces_hash)
 ```
 
 There is an optional block event hash reporting system pointed at https://api.opi.network/report_block. If you want to exclude your node from this, just change `REPORT_TO_INDEXER` variable in `brc20_index/.env`.
