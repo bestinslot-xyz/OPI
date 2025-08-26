@@ -117,9 +117,16 @@ impl Brc20Indexer {
                 let bitcoin_rpc_proxy_addr_clone =
                     self.config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
                 let bitcoin_rpc_url_clone = self.config.bitcoin_rpc_url.clone();
+                let light_client_mode = self.config.light_client_mode;
+                let network_type_clone = self.config.network_type_string.clone();
                 self.bitcoin_proxy_server_handle = Some(tokio::spawn(async move {
-                    run_bitcoin_proxy_server(bitcoin_rpc_url_clone, bitcoin_rpc_proxy_addr_clone)
-                        .await
+                    run_bitcoin_proxy_server(
+                        bitcoin_rpc_url_clone,
+                        light_client_mode,
+                        network_type_clone,
+                        bitcoin_rpc_proxy_addr_clone,
+                    )
+                    .await
                 }));
             }
             // Wait for the servers to start
@@ -127,16 +134,6 @@ impl Brc20Indexer {
 
             let brc20_prog_block_height =
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
-
-            if self.config.light_client_mode {
-                let current_block_height = get_brc20_database()
-                    .lock()
-                    .await
-                    .get_current_block_height()
-                    .await?;
-                self.pre_fill_rpc_results_cache(current_block_height)
-                    .await?;
-            }
 
             self.brc20_prog_client
                 .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
