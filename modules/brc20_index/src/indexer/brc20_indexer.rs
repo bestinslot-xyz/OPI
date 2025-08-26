@@ -862,7 +862,9 @@ impl Brc20Indexer {
         let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
         let mut brc20_prog_tx_idx: u64 = 0;
 
+        let get_transfers_timer = start_timer(SPAN, "get_transfers", block_height);
         let transfers = self.main_db.get_transfers(block_height).await?;
+        stop_timer(&get_transfers_timer).await;
         if transfers.is_empty() {
             self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
                 .await?;
