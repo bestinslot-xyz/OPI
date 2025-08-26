@@ -549,10 +549,10 @@ impl Brc20Indexer {
         let mut brc20_prog_tx_idx = 0;
         for event_record in events {
             let event_name = event_record
-                .get("event_name")
+                .get("event_type")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    format!("Event name not found in event record: {:?}", event_record)
+                    format!("Event type not found in event record: {:?}", event_record)
                 })?;
             let single_event_timer = start_timer(METHOD_SPAN, event_name, block_height);
             let event_type_id = event_name_to_id(&event_name);
