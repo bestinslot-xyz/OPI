@@ -4,42 +4,42 @@ use std::collections::HashMap;
 lazy_static::lazy_static! {
     pub static ref FIRST_INSCRIPTION_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
-        map.insert(Network::Bitcoin, 767430);
-        map.insert(Network::Testnet, 2413343);
+        map.insert(Network::Bitcoin, 767_430);
+        map.insert(Network::Testnet, 2_413_343);
         map.insert(Network::Testnet4, 0);
         map.insert(Network::Regtest, 0);
-        map.insert(Network::Signet, 112402);
+        map.insert(Network::Signet, 112_402);
         map
     };
 
     pub static ref FIRST_BRC20_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
-        map.insert(Network::Bitcoin, 779832);
-        map.insert(Network::Testnet, 2413343);
+        map.insert(Network::Bitcoin, 779_832);
+        map.insert(Network::Testnet, 2_413_343);
         map.insert(Network::Testnet4, 0);
         map.insert(Network::Regtest, 0);
-        map.insert(Network::Signet, 112402);
+        map.insert(Network::Signet, 112_402);
         map
     };
 
     /// During phase 1, only 6 byte tickers can get deposited into programmable module.
     pub static ref FIRST_BRC20_PROG_PHASE_1_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
-        map.insert(Network::Bitcoin, 909969);
+        map.insert(Network::Bitcoin, 912_690);
         map.insert(Network::Testnet, 0);
         map.insert(Network::Testnet4, 0);
         map.insert(Network::Regtest, 0);
-        map.insert(Network::Signet, 230000);
+        map.insert(Network::Signet, 230_000);
         map
     };
 
     pub static ref FIRST_BRC20_PROG_PHASE_2_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
-        map.insert(Network::Bitcoin, 914888);
+        map.insert(Network::Bitcoin, 9_999_999); // Unset, waiting for finalization
         map.insert(Network::Testnet, 0);
         map.insert(Network::Testnet4, 0);
         map.insert(Network::Regtest, 0);
-        map.insert(Network::Signet, 230000);
+        map.insert(Network::Signet, 230_000);
         map
     };
 }
