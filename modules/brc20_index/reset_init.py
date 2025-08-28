@@ -30,7 +30,7 @@ if init_env:
   BRC20_PROG_RPC_URL="http://localhost:18545"
   BRC20_PROG_RPC_SERVER_USER="user"
   BRC20_PROG_RPC_SERVER_PASSWORD="password"
-  BRC20_PROG_BALANCE_SERVER_URL="localhost:18546"
+  BRC20_PROG_BALANCE_SERVER_URL="127.0.0.1:18546"
 
   print("Initialising .env file")
   print("leave blank to use default values")
@@ -102,7 +102,7 @@ if init_env:
     res = stdiomask.getpass("BRC20 programmable module RPC password (Default: password): ")
     if res != '':
       BRC20_PROG_RPC_SERVER_PASSWORD = res
-    res = input("BRC20 programmable module balance server URL (Default: localhost:18546): ")
+    res = input("BRC20 programmable module balance server URL (Default: 127.0.0.1:18546): ")
     if res != '':
       BRC20_PROG_BALANCE_SERVER_URL = res
 
