@@ -48,7 +48,7 @@ pub struct Brc20Indexer {
     main_db: OpiClient,
     event_provider_client: EventProviderClient,
     last_opi_block: i32,
-    last_reported_block: i32,
+    last_reported_block: Option<i32>,
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
     brc20_reporter: Brc20Reporter,
@@ -69,7 +69,7 @@ impl Brc20Indexer {
             main_db,
             config,
             last_opi_block: 0,
-            last_reported_block: 0,
+            last_reported_block: None,
             brc20_prog_client,
             brc20_reporter,
             event_provider_client,
@@ -83,10 +83,14 @@ impl Brc20Indexer {
 
         self.event_provider_client.load_providers().await?;
         self.last_opi_block = self.get_opi_block_height().await?;
-        self.last_reported_block = self
-            .event_provider_client
-            .get_best_verified_block_with_retries()
-            .await?;
+
+        if self.config.report_to_indexer {
+            self.last_reported_block = self
+                .event_provider_client
+                .get_best_verified_block_with_retries()
+                .await
+                .ok();
+        }
 
         let db_version = get_brc20_database().lock().await.get_db_version().await?;
         if db_version != DB_VERSION {
@@ -445,27 +449,33 @@ impl Brc20Indexer {
             }
 
             // Start reporting after 10 blocks left to full sync
-            if self.config.report_to_indexer && next_block >= self.last_reported_block - 10 {
+            if self.config.report_to_indexer {
                 let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
-                self.brc20_reporter
-                    .report(
-                        next_block,
-                        block_hash.to_string(),
-                        if block_time == 0 {
-                            None
-                        } else {
-                            Some(block_time)
-                        },
-                        block_events_hash.clone(),
-                        cumulative_events_hash.clone(),
-                        block_traces_hash.clone(),
-                        cumulative_traces_hash.clone(),
-                    )
-                    .await?;
+                if let Some(last_reported_block) = self.last_reported_block {
+                    if next_block >= last_reported_block - 10 {
+                        self.brc20_reporter
+                            .report(
+                                next_block,
+                                block_hash.to_string(),
+                                if block_time == 0 {
+                                    None
+                                } else {
+                                    Some(block_time)
+                                },
+                                block_events_hash.clone(),
+                                cumulative_events_hash.clone(),
+                                block_traces_hash.clone(),
+                                cumulative_traces_hash.clone(),
+                            )
+                            .await
+                            .ok();
+                    }
+                }
                 self.last_reported_block = self
                     .event_provider_client
-                    .get_best_verified_block_with_retries()
-                    .await?;
+                    .get_best_verified_block()
+                    .await
+                    .ok(); // Try once to avoid holding up the loop
                 stop_timer(&report_timer).await;
             }
             stop_timer(&loop_timer).await;

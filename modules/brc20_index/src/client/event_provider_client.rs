@@ -99,7 +99,7 @@ impl EventProviderClient {
         }
     }
 
-    async fn get_best_verified_block(&self) -> Result<i32, Box<dyn std::error::Error>> {
+    pub async fn get_best_verified_block(&self) -> Result<i32, Box<dyn std::error::Error>> {
         let response = self
             .client
             .get(format!(
