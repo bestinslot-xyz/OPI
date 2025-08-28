@@ -260,6 +260,8 @@ impl Brc20Database {
         block_hash: &str,
         block_traces_hash: &str,
     ) -> Result<(), Box<dyn Error>> {
+        let mut tx = self.client.begin().await?;
+
         tracing::debug!(
             "Setting block hash for height {}: {}",
             block_height,
@@ -272,7 +274,7 @@ impl Brc20Database {
             block_height,
             block_hash
         )
-        .execute(&self.client)
+        .execute(&mut *tx)
         .await?;
 
         // Set cumulative event hashes for the block
@@ -306,8 +308,10 @@ impl Brc20Database {
             block_traces_hash,
             cumulative_trace_hash
         )
-        .execute(&self.client)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
         Ok(())
     }
 
