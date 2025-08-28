@@ -161,7 +161,11 @@ impl EventProviderClient {
                     }
                 },
                 Err(e) => {
-                    tracing::error!("Error fetching Bitcoin RPC results from {}: {}", event_provider.url, e);
+                    tracing::error!(
+                        "Error fetching Bitcoin RPC results from {}: {}",
+                        event_provider.url,
+                        e
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue; // Retry on error
                 }
@@ -172,7 +176,9 @@ impl EventProviderClient {
                 continue; // Retry if there's an error
             }
 
-            return response.result.ok_or("Bitcoin RPC results not found".into());
+            return response
+                .result
+                .ok_or("Bitcoin RPC results not found".into());
         }
         return Err("Failed to fetch Bitcoin RPC results after retries".into());
     }

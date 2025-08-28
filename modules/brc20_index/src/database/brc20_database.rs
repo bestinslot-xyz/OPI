@@ -372,7 +372,12 @@ impl Brc20Database {
             .collect())
     }
 
-    pub async fn log_timer(&mut self, label: String, duration: u128, block_height: i32) -> Result<(), Box<dyn Error>> {
+    pub async fn log_timer(
+        &mut self,
+        label: String,
+        duration: u128,
+        block_height: i32,
+    ) -> Result<(), Box<dyn Error>> {
         self.log_timer_inserts
             .entry(block_height)
             .or_insert_with(HashMap::new)
@@ -1412,6 +1417,8 @@ impl Brc20Database {
     }
 
     pub async fn flush_queries_to_db(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut tx = self.client.begin().await?;
+
         if !self.log_timer_inserts.is_empty() {
             let mut all_log_data = Vec::new();
             let mut all_log_block_heights = Vec::new();
@@ -1432,7 +1439,7 @@ impl Brc20Database {
                 &all_log_block_heights,
                 &all_log_data,
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.log_timer_inserts.clear();
@@ -1474,7 +1481,7 @@ impl Brc20Database {
                 &all_deploy_inscription_ids,
                 &all_deploy_block_heights
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.new_tickers.clear();
@@ -1488,7 +1495,7 @@ impl Brc20Database {
                     BigDecimal::from(update_data.burned_supply),
                     ticker_name
                 )
-                .execute(&self.client)
+                .execute(&mut *tx)
                 .await?;
             }
             self.ticker_updates.clear();
@@ -1529,7 +1536,7 @@ impl Brc20Database {
                 &all_txids,
                 &all_events
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.event_inserts.clear();
@@ -1557,7 +1564,7 @@ impl Brc20Database {
                 &all_inscription_ids,
                 &all_events
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.light_event_inserts.clear();
@@ -1582,7 +1589,7 @@ impl Brc20Database {
                 &all_responses,
                 &all_block_heights
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.bitcoin_rpc_inserts.clear();
@@ -1617,11 +1624,13 @@ impl Brc20Database {
                 &all_block_heights,
                 &all_event_ids
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.balance_updates.clear();
         }
+
+        tx.commit().await?;
         Ok(())
     }
 

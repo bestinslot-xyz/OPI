@@ -27,7 +27,10 @@ static SPAN: &str = "EventProcessor";
 pub struct EventProcessor;
 
 impl EventProcessor {
-    pub async fn brc20_prog_deploy_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn brc20_prog_deploy_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe", block_height);
         get_brc20_database()
             .lock()
@@ -73,7 +76,10 @@ impl EventProcessor {
         Ok(())
     }
 
-    pub async fn brc20_prog_call_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn brc20_prog_call_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe", block_height);
         get_brc20_database()
             .lock()
@@ -130,7 +136,10 @@ impl EventProcessor {
         Ok(())
     }
 
-    pub async fn brc20_prog_transact_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn brc20_prog_transact_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe", block_height);
         get_brc20_database()
             .lock()
@@ -175,7 +184,10 @@ impl EventProcessor {
         Ok(transact_result.len() as u64)
     }
 
-    pub async fn brc20_prog_withdraw_inscribe(block_height: i32, inscription_id: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn brc20_prog_withdraw_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe", block_height);
         get_brc20_database()
             .lock()
