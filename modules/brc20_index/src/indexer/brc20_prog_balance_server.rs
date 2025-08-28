@@ -13,7 +13,7 @@ pub async fn run_balance_server(balance_server_addr: String) {
 
     let addr: SocketAddr = balance_server_addr
         .parse()
-        .expect(format!("Invalid balance server URL format: {}", balance_server_addr).as_str());
+        .expect(format!("Invalid balance server address format: {}", balance_server_addr).as_str());
     tracing::info!("Balance server listening on {}", addr);
     axum_server::bind(addr)
         .serve(app.into_make_service())

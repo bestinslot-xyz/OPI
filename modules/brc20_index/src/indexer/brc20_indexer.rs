@@ -109,7 +109,7 @@ impl Brc20Indexer {
                 .into());
             }
 
-            let url_clone = self.config.brc20_prog_balance_server_url.clone();
+            let url_clone = self.config.brc20_prog_balance_server_addr.clone();
             self.server_handle = Some(tokio::spawn(
                 async move { run_balance_server(url_clone).await },
             ));
