@@ -105,7 +105,11 @@ impl EventProcessor {
             .set_transfer_validity(inscription_id, TransferValidity::Used);
 
         let contract_address = if let Some(address) = event.contract_address.clone() {
-            Some(address.as_str().try_into()?)
+            if let Ok(address_inner) = address.as_str().try_into() {
+                Some(address_inner)
+            } else {
+                None
+            }
         } else {
             None
         };
