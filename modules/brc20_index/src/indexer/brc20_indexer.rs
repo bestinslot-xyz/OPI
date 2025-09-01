@@ -238,6 +238,12 @@ impl Brc20Indexer {
             self.reorg_to_last_synced_block_height().await?;
             stop_timer(&reorg_to_last_synced_block_height_timer).await;
 
+            let next_block = get_brc20_database()
+                .lock()
+                .await
+                .get_next_block_height()
+                .await?;
+
             // Check if a new block is available
             let last_opi_block = self.last_opi_block;
             if next_block > last_opi_block {
