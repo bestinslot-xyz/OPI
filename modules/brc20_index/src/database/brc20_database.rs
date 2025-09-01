@@ -710,6 +710,11 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM brc20_logs WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
         let res = sqlx::query(&format!(
             "SELECT event FROM {} WHERE event_type = $1 AND block_height > $2",
             self.events_table
