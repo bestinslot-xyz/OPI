@@ -20,6 +20,7 @@ if init_env:
   DB_DATABASE="postgres"
   DB_PASSWD=""
   DB_SSL="false"
+  OPERATION_MODE="full"
   NETWORK_TYPE="mainnet"
   REPORT_TO_INDEXER="true"
   REPORT_URL="https://api.opi.network/report_block"
@@ -27,9 +28,9 @@ if init_env:
   REPORT_NAME="opi_brc20_index"
   BRC20_PROG_ENABLED="false"
   BRC20_PROG_RPC_URL="http://localhost:18545"
-  BRC20_PROG_RPC_SERVER_USER="user"
-  BRC20_PROG_RPC_SERVER_PASSWORD="password"
-  BRC20_PROG_BALANCE_SERVER_URL="localhost:18546"
+  BRC20_PROG_RPC_USER="user"
+  BRC20_PROG_RPC_PASSWORD="password"
+  BRC20_PROG_BALANCE_SERVER_ADDR="127.0.0.1:18546"
 
   print("Initialising .env file")
   print("leave blank to use default values")
@@ -65,6 +66,9 @@ if init_env:
     res = input("BRC20 Postgres DB SSL (Default: false) options: true, false: ")
     if res != '':
       DB_SSL = res
+  res = input("Operation mode (Default: full) options: full, light: ")
+  if res != '':
+    OPERATION_MODE = res
   res = input("Network type (Default: mainnet) options: mainnet, testnet, testnet4, signet, regtest: ")
   if res != '':
     NETWORK_TYPE = res
@@ -94,13 +98,13 @@ if init_env:
       BRC20_PROG_RPC_URL = res
     res = input("BRC20 programmable module RPC username (Default: user): ")
     if res != '':
-      BRC20_PROG_RPC_SERVER_USER = res
+      BRC20_PROG_RPC_USER = res
     res = stdiomask.getpass("BRC20 programmable module RPC password (Default: password): ")
     if res != '':
-      BRC20_PROG_RPC_SERVER_PASSWORD = res
-    res = input("BRC20 programmable module balance server URL (Default: localhost:18546): ")
+      BRC20_PROG_RPC_PASSWORD = res
+    res = input("BRC20 programmable module balance server address (Default: 127.0.0.1:18546): ")
     if res != '':
-      BRC20_PROG_BALANCE_SERVER_URL = res
+      BRC20_PROG_BALANCE_SERVER_ADDR = res
 
   f = open('.env', 'w')
   f.write('DB_USER="' + DB_USER + '"\n')
@@ -109,6 +113,7 @@ if init_env:
   f.write('DB_DATABASE="' + DB_DATABASE + '"\n')
   f.write('DB_PASSWD="' + DB_PASSWD + '"\n')
   f.write('DB_SSL="' + DB_SSL + '"\n')
+  f.write('OPERATION_MODE="' + OPERATION_MODE + '"\n')
   f.write('NETWORK_TYPE="' + NETWORK_TYPE + '"\n')
   f.write('REPORT_TO_INDEXER="' + REPORT_TO_INDEXER + '"\n')
   f.write('REPORT_URL="' + REPORT_URL + '"\n')
@@ -116,9 +121,9 @@ if init_env:
   f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
   f.write('BRC20_PROG_ENABLED="' + BRC20_PROG_ENABLED + '"\n')
   f.write('BRC20_PROG_RPC_URL="' + BRC20_PROG_RPC_URL + '"\n')
-  f.write('BRC20_PROG_RPC_SERVER_USER="' + BRC20_PROG_RPC_SERVER_USER + '"\n')
-  f.write('BRC20_PROG_RPC_SERVER_PASSWORD="' + BRC20_PROG_RPC_SERVER_PASSWORD + '"\n')
-  f.write('BRC20_PROG_BALANCE_SERVER_URL="' + BRC20_PROG_BALANCE_SERVER_URL + '"\n')
+  f.write('BRC20_PROG_RPC_USER="' + BRC20_PROG_RPC_USER + '"\n')
+  f.write('BRC20_PROG_RPC_PASSWORD="' + BRC20_PROG_RPC_PASSWORD + '"\n')
+  f.write('BRC20_PROG_BALANCE_SERVER_ADDR="' + BRC20_PROG_BALANCE_SERVER_ADDR + '"\n')
   f.close()
 
 res = input("Are you sure you want to initialise/reset the brc20 database? (y/n) ")

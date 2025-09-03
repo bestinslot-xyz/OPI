@@ -1,7 +1,17 @@
+use bitcoin::Network;
+
+use crate::types::events::{
+    Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
+    Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent, Brc20ProgTransactTransferEvent,
+    Brc20ProgWithdrawInscribeEvent, Brc20ProgWithdrawTransferEvent, DeployInscribeEvent,
+    MintInscribeEvent, PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent,
+};
+
 pub trait Event {
     fn event_name() -> String;
     fn event_id() -> i32;
     fn get_event_str(&self, inscription_id: &str, decimals: u8) -> String;
+    fn calculate_wallets(&mut self, network: Network);
 }
 
 pub fn number_string_with_full_decimals(number: u128, decimals: u8) -> String {
@@ -20,6 +30,65 @@ pub fn number_string_with_full_decimals(number: u128, decimals: u8) -> String {
     }
 
     number_str
+}
+
+pub fn load_event<T>(event_type_id: i32, event_record: &serde_json::Value) -> Result<T, String>
+where
+    T: Event + serde::de::DeserializeOwned,
+{
+    if event_type_id == T::event_id() {
+        serde_json::from_value(event_record.clone())
+            .map_err(|e| format!("Failed to deserialize event: {}", e))
+    } else {
+        Err(format!(
+            "Event type ID {} does not match expected ID {}",
+            event_type_id,
+            T::event_id()
+        ))
+    }
+}
+
+pub fn event_name_to_id(event_name: &str) -> i32 {
+    if event_name == Brc20ProgCallInscribeEvent::event_name() {
+        Brc20ProgCallInscribeEvent::event_id()
+    } else if event_name == Brc20ProgCallTransferEvent::event_name() {
+        Brc20ProgCallTransferEvent::event_id()
+    } else if event_name == Brc20ProgDeployInscribeEvent::event_name() {
+        Brc20ProgDeployInscribeEvent::event_id()
+    } else if event_name == Brc20ProgDeployTransferEvent::event_name() {
+        Brc20ProgDeployTransferEvent::event_id()
+    } else if event_name == Brc20ProgTransactInscribeEvent::event_name() {
+        Brc20ProgTransactInscribeEvent::event_id()
+    } else if event_name == Brc20ProgTransactTransferEvent::event_name() {
+        Brc20ProgTransactTransferEvent::event_id()
+    } else if event_name == Brc20ProgWithdrawInscribeEvent::event_name() {
+        Brc20ProgWithdrawInscribeEvent::event_id()
+    } else if event_name == Brc20ProgWithdrawTransferEvent::event_name() {
+        Brc20ProgWithdrawTransferEvent::event_id()
+    } else if event_name == PreDeployInscribeEvent::event_name() {
+        PreDeployInscribeEvent::event_id()
+    } else if event_name == DeployInscribeEvent::event_name() {
+        DeployInscribeEvent::event_id()
+    } else if event_name == MintInscribeEvent::event_name() {
+        MintInscribeEvent::event_id()
+    } else if event_name == TransferInscribeEvent::event_name() {
+        TransferInscribeEvent::event_id()
+    } else if event_name == TransferTransferEvent::event_name() {
+        TransferTransferEvent::event_id()
+    } else {
+        -1 // Unknown event
+    }
+}
+
+pub fn get_wallet_from_pk_script(pk_script: &str, network: bitcoin::Network) -> Option<String> {
+    let Ok(pk_script_bytes) = hex::decode(pk_script) else {
+        return None;
+    };
+    let script = bitcoin::Script::from_bytes(pk_script_bytes.as_slice());
+    let Ok(address) = bitcoin::Address::from_script(&script, network) else {
+        return None;
+    };
+    Some(address.to_string())
 }
 
 #[cfg(test)]

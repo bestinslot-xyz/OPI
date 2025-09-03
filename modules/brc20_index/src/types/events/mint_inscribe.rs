@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{DefaultOnNull, serde_as};
 
-use crate::types::events::number_string_with_full_decimals;
+use crate::types::events::{event::get_wallet_from_pk_script, number_string_with_full_decimals};
 
 use super::Event;
 
@@ -10,7 +10,7 @@ use super::Event;
 pub struct MintInscribeEvent {
     #[serde(rename = "minted_pkScript")]
     pub minted_pk_script: String,
-    #[serde(default)]
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub minted_wallet: String,
     #[serde(rename = "tick")]
     pub ticker: String,
@@ -41,5 +41,13 @@ impl Event for MintInscribeEvent {
             number_string_with_full_decimals(self.amount, decimals),
             self.parent_id
         )
+    }
+
+    fn calculate_wallets(&mut self, network: bitcoin::Network) {
+        if let Some(wallet) = get_wallet_from_pk_script(&self.minted_pk_script, network) {
+            self.minted_wallet = wallet;
+        } else {
+            self.minted_wallet = String::new();
+        }
     }
 }

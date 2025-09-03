@@ -7,12 +7,15 @@ use std::{
     vec,
 };
 
+use axum::body::Bytes;
+use bitcoin::Network;
 use brc20_index::types::events;
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
 use once_cell::sync::OnceCell;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
@@ -26,10 +29,13 @@ lazy_static! {
         "brc20_tickers",
         "brc20_historic_balances",
         "brc20_events",
+        "brc20_light_events",
         "brc20_cumulative_event_hashes",
+        "brc20_bitcoin_rpc_result_cache",
         "brc20_block_hashes",
         "brc20_unused_txes",
         "brc20_current_balances",
+        "brc20_logs",
     ];
 }
 
@@ -65,7 +71,16 @@ pub struct TickerUpdateData {
 }
 
 #[derive(Debug, Clone)]
-pub struct EventInsertData {
+pub struct LightEventRecord {
+    pub event_id: i64,
+    pub event_type_id: i32,
+    pub block_height: i32,
+    pub inscription_id: String,
+    pub event: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventRecord {
     pub event_id: i64,
     pub event_type_id: i32,
     pub block_height: i32,
@@ -88,6 +103,13 @@ pub struct BalanceUpdateData {
     pub event_id: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct BitcoinRpcResultRecord {
+    pub method: String,
+    pub response: serde_json::Value,
+    pub block_height: i32,
+}
+
 pub static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
 
 pub fn get_brc20_database() -> Arc<Mutex<Brc20Database>> {
@@ -106,6 +128,8 @@ pub fn set_brc20_database(database: Arc<Mutex<Brc20Database>>) {
 #[derive(Debug)]
 pub struct Brc20Database {
     pub client: Pool<Postgres>,
+    pub bitcoin_rpc_cache_enabled: bool,
+    pub network: Network,
     pub first_inscription_height: i32,
     pub transfer_validity_cache: HashMap<String, TransferValidity>,
     pub current_event_id: i64,
@@ -115,8 +139,14 @@ pub struct Brc20Database {
 
     pub new_tickers: Vec<Ticker>,
     pub ticker_updates: HashMap<String, TickerUpdateData>,
-    pub event_inserts: Vec<EventInsertData>,
+    pub light_event_inserts: Vec<LightEventRecord>,
+    pub event_inserts: Vec<EventRecord>,
+    pub bitcoin_rpc_inserts: HashMap<serde_json::Value, BitcoinRpcResultRecord>,
+    pub log_timer_inserts: HashMap<i32, HashMap<String, Vec<u128>>>,
+    pub block_event_strings: HashMap<i32, String>,
     pub balance_updates: Vec<BalanceUpdateData>,
+    pub light_client_mode: bool,
+    pub events_table: String,
 }
 
 impl Brc20Database {
@@ -153,9 +183,11 @@ impl Brc20Database {
             .expect("Failed to connect to the database");
         Brc20Database {
             client,
+            network: config.network_type,
             first_inscription_height: config.first_inscription_height,
             transfer_validity_cache: HashMap::new(),
             current_event_id: 0,
+            bitcoin_rpc_cache_enabled: config.bitcoin_rpc_cache_enabled,
             tickers: HashMap::new(),
             cached_events: HashMap::new(),
             balance_cache: HashMap::new(),
@@ -163,7 +195,17 @@ impl Brc20Database {
             new_tickers: Vec::new(),
             ticker_updates: HashMap::new(),
             event_inserts: Vec::new(),
+            log_timer_inserts: HashMap::new(),
+            light_event_inserts: Vec::new(),
+            bitcoin_rpc_inserts: HashMap::new(),
             balance_updates: Vec::new(),
+            block_event_strings: HashMap::new(),
+            light_client_mode: config.light_client_mode,
+            events_table: if config.light_client_mode {
+                "brc20_light_events".to_string()
+            } else {
+                "brc20_events".to_string()
+            },
         }
     }
 
@@ -178,13 +220,7 @@ impl Brc20Database {
                 .await?;
         };
 
-        self.current_event_id =
-            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
-                .fetch_optional(&self.client)
-                .await?
-                .map(|row| row.max_event_id.unwrap_or(-1))
-                .unwrap_or(-1)
-                + 1;
+        self.fetch_current_event_id().await?;
 
         let start_time = Instant::now();
         for ticker in self.get_tickers().await? {
@@ -199,23 +235,83 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn set_block_hash(
-        &self,
+    pub async fn fetch_current_event_id(&mut self) -> Result<(), Box<dyn Error>> {
+        self.current_event_id = if self.light_client_mode {
+            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_light_events")
+                .fetch_optional(&self.client)
+                .await?
+                .map(|row| row.max_event_id.unwrap_or(-1))
+                .unwrap_or(-1)
+                + 1
+        } else {
+            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
+                .fetch_optional(&self.client)
+                .await?
+                .map(|row| row.max_event_id.unwrap_or(-1))
+                .unwrap_or(-1)
+                + 1
+        };
+        Ok(())
+    }
+
+    pub async fn set_block_hashes(
+        &mut self,
         block_height: i32,
         block_hash: &str,
+        block_traces_hash: &str,
     ) -> Result<(), Box<dyn Error>> {
+        let mut tx = self.client.begin().await?;
+
         tracing::debug!(
             "Setting block hash for height {}: {}",
             block_height,
             block_hash
         );
+
+        // Set block hash for the given block height
         sqlx::query!(
             "INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES ($1, $2)",
             block_height,
             block_hash
         )
-        .execute(&self.client)
+        .execute(&mut *tx)
         .await?;
+
+        // Set cumulative event hashes for the block
+        let block_events_hash = sha256::digest(
+            self.block_event_strings
+                .get(&block_height)
+                .unwrap_or(&String::new())
+                .trim_end_matches(EVENT_SEPARATOR),
+        );
+        let cumulative_event_hash = self.get_cumulative_events_hash(block_height - 1).await?;
+        let cumulative_event_hash = match cumulative_event_hash {
+            Some(hash) => sha256::digest(hash + &block_events_hash),
+            None => block_events_hash.clone(),
+        };
+
+        let previous_cumulative_trace_hash =
+            self.get_cumulative_traces_hash(block_height - 1).await?;
+        let cumulative_trace_hash = if !block_traces_hash.is_empty() {
+            sha256::digest(previous_cumulative_trace_hash.unwrap_or_default() + block_traces_hash)
+        } else {
+            String::new()
+        };
+
+        self.block_event_strings.remove(&block_height);
+
+        sqlx::query!(
+            "INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash, block_trace_hash, cumulative_trace_hash) VALUES ($1, $2, $3, $4, $5)",
+            block_height,
+            block_events_hash,
+            cumulative_event_hash,
+            block_traces_hash,
+            cumulative_trace_hash
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -278,6 +374,21 @@ impl Brc20Database {
                 original_ticker: row.original_tick,
             })
             .collect())
+    }
+
+    pub async fn log_timer(
+        &mut self,
+        label: String,
+        duration: u128,
+        block_height: i32,
+    ) -> Result<(), Box<dyn Error>> {
+        self.log_timer_inserts
+            .entry(block_height)
+            .or_insert_with(HashMap::new)
+            .entry(label)
+            .or_insert_with(Vec::new)
+            .push(duration);
+        Ok(())
     }
 
     pub async fn get_db_version(&self) -> Result<i32, Box<dyn Error>> {
@@ -357,21 +468,22 @@ impl Brc20Database {
 
         tracing::info!("Selecting unused txes");
 
-        let unused_txes = sqlx::query(
+        let unused_txes = sqlx::query(&format!(
             "with tempp as (
                   select inscription_id, event, id, block_height
-                  from brc20_events
+                  from {}
                   where event_type = $1
                 ), tempp2 as (
                   select inscription_id, event
-                  from brc20_events
+                  from {}
                   where event_type = $2
                 )
                 select t.event, t.id, t.block_height, t.inscription_id
                 from tempp t
                 left join tempp2 t2 on t.inscription_id = t2.inscription_id
                 where t2.inscription_id is null;",
-        )
+            self.events_table, self.events_table
+        ))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
         .fetch_all(&mut *tx)
@@ -466,7 +578,7 @@ impl Brc20Database {
     pub async fn index_extra_tables(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         let mut tx = self.client.begin().await?;
 
-        tracing::info!("Indexing extra tables for block height {}", block_height);
+        tracing::debug!("Indexing extra tables for block height {}", block_height);
 
         let balance_changes = sqlx::query(
             "select pkscript, wallet, tick, overall_balance, available_balance 
@@ -510,11 +622,12 @@ impl Brc20Database {
             .await?;
         }
 
-        let events = sqlx::query(
+        let events = sqlx::query(&format!(
             "select event, id, event_type, inscription_id 
-                 from brc20_events where block_height = $1 and (event_type = $2 or event_type = $3) 
+                 from {} where block_height = $1 and (event_type = $2 or event_type = $3) 
                  order by id asc;",
-        )
+            self.events_table
+        ))
         .bind(block_height)
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
@@ -597,9 +710,15 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        let res = sqlx::query(
-            "SELECT event FROM brc20_events WHERE event_type = $1 AND block_height > $2",
-        )
+        sqlx::query("DELETE FROM brc20_logs WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
+        let res = sqlx::query(&format!(
+            "SELECT event FROM {} WHERE event_type = $1 AND block_height > $2",
+            self.events_table
+        ))
         .bind(crate::types::events::MintInscribeEvent::event_id())
         .bind(block_height)
         .fetch_all(&mut *tx)
@@ -631,12 +750,27 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM brc20_bitcoin_rpc_result_cache WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query("DELETE FROM brc20_events WHERE block_height > $1")
             .bind(block_height)
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM brc20_light_events WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query("DELETE FROM brc20_cumulative_event_hashes WHERE block_height > $1")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_bitcoin_rpc_result_cache_id_seq', max(id)) from brc20_bitcoin_rpc_result_cache;")
             .bind(block_height)
             .execute(&mut *tx)
             .await?;
@@ -657,6 +791,11 @@ impl Brc20Database {
             .await?;
 
         sqlx::query("SELECT setval('brc20_events_id_seq', max(id)) from brc20_events;")
+            .bind(block_height)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("SELECT setval('brc20_light_events_id_seq', max(id)) from brc20_light_events;")
             .bind(block_height)
             .execute(&mut *tx)
             .await?;
@@ -713,21 +852,22 @@ impl Brc20Database {
 
         tracing::info!("Selecting unused txes");
 
-        let unused_txes = sqlx::query(
+        let unused_txes = sqlx::query(&format!(
             "with tempp as (
                   select inscription_id, event, id, block_height
-                  from brc20_events
+                  from {}
                   where event_type = $1
                 ), tempp2 as (
                   select inscription_id, event
-                  from brc20_events
+                  from {}
                   where event_type = $2
                 )
                 select t.event, t.id, t.block_height, t.inscription_id
                 from tempp t
                 left join tempp2 t2 on t.inscription_id = t2.inscription_id
                 where t2.inscription_id is null;",
-        )
+            self.events_table, self.events_table
+        ))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
         .fetch_all(&mut *tx)
@@ -764,13 +904,7 @@ impl Brc20Database {
 
         tracing::info!("Reorg completed up to block height {}", block_height);
 
-        self.current_event_id =
-            sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_events")
-                .fetch_optional(&self.client)
-                .await?
-                .map(|row| row.max_event_id.unwrap_or(-1))
-                .unwrap_or(-1)
-                + 1;
+        self.fetch_current_event_id().await?;
 
         self.tickers.clear();
         self.cached_events.clear();
@@ -788,7 +922,7 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn get_cumulative_hash(
+    pub async fn get_cumulative_events_hash(
         &self,
         block_height: i32,
     ) -> Result<Option<String>, Box<dyn Error>> {
@@ -800,27 +934,29 @@ impl Brc20Database {
         .await?.map(|r| r.cumulative_event_hash))
     }
 
-    pub async fn update_cumulative_hash(
+    pub async fn get_cumulative_traces_hash(
         &self,
         block_height: i32,
-        block_events: &str,
-    ) -> Result<(String, String), Box<dyn Error>> {
-        let block_events_hash = sha256::digest(block_events.trim_end_matches(EVENT_SEPARATOR));
-        let cumulative_event_hash = self.get_cumulative_hash(block_height - 1).await?;
-        let cumulative_event_hash = match cumulative_event_hash {
-            Some(hash) => sha256::digest(hash + &block_events_hash),
-            None => block_events_hash.clone(),
-        };
-
-        sqlx::query!(
-            "INSERT INTO brc20_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) VALUES ($1, $2, $3)",
-            block_height,
-            block_events_hash,
-            cumulative_event_hash
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        Ok(sqlx::query!(
+            "SELECT cumulative_trace_hash FROM brc20_cumulative_event_hashes WHERE block_height = $1",
+            block_height
         )
-        .execute(&self.client)
-        .await?;
-        Ok((block_events_hash, cumulative_event_hash))
+        .fetch_optional(&self.client)
+        .await?.map(|r| r.cumulative_trace_hash))
+    }
+
+    pub async fn get_block_events_hash(
+        &self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        Ok(sqlx::query!(
+            "SELECT block_event_hash FROM brc20_cumulative_event_hashes WHERE block_height = $1",
+            block_height
+        )
+        .fetch_optional(&self.client)
+        .await?
+        .map(|r| r.block_event_hash))
     }
 
     pub fn get_event_key<T>(&self, inscription_id: &str) -> String
@@ -846,19 +982,36 @@ impl Brc20Database {
                 .map_err(|e| e.into());
         }
 
-        let row = sqlx::query!(
-            "SELECT event FROM brc20_events WHERE inscription_id = $1 AND event_type = $2",
-            inscription_id,
-            T::event_id()
-        )
-        .fetch_optional(&self.client)
-        .await?;
+        if self.light_client_mode {
+            let row = sqlx::query!(
+                "SELECT event FROM brc20_light_events WHERE inscription_id = $1 AND event_type = $2",
+                inscription_id,
+                T::event_id()
+            )
+            .fetch_optional(&self.client)
+            .await?;
 
-        if let Some(row) = row {
-            let event: T = serde_json::from_value(row.event)?;
-            Ok(Some(event))
+            if let Some(row) = row {
+                let event: T = serde_json::from_value(row.event)?;
+                Ok(Some(event))
+            } else {
+                Ok(None)
+            }
         } else {
-            Ok(None)
+            let row = sqlx::query!(
+                "SELECT event FROM brc20_events WHERE inscription_id = $1 AND event_type = $2",
+                inscription_id,
+                T::event_id()
+            )
+            .fetch_optional(&self.client)
+            .await?;
+
+            if let Some(row) = row {
+                let event: T = serde_json::from_value(row.event)?;
+                Ok(Some(event))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -872,34 +1025,14 @@ impl Brc20Database {
         new_satpoint: &String,
         txid: &String,
         event: &T,
+        decimals: Option<u8>,
     ) -> Result<i64, Box<dyn Error>>
     where
         T: Event + Serialize + std::fmt::Debug,
     {
-        tracing::debug!(
-            "Adding event for inscription_id: {}, event_type: {}, block_height: {}, event: {:?}",
-            inscription_id,
-            T::event_name(),
-            block_height,
-            event
-        );
-        if self
-            .cached_events
-            .contains_key(&self.get_event_key::<T>(inscription_id))
-        {
-            return Err(format!(
-                "Event for inscription_id {} and event_type {} already exists",
-                inscription_id,
-                T::event_name()
-            )
-            .into());
-        }
-        self.cached_events.insert(
-            self.get_event_key::<T>(inscription_id),
-            serde_json::to_value(event)?,
-        );
+        self.cache_event(block_height, inscription_id, event, decimals.unwrap_or(0))?;
 
-        self.event_inserts.push(EventInsertData {
+        self.event_inserts.push(EventRecord {
             event_id: self.current_event_id,
             event_type_id: T::event_id(),
             block_height,
@@ -915,6 +1048,204 @@ impl Brc20Database {
         Ok(self.current_event_id - 1)
     }
 
+    pub fn add_light_event<T>(
+        &mut self,
+        block_height: i32,
+        inscription_id: &str,
+        event: &mut T,
+        decimals: u8,
+    ) -> Result<i64, Box<dyn Error>>
+    where
+        T: Event + Serialize + std::fmt::Debug,
+    {
+        // Wallet types are not trusted, as they are not part of the event hash data.
+        // Re-calculation helps us ensure that the wallet data is accurate.
+        event.calculate_wallets(self.network);
+
+        self.cache_event(block_height, inscription_id, event, decimals)?;
+
+        self.light_event_inserts.push(LightEventRecord {
+            block_height,
+            event_id: self.current_event_id,
+            event_type_id: T::event_id(),
+            inscription_id: inscription_id.to_string(),
+            event: serde_json::to_value(event)?,
+        });
+
+        self.current_event_id += 1;
+        Ok(self.current_event_id - 1)
+    }
+
+    pub fn cache_event<T>(
+        &mut self,
+        block_height: i32,
+        inscription_id: &str,
+        event: &T,
+        decimals: u8,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        T: Event + Serialize + std::fmt::Debug,
+    {
+        tracing::debug!(
+            "Storing event string for inscription_id: {}, block_height: {}, event: {:?}",
+            inscription_id,
+            block_height,
+            event
+        );
+
+        if self
+            .cached_events
+            .contains_key(&self.get_event_key::<T>(inscription_id))
+        {
+            return Err(format!(
+                "Light event for inscription_id {} and event_type {} already exists",
+                inscription_id,
+                T::event_name()
+            )
+            .into());
+        }
+
+        self.block_event_strings
+            .entry(block_height)
+            .or_insert_with(String::new)
+            .push_str(&format!(
+                "{}{}",
+                event.get_event_str(inscription_id, decimals),
+                EVENT_SEPARATOR
+            ));
+
+        self.cached_events.insert(
+            self.get_event_key::<T>(inscription_id),
+            serde_json::to_value(event)?,
+        );
+
+        Ok(())
+    }
+
+    pub async fn get_bitcoin_rpc_request(
+        &self,
+        request: &Bytes,
+    ) -> Result<Option<Bytes>, Box<dyn Error>> {
+        if !self.bitcoin_rpc_cache_enabled {
+            return Ok(None);
+        }
+
+        let Ok(request_json) = serde_json::from_slice::<serde_json::Value>(request) else {
+            return Err("Failed to parse Bitcoin RPC request as JSON".into());
+        };
+
+        let request_id = request_json.get("id");
+
+        tracing::debug!(
+            "Fetching Bitcoin RPC request from cache: {:?} with id {:?}",
+            request_json,
+            request_id
+        );
+
+        let Some(request_json_without_id) = request_json.as_object().and_then(|obj| {
+            let mut obj_clone = obj.clone();
+            obj_clone.remove("id");
+            Some(serde_json::Value::Object(obj_clone))
+        }) else {
+            return Err("Bitcoin RPC request does not contain a valid JSON object".into());
+        };
+
+        let request_method = request_json_without_id
+            .get("method")
+            .and_then(|m| m.as_str())
+            .ok_or("Bitcoin RPC request does not contain a method")?;
+
+        let response_without_id = self
+            .bitcoin_rpc_inserts
+            .get(&request_json_without_id)
+            .and_then(|x| Some(x.response.clone()));
+
+        let response_without_id = if let Some(response_without_id) = response_without_id {
+            response_without_id
+        } else {
+            let Some(response_without_id) = sqlx::query!(
+            "SELECT response FROM brc20_bitcoin_rpc_result_cache WHERE method = $1 AND request = $2 LIMIT 1",
+            request_method,
+            request_json_without_id
+        )
+        .fetch_optional(&self.client)
+        .await? else {
+            return Ok(None);
+        };
+            response_without_id.response
+        };
+
+        let response_bytes = if let Some(id) = request_id {
+            let mut response_with_id = response_without_id.clone();
+            if let Some(obj) = response_with_id.as_object_mut() {
+                obj.insert("id".to_string(), id.clone());
+            }
+            serde_json::to_vec(&response_with_id)?
+        } else {
+            serde_json::to_vec(&response_without_id)?
+        };
+
+        return Ok(Some(Bytes::from(response_bytes)));
+    }
+
+    pub async fn cache_bitcoin_rpc_request(
+        &mut self,
+        request: &[u8],
+        response: &Bytes,
+    ) -> Result<(), Box<dyn Error>> {
+        if !self.bitcoin_rpc_cache_enabled {
+            return Ok(());
+        }
+
+        let Ok(request_json) =
+            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(request))
+        else {
+            return Err("Failed to parse Bitcoin RPC request as JSON".into());
+        };
+
+        let request_json_without_id = request_json
+            .as_object()
+            .and_then(|obj| {
+                let mut obj_clone = obj.clone();
+                obj_clone.remove("id");
+                Some(serde_json::Value::Object(obj_clone))
+            })
+            .unwrap_or(request_json);
+
+        let Some(request_method) = request_json_without_id
+            .get("method")
+            .and_then(|m| m.as_str())
+        else {
+            return Err("Bitcoin RPC request does not contain a method".into());
+        };
+
+        let Ok(response_json) =
+            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(&response))
+        else {
+            return Err("Failed to parse Bitcoin RPC response as JSON".into());
+        };
+
+        let response_json_without_id = response_json
+            .as_object()
+            .and_then(|obj| {
+                let mut obj_clone = obj.clone();
+                obj_clone.remove("id");
+                Some(serde_json::Value::Object(obj_clone))
+            })
+            .unwrap_or(response_json);
+
+        self.bitcoin_rpc_inserts.insert(
+            request_json_without_id.clone(),
+            BitcoinRpcResultRecord {
+                block_height: self.get_current_block_height().await?,
+                method: request_method.to_string(),
+                response: response_json_without_id,
+            },
+        );
+
+        Ok(())
+    }
+
     pub async fn get_transfer_validity(
         &mut self,
         inscription_id: &str,
@@ -925,7 +1256,29 @@ impl Brc20Database {
             return Ok(validity.clone());
         }
 
-        let row = sqlx::query!(
+        let validity = if self.light_client_mode {
+            let row = sqlx::query!(
+            "SELECT COALESCE(SUM(CASE WHEN event_type = $1 THEN 1 ELSE 0 END), 0) AS inscr_cnt,
+                        COALESCE(SUM(CASE WHEN event_type = $2 THEN 1 ELSE 0 END), 0) AS transfer_cnt
+                        FROM brc20_light_events WHERE inscription_id = $3"
+        ,inscribe_event_id, transfer_event_id, inscription_id)
+        .fetch_optional(&self.client)
+        .await?;
+
+            match row {
+                Some(row) => {
+                    if row.inscr_cnt != Some(1) {
+                        TransferValidity::Invalid
+                    } else if row.transfer_cnt != Some(0) {
+                        TransferValidity::Used
+                    } else {
+                        TransferValidity::Valid
+                    }
+                }
+                None => TransferValidity::Invalid,
+            }
+        } else {
+            let row = sqlx::query!(
             "SELECT COALESCE(SUM(CASE WHEN event_type = $1 THEN 1 ELSE 0 END), 0) AS inscr_cnt,
                         COALESCE(SUM(CASE WHEN event_type = $2 THEN 1 ELSE 0 END), 0) AS transfer_cnt
                         FROM brc20_events WHERE inscription_id = $3"
@@ -933,17 +1286,18 @@ impl Brc20Database {
         .fetch_optional(&self.client)
         .await?;
 
-        let validity = match row {
-            Some(row) => {
-                if row.inscr_cnt != Some(1) {
-                    TransferValidity::Invalid
-                } else if row.transfer_cnt != Some(0) {
-                    TransferValidity::Used
-                } else {
-                    TransferValidity::Valid
+            match row {
+                Some(row) => {
+                    if row.inscr_cnt != Some(1) {
+                        TransferValidity::Invalid
+                    } else if row.transfer_cnt != Some(0) {
+                        TransferValidity::Used
+                    } else {
+                        TransferValidity::Valid
+                    }
                 }
+                None => TransferValidity::Invalid,
             }
-            None => TransferValidity::Invalid,
         };
 
         self.transfer_validity_cache
@@ -1072,6 +1426,34 @@ impl Brc20Database {
     }
 
     pub async fn flush_queries_to_db(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut tx = self.client.begin().await?;
+
+        if !self.log_timer_inserts.is_empty() {
+            let mut all_log_data = Vec::new();
+            let mut all_log_block_heights = Vec::new();
+            for (block_height, logs) in &self.log_timer_inserts {
+                for (label, durations_ns) in logs {
+                    all_log_block_heights.push(*block_height);
+                    all_log_data.push(json!({
+                        "label": label,
+                        "total_duration_ns": durations_ns.iter().sum::<u128>(),
+                        "count": durations_ns.len()
+                    }));
+                }
+            }
+
+            sqlx::query!(
+                "INSERT INTO brc20_logs (block_height, log_data) SELECT * FROM UNNEST
+                ($1::int4[], $2::jsonb[])",
+                &all_log_block_heights,
+                &all_log_data,
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            self.log_timer_inserts.clear();
+        }
+
         if !self.new_tickers.is_empty() {
             let mut all_tickers = Vec::new();
             let mut all_original_tickers = Vec::new();
@@ -1108,7 +1490,7 @@ impl Brc20Database {
                 &all_deploy_inscription_ids,
                 &all_deploy_block_heights
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.new_tickers.clear();
@@ -1122,7 +1504,7 @@ impl Brc20Database {
                     BigDecimal::from(update_data.burned_supply),
                     ticker_name
                 )
-                .execute(&self.client)
+                .execute(&mut *tx)
                 .await?;
             }
             self.ticker_updates.clear();
@@ -1163,10 +1545,63 @@ impl Brc20Database {
                 &all_txids,
                 &all_events
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.event_inserts.clear();
+        }
+
+        if !self.light_event_inserts.is_empty() {
+            let mut all_event_ids = Vec::new();
+            let mut all_event_type_ids = Vec::new();
+            let mut all_block_heights = Vec::new();
+            let mut all_inscription_ids = Vec::new();
+            let mut all_events = Vec::new();
+            for event_data in &self.light_event_inserts {
+                all_event_ids.push(event_data.event_id);
+                all_event_type_ids.push(event_data.event_type_id);
+                all_block_heights.push(event_data.block_height);
+                all_inscription_ids.push(event_data.inscription_id.clone());
+                all_events.push(event_data.event.clone());
+            }
+            sqlx::query!(
+                "INSERT INTO brc20_light_events (id, event_type, block_height, inscription_id, event) SELECT * FROM UNNEST
+                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::jsonb[])",
+                &all_event_ids,
+                &all_event_type_ids,
+                &all_block_heights,
+                &all_inscription_ids,
+                &all_events
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            self.light_event_inserts.clear();
+        }
+
+        if !self.bitcoin_rpc_inserts.is_empty() {
+            let mut all_methods = Vec::new();
+            let mut all_requests = Vec::new();
+            let mut all_responses = Vec::new();
+            let mut all_block_heights = Vec::new();
+            for (request, result) in &self.bitcoin_rpc_inserts {
+                all_requests.push(request.clone());
+                all_methods.push(result.method.clone());
+                all_responses.push(result.response.clone());
+                all_block_heights.push(result.block_height);
+            }
+            sqlx::query!(
+                "INSERT INTO brc20_bitcoin_rpc_result_cache (method, request, response, block_height) SELECT * FROM UNNEST
+                ($1::text[], $2::jsonb[], $3::jsonb[], $4::int4[])",
+                &all_methods,
+                &all_requests,
+                &all_responses,
+                &all_block_heights
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            self.bitcoin_rpc_inserts.clear();
         }
 
         if !self.balance_updates.is_empty() {
@@ -1198,11 +1633,13 @@ impl Brc20Database {
                 &all_block_heights,
                 &all_event_ids
             )
-            .execute(&self.client)
+            .execute(&mut *tx)
             .await?;
 
             self.balance_updates.clear();
         }
+
+        tx.commit().await?;
         Ok(())
     }
 

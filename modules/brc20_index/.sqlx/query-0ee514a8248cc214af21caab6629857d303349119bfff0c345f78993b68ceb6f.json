@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_bitcoin_rpc_result_cache (method, request, response, block_height) SELECT * FROM UNNEST\n                ($1::text[], $2::jsonb[], $3::jsonb[], $4::int4[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "JsonbArray",
+        "JsonbArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ee514a8248cc214af21caab6629857d303349119bfff0c345f78993b68ceb6f"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_light_events (id, event_type, block_height, inscription_id, event) SELECT * FROM UNNEST\n                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::jsonb[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int4Array",
+        "Int4Array",
+        "TextArray",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87abda0a71bf22f7eedefe2abc27261c6cac21a9d24c2854f268db8d8a434772"
+}

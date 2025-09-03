@@ -1,21 +1,26 @@
 # OPI - Open Protocol Indexer
 
 Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** for **meta-protocols** on Bitcoin.
-OPI uses a fork of **ord 0.14.0** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind. The main indexer indexes all text/json inscriptions and modules can extend it with different meta-protocols.
+OPI uses a fork of **ord 0.23.2** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind.
 All modules in OPI have been built with **reorg protection**.
 
 Currently OPI has modules for **BRC-20**, **Bitmap** and **SNS**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
 
-## Main Meta-Protocol Indexer
+## Main Meta-Protocol Indexer / OPI-ord
 
-**Meta-Protocol indexer** sits in the core of OPI. It indexes **all json/text inscriptions** and their **first 2 transfers**.
+**OPI-ord** sits in the core of OPI. It indexes **all json/text inscriptions** and their **first 2 transfers**.
 Transfer limit can be changed via `INDEX_TX_LIMIT` variable in ord fork. This limit has been added since there are some UTXO's with a lot of inscription content and their movement floods transfers tables. Also, base indexing of most protocols only needs the first two transfers. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time.
 
 ## BRC-20 Indexer / API
 
 **BRC-20 Indexer** is the first module of OPI. It follows the official protocol rules hosted [here](https://layer1.gitbook.io/layer1-foundation/protocols/brc-20/indexing). BRC-20 Indexer saves all historical balance changes and all BRC-20 events.
 
-In addition to indexing all events, it also calculates a block hash and cumulative hash of all events for easier db comparison. Here's the pseudocode for hash calculation:
+In addition to indexing all events, it also calculates a block hash and cumulative hash of all events for easier db comparison.
+
+It also calculates a hash of all BRC-20 programmable module traces in the current block, and a cumulative hash of the traces.
+
+Here's the pseudocode for hash calculation:
+
 ```python
 ## Calculation starts at block 767430 which is the first inscription block
 
@@ -56,6 +61,19 @@ if block_str.last is EVENT_SEPARATOR: block_str.remove_last()
 block_hash = sha256_hex(block_str)
 ## for first block last_cumulative_hash is empty
 cumulative_hash = sha256_hex(last_cumulative_hash + block_hash)
+```
+
+To calculate the trace hashes in a stable way, the JSON string representation of an EVM trace uses the suggested schema at RFC 8785, which has implementations in both Rust and Python:
+
+```python
+  ### Calculation starts at block 912690, which is the first BRC2.0 block
+  traces_str = ""
+  for tx in block_txes:
+    trace_str = rfc8785.dumps(brc20_prog_client.debug_traceTransaction(tx).result)
+    traces_str += trace_str + EVENT_SEPARATOR
+  if traces_str.last is EVENT_SEPARATOR: traces_str.remove_last()
+  traces_hash = sha256_hex(traces_str)
+  cumulative_traces_hash = sha256_hex(last_cumulative_traces_hash + traces_hash)
 ```
 
 There is an optional block event hash reporting system pointed at https://api.opi.network/report_block. If you want to exclude your node from this, just change `REPORT_TO_INDEXER` variable in `brc20_index/.env`.

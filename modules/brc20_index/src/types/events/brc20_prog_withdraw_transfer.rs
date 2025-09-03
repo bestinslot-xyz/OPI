@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{DefaultOnNull, serde_as};
 
-use crate::types::events::number_string_with_full_decimals;
+use crate::types::events::{event::get_wallet_from_pk_script, number_string_with_full_decimals};
 
 use super::Event;
 
@@ -10,9 +10,11 @@ use super::Event;
 pub struct Brc20ProgWithdrawTransferEvent {
     #[serde(rename = "source_pkScript")]
     pub source_pk_script: String,
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub source_wallet: String,
     #[serde(rename = "spent_pkScript")]
     pub spent_pk_script: Option<String>,
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub spent_wallet: Option<String>,
     #[serde(rename = "tick")]
     pub ticker: String,
@@ -42,5 +44,23 @@ impl Event for Brc20ProgWithdrawTransferEvent {
             self.original_ticker,
             number_string_with_full_decimals(self.amount, decimals)
         )
+    }
+
+    fn calculate_wallets(&mut self, network: bitcoin::Network) {
+        if let Some(wallet) = get_wallet_from_pk_script(&self.source_pk_script, network) {
+            self.source_wallet = wallet;
+        } else {
+            self.source_wallet = String::new();
+        }
+
+        if let Some(spent_pk_script) = &self.spent_pk_script {
+            if let Some(wallet) = get_wallet_from_pk_script(spent_pk_script, network) {
+                self.spent_wallet = Some(wallet);
+            } else {
+                self.spent_wallet = None;
+            }
+        } else {
+            self.spent_wallet = None;
+        }
     }
 }

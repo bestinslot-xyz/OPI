@@ -1,3 +1,4 @@
+mod client;
 mod config;
 mod database;
 mod indexer;
@@ -36,7 +37,7 @@ fn confirm(prompt: &str) -> bool {
     }
 }
 
-fn parse_args() -> Args {
+fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut is_setup = false;
     let mut is_reset = false;
     let mut reorg_height: Option<i32> = None;
@@ -50,12 +51,10 @@ fn parse_args() -> Args {
                     if let Ok(height) = height_str.parse::<i32>() {
                         reorg_height = Some(height);
                     } else {
-                        eprintln!("Invalid height provided for --reorg");
-                        std::process::exit(0);
+                        return Err("Invalid height for --reorg".into());
                     }
                 } else {
-                    eprintln!("No height provided after --reorg");
-                    std::process::exit(0);
+                    return Err("No height provided after --reorg".into());
                 }
             }
             "--log-level" | "-l" => {
@@ -96,10 +95,14 @@ fn parse_args() -> Args {
                                 .finish(),
                         )
                         .expect("Failed to set global subscriber"),
-                        _ => eprintln!("Invalid log level: {}", level),
+                        _ => {
+                            return Err(
+                                "Invalid log level. Use trace, debug, info, warn, or error.".into(),
+                            );
+                        }
                     }
                 } else {
-                    eprintln!("No log level provided after --level");
+                    return Err("No log level provided after --level".into());
                 }
             }
             "--help" | "-h" => {
@@ -118,17 +121,17 @@ fn parse_args() -> Args {
         }
     }
 
-    Args {
+    Ok(Args {
         is_setup,
         is_reset,
         reorg_height,
-    }
+    })
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenvy::dotenv().ok();
-    let args = parse_args();
+    let args = parse_args()?;
     if args.is_setup {
         // TODO - Implement setup logic
         return Ok(());
@@ -141,10 +144,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Are you sure you want to reorg the indexer? This will reset the state to the specified height.",
         ) {
             brc20_indexer.reorg(reorg_height).await?;
-            println!("Reorg to height {} completed successfully.", reorg_height);
+            tracing::info!("Reorg to height {} completed successfully.", reorg_height);
             return Ok(());
         } else {
-            eprintln!("Reorg cancelled.");
+            tracing::error!("Reorg cancelled.");
             return Ok(());
         }
     }
@@ -153,17 +156,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Are you sure you want to reset the indexer? This will delete all data and start fresh.",
         ) {
             brc20_indexer.reset().await?;
-            println!("Indexer reset successfully.");
+            tracing::info!("Indexer reset successfully.");
             return Ok(());
         } else {
-            eprintln!("Reset cancelled.");
+            tracing::error!("Reset cancelled.");
             return Ok(());
         }
     }
-    brc20_indexer
-        .run()
-        .await
-        .expect("Error running the indexer");
+    brc20_indexer.run().await?;
 
     Ok(())
 }

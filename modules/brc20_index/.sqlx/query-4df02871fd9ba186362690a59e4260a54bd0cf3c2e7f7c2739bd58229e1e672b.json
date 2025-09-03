@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_logs (block_height, log_data) SELECT * FROM UNNEST\n                ($1::int4[], $2::jsonb[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4df02871fd9ba186362690a59e4260a54bd0cf3c2e7f7c2739bd58229e1e672b"
+}

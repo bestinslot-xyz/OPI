@@ -1,73 +1,100 @@
 use std::error::Error;
 
-use brc20_prog::{
-    Brc20ProgApiClient,
-    types::{Base64Bytes, RawBytes},
-};
-use db_reader::BRC20Tx;
+use brc20_prog::Brc20ProgApiClient;
 use jsonrpsee::http_client::HttpClient;
 use tokio::task::JoinHandle;
 
 use crate::{
+    client::{EventProviderClient, OpiClient},
     config::{
         AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_MINE_BATCH_SIZE,
         BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION, Brc20IndexerConfig,
-        CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY, EVENT_SEPARATOR, HASH_KEY,
-        INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, NO_WALLET,
-        OP_RETURN, OPERATION_BRC20_PROG_CALL, OPERATION_BRC20_PROG_CALL_SHORT,
-        OPERATION_BRC20_PROG_DEPLOY, OPERATION_BRC20_PROG_DEPLOY_SHORT,
-        OPERATION_BRC20_PROG_TRANSACT, OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY,
-        OPERATION_KEY, OPERATION_MINT, OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
+        CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY, HASH_KEY, INSCRIPTION_ID_KEY,
+        LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, OPERATION_BRC20_PROG_CALL,
+        OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
+        OPERATION_BRC20_PROG_DEPLOY_SHORT, OPERATION_BRC20_PROG_TRANSACT,
+        OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY, OPERATION_KEY, OPERATION_MINT,
+        OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
         PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20,
         PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
         SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
     },
-    database::{Brc20Balance, OpiDatabase, TransferValidity, get_brc20_database},
+    database::{
+        get_brc20_database,
+        timer::{start_timer, stop_timer},
+    },
     indexer::{
+        EventGenerator, EventProcessor,
         brc20_prog_balance_server::run_balance_server,
-        brc20_prog_client::build_brc20_prog_http_client,
+        brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
+        brc20_prog_client::{build_brc20_prog_http_client, calculate_brc20_prog_traces_hash},
         brc20_reporter::Brc20Reporter,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
     no_default,
-    types::{
-        Ticker,
-        events::{
-            Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
-            Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
-            Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
-            Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
-            PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent,
-        },
+    types::events::{
+        Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
+        Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
+        Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
+        Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
+        PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent, event_name_to_id,
+        load_event,
     },
 };
 
+static SPAN: &str = "Brc20Indexer";
+
 pub struct Brc20Indexer {
-    main_db: OpiDatabase,
+    main_db: OpiClient,
+    event_provider_client: EventProviderClient,
+    last_opi_block: i32,
+    last_reported_block: Option<i32>,
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
     brc20_reporter: Brc20Reporter,
-    server_handle: Option<JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>>,
+    server_handle: Option<JoinHandle<()>>,
+    bitcoin_proxy_server_handle: Option<JoinHandle<()>>,
 }
 
 impl Brc20Indexer {
     pub fn new(config: Brc20IndexerConfig) -> Self {
+<<<<<<< HEAD
         let main_db = OpiDatabase::new(config.meta_db_url.clone());
+=======
+        let main_db = OpiClient::new(config.opi_db_url.clone());
+>>>>>>> main
 
         let brc20_prog_client = build_brc20_prog_http_client(&config);
         let brc20_reporter = Brc20Reporter::new(&config);
+        let event_provider_client =
+            EventProviderClient::new(&config).expect("Failed to create EventProviderClient");
 
         Brc20Indexer {
             main_db,
             config,
+            last_opi_block: 0,
+            last_reported_block: None,
             brc20_prog_client,
             brc20_reporter,
+            event_provider_client,
             server_handle: None,
+            bitcoin_proxy_server_handle: None,
         }
     }
 
     async fn init(&mut self) -> Result<(), Box<dyn Error>> {
         get_brc20_database().lock().await.init().await?;
+
+        self.event_provider_client.load_providers().await?;
+        self.last_opi_block = self.get_opi_block_height().await?;
+
+        if self.config.report_to_indexer {
+            self.last_reported_block = self
+                .event_provider_client
+                .get_best_verified_block_with_retries()
+                .await
+                .ok();
+        }
 
         let db_version = get_brc20_database().lock().await.get_db_version().await?;
         if db_version != DB_VERSION {
@@ -90,11 +117,27 @@ impl Brc20Indexer {
                 .into());
             }
 
-            let url_clone = self.config.brc20_prog_balance_server_url.clone();
+            let url_clone = self.config.brc20_prog_balance_server_addr.clone();
             self.server_handle = Some(tokio::spawn(
                 async move { run_balance_server(url_clone).await },
             ));
-            // Wait for the server to start
+            if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
+                let bitcoin_rpc_proxy_addr_clone =
+                    self.config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
+                let bitcoin_rpc_url_clone = self.config.bitcoin_rpc_url.clone();
+                let light_client_mode = self.config.light_client_mode;
+                let network_type_clone = self.config.network_type_string.clone();
+                self.bitcoin_proxy_server_handle = Some(tokio::spawn(async move {
+                    run_bitcoin_proxy_server(
+                        bitcoin_rpc_url_clone,
+                        light_client_mode,
+                        network_type_clone,
+                        bitcoin_rpc_proxy_addr_clone,
+                    )
+                    .await
+                }));
+            }
+            // Wait for the servers to start
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
             let brc20_prog_block_height =
@@ -127,15 +170,17 @@ impl Brc20Indexer {
     }
 
     pub async fn clear_caches(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.config.brc20_prog_enabled {
-            self.brc20_prog_client.brc20_clear_caches().await?;
-        }
-
         let current_block_height = get_brc20_database()
             .lock()
             .await
             .get_current_block_height()
             .await?;
+
+        let function_timer = start_timer(SPAN, "clear_caches", current_block_height);
+
+        if self.config.brc20_prog_enabled {
+            self.brc20_prog_client.brc20_clear_caches().await?;
+        }
 
         if get_brc20_database()
             .lock()
@@ -149,6 +194,8 @@ impl Brc20Indexer {
             );
             self.reorg(current_block_height).await?;
         }
+
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -181,126 +228,681 @@ impl Brc20Indexer {
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         self.init().await?;
         loop {
-            // This doesn't always reorg, but it will reorg if the last block is not the same
-            self.reorg_to_last_synced_block_height().await?;
-
-            // Check if a new block is available
-            let last_opi_block = self.main_db.get_current_block_height().await?;
-            let next_brc20_block = get_brc20_database()
+            let next_block = get_brc20_database()
                 .lock()
                 .await
                 .get_next_block_height()
                 .await?;
-            if next_brc20_block > last_opi_block {
+
+            let loop_timer = start_timer(SPAN, "run_single_block", next_block);
+
+            // This doesn't always reorg, but it will reorg if the last block is not the same
+            let reorg_to_last_synced_block_height_timer =
+                start_timer(SPAN, "reorg_to_last_synced_block_height", next_block);
+            self.reorg_to_last_synced_block_height().await?;
+            stop_timer(&reorg_to_last_synced_block_height_timer).await;
+
+            let next_block = get_brc20_database()
+                .lock()
+                .await
+                .get_next_block_height()
+                .await?;
+
+            // Check if a new block is available
+            let last_opi_block = self.last_opi_block;
+            if next_block > last_opi_block {
                 tracing::info!("Waiting for new blocks...");
+                self.last_opi_block = self.get_opi_block_height().await.unwrap_or(last_opi_block);
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 continue;
             }
 
-            let is_synced = next_brc20_block == last_opi_block;
+            let is_synced = next_block == last_opi_block;
 
-            if next_brc20_block % 1000 == 0 {
-                tracing::info!(
-                    "Clearing brc20 db caches at block height {}",
-                    next_brc20_block
-                );
+            if next_block % 1000 == 0 && next_block >= self.config.first_brc20_height {
+                tracing::info!("Clearing brc20 db caches at block height {}", next_block);
+                let clear_caches_timer = start_timer(SPAN, "clear_brc20_caches", next_block);
                 get_brc20_database().lock().await.clear_caches();
+                stop_timer(&clear_caches_timer).await;
             }
-            if is_synced || next_brc20_block % 1000 == 0 {
-                tracing::info!("Processing block: {}", next_brc20_block);
+            if is_synced || next_block % 1000 == 0 {
+                tracing::info!("Processing block: {}", next_block);
             }
 
-            let (block_hash, block_time) = self
-                .main_db
-                .get_block_hash_and_time(next_brc20_block)
-                .await?;
-            let block_events = self
-                .index_block(next_brc20_block, &block_hash, block_time as u64, is_synced)
-                .await?;
+            let get_block_info_timer = start_timer(SPAN, "get_block_info", next_block);
+            let (block_hash, block_time, opi_cumulative_event_hash, opi_cumulative_trace_hash) =
+                if self.config.light_client_mode {
+                    let block_info = self
+                        .event_provider_client
+                        .get_block_info_with_retries(next_block)
+                        .await?;
+                    (
+                        block_info.best_block_hash,
+                        block_info.best_block_time.unwrap_or(0) as i64, // Default to 0 if not available
+                        block_info.best_cumulative_hash,
+                        block_info.best_cumulative_trace_hash,
+                    )
+                } else {
+                    let (block_hash, block_time) =
+                        self.main_db.get_block_hash_and_time(next_block).await?;
+                    (block_hash, block_time, "".to_string(), None)
+                };
+            stop_timer(&get_block_info_timer).await;
 
-            if next_brc20_block >= self.config.first_brc20_height
+            if block_time == 0
+                && self.config.brc20_prog_enabled
+                && next_block >= self.config.first_brc20_prog_phase_one_height
+            {
+                tracing::error!(
+                    "Block time is 0 for block {}, this may cause issues with BRC2.0 events. Stopping indexing.",
+                    next_block
+                );
+                return Err("Block time is 0".into());
+            }
+
+            if next_block < self.config.first_brc20_height {
+                if next_block % 1000 == 0 {
+                    tracing::info!(
+                        "Block height {} is less than first_brc20_height {}, skipping",
+                        next_block,
+                        self.config.first_brc20_height
+                    );
+                }
+            } else {
+                if self.config.light_client_mode {
+                    if next_block > self.config.first_brc20_prog_phase_one_height {
+                        match self.pre_fill_rpc_results_cache(next_block).await {
+                            Ok(_) => {}
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to get Bitcoin RPC results for block {}: {}",
+                                    next_block,
+                                    err
+                                );
+                                tracing::error!("Retrying in 5 seconds...");
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        };
+                    }
+                    let get_events_timer = start_timer(SPAN, "get_events", next_block);
+                    let events = match self
+                        .event_provider_client
+                        .get_events(next_block as i64)
+                        .await
+                    {
+                        Ok(events) => events,
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to get events for block {}: {}",
+                                next_block,
+                                err
+                            );
+                            tracing::error!("Retrying in 5 seconds...");
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    };
+                    stop_timer(&get_events_timer).await;
+                    self.process_events(
+                        next_block,
+                        &block_hash,
+                        block_time as u64,
+                        is_synced,
+                        events,
+                    )
+                    .await?;
+                } else {
+                    self.generate_and_process_events(
+                        next_block,
+                        &block_hash,
+                        block_time as u64,
+                        is_synced,
+                    )
+                    .await?;
+                }
+            }
+
+            let index_extras_timer = start_timer(SPAN, "index_extra_tables", next_block);
+            if next_block >= self.config.first_brc20_height
                 && get_brc20_database()
                     .lock()
                     .await
-                    .should_index_extras(next_brc20_block, last_opi_block)
+                    .should_index_extras(next_block, last_opi_block)
                     .await?
             {
                 // Index extras if synced or close to sync
                 get_brc20_database()
                     .lock()
                     .await
-                    .index_extra_tables(next_brc20_block)
+                    .index_extra_tables(next_block)
                     .await?;
             }
+            stop_timer(&index_extras_timer).await;
 
+            let trace_hash_timer =
+                start_timer(SPAN, "calculate_brc20_prog_traces_hash", next_block);
+            let block_traces_hash = if self.config.brc20_prog_enabled
+                && next_block >= self.config.first_brc20_prog_phase_one_height
+            {
+                calculate_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
+            } else {
+                String::new()
+            };
+            stop_timer(&trace_hash_timer).await;
+
+            let set_block_hashes_timer = start_timer(SPAN, "set_block_hashes", next_block);
             get_brc20_database()
                 .lock()
                 .await
-                .set_block_hash(next_brc20_block, &block_hash)
+                .set_block_hashes(next_block, &block_hash, block_traces_hash.as_str())
                 .await?;
-            let (block_events_hash, cumulative_events_hash) = get_brc20_database()
+            stop_timer(&set_block_hashes_timer).await;
+
+            let Some(block_events_hash) = get_brc20_database()
                 .lock()
                 .await
-                .update_cumulative_hash(next_brc20_block, &block_events)
-                .await?;
+                .get_block_events_hash(next_block)
+                .await?
+            else {
+                tracing::warn!("Block events hash not found for block {}", next_block);
+                return Ok(());
+            };
+
+            let Some(cumulative_events_hash) = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_events_hash(next_block)
+                .await?
+            else {
+                tracing::warn!("Cumulative events hash not found for block {}", next_block);
+                return Ok(());
+            };
+
+            let cumulative_traces_hash = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_traces_hash(next_block)
+                .await?
+                .unwrap_or_default();
+
+            if self.config.light_client_mode {
+                // Validate cumulative hash with OPI client
+                if cumulative_events_hash != opi_cumulative_event_hash
+                    || (self.config.brc20_prog_enabled
+                        && cumulative_traces_hash
+                            != opi_cumulative_trace_hash.clone().unwrap_or_default())
+                {
+                    // Reorg the last block if cumulative events hash mismatch
+                    get_brc20_database()
+                        .lock()
+                        .await
+                        .reorg(next_block - 1)
+                        .await?;
+                    if self.config.brc20_prog_enabled {
+                        self.brc20_prog_client
+                            .brc20_reorg((next_block - 1) as u64)
+                            .await?;
+                    }
+                    tracing::error!("Cumulative event hash mismatch!!");
+                    tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
+                    tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
+                    if self.config.brc20_prog_enabled {
+                        tracing::error!(
+                            "OPI cumulative traces hash: {:?}",
+                            opi_cumulative_trace_hash.unwrap_or_default()
+                        );
+                        tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
+                    }
+                    return Err("Cumulative hash mismatch, please check your OPI client".into());
+                }
+            }
 
             // Start reporting after 10 blocks left to full sync
-            if next_brc20_block >= last_opi_block - 10 {
-                self.brc20_reporter
-                    .report(
-                        next_brc20_block,
-                        block_hash.clone(),
-                        block_events_hash.clone(),
-                        cumulative_events_hash.clone(),
-                    )
-                    .await?;
+            if self.config.report_to_indexer {
+                let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
+                if let Some(last_reported_block) = self.last_reported_block {
+                    if next_block >= last_reported_block - 10 {
+                        self.brc20_reporter
+                            .report(
+                                next_block,
+                                block_hash.to_string(),
+                                if block_time == 0 {
+                                    None
+                                } else {
+                                    Some(block_time)
+                                },
+                                block_events_hash.clone(),
+                                cumulative_events_hash.clone(),
+                                block_traces_hash.clone(),
+                                cumulative_traces_hash.clone(),
+                            )
+                            .await
+                            .ok();
+                    }
+                }
+                self.last_reported_block = self
+                    .event_provider_client
+                    .get_best_verified_block()
+                    .await
+                    .ok(); // Try once to avoid holding up the loop
+                stop_timer(&report_timer).await;
             }
+            stop_timer(&loop_timer).await;
         }
     }
 
-    /// Returns the block events buffer
-    pub async fn index_block(
+    pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
+        if self.config.brc20_prog_enabled {
+            let function_timer = start_timer(SPAN, "pre_fill_rpc_results_cache", next_block);
+            let bitcoin_rpc_results = match self
+                .event_provider_client
+                .get_bitcoin_rpc_results_with_retries(next_block as i64)
+                .await
+            {
+                Ok(results) => results,
+                Err(error) => {
+                    return Err(error);
+                }
+            };
+            tracing::debug!(
+                "Found {} Bitcoin RPC results for block {}",
+                bitcoin_rpc_results.len(),
+                next_block
+            );
+            for response in bitcoin_rpc_results {
+                let request_bytes = serde_json::to_string(&response.request)?;
+                let response_bytes = serde_json::to_string(&response.response)?.into();
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .cache_bitcoin_rpc_request(request_bytes.as_bytes(), &response_bytes)
+                    .await?;
+            }
+            stop_timer(&function_timer).await;
+        }
+        Ok(())
+    }
+
+    pub async fn finalise_block_for_brc20_prog(
         &mut self,
         block_height: i32,
         block_hash: &str,
         block_time: u64,
         is_synced: bool,
-    ) -> Result<String, Box<dyn Error>> {
-        let mut block_events_buffer = String::new();
-        let mut brc20_prog_tx_idx: u64 = 0;
+        brc20_prog_tx_idx: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        if self.config.brc20_prog_enabled
+            && block_height >= self.config.first_brc20_prog_phase_one_height
+        {
+            let function_timer = start_timer(SPAN, "finalise_block_for_brc20_prog", block_height);
+            self.brc20_prog_client
+                .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
+                .await?;
+            if is_synced || block_height % 100 == 0 {
+                self.brc20_prog_client.brc20_commit_to_database().await?;
+            }
+            stop_timer(&function_timer).await;
+        }
+        Ok(())
+    }
 
-        if block_height < self.config.first_brc20_height {
-            tracing::info!(
-                "Block height {} is less than first_brc20_height {}, skipping",
-                block_height,
-                self.config.first_brc20_height
-            );
-            return Ok(block_events_buffer);
+    pub async fn process_events(
+        &mut self,
+        block_height: i32,
+        block_hash: &str,
+        block_time: u64,
+        is_synced: bool,
+        events: Vec<serde_json::Value>,
+    ) -> Result<(), Box<dyn Error>> {
+        static METHOD_SPAN: &str = "process_events";
+        let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
+        if events.is_empty() {
+            self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
+                .await?;
+            stop_timer(&function_timer).await;
+            return Ok(());
         }
 
-        let transfers = self.main_db.get_transfers(block_height).await?;
-        if transfers.is_empty() {
-            if self.config.brc20_prog_enabled
-                && block_height >= self.config.first_brc20_prog_phase_one_height
-            {
-                self.brc20_prog_client
-                    .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
-                    .await?;
-                if is_synced || block_height % 100 == 0 {
-                    self.brc20_prog_client.brc20_commit_to_database().await?;
-                }
-            }
+        tracing::info!("Found {} event(s) for block {}", events.len(), block_height);
 
-            return Ok(block_events_buffer);
+        let mut brc20_prog_tx_idx = 0;
+        for event_record in events {
+            let event_name = event_record
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!("Event type not found in event record: {:?}", event_record)
+                })?;
+            let single_event_timer = start_timer(METHOD_SPAN, event_name, block_height);
+            let event_type_id = event_name_to_id(&event_name);
+            let inscription_id = event_record
+                .get("inscription_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "Inscription ID not found in event record: {:?}",
+                        event_record
+                    )
+                })?;
+            if event_type_id == Brc20ProgDeployInscribeEvent::event_id() {
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut load_event::<Brc20ProgDeployInscribeEvent>(event_type_id, &event_record)?,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_deploy_inscribe(block_height, &inscription_id).await?;
+            } else if event_type_id == Brc20ProgDeployTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgDeployTransferEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_deploy_transfer(
+                    &self.brc20_prog_client,
+                    block_height,
+                    block_time,
+                    block_hash,
+                    brc20_prog_tx_idx,
+                    &inscription_id,
+                    &event,
+                )
+                .await?;
+                brc20_prog_tx_idx += 1;
+            } else if event_type_id == Brc20ProgCallInscribeEvent::event_id() {
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut load_event::<Brc20ProgCallInscribeEvent>(event_type_id, &event_record)?,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_call_inscribe(block_height, &inscription_id).await?;
+            } else if event_type_id == Brc20ProgCallTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgCallTransferEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_call_transfer(
+                    &self.brc20_prog_client,
+                    block_height,
+                    block_time,
+                    block_hash,
+                    brc20_prog_tx_idx,
+                    &inscription_id,
+                    &mut event,
+                )
+                .await?;
+                brc20_prog_tx_idx += 1;
+            } else if event_type_id == Brc20ProgTransactInscribeEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgTransactInscribeEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_transact_inscribe(block_height, &inscription_id).await?;
+            } else if event_type_id == Brc20ProgTransactTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgTransactTransferEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                match EventProcessor::brc20_prog_transact_transfer(
+                    &self.brc20_prog_client,
+                    block_height,
+                    block_hash,
+                    &inscription_id,
+                    block_time,
+                    brc20_prog_tx_idx,
+                    &event,
+                )
+                .await
+                {
+                    Ok(txes_executed) => {
+                        brc20_prog_tx_idx += txes_executed;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgTransactTransferEvent: {}", e);
+                        return Err(e.into());
+                    }
+                }
+            } else if event_type_id == Brc20ProgWithdrawInscribeEvent::event_id() {
+                let event =
+                    load_event::<Brc20ProgWithdrawInscribeEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for Brc20ProgWithdrawInscribeEvent",
+                            event.ticker
+                        )
+                    })?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut load_event::<Brc20ProgWithdrawInscribeEvent>(
+                        event_type_id,
+                        &event_record,
+                    )?,
+                    ticker.decimals,
+                )?;
+                EventProcessor::brc20_prog_withdraw_inscribe(block_height, &inscription_id).await?;
+            } else if event_type_id == Brc20ProgWithdrawTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgWithdrawTransferEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for Brc20ProgWithdrawTransferEvent",
+                            event.ticker
+                        )
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                match EventProcessor::brc20_prog_withdraw_transfer(
+                    &self.brc20_prog_client,
+                    block_height,
+                    block_hash,
+                    block_time,
+                    brc20_prog_tx_idx,
+                    &inscription_id,
+                    event_id,
+                    &event,
+                )
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += if tx_executed { 1 } else { 0 }; // Increment tx index if event was executed
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgWithdrawTransferEvent: {}", e);
+                        return Err(e.into());
+                    }
+                }
+            } else if event_type_id == DeployInscribeEvent::event_id() {
+                let mut event = load_event::<DeployInscribeEvent>(event_type_id, &event_record)?;
+                let decimals = event.decimals;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    &inscription_id,
+                    &mut event,
+                    decimals,
+                )?;
+                EventProcessor::brc20_deploy_inscribe(block_height, &inscription_id, &event)
+                    .await?;
+            } else if event_type_id == MintInscribeEvent::event_id() {
+                let mut event = load_event::<MintInscribeEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!("Ticker {} not found for MintInscribeEvent", event.ticker)
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    &inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
+            } else if event_type_id == PreDeployInscribeEvent::event_id() {
+                let mut event = load_event::<PreDeployInscribeEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    &inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                // PreDeployInscribeEvent is not processed here, it is handled already in the transfer processing
+            } else if event_type_id == TransferInscribeEvent::event_id() {
+                let mut event = load_event::<TransferInscribeEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for TransferInscribeEvent",
+                            event.ticker
+                        )
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    &inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                EventProcessor::brc20_transfer_inscribe(
+                    block_height,
+                    event_id,
+                    &inscription_id,
+                    &event,
+                )
+                .await?;
+            } else if event_type_id == TransferTransferEvent::event_id() {
+                let mut event = load_event::<TransferTransferEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for TransferTransferEvent",
+                            event.ticker
+                        )
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    &inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                EventProcessor::brc20_transfer_transfer(
+                    &self.brc20_prog_client,
+                    block_height,
+                    block_time,
+                    block_hash,
+                    brc20_prog_tx_idx,
+                    &inscription_id,
+                    event_id,
+                    &event,
+                    &self.config,
+                )
+                .await?;
+                if event.spent_pk_script.unwrap_or_default() == BRC20_PROG_OP_RETURN_PKSCRIPT {
+                    brc20_prog_tx_idx += 1;
+                }
+            } else {
+                tracing::warn!("Unknown event type: {}", event_type_id);
+                return Err(format!(
+                    "Unknown event type: {} for block {}",
+                    event_type_id, block_height
+                )
+                .into());
+            }
+            stop_timer(&single_event_timer).await;
+        }
+
+        let flush_timer = start_timer(SPAN, "flush_queries_to_db", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .flush_queries_to_db()
+            .await?;
+        stop_timer(&flush_timer).await;
+
+        self.finalise_block_for_brc20_prog(
+            block_height,
+            block_hash,
+            block_time,
+            is_synced,
+            brc20_prog_tx_idx,
+        )
+        .await?;
+
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    /// Generates events for the given block height.
+    pub async fn generate_and_process_events(
+        &mut self,
+        block_height: i32,
+        block_hash: &str,
+        block_time: u64,
+        is_synced: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        static METHOD_SPAN: &str = "generate_and_process_events";
+        let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
+        let mut brc20_prog_tx_idx: u64 = 0;
+
+        let get_transfers_timer = start_timer(SPAN, "get_transfers", block_height);
+        let transfers = self.main_db.get_transfers(block_height).await?;
+        stop_timer(&get_transfers_timer).await;
+        if transfers.is_empty() {
+            self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
+                .await?;
+            return Ok(());
         }
 
         tracing::info!(
-            "Transfers found in block {}: {}",
+            "Found {} transfer(s) for block {}",
+            transfers.len(),
             block_height,
-            transfers.len()
         );
 
+        let mut last_transfer_timer = None;
         for index in 0..transfers.len() {
+            last_transfer_timer = match last_transfer_timer {
+                Some(timer) => {
+                    stop_timer(&timer).await;
+                    Some(start_timer(METHOD_SPAN, format!("transfer"), block_height))
+                }
+                None => Some(start_timer(METHOD_SPAN, format!("transfer"), block_height)),
+            };
             let transfer = &transfers[index];
             if index % 100 == 0 && transfers.len() > 100 {
                 tracing::debug!("Processing transfer {} / {}", index, transfers.len());
@@ -390,31 +992,46 @@ impl Brc20Indexer {
                     || operation == OPERATION_BRC20_PROG_DEPLOY_SHORT
                 {
                     if transfer.old_satpoint.is_some() {
-                        match self
-                            .brc20_prog_deploy_transfer(
-                                block_height,
-                                data,
-                                base64_data,
-                                block_time,
-                                block_hash,
-                                brc20_prog_tx_idx,
-                                &mut block_events_buffer,
-                                transfer,
-                            )
-                            .await
-                        {
-                            Ok(_) => {
-                                brc20_prog_tx_idx += 1;
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        self.brc20_prog_deploy_inscribe(
+                        match EventGenerator::brc20_prog_deploy_transfer(
                             block_height,
                             data,
                             base64_data,
-                            &mut block_events_buffer,
                             transfer,
+                        )
+                        .await
+                        {
+                            Ok(event) => {
+                                EventProcessor::brc20_prog_deploy_transfer(
+                                    &self.brc20_prog_client,
+                                    block_height,
+                                    block_time,
+                                    block_hash,
+                                    brc20_prog_tx_idx,
+                                    &transfer.inscription_id,
+                                    &event,
+                                )
+                                .await?;
+                                brc20_prog_tx_idx += 1;
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "Failed to generate BRC20 Prog deploy transfer event: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        EventGenerator::brc20_prog_deploy_inscribe(
+                            block_height,
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await?;
+                        EventProcessor::brc20_prog_deploy_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
                         )
                         .await?;
                     }
@@ -431,34 +1048,7 @@ impl Brc20Indexer {
                         continue;
                     }
                     if transfer.old_satpoint.is_some() {
-                        match self
-                            .brc20_prog_call_transfer(
-                                block_height,
-                                transfer
-                                    .content
-                                    .get(CONTRACT_ADDRESS_KEY)
-                                    .and_then(|c| c.as_str()),
-                                transfer
-                                    .content
-                                    .get(INSCRIPTION_ID_KEY)
-                                    .and_then(|i| i.as_str()),
-                                data,
-                                base64_data,
-                                block_time,
-                                block_hash,
-                                brc20_prog_tx_idx,
-                                &mut block_events_buffer,
-                                transfer,
-                            )
-                            .await
-                        {
-                            Ok(_) => {
-                                brc20_prog_tx_idx += 1;
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        self.brc20_prog_call_inscribe(
+                        match EventGenerator::brc20_prog_call_transfer(
                             block_height,
                             transfer
                                 .content
@@ -470,8 +1060,50 @@ impl Brc20Indexer {
                                 .and_then(|i| i.as_str()),
                             data,
                             base64_data,
-                            &mut block_events_buffer,
                             transfer,
+                        )
+                        .await
+                        {
+                            Ok(event) => {
+                                EventProcessor::brc20_prog_call_transfer(
+                                    &self.brc20_prog_client,
+                                    block_height,
+                                    block_time,
+                                    block_hash,
+                                    brc20_prog_tx_idx,
+                                    &transfer.inscription_id,
+                                    &event,
+                                )
+                                .await?;
+                                brc20_prog_tx_idx += 1;
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to generate BRC20 Prog call transfer event: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        EventGenerator::brc20_prog_call_inscribe(
+                            block_height,
+                            transfer
+                                .content
+                                .get(CONTRACT_ADDRESS_KEY)
+                                .and_then(|c| c.as_str()),
+                            transfer
+                                .content
+                                .get(INSCRIPTION_ID_KEY)
+                                .and_then(|i| i.as_str()),
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await?;
+                        EventProcessor::brc20_prog_call_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
                         )
                         .await?;
                     }
@@ -479,31 +1111,51 @@ impl Brc20Indexer {
                     || operation == OPERATION_BRC20_PROG_TRANSACT_SHORT
                 {
                     if transfer.old_satpoint.is_some() {
-                        match self
-                            .brc20_prog_transact_transfer(
-                                block_height,
-                                block_hash,
-                                block_time,
-                                data,
-                                base64_data,
-                                brc20_prog_tx_idx,
-                                &mut block_events_buffer,
-                                transfer,
-                            )
-                            .await
-                        {
-                            Ok(txes_executed) => {
-                                brc20_prog_tx_idx += txes_executed;
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        self.brc20_prog_transact_inscribe(
+                        match EventGenerator::brc20_prog_transact_transfer(
                             block_height,
                             data,
                             base64_data,
-                            &mut block_events_buffer,
                             transfer,
+                        )
+                        .await
+                        {
+                            Ok(event) => {
+                                match EventProcessor::brc20_prog_transact_transfer(
+                                    &self.brc20_prog_client,
+                                    block_height,
+                                    block_hash,
+                                    &transfer.inscription_id,
+                                    block_time,
+                                    brc20_prog_tx_idx,
+                                    &event,
+                                )
+                                .await
+                                {
+                                    Ok(txes_executed) => {
+                                        brc20_prog_tx_idx += txes_executed;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "Failed to generate BRC20 Prog transact transfer event: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        EventGenerator::brc20_prog_transact_inscribe(
+                            block_height,
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await?;
+                        EventProcessor::brc20_prog_transact_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
                         )
                         .await?;
                     }
@@ -532,26 +1184,7 @@ impl Brc20Indexer {
                     continue;
                 };
 
-                let predeploy_event = PreDeployInscribeEvent {
-                    predeployer_pk_script: transfer.new_pkscript.clone(),
-                    predeployer_wallet: transfer.new_wallet.clone(),
-                    hash: hash.to_string(),
-                    block_height: block_height,
-                };
-
-                block_events_buffer
-                    .push_str(&predeploy_event.get_event_str(&transfer.inscription_id, 0));
-                block_events_buffer.push_str(EVENT_SEPARATOR);
-
-                get_brc20_database().lock().await.add_event(
-                    block_height,
-                    &transfer.inscription_id,
-                    &transfer.inscription_number,
-                    &transfer.old_satpoint,
-                    &transfer.new_satpoint,
-                    &transfer.txid,
-                    &predeploy_event,
-                )?;
+                EventGenerator::brc20_predeploy_inscribe(block_height, hash, &transfer).await?;
                 continue;
             }
 
@@ -637,33 +1270,49 @@ impl Brc20Indexer {
                 };
 
                 if let Some(_) = transfer.old_satpoint.as_ref() {
-                    match self
-                        .brc20_prog_withdraw_transfer(
-                            block_height,
-                            block_hash,
-                            block_time,
-                            &deployed_ticker,
-                            original_ticker,
-                            amount,
-                            brc20_prog_tx_idx,
-                            &mut block_events_buffer,
-                            transfer,
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            brc20_prog_tx_idx += 1;
-                        }
-                        _ => {}
-                    }
-                } else {
-                    self.brc20_prog_withdraw_inscribe(
+                    let (event_id, event) = EventGenerator::brc20_prog_withdraw_transfer(
                         block_height,
                         &deployed_ticker,
                         original_ticker,
                         amount,
-                        &mut block_events_buffer,
                         transfer,
+                    )
+                    .await?;
+                    match EventProcessor::brc20_prog_withdraw_transfer(
+                        &self.brc20_prog_client,
+                        block_height,
+                        block_hash,
+                        block_time,
+                        brc20_prog_tx_idx,
+                        &transfer.inscription_id,
+                        event_id,
+                        &event,
+                    )
+                    .await
+                    {
+                        Ok(tx_executed) => {
+                            brc20_prog_tx_idx += if tx_executed { 1 } else { 0 };
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to process Brc20ProgWithdrawTransferEvent: {}",
+                                e
+                            );
+                            return Err(e.into());
+                        }
+                    }
+                } else {
+                    EventGenerator::brc20_prog_withdraw_inscribe(
+                        block_height,
+                        &deployed_ticker,
+                        original_ticker,
+                        amount,
+                        transfer,
+                    )
+                    .await?;
+                    EventProcessor::brc20_prog_withdraw_inscribe(
+                        block_height,
+                        &transfer.inscription_id,
                     )
                     .await?;
                 }
@@ -866,16 +1515,21 @@ impl Brc20Indexer {
                     continue;
                 }
 
-                self.brc20_deploy_inscribe(
+                let event = EventGenerator::brc20_deploy_inscribe(
                     block_height,
-                    &ticker,
+                    ticker.as_str(),
                     original_ticker,
                     max_supply,
                     limit_per_mint,
                     decimals,
                     is_self_mint,
-                    &mut block_events_buffer,
                     transfer,
+                )
+                .await?;
+                EventProcessor::brc20_deploy_inscribe(
+                    block_height,
+                    &transfer.inscription_id,
+                    &event,
                 )
                 .await?;
 
@@ -907,15 +1561,25 @@ impl Brc20Indexer {
                     continue;
                 };
 
-                self.brc20_mint_inscribe(
+                match EventGenerator::brc20_mint_inscribe(
                     block_height,
                     &mut deployed_ticker,
                     original_ticker,
                     amount,
-                    &mut block_events_buffer,
                     transfer,
                 )
-                .await?;
+                .await
+                {
+                    Ok((event_id, event)) => {
+                        EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            "Failed to generate BRC20 mint inscribe event for transfer {}",
+                            transfer.inscription_id
+                        );
+                    }
+                }
                 continue;
             }
 
@@ -945,62 +1609,118 @@ impl Brc20Indexer {
                 };
 
                 if transfer.old_satpoint.is_some() {
-                    match self
-                        .brc20_transfer_transfer(
-                            block_height,
-                            block_time,
-                            block_hash,
-                            &mut deployed_ticker,
-                            original_ticker,
-                            amount,
-                            brc20_prog_tx_idx,
-                            &mut block_events_buffer,
-                            transfer,
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            if transfer.new_pkscript == BRC20_PROG_OP_RETURN_PKSCRIPT {
-                                brc20_prog_tx_idx += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                } else {
-                    self.brc20_transfer_inscribe(
+                    match EventGenerator::brc20_transfer_transfer(
                         block_height,
-                        &deployed_ticker,
+                        &mut deployed_ticker,
                         original_ticker,
                         amount,
-                        &mut block_events_buffer,
                         transfer,
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok((event_id, event)) => {
+                            match EventProcessor::brc20_transfer_transfer(
+                                &self.brc20_prog_client,
+                                block_height,
+                                block_time,
+                                block_hash,
+                                brc20_prog_tx_idx,
+                                &transfer.inscription_id,
+                                event_id,
+                                &event,
+                                &self.config,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    if event.spent_pk_script.unwrap_or_default()
+                                        == BRC20_PROG_OP_RETURN_PKSCRIPT
+                                    {
+                                        brc20_prog_tx_idx += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        "Failed to process Brc20TransferTransferEvent: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Failed to generate BRC20 transfer transfer event for transfer {}: {}",
+                                transfer.inscription_id,
+                                e
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    match EventGenerator::brc20_transfer_inscribe(
+                        block_height,
+                        &mut deployed_ticker,
+                        original_ticker,
+                        amount,
+                        transfer,
+                    )
+                    .await
+                    {
+                        Ok((event_id, event)) => {
+                            EventProcessor::brc20_transfer_inscribe(
+                                block_height,
+                                event_id,
+                                &transfer.inscription_id,
+                                &event,
+                            )
+                            .await?;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Failed to generate BRC20 transfer inscribe event for transfer {}: {}",
+                                transfer.inscription_id,
+                                e
+                            );
+                        }
+                    }
                 }
             }
             continue;
         }
+        if let Some(timer) = last_transfer_timer {
+            stop_timer(&timer).await;
+        }
 
+        let flush_timer = start_timer(SPAN, "flush_queries_to_db", block_height);
         get_brc20_database()
             .lock()
             .await
             .flush_queries_to_db()
             .await?;
+        stop_timer(&flush_timer).await;
 
-        if self.config.brc20_prog_enabled
-            && block_height >= self.config.first_brc20_prog_phase_one_height
-        {
-            self.brc20_prog_client
-                .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
-                .await?;
-            if is_synced || block_height % 100 == 0 {
-                self.brc20_prog_client.brc20_commit_to_database().await?;
-            }
-        }
+        self.finalise_block_for_brc20_prog(
+            block_height,
+            block_hash,
+            block_time,
+            is_synced,
+            brc20_prog_tx_idx,
+        )
+        .await?;
 
-        Ok(block_events_buffer
-            .trim_end_matches(EVENT_SEPARATOR)
-            .to_string())
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn get_opi_block_height(&self) -> Result<i32, Box<dyn Error>> {
+        let result = if self.config.light_client_mode {
+            self.event_provider_client
+                .get_best_verified_block_with_retries()
+                .await
+        } else {
+            self.main_db.get_current_block_height().await
+        };
+        result
     }
 
     pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
@@ -1010,7 +1730,7 @@ impl Brc20Indexer {
             .await
             .get_current_block_height()
             .await?;
-        let last_opi_block_height = self.main_db.get_current_block_height().await?;
+        let last_opi_block_height = self.last_opi_block;
         let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled {
             self.config.first_brc20_prog_phase_one_height
         } else {
@@ -1046,7 +1766,6 @@ impl Brc20Indexer {
                     last_brc20_block_height
                 );
             } else if last_brc20_block_height < last_brc20_prog_block_height {
-                // BRC20 prog is ahead of BRC20, reorg BRC20 to current BRC20 height
                 tracing::info!(
                     "BRC20 Prog is ahead of BRC20, reorging BRC20 prog to current BRC20 height: {}",
                     last_brc20_block_height
@@ -1056,10 +1775,9 @@ impl Brc20Indexer {
                     .await?;
 
                 last_brc20_prog_block_height = last_brc20_block_height;
-            } else if last_brc20_prog_block_height < last_brc20_block_height {
-                // BRC20 Prog is behind BRC20, reorg BRC20 Prog to current BRC20 height
+            } else {
                 tracing::info!(
-                    "BRC20 Prog is behind BRC20, reorging BRC20 to current BRC20 prog height: {}",
+                    "BRC20 is ahead of BRC20 Prog, reorging BRC20 to current BRC20 prog height: {}",
                     last_brc20_prog_block_height
                 );
                 get_brc20_database()
@@ -1091,7 +1809,14 @@ impl Brc20Indexer {
                 .await
                 .get_block_hash(current_brc20_height)
                 .await?;
-            let opi_block_hash = self.main_db.get_block_hash(current_brc20_height).await?;
+            let opi_block_hash = if self.config.light_client_mode {
+                self.event_provider_client
+                    .get_block_info_with_retries(current_brc20_height)
+                    .await?
+                    .best_block_hash
+            } else {
+                self.main_db.get_block_hash(current_brc20_height).await?
+            };
             let brc20_prog_block_hash = if !self.config.brc20_prog_enabled
                 || current_brc20_height < self.config.first_brc20_prog_phase_one_height
             {
@@ -1161,1005 +1886,6 @@ impl Brc20Indexer {
             current_brc20_height -= 1;
             current_brc20_prog_height -= 1;
         }
-
-        Ok(())
-    }
-
-    async fn brc20_prog_deploy_inscribe(
-        &mut self,
-        block_height: i32,
-        data: Option<&str>,
-        base64_data: Option<&str>,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let event = Brc20ProgDeployInscribeEvent {
-            source_pk_script: transfer.new_pkscript.to_string(),
-            data: data.map(|d| d.to_string()),
-            base64_data: base64_data.map(|b| b.to_string()),
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
-        Ok(())
-    }
-
-    async fn brc20_prog_deploy_transfer(
-        &mut self,
-        block_height: i32,
-        data: Option<&str>,
-        base64_data: Option<&str>,
-        block_time: u64,
-        block_hash: &str,
-        brc20_prog_tx_idx: u64,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let TransferValidity::Valid = get_brc20_database()
-            .lock()
-            .await
-            .get_transfer_validity(
-                &transfer.inscription_id,
-                Brc20ProgDeployInscribeEvent::event_id(),
-                Brc20ProgDeployTransferEvent::event_id(),
-            )
-            .await?
-        else {
-            tracing::debug!(
-                "Transfer is not valid for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("Transfer is not valid")?;
-        };
-        let Some(inscribe_event) = get_brc20_database()
-            .lock()
-            .await
-            .get_event_with_type::<Brc20ProgDeployInscribeEvent>(&transfer.inscription_id)
-            .await?
-        else {
-            tracing::debug!(
-                "Inscribe event not found for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("Inscribe event not found")?;
-        };
-        if transfer.new_pkscript != BRC20_PROG_OP_RETURN_PKSCRIPT {
-            tracing::debug!(
-                "New pk script is not brc20_prog op return pk script for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("New pk script is not brc20_prog op return pk script")?;
-        }
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
-
-        let event = Brc20ProgDeployTransferEvent {
-            source_pk_script: inscribe_event.source_pk_script.clone(),
-            spent_pk_script: transfer.new_pkscript.to_string(),
-            data: data.map(|d| d.to_string()),
-            base64_data: base64_data.map(|b| b.to_string()),
-            byte_len: transfer.byte_len as i32,
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-
-        self.brc20_prog_client
-            .brc20_deploy(
-                inscribe_event.source_pk_script,
-                data.map(|d| RawBytes::new(d.to_string())),
-                base64_data.map(|b| Base64Bytes::new(b.to_string())),
-                block_time,
-                block_hash.try_into()?,
-                brc20_prog_tx_idx,
-                Some(transfer.inscription_id.to_string()),
-                Some(transfer.byte_len as u64),
-            )
-            .await
-            .expect("Failed to deploy smart contract, please check your brc20_prog node");
-
-        Ok(())
-    }
-
-    async fn brc20_prog_call_transfer(
-        &mut self,
-        block_height: i32,
-        contract_address: Option<&str>,
-        contract_inscription_id: Option<&str>,
-        data: Option<&str>,
-        base64_data: Option<&str>,
-        block_time: u64,
-        block_hash: &str,
-        brc20_prog_tx_idx: u64,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let TransferValidity::Valid = get_brc20_database()
-            .lock()
-            .await
-            .get_transfer_validity(
-                &transfer.inscription_id,
-                Brc20ProgCallInscribeEvent::event_id(),
-                Brc20ProgCallTransferEvent::event_id(),
-            )
-            .await?
-        else {
-            tracing::debug!(
-                "Transfer is not valid for inscription ID: {}",
-                transfer.inscription_id,
-            );
-            return Err("Transfer is not valid")?;
-        };
-        let Some(inscribe_event) = get_brc20_database()
-            .lock()
-            .await
-            .get_event_with_type::<Brc20ProgCallInscribeEvent>(&transfer.inscription_id)
-            .await?
-        else {
-            tracing::debug!(
-                "Inscribe event not found for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("Inscribe event not found")?;
-        };
-        if transfer.new_pkscript != BRC20_PROG_OP_RETURN_PKSCRIPT {
-            tracing::debug!(
-                "New pk script is not brc20_prog op return pk script for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("New pk script is not brc20_prog op return pk script")?;
-        }
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
-
-        let event = Brc20ProgCallTransferEvent {
-            source_pk_script: inscribe_event.source_pk_script.clone(),
-            spent_pk_script: transfer.new_pkscript.to_string().into(),
-            data: data.map(|d| d.to_string()),
-            base64_data: base64_data.map(|b| b.to_string()),
-            byte_len: transfer.byte_len as u64,
-            contract_address: contract_address.map(|s| s.to_string()),
-            contract_inscription_id: contract_inscription_id.map(|s| s.to_string()),
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-
-        let contract_address = if let Some(address) = contract_address {
-            Some(address.try_into()?)
-        } else {
-            None
-        };
-        self.brc20_prog_client
-            .brc20_call(
-                inscribe_event.source_pk_script,
-                contract_address,
-                contract_inscription_id.map(|s| s.to_string()),
-                data.map(|d| RawBytes::new(d.to_string())),
-                base64_data.map(|b| Base64Bytes::new(b.to_string())),
-                block_time,
-                block_hash.try_into()?,
-                brc20_prog_tx_idx,
-                Some(transfer.inscription_id.to_string()),
-                Some(transfer.byte_len as u64),
-            )
-            .await
-            .expect("Failed to call smart contract, please check your brc20_prog node");
-
-        Ok(())
-    }
-
-    async fn brc20_prog_call_inscribe(
-        &mut self,
-        block_height: i32,
-        contract_address: Option<&str>,
-        contract_inscription_id: Option<&str>,
-        data: Option<&str>,
-        base64_data: Option<&str>,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let event = Brc20ProgCallInscribeEvent {
-            source_pk_script: transfer.new_pkscript.to_string(),
-            contract_address: contract_address.map(|s| s.to_string()).unwrap_or_default(),
-            contract_inscription_id: contract_inscription_id
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-            data: data.map(|d| d.to_string()),
-            base64_data: base64_data.map(|b| b.to_string()),
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
-        Ok(())
-    }
-
-    async fn brc20_prog_transact_inscribe(
-        &mut self,
-        block_height: i32,
-        data: Option<&str>,
-        base64_data: Option<&str>,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let event = Brc20ProgTransactInscribeEvent {
-            source_pk_script: transfer.new_pkscript.to_string(),
-            data: data.map(|d| d.to_string()),
-            base64_data: base64_data.map(|b| b.to_string()),
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
-        Ok(())
-    }
-
-    async fn brc20_prog_transact_transfer(
-        &mut self,
-        block_height: i32,
-        block_hash: &str,
-        block_time: u64,
-        data: Option<&str>,
-        base64_data: Option<&str>,
-        brc20_prog_tx_idx: u64,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<u64, Box<dyn Error>> {
-        let TransferValidity::Valid = get_brc20_database()
-            .lock()
-            .await
-            .get_transfer_validity(
-                &transfer.inscription_id,
-                Brc20ProgTransactInscribeEvent::event_id(),
-                Brc20ProgTransactTransferEvent::event_id(),
-            )
-            .await?
-        else {
-            tracing::debug!(
-                "Transfer is not valid for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("Transfer is not valid")?;
-        };
-        let Some(inscribe_event) = get_brc20_database()
-            .lock()
-            .await
-            .get_event_with_type::<Brc20ProgTransactInscribeEvent>(&transfer.inscription_id)
-            .await?
-        else {
-            tracing::debug!(
-                "Inscribe event not found for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("Inscribe event not found")?;
-        };
-        if transfer.new_pkscript != BRC20_PROG_OP_RETURN_PKSCRIPT {
-            tracing::debug!(
-                "New pk script is not brc20_prog op return pk script for inscription ID: {}",
-                transfer.inscription_id
-            );
-            return Err("New pk script is not brc20_prog op return pk script")?;
-        }
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
-
-        let event = Brc20ProgTransactTransferEvent {
-            source_pk_script: inscribe_event.source_pk_script.clone(),
-            spent_pk_script: transfer.new_pkscript.to_string().into(),
-            data: data.map(|d| d.to_string()),
-            base64_data: base64_data.map(|b| b.to_string()),
-            byte_len: transfer.byte_len as i32,
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, 0));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-        let transact_result = self
-            .brc20_prog_client
-            .brc20_transact(
-                data.map(|d| RawBytes::new(d.to_string())),
-                base64_data.map(|b| Base64Bytes::new(b.to_string())),
-                block_time,
-                block_hash.try_into()?,
-                brc20_prog_tx_idx,
-                Some(transfer.inscription_id.to_string()),
-                Some(transfer.byte_len as u64),
-            )
-            .await
-            .expect("Failed to run transact, please check your brc20_prog node");
-        Ok(transact_result.len() as u64)
-    }
-
-    async fn brc20_prog_withdraw_transfer(
-        &mut self,
-        block_height: i32,
-        block_hash: &str,
-        block_time: u64,
-        ticker: &Ticker,
-        original_ticker: &str,
-        amount: u128,
-        brc20_prog_tx_idx: u64,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let TransferValidity::Valid = get_brc20_database()
-            .lock()
-            .await
-            .get_transfer_validity(
-                &transfer.inscription_id,
-                Brc20ProgWithdrawInscribeEvent::event_id(),
-                Brc20ProgWithdrawTransferEvent::event_id(),
-            )
-            .await?
-        else {
-            return Err("Transfer is not valid")?;
-        };
-        let Some(inscribe_event) = get_brc20_database()
-            .lock()
-            .await
-            .get_event_with_type::<Brc20ProgWithdrawInscribeEvent>(&transfer.inscription_id)
-            .await?
-        else {
-            return Err("Inscribe event not found")?;
-        };
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
-
-        let event = Brc20ProgWithdrawTransferEvent {
-            source_pk_script: inscribe_event.source_pk_script.clone(),
-            source_wallet: inscribe_event.source_wallet.clone(),
-            spent_pk_script: transfer.new_pkscript.to_string().into(),
-            spent_wallet: transfer.new_wallet.to_string().into(),
-            ticker: ticker.ticker.clone(),
-            original_ticker: original_ticker.to_string(),
-            amount,
-        };
-        let event_id = get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer
-            .push_str(&event.get_event_str(&transfer.inscription_id, ticker.decimals));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-
-        let withdraw_result = self
-            .brc20_prog_client
-            .brc20_withdraw(
-                inscribe_event.source_pk_script.clone(),
-                ticker.ticker.clone(),
-                amount.into(),
-                block_time,
-                block_hash.try_into()?,
-                brc20_prog_tx_idx,
-                Some(transfer.inscription_id.to_string()),
-            )
-            .await
-            .expect("Failed to run withdraw, please check your brc20_prog node");
-
-        if !withdraw_result.status.is_zero() {
-            let withdraw_to_pkscript = if transfer.sent_as_fee {
-                &inscribe_event.source_pk_script
-            } else {
-                &transfer.new_pkscript
-            };
-
-            let withdraw_to_wallet: &str = if transfer.sent_as_fee {
-                &inscribe_event.source_wallet
-            } else {
-                &transfer.new_wallet
-            };
-
-            let mut brc20_prog_balance = get_brc20_database()
-                .lock()
-                .await
-                .get_balance(&ticker.ticker, &BRC20_PROG_OP_RETURN_PKSCRIPT)
-                .await?;
-
-            brc20_prog_balance.overall_balance -= amount;
-            brc20_prog_balance.available_balance -= amount;
-
-            // Reduce balance in the BRC20PROG module
-            get_brc20_database().lock().await.update_balance(
-                &ticker.ticker,
-                &BRC20_PROG_OP_RETURN_PKSCRIPT,
-                NO_WALLET,
-                &Brc20Balance {
-                    overall_balance: brc20_prog_balance.overall_balance,
-                    available_balance: brc20_prog_balance.available_balance,
-                },
-                block_height,
-                event_id,
-            )?;
-
-            let mut target_balance = get_brc20_database()
-                .lock()
-                .await
-                .get_balance(&ticker.ticker, &withdraw_to_pkscript)
-                .await?;
-
-            target_balance.overall_balance += amount;
-            target_balance.available_balance += amount;
-
-            get_brc20_database().lock().await.update_balance(
-                &ticker.ticker,
-                withdraw_to_pkscript,
-                withdraw_to_wallet,
-                &Brc20Balance {
-                    overall_balance: target_balance.overall_balance,
-                    available_balance: target_balance.available_balance,
-                },
-                block_height,
-                -event_id, // Negate to create a unique event ID
-            )?;
-        }
-        Ok(())
-    }
-
-    async fn brc20_prog_withdraw_inscribe(
-        &mut self,
-        block_height: i32,
-        ticker: &Ticker,
-        original_ticker: &str,
-        amount: u128,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let event = Brc20ProgWithdrawInscribeEvent {
-            source_pk_script: transfer.new_pkscript.to_string(),
-            source_wallet: transfer.new_wallet.to_string().into(),
-            ticker: ticker.ticker.to_string(),
-            original_ticker: original_ticker.to_string(),
-            amount,
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
-        block_events_buffer
-            .push_str(&event.get_event_str(&transfer.inscription_id, ticker.decimals));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-        Ok(())
-    }
-
-    async fn brc20_deploy_inscribe(
-        &mut self,
-        block_height: i32,
-        ticker: &str,
-        original_ticker: &str,
-        max_supply: u128,
-        limit_per_mint: u128,
-        decimals: u8,
-        is_self_mint: bool,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let event = DeployInscribeEvent {
-            deployer_pk_script: transfer.new_pkscript.to_string(),
-            deployer_wallet: transfer.new_wallet.to_string(),
-            ticker: ticker.to_string(),
-            original_ticker: original_ticker.to_string(),
-            max_supply,
-            limit_per_mint,
-            decimals,
-            is_self_mint,
-        };
-        get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer.push_str(&event.get_event_str(&transfer.inscription_id, decimals));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-
-        let new_ticker = Ticker {
-            ticker: ticker.to_string(),
-            remaining_supply: max_supply,
-            limit_per_mint,
-            decimals,
-            is_self_mint,
-            deploy_inscription_id: transfer.inscription_id.to_string(),
-            original_ticker: original_ticker.to_string(),
-            _max_supply: max_supply,
-            burned_supply: 0,
-            deploy_block_height: block_height,
-        };
-        get_brc20_database().lock().await.add_ticker(&new_ticker)?;
-
-        Ok(())
-    }
-
-    async fn brc20_mint_inscribe(
-        &mut self,
-        block_height: i32,
-        deployed_ticker: &mut Ticker,
-        original_ticker: &str,
-        mut amount: u128,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        if deployed_ticker.is_self_mint {
-            let Some(parent_id) = transfer.parent_id.as_ref() else {
-                // Skip if parent id is not present
-                tracing::debug!(
-                    "Skipping mint {} as parent id is not present for self-mint",
-                    transfer.inscription_id
-                );
-                return Ok(());
-            };
-            if &deployed_ticker.deploy_inscription_id != parent_id {
-                tracing::debug!(
-                    "Skipping mint {} as parent id {} does not match deploy inscription id {}",
-                    transfer.inscription_id,
-                    parent_id,
-                    deployed_ticker.deploy_inscription_id
-                );
-                return Ok(());
-            }
-        }
-
-        if deployed_ticker.remaining_supply == 0 {
-            tracing::debug!(
-                "Skipping mint {} as remaining supply is 0 for ticker {}",
-                transfer.inscription_id,
-                deployed_ticker.ticker
-            );
-            return Ok(());
-        }
-
-        if amount > deployed_ticker.limit_per_mint {
-            tracing::debug!(
-                "Skipping mint {} as amount {} exceeds limit per mint {} for ticker {}",
-                transfer.inscription_id,
-                amount,
-                deployed_ticker.limit_per_mint,
-                deployed_ticker.ticker
-            );
-            return Ok(());
-        }
-
-        if amount > deployed_ticker.remaining_supply {
-            // Set amount to remaining supply
-            amount = deployed_ticker.remaining_supply;
-        }
-
-        let event = MintInscribeEvent {
-            minted_pk_script: transfer.new_pkscript.to_string(),
-            minted_wallet: transfer.new_wallet.to_string(),
-            ticker: deployed_ticker.ticker.clone(),
-            original_ticker: original_ticker.to_string(),
-            amount,
-            parent_id: transfer
-                .parent_id
-                .as_ref()
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
-        };
-        let event_id = get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer
-            .push_str(&event.get_event_str(&transfer.inscription_id, deployed_ticker.decimals));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-
-        deployed_ticker.remaining_supply -= amount;
-        get_brc20_database()
-            .lock()
-            .await
-            .update_ticker(deployed_ticker.clone())?;
-
-        let mut balance = get_brc20_database()
-            .lock()
-            .await
-            .get_balance(&deployed_ticker.ticker, &transfer.new_pkscript)
-            .await?;
-
-        balance.overall_balance += amount;
-        balance.available_balance += amount;
-
-        get_brc20_database().lock().await.update_balance(
-            deployed_ticker.ticker.as_str(),
-            &transfer.new_pkscript,
-            &transfer.new_wallet,
-            &balance,
-            block_height,
-            event_id,
-        )?;
-
-        Ok(())
-    }
-
-    async fn brc20_transfer_inscribe(
-        &mut self,
-        block_height: i32,
-        ticker: &Ticker,
-        original_ticker: &str,
-        amount: u128,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut balance = get_brc20_database()
-            .lock()
-            .await
-            .get_balance(&ticker.ticker, &transfer.new_pkscript)
-            .await?;
-
-        // If available balance is less than amount, return early
-        if balance.available_balance < amount {
-            tracing::debug!(
-                "Skipping transfer {} as available balance {} is less than amount {}",
-                transfer.inscription_id,
-                balance.available_balance,
-                amount
-            );
-            return Ok(());
-        }
-
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Valid);
-
-        let event = TransferInscribeEvent {
-            source_pk_script: transfer.new_pkscript.to_string(),
-            source_wallet: transfer.new_wallet.to_string(),
-            ticker: ticker.ticker.to_string(),
-            original_ticker: original_ticker.to_string(),
-            amount,
-        };
-
-        let event_id = get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer
-            .push_str(&event.get_event_str(&transfer.inscription_id, ticker.decimals));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-
-        balance.available_balance -= amount;
-
-        get_brc20_database().lock().await.update_balance(
-            &ticker.ticker,
-            &transfer.new_pkscript,
-            &transfer.new_wallet,
-            &balance,
-            block_height,
-            event_id,
-        )?;
-
-        Ok(())
-    }
-
-    async fn brc20_transfer_transfer(
-        &mut self,
-        block_height: i32,
-        block_time: u64,
-        block_hash: &str,
-        ticker: &mut Ticker,
-        original_ticker: &str,
-        amount: u128,
-        brc20_prog_tx_idx: u64,
-        block_events_buffer: &mut String,
-        transfer: &BRC20Tx,
-    ) -> Result<(), Box<dyn Error>> {
-        tracing::debug!(
-            "Processing transfer for inscription ID: {}, new pk script: {}, new wallet: {:?}, ticker: {}, original ticker: {}, amount: {}, sent as fee: {}, tx_id: {}",
-            transfer.inscription_id,
-            transfer.new_pkscript,
-            transfer.new_wallet,
-            ticker.ticker,
-            original_ticker,
-            amount,
-            transfer.sent_as_fee,
-            transfer.tx_id
-        );
-        let Some(inscribe_event) = get_brc20_database()
-            .lock()
-            .await
-            .get_event_with_type::<TransferInscribeEvent>(&transfer.inscription_id)
-            .await?
-        else {
-            tracing::debug!(
-                "Skipping transfer {} as inscribe event is not found",
-                transfer.inscription_id
-            );
-            return Err("Inscribe event not found")?;
-        };
-
-        let TransferValidity::Valid = get_brc20_database()
-            .lock()
-            .await
-            .get_transfer_validity(
-                &transfer.inscription_id,
-                TransferInscribeEvent::event_id(),
-                TransferTransferEvent::event_id(),
-            )
-            .await?
-        else {
-            tracing::debug!(
-                "Skipping transfer {} as transfer is not valid",
-                transfer.inscription_id
-            );
-            return Err("Transfer is not valid")?;
-        };
-
-        let event = TransferTransferEvent {
-            source_pk_script: inscribe_event.source_pk_script.clone(),
-            source_wallet: inscribe_event.source_wallet.to_string(),
-            spent_pk_script: if transfer.sent_as_fee {
-                None
-            } else {
-                Some(transfer.new_pkscript.to_string())
-            },
-            spent_wallet: if transfer.sent_as_fee {
-                None
-            } else {
-                Some(transfer.new_wallet.clone())
-            },
-            ticker: ticker.ticker.clone(),
-            original_ticker: original_ticker.to_string(),
-            amount,
-            tx_id: transfer.tx_id.clone(),
-        };
-
-        let event_id = get_brc20_database().lock().await.add_event(
-            block_height,
-            &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
-            &event,
-        )?;
-        block_events_buffer
-            .push_str(&event.get_event_str(&transfer.inscription_id, ticker.decimals));
-        block_events_buffer.push_str(EVENT_SEPARATOR);
-
-        // TODO: Reduce overall balance of the source wallet
-
-        // If sent as fee, return to the source wallet
-        // If sent to BRC20_PROG_OP_RETURN_PKSCRIPT, send to brc20_prog
-        // If sent to OP_RETURN, update burned supply
-        // If sent to a wallet, update the wallet balance
-        let mut source_balance = get_brc20_database()
-            .lock()
-            .await
-            .get_balance(&ticker.ticker, &inscribe_event.source_pk_script)
-            .await?;
-        if transfer.sent_as_fee {
-            source_balance.available_balance += amount;
-
-            get_brc20_database().lock().await.update_balance(
-                &ticker.ticker,
-                &inscribe_event.source_pk_script,
-                &inscribe_event.source_wallet,
-                &source_balance,
-                block_height,
-                event_id,
-            )?;
-        } else if transfer.new_pkscript == BRC20_PROG_OP_RETURN_PKSCRIPT {
-            if (block_height < self.config.first_brc20_prog_all_tickers_height
-                && original_ticker.as_bytes().len() < 6)
-                || block_height < self.config.first_brc20_prog_phase_one_height
-                || !self.config.brc20_prog_enabled
-            {
-                // Burn tokens if BRC20 Prog is not enabled for this ticker yet
-                source_balance.overall_balance -= amount;
-                get_brc20_database().lock().await.update_balance(
-                    &ticker.ticker,
-                    &inscribe_event.source_pk_script,
-                    &inscribe_event.source_wallet,
-                    &source_balance,
-                    block_height,
-                    event_id,
-                )?;
-
-                ticker.burned_supply += amount;
-                get_brc20_database()
-                    .lock()
-                    .await
-                    .update_ticker(ticker.clone())?;
-
-                Err("Burning tokens, BRC20 Prog is not enabled yet")?;
-            } else {
-                source_balance.overall_balance -= amount;
-
-                get_brc20_database().lock().await.update_balance(
-                    &ticker.ticker,
-                    &inscribe_event.source_pk_script,
-                    &inscribe_event.source_wallet,
-                    &source_balance,
-                    block_height,
-                    event_id,
-                )?;
-
-                let mut brc20_prog_balance = get_brc20_database()
-                    .lock()
-                    .await
-                    .get_balance(&ticker.ticker, BRC20_PROG_OP_RETURN_PKSCRIPT)
-                    .await?;
-
-                brc20_prog_balance.available_balance += amount;
-                brc20_prog_balance.overall_balance += amount;
-
-                get_brc20_database().lock().await.update_balance(
-                    &ticker.ticker,
-                    BRC20_PROG_OP_RETURN_PKSCRIPT,
-                    NO_WALLET,
-                    &brc20_prog_balance,
-                    block_height,
-                    -event_id, // Negate to create a unique event ID
-                )?;
-                self.brc20_prog_client
-                    .brc20_deposit(
-                        inscribe_event.source_pk_script,
-                        ticker.ticker.clone(),
-                        amount.into(),
-                        block_time,
-                        block_hash.try_into()?,
-                        brc20_prog_tx_idx,
-                        Some(transfer.inscription_id.to_string()),
-                    )
-                    .await?;
-            }
-        } else if transfer.new_pkscript == OP_RETURN {
-            let mut source_balance = get_brc20_database()
-                .lock()
-                .await
-                .get_balance(&ticker.ticker, &inscribe_event.source_pk_script)
-                .await?;
-
-            source_balance.overall_balance -= amount;
-
-            get_brc20_database().lock().await.update_balance(
-                &ticker.ticker,
-                &inscribe_event.source_pk_script,
-                &inscribe_event.source_wallet,
-                &source_balance,
-                block_height,
-                event_id,
-            )?;
-
-            // Update burned supply
-            ticker.burned_supply += amount;
-            get_brc20_database()
-                .lock()
-                .await
-                .update_ticker(ticker.clone())?;
-        } else {
-            let mut source_balance = get_brc20_database()
-                .lock()
-                .await
-                .get_balance(&ticker.ticker, &inscribe_event.source_pk_script)
-                .await?;
-
-            source_balance.overall_balance -= amount;
-
-            get_brc20_database().lock().await.update_balance(
-                &ticker.ticker,
-                &inscribe_event.source_pk_script,
-                &inscribe_event.source_wallet,
-                &source_balance,
-                block_height,
-                event_id,
-            )?;
-
-            let mut target_balance = get_brc20_database()
-                .lock()
-                .await
-                .get_balance(&ticker.ticker, &transfer.new_pkscript)
-                .await?;
-
-            target_balance.available_balance += amount;
-            target_balance.overall_balance += amount;
-
-            get_brc20_database().lock().await.update_balance(
-                &ticker.ticker,
-                &transfer.new_pkscript,
-                &transfer.new_wallet,
-                &target_balance,
-                block_height,
-                -event_id, // Negate to create a unique event ID
-            )?;
-        }
-        get_brc20_database()
-            .lock()
-            .await
-            .set_transfer_validity(&transfer.inscription_id, TransferValidity::Used);
 
         Ok(())
     }

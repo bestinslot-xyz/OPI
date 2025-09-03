@@ -42,6 +42,20 @@ CREATE INDEX brc20_events_event_type_idx ON public.brc20_events USING btree (eve
 CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree (inscription_id);
 CREATE INDEX brc20_events_ticker_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)));
 
+CREATE TABLE public.brc20_light_events (
+	id bigserial NOT NULL,
+	event_type int4 NOT NULL,
+	block_height int4 NOT NULL,
+	inscription_id text NOT NULL,
+	"event" jsonb NOT NULL,
+	CONSTRAINT light_events_pk PRIMARY KEY (id)
+);
+CREATE UNIQUE INDEX brc20_light_events_event_type_inscription_id_idx ON public.brc20_light_events USING btree (event_type, inscription_id);
+CREATE INDEX brc20_light_events_block_height_idx ON public.brc20_light_events USING btree (block_height);
+CREATE INDEX brc20_light_events_event_type_idx ON public.brc20_light_events USING btree (event_type);
+CREATE INDEX brc20_light_events_inscription_id_idx ON public.brc20_light_events USING btree (inscription_id);
+CREATE INDEX brc20_light_events_ticker_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)));
+
 CREATE TABLE public.brc20_tickers (
 	id bigserial NOT NULL,
 	original_tick text NOT NULL,
@@ -64,6 +78,8 @@ CREATE TABLE public.brc20_cumulative_event_hashes (
 	block_height int4 NOT NULL,
 	block_event_hash text NOT NULL,
 	cumulative_event_hash text NOT NULL,
+	block_trace_hash text NOT NULL,
+	cumulative_trace_hash text NOT NULL,
 	CONSTRAINT brc20_cumulative_event_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_cumulative_event_hashes_block_height_idx ON public.brc20_cumulative_event_hashes USING btree (block_height);
@@ -100,7 +116,7 @@ CREATE TABLE public.brc20_indexer_version (
 	event_hash_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-full-node v0.5.0', 6, 2);
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-rs-node v0.1.0', 7, 2);
 
 CREATE TABLE public.brc20_current_balances (
 	id bigserial NOT NULL,
@@ -134,3 +150,23 @@ CREATE UNIQUE INDEX brc20_unused_txes_inscription_id_idx ON public.brc20_unused_
 CREATE INDEX brc20_unused_txes_tick_idx ON public.brc20_unused_txes USING btree (tick);
 CREATE INDEX brc20_unused_txes_pkscript_idx ON public.brc20_unused_txes USING btree (current_holder_pkscript);
 CREATE INDEX brc20_unused_txes_wallet_idx ON public.brc20_unused_txes USING btree (current_holder_wallet);
+
+CREATE TABLE public.brc20_bitcoin_rpc_result_cache (
+	id bigserial NOT NULL,
+	method text NOT NULL,
+	request jsonb NOT NULL,
+	response jsonb NOT NULL,
+	block_height int4 NOT NULL,
+	CONSTRAINT brc20_bitcoin_rpc_result_cache_pk PRIMARY KEY (id)
+);
+CREATE INDEX brc20_bitcoin_rpc_result_cache_request_idx ON public.brc20_bitcoin_rpc_result_cache USING btree (request);
+CREATE INDEX brc20_bitcoin_rpc_result_cache_block_height_idx ON public.brc20_bitcoin_rpc_result_cache USING btree (block_height);
+
+CREATE TABLE public.brc20_logs (
+	id bigserial NOT NULL,
+	block_height int4 NOT NULL,
+	log_data jsonb NOT NULL,
+	CONSTRAINT brc20_logs_pk PRIMARY KEY (id)
+);
+
+CREATE INDEX brc20_logs_block_height ON public.brc20_logs (block_height DESC);

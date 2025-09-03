@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde_with::{DefaultOnNull, serde_as};
+
+use crate::types::events::event::get_wallet_from_pk_script;
 
 use super::Event;
 
@@ -8,6 +10,7 @@ use super::Event;
 pub struct PreDeployInscribeEvent {
     #[serde(rename = "predeployer_pkScript")]
     pub predeployer_pk_script: String,
+    #[serde_as(deserialize_as = "DefaultOnNull")]
     pub predeployer_wallet: String,
     pub hash: String,
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -32,5 +35,13 @@ impl Event for PreDeployInscribeEvent {
             self.hash,
             self.block_height,
         )
+    }
+
+    fn calculate_wallets(&mut self, network: bitcoin::Network) {
+        if let Some(wallet) = get_wallet_from_pk_script(&self.predeployer_pk_script, network) {
+            self.predeployer_wallet = wallet;
+        } else {
+            self.predeployer_wallet = String::new();
+        }
     }
 }
