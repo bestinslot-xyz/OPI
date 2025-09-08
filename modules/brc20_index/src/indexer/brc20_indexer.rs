@@ -475,13 +475,19 @@ impl Brc20Indexer {
                             )
                             .await
                             .ok();
+                        self.last_reported_block = self
+                            .event_provider_client
+                            .get_best_verified_block()
+                            .await
+                            .ok(); // Try once to avoid holding up the loop
                     }
+                } else {
+                    self.last_reported_block = self
+                        .event_provider_client
+                        .get_best_verified_block()
+                        .await
+                        .ok(); // Try once to avoid holding up the loop
                 }
-                self.last_reported_block = self
-                    .event_provider_client
-                    .get_best_verified_block()
-                    .await
-                    .ok(); // Try once to avoid holding up the loop
                 stop_timer(&report_timer).await;
             }
             stop_timer(&loop_timer).await;
