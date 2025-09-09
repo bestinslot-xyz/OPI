@@ -1733,8 +1733,10 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
         let last_opi_block_height = self.last_opi_block;
-        let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled {
-            self.config.first_brc20_prog_phase_one_height
+        let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled
+            || last_brc20_block_height < self.config.first_brc20_prog_phase_one_height
+        {
+            self.config.first_brc20_prog_phase_one_height - 1
         } else {
             parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
         };
@@ -1857,7 +1859,7 @@ impl Brc20Indexer {
                     .await
                     .reorg(current_brc20_height)
                     .await?;
-                if self.config.brc20_prog_enabled {
+                if self.config.brc20_prog_enabled && current_brc20_height >= self.config.first_brc20_prog_phase_one_height{
                     self.brc20_prog_client
                         .brc20_reorg(current_brc20_prog_height as u64)
                         .await?;
