@@ -1099,9 +1099,9 @@ dependencies = [
 
 [[package]]
 name = "brc20-prog"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc622fae867d09c744603cf0014f8db783409ee9250135726eecb3ed503ca06e"
+checksum = "ff87dc81f169e8ed931dfd10191c61bf26430f5b4a49e5c1810476e8e20cb27e"
 dependencies = [
  "alloy",
  "alloy-rlp",
