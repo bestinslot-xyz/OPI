@@ -108,6 +108,9 @@ pub const BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18547";
 pub const BITCOIN_RPC_URL_KEY: &str = "BITCOIN_RPC_URL";
 pub const BITCOIN_RPC_URL_DEFAULT: &str = "http://localhost:38332";
 
+pub const STARTUP_WAIT_SECONDS_KEY: &str = "STARTUP_WAIT_SECONDS";
+pub const STARTUP_WAIT_SECONDS_DEFAULT: u64 = 1;
+
 // BRC20 specific keys
 pub const LIMIT_PER_MINT_KEY: &str = "lim";
 pub const MAX_SUPPLY_KEY: &str = "max";
@@ -174,6 +177,13 @@ pub const INDEXER_VERSION: &str = "opi-brc20-rs-node v0.1.0";
 pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-rs-node-light v0.1.0";
 
 pub const OPI_URL: &str = "https://api.opi.network";
+
+pub fn get_startup_wait_secs() -> u64 {
+    std::env::var(STARTUP_WAIT_SECONDS_KEY)
+        .unwrap_or_else(|_| STARTUP_WAIT_SECONDS_DEFAULT.to_string())
+        .parse::<u64>()
+        .unwrap_or(STARTUP_WAIT_SECONDS_DEFAULT)
+}
 
 fn get_bitcoin_network_type(network_type: &str) -> Network {
     match network_type {

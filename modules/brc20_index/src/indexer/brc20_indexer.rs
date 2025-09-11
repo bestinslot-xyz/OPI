@@ -17,7 +17,7 @@ use crate::{
         OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
         PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20,
         PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
-        SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
+        SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY, get_startup_wait_secs,
     },
     database::{
         get_brc20_database,
@@ -113,10 +113,16 @@ impl Brc20Indexer {
                 .into());
             }
 
+            // Wait for the servers to start
+            let wait_seconds = get_startup_wait_secs();
+            tracing::info!(
+                "Waiting for the server to start for {} seconds...",
+                wait_seconds
+            );
             let url_clone = self.config.brc20_prog_balance_server_addr.clone();
-            self.server_handle = Some(tokio::spawn(
-                async move { run_balance_server(url_clone).await },
-            ));
+            self.server_handle = Some(tokio::spawn(async move {
+                run_balance_server(url_clone).await;
+            }));
             if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
                 let bitcoin_rpc_proxy_addr_clone =
                     self.config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
@@ -133,8 +139,8 @@ impl Brc20Indexer {
                     .await
                 }));
             }
-            // Wait for the servers to start
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
+            tracing::debug!("Continuing initialization...");
 
             let brc20_prog_block_height =
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
@@ -1859,7 +1865,9 @@ impl Brc20Indexer {
                     .await
                     .reorg(current_brc20_height)
                     .await?;
-                if self.config.brc20_prog_enabled && current_brc20_height >= self.config.first_brc20_prog_phase_one_height{
+                if self.config.brc20_prog_enabled
+                    && current_brc20_height >= self.config.first_brc20_prog_phase_one_height
+                {
                     self.brc20_prog_client
                         .brc20_reorg(current_brc20_prog_height as u64)
                         .await?;
