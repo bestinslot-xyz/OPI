@@ -22,7 +22,7 @@ pub fn build_brc20_prog_http_client(config: &Brc20IndexerConfig) -> HttpClient {
     }
     HttpClient::builder()
         .set_headers(headers)
-        .request_timeout(Duration::from_secs(5))
+        .request_timeout(Duration::from_secs(10))
         .build(config.brc20_prog_rpc_url.clone())
         .expect("Failed to create HTTP client")
 }
