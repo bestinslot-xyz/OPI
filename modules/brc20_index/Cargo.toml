@@ -24,7 +24,7 @@ serde_json = { version = "1.0.140", features = ["arbitrary_precision"] }
 serde_json_canonicalizer = "0.3.0"
 serde_with = "3.13.0"
 sha256 = "1.6.0"
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "bigdecimal", "time", "tls-native-tls"] }
+sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "bigdecimal", "time", "tls-rustls"] }
 tokio = { version = "1.45.0", features = ["rt", "macros"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
