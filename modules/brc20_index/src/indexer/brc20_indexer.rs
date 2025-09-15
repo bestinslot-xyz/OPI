@@ -309,6 +309,13 @@ impl Brc20Indexer {
                         next_block,
                         self.config.first_brc20_height
                     );
+                    let timer = start_timer(SPAN, "flush_queries_to_db", next_block);
+                    get_brc20_database()
+                        .lock()
+                        .await
+                        .flush_queries_to_db()
+                        .await?;
+                    stop_timer(&timer).await;
                 }
             } else {
                 if self.config.light_client_mode {
