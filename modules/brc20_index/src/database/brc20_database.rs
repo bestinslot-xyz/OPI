@@ -156,6 +156,26 @@ impl Brc20Database {
         } else {
             ""
         };
+        tracing::info!(
+            "Connecting to database at {}",
+            &format!(
+                "postgres://{}:{}@{}:{}/{}{}",
+                config
+                    .db_user
+                    .replace("/", "%2F")
+                    .replace(":", "%3A")
+                    .replace("@", "%40"),
+                "**********",
+                config.db_host,
+                config.db_port,
+                config
+                    .db_database
+                    .replace("/", "%2F")
+                    .replace(":", "%3A")
+                    .replace("@", "%40"),
+                ssl_mode
+            )
+        );
         let client = PgPoolOptions::new()
             .max_connections(5)
             .acquire_slow_threshold(Duration::from_secs(10))
