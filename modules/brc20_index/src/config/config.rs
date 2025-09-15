@@ -65,6 +65,9 @@ pub const DB_SSL_DEFAULT: &str = "false";
 pub const REPORT_TO_INDEXER_KEY: &str = "REPORT_TO_INDEXER";
 pub const REPORT_TO_INDEXER_DEFAULT: &str = "true";
 
+pub const REPORT_ALL_BLOCKS_KEY: &str = "REPORT_ALL_BLOCKS";
+pub const REPORT_ALL_BLOCKS_DEFAULT: &str = "false";
+
 pub const REPORT_URL_KEY: &str = "REPORT_URL";
 pub const REPORT_URL_DEFAULT: &str = "https://api.opi.network/report_block";
 
@@ -209,6 +212,7 @@ pub struct Brc20IndexerConfig {
     pub opi_db_url: String,
 
     pub report_to_indexer: bool,
+    pub report_all_blocks: bool,
     pub report_url: String,
     pub report_retries: i32,
     pub report_name: String,
@@ -261,6 +265,10 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| REPORT_TO_INDEXER_DEFAULT.to_string())
                 == "true"
                 && network_type != Network::Regtest,
+
+            report_all_blocks: std::env::var(REPORT_ALL_BLOCKS_KEY)
+                .unwrap_or_else(|_| REPORT_ALL_BLOCKS_DEFAULT.to_string())
+                == "true",
 
             report_url: std::env::var(REPORT_URL_KEY)
                 .unwrap_or_else(|_| REPORT_URL_DEFAULT.to_string()),

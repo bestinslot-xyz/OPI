@@ -464,7 +464,7 @@ impl Brc20Indexer {
             if self.config.report_to_indexer {
                 let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
                 if let Some(last_reported_block) = self.last_reported_block {
-                    if next_block >= last_reported_block - 10 {
+                    if next_block >= last_reported_block - 10 || self.config.report_all_blocks {
                         self.brc20_reporter
                             .report(
                                 next_block,
