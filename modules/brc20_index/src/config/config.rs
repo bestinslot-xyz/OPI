@@ -114,6 +114,9 @@ pub const BITCOIN_RPC_URL_DEFAULT: &str = "http://localhost:38332";
 pub const STARTUP_WAIT_SECONDS_KEY: &str = "STARTUP_WAIT_SECONDS";
 pub const STARTUP_WAIT_SECONDS_DEFAULT: u64 = 1;
 
+pub const SAVE_LOGS_KEY: &str = "SAVE_LOGS";
+pub const SAVE_LOGS_DEFAULT: &str = "true";
+
 // BRC20 specific keys
 pub const LIMIT_PER_MINT_KEY: &str = "lim";
 pub const MAX_SUPPLY_KEY: &str = "max";
@@ -201,6 +204,7 @@ fn get_bitcoin_network_type(network_type: &str) -> Network {
 
 pub struct Brc20IndexerConfig {
     pub light_client_mode: bool,
+    pub save_logs: bool,
 
     pub db_host: String,
     pub db_port: String,
@@ -312,6 +316,9 @@ impl Default for Brc20IndexerConfig {
             light_client_mode: std::env::var(OPERATION_MODE_KEY)
                 .unwrap_or_else(|_| OPERATION_MODE_FULL.to_string())
                 == OPERATION_MODE_LIGHT,
+            save_logs: std::env::var(SAVE_LOGS_KEY)
+                .unwrap_or_else(|_| SAVE_LOGS_DEFAULT.to_string())
+                == "true",
 
             brc20_prog_bitcoin_rpc_proxy_server_enabled: std::env::var(
                 BITCOIN_RPC_PROXY_SERVER_ENABLED,
