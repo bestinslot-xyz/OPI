@@ -22,6 +22,7 @@ use crate::{
 struct Args {
     is_setup: bool,
     is_reset: bool,
+    report_block_height: Option<i32>,
     reorg_height: Option<i32>,
 }
 
@@ -41,11 +42,23 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut is_setup = false;
     let mut is_reset = false;
     let mut reorg_height: Option<i32> = None;
+    let mut report_block_height: Option<i32> = None;
 
     for (idx, arg) in std::env::args().enumerate() {
         match arg.as_str() {
             "--setup" => is_setup = true,
             "--reset" => is_reset = true,
+            "--report" => {
+                if let Some(height_str) = std::env::args().nth(idx + 1) {
+                    if let Ok(height) = height_str.parse::<i32>() {
+                        report_block_height = Some(height);
+                    } else {
+                        return Err("Invalid height for --report".into());
+                    }
+                } else {
+                    return Err("No height provided after --report".into());
+                }
+            }
             "--reorg" => {
                 if let Some(height_str) = std::env::args().nth(idx + 1) {
                     if let Ok(height) = height_str.parse::<i32>() {
@@ -125,6 +138,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         is_setup,
         is_reset,
         reorg_height,
+        report_block_height,
     })
 }
 
@@ -139,6 +153,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config = Brc20IndexerConfig::default();
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
     let mut brc20_indexer = Brc20Indexer::new(config);
+    if let Some(report_height) = args.report_block_height {
+        tracing::info!("Reporting block at height {}", report_height);
+        brc20_indexer.report_block(report_height).await?;
+        return Ok(());
+    }
     if let Some(reorg_height) = args.reorg_height {
         if confirm(
             "Are you sure you want to reorg the indexer? This will reset the state to the specified height.",

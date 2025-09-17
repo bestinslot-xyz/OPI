@@ -507,6 +507,69 @@ impl Brc20Indexer {
         }
     }
 
+    pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        if self.config.light_client_mode {
+            return Err("Reporting is not supported in light client mode".into());
+        }
+
+        let (block_hash, block_time) = self.main_db.get_block_hash_and_time(block_height).await?;
+
+        let Some(block_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_block_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!("Block events hash not found for block {}", block_height).into());
+        };
+
+        let Some(cumulative_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!(
+                "Cumulative events hash not found for block {}",
+                block_height
+            )
+            .into());
+        };
+
+        let cumulative_traces_hash = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_traces_hash(block_height)
+            .await?
+            .unwrap_or_default();
+
+        let block_traces_hash = if self.config.brc20_prog_enabled
+            && block_height >= self.config.first_brc20_prog_phase_one_height
+        {
+            calculate_brc20_prog_traces_hash(&self.brc20_prog_client, block_height).await?
+        } else {
+            String::new()
+        };
+
+        self.brc20_reporter
+            .report(
+                block_height,
+                block_hash.to_string(),
+                if block_time == 0 {
+                    None
+                } else {
+                    Some(block_time)
+                },
+                block_events_hash,
+                cumulative_events_hash,
+                block_traces_hash,
+                cumulative_traces_hash,
+            )
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
         if self.config.brc20_prog_enabled {
             let function_timer = start_timer(SPAN, "pre_fill_rpc_results_cache", next_block);
