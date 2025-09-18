@@ -1262,7 +1262,7 @@ impl Brc20Database {
         self.bitcoin_rpc_inserts.insert(
             request_json_without_id.clone(),
             BitcoinRpcResultRecord {
-                block_height: self.get_current_block_height().await?,
+                block_height: self.get_next_block_height().await?,
                 method: request_method.to_string(),
                 response: response_json_without_id,
             },
