@@ -37,22 +37,22 @@ spec:
           - name: DB_USER
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: metaDb.user
           - name: DB_HOST
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: metaDb.host
           - name: DB_DATABASE
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: metaDb.database
           - name: DB_PASSWD
             valueFrom:
               secretKeyRef:
-                name: metadb-app
+                name: {{ .Values.dbSecretName }}
                 key: password
           - name: REPORT_TO_INDEXER
             value: "false"
@@ -67,37 +67,37 @@ spec:
           - name: NETWORK_TYPE
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: networkType
           - name: OPI_DB_URL
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: dbReader.url
           - name: SAVEPOINT_INTERVAL
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: savepointInterval
           - name: MAX_SAVEPOINTS
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: maxSavepoints
           - name: BRC20_PROG_ENABLED
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: brc20Prog.enabled
           - name: BRC20_PROG_RPC_URL
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: brc20Prog.rpcServerUrl
           - name: BRC20_PROG_RPC_USER
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: brc20Prog.rpcServerUser
           - name: BRC20_PROG_RPC_PASSWORD
             valueFrom:

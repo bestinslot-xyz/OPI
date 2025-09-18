@@ -1,7 +1,8 @@
 # Default values for brc20-index.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
-
+configMapName: bis-config
+dbSecretName: metadb-app
 replicaCount: 1
 
 image:
@@ -65,10 +66,10 @@ resources:
   # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
   limits:
   #  cpu: 90m
-    memory: 100Mi
+    memory: 2000Mi
   requests:
     cpu: 25m
-    memory: 100Mi
+    memory: 2000Mi
 
 autoscaling:
   enabled: false

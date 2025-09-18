@@ -3,7 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   annotations:
     helm.sh/resource-policy: keep
-  name: opi-main-index
+  name: {{ include "main-index.fullname" . }}
 spec:
   accessModes:
   - ReadWriteOnce

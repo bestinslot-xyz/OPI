@@ -53,7 +53,7 @@ spec:
           - name: ORD_BITCOIN_RPC_USERNAME
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: rpc.user
           - name: ORD_BITCOIN_RPC_PASSWORD
             valueFrom:
@@ -63,25 +63,30 @@ spec:
           - name: ORD_BITCOIN_RPC_URL
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: rpc.host
           - name: ORD_CHAIN
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: networkType
           - name: ORD_DATA_DIR
             value: "/ord"
           - name: ORD_SAVEPOINT_INTERVAL
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: savepointInterval
           - name: ORD_MAX_SAVEPOINTS
             valueFrom:
               configMapKeyRef:
-                name: bis-config
+                name: {{ .Values.configMapName }}
                 key: maxSavepoints
+          - name: ORD_COMMIT_INTERVAL
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.configMapName }}
+                key: commitInterval
           - name: DB_READER_API_URL
             value: "0.0.0.0:{{ .Values.service.port }}"
           resources:
@@ -96,7 +101,7 @@ spec:
       volumes:
         - name: opi-main-index
           persistentVolumeClaim:
-            claimName: opi-main-index
+            claimName: {{ include "main-index.fullname" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

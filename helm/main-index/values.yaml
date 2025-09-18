@@ -1,7 +1,7 @@
 # Default values for main-index.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
-
+configMapName: bis-config
 replicaCount: 1
 
 image:
@@ -71,10 +71,10 @@ resources:
   # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
   limits:
   #  cpu: 90m
-    memory: 1820Mi
+    memory: 14000Mi
   requests:
-    cpu: 18m
-    memory: 1820Mi
+    cpu: 1500m
+    memory: 12000Mi
 
 autoscaling:
   enabled: false
