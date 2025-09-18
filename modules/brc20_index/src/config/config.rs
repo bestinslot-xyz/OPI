@@ -68,6 +68,9 @@ pub const DB_SSL_DEFAULT: &str = "false";
 pub const REPORT_TO_INDEXER_KEY: &str = "REPORT_TO_INDEXER";
 pub const REPORT_TO_INDEXER_DEFAULT: &str = "true";
 
+pub const REPORT_ALL_BLOCKS_KEY: &str = "REPORT_ALL_BLOCKS";
+pub const REPORT_ALL_BLOCKS_DEFAULT: &str = "false";
+
 pub const REPORT_URL_KEY: &str = "REPORT_URL";
 pub const REPORT_URL_DEFAULT: &str = "https://api.opi.network/report_block";
 
@@ -116,6 +119,12 @@ pub const BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18547";
 
 pub const BITCOIN_RPC_URL_KEY: &str = "BITCOIN_RPC_URL";
 pub const BITCOIN_RPC_URL_DEFAULT: &str = "http://localhost:38332";
+
+pub const STARTUP_WAIT_SECONDS_KEY: &str = "STARTUP_WAIT_SECONDS";
+pub const STARTUP_WAIT_SECONDS_DEFAULT: u64 = 1;
+
+pub const SAVE_LOGS_KEY: &str = "SAVE_LOGS";
+pub const SAVE_LOGS_DEFAULT: &str = "true";
 
 // BRC20 specific keys
 pub const LIMIT_PER_MINT_KEY: &str = "lim";
@@ -178,11 +187,18 @@ pub const OPERATION_MODE_LIGHT: &str = "light";
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 7;
 pub const EVENT_HASH_VERSION: i32 = 2;
-pub const BRC20_PROG_VERSION: &str = "0.10.5";
+pub const BRC20_PROG_VERSION: &str = "0.11.1";
 pub const INDEXER_VERSION: &str = "opi-brc20-rs-node v0.1.0";
 pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-rs-node-light v0.1.0";
 
 pub const OPI_URL: &str = "https://api.opi.network";
+
+pub fn get_startup_wait_secs() -> u64 {
+    std::env::var(STARTUP_WAIT_SECONDS_KEY)
+        .unwrap_or_else(|_| STARTUP_WAIT_SECONDS_DEFAULT.to_string())
+        .parse::<u64>()
+        .unwrap_or(STARTUP_WAIT_SECONDS_DEFAULT)
+}
 
 fn get_bitcoin_network_type(network_type: &str) -> Network {
     match network_type {
@@ -197,6 +213,7 @@ fn get_bitcoin_network_type(network_type: &str) -> Network {
 
 pub struct Brc20IndexerConfig {
     pub light_client_mode: bool,
+    pub save_logs: bool,
 
     pub db_host: String,
     pub db_port: String,
@@ -208,6 +225,7 @@ pub struct Brc20IndexerConfig {
     pub opi_db_url: String,
 
     pub report_to_indexer: bool,
+    pub report_all_blocks: bool,
     pub report_url: String,
     pub report_retries: i32,
     pub report_name: String,
@@ -264,6 +282,10 @@ impl Default for Brc20IndexerConfig {
                 == "true"
                 && network_type != Network::Regtest,
 
+            report_all_blocks: std::env::var(REPORT_ALL_BLOCKS_KEY)
+                .unwrap_or_else(|_| REPORT_ALL_BLOCKS_DEFAULT.to_string())
+                == "true",
+
             report_url: std::env::var(REPORT_URL_KEY)
                 .unwrap_or_else(|_| REPORT_URL_DEFAULT.to_string()),
             report_retries: std::env::var(REPORT_RETRIES_KEY)
@@ -316,6 +338,9 @@ impl Default for Brc20IndexerConfig {
             light_client_mode: std::env::var(OPERATION_MODE_KEY)
                 .unwrap_or_else(|_| OPERATION_MODE_FULL.to_string())
                 == OPERATION_MODE_LIGHT,
+            save_logs: std::env::var(SAVE_LOGS_KEY)
+                .unwrap_or_else(|_| SAVE_LOGS_DEFAULT.to_string())
+                == "true",
 
             brc20_prog_bitcoin_rpc_proxy_server_enabled: std::env::var(
                 BITCOIN_RPC_PROXY_SERVER_ENABLED,

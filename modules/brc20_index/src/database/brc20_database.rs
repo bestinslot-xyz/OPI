@@ -146,6 +146,7 @@ pub struct Brc20Database {
     pub block_event_strings: HashMap<i32, String>,
     pub balance_updates: Vec<BalanceUpdateData>,
     pub light_client_mode: bool,
+    pub save_logs: bool,
     pub events_table: String,
 }
 
@@ -156,6 +157,26 @@ impl Brc20Database {
         } else {
             ""
         };
+        tracing::info!(
+            "Connecting to database at {}",
+            &format!(
+                "postgres://{}:{}@{}:{}/{}{}",
+                config
+                    .db_user
+                    .replace("/", "%2F")
+                    .replace(":", "%3A")
+                    .replace("@", "%40"),
+                "**********",
+                config.db_host,
+                config.db_port,
+                config
+                    .db_database
+                    .replace("/", "%2F")
+                    .replace(":", "%3A")
+                    .replace("@", "%40"),
+                ssl_mode
+            )
+        );
         let client = PgPoolOptions::new()
             .max_connections(5)
             .acquire_slow_threshold(Duration::from_secs(10))
@@ -201,6 +222,7 @@ impl Brc20Database {
             balance_updates: Vec::new(),
             block_event_strings: HashMap::new(),
             light_client_mode: config.light_client_mode,
+            save_logs: config.save_logs,
             events_table: if config.light_client_mode {
                 "brc20_light_events".to_string()
             } else {
@@ -382,6 +404,9 @@ impl Brc20Database {
         duration: u128,
         block_height: i32,
     ) -> Result<(), Box<dyn Error>> {
+        if !self.save_logs {
+            return Ok(());
+        }
         self.log_timer_inserts
             .entry(block_height)
             .or_insert_with(HashMap::new)

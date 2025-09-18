@@ -17,7 +17,7 @@ use crate::{
         OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
         PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20,
         PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
-        SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY,
+        SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY, get_startup_wait_secs,
     },
     database::{
         get_brc20_database,
@@ -113,10 +113,16 @@ impl Brc20Indexer {
                 .into());
             }
 
+            // Wait for the servers to start
+            let wait_seconds = get_startup_wait_secs();
+            tracing::info!(
+                "Waiting for the server to start for {} seconds...",
+                wait_seconds
+            );
             let url_clone = self.config.brc20_prog_balance_server_addr.clone();
-            self.server_handle = Some(tokio::spawn(
-                async move { run_balance_server(url_clone).await },
-            ));
+            self.server_handle = Some(tokio::spawn(async move {
+                run_balance_server(url_clone).await;
+            }));
             if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
                 let bitcoin_rpc_proxy_addr_clone =
                     self.config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
@@ -133,8 +139,8 @@ impl Brc20Indexer {
                     .await
                 }));
             }
-            // Wait for the servers to start
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
+            tracing::debug!("Continuing initialization...");
 
             let brc20_prog_block_height =
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
@@ -303,6 +309,13 @@ impl Brc20Indexer {
                         next_block,
                         self.config.first_brc20_height
                     );
+                    let timer = start_timer(SPAN, "flush_queries_to_db", next_block);
+                    get_brc20_database()
+                        .lock()
+                        .await
+                        .flush_queries_to_db()
+                        .await?;
+                    stop_timer(&timer).await;
                 }
             } else {
                 if self.config.light_client_mode {
@@ -458,7 +471,7 @@ impl Brc20Indexer {
             if self.config.report_to_indexer {
                 let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
                 if let Some(last_reported_block) = self.last_reported_block {
-                    if next_block >= last_reported_block - 10 {
+                    if next_block >= last_reported_block - 10 || self.config.report_all_blocks {
                         self.brc20_reporter
                             .report(
                                 next_block,
@@ -492,6 +505,69 @@ impl Brc20Indexer {
             }
             stop_timer(&loop_timer).await;
         }
+    }
+
+    pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        if self.config.light_client_mode {
+            return Err("Reporting is not supported in light client mode".into());
+        }
+
+        let (block_hash, block_time) = self.main_db.get_block_hash_and_time(block_height).await?;
+
+        let Some(block_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_block_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!("Block events hash not found for block {}", block_height).into());
+        };
+
+        let Some(cumulative_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!(
+                "Cumulative events hash not found for block {}",
+                block_height
+            )
+            .into());
+        };
+
+        let cumulative_traces_hash = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_traces_hash(block_height)
+            .await?
+            .unwrap_or_default();
+
+        let block_traces_hash = if self.config.brc20_prog_enabled
+            && block_height >= self.config.first_brc20_prog_phase_one_height
+        {
+            calculate_brc20_prog_traces_hash(&self.brc20_prog_client, block_height).await?
+        } else {
+            String::new()
+        };
+
+        self.brc20_reporter
+            .report(
+                block_height,
+                block_hash.to_string(),
+                if block_time == 0 {
+                    None
+                } else {
+                    Some(block_time)
+                },
+                block_events_hash,
+                cumulative_events_hash,
+                block_traces_hash,
+                cumulative_traces_hash,
+            )
+            .await?;
+
+        Ok(())
     }
 
     pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
@@ -1733,8 +1809,10 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
         let last_opi_block_height = self.last_opi_block;
-        let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled {
-            self.config.first_brc20_prog_phase_one_height
+        let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled
+            || last_brc20_block_height < self.config.first_brc20_prog_phase_one_height
+        {
+            self.config.first_brc20_prog_phase_one_height - 1
         } else {
             parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
         };
@@ -1859,7 +1937,9 @@ impl Brc20Indexer {
                     .await
                     .reorg(current_brc20_height)
                     .await?;
-                if self.config.brc20_prog_enabled {
+                if self.config.brc20_prog_enabled
+                    && current_brc20_height >= self.config.first_brc20_prog_phase_one_height
+                {
                     self.brc20_prog_client
                         .brc20_reorg(current_brc20_prog_height as u64)
                         .await?;
