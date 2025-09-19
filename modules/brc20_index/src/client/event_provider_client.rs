@@ -52,7 +52,11 @@ impl EventProviderClient {
                 Ok(data) => return Ok(data),
                 Err(e) => {
                     if retries >= RETRY_COUNT {
-                        return Err(e.into());
+                        return Err(format!(
+                            "Failed to fetch block info from {} for block {}: {}",
+                            OPI_URL, block_height, e
+                        )
+                        .into());
                     }
                     retries += 1;
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
