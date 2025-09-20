@@ -911,7 +911,14 @@ impl Brc20Indexer {
                 )
                 .await?;
                 if event.spent_pk_script.unwrap_or_default() == BRC20_PROG_OP_RETURN_PKSCRIPT {
-                    brc20_prog_tx_idx += 1;
+                    if (block_height < self.config.first_brc20_prog_all_tickers_height
+                            && event.original_ticker.as_bytes().len() < 6)
+                            || block_height < self.config.first_brc20_prog_phase_one_height
+                            || !self.config.brc20_prog_enabled {
+                        brc20_prog_tx_idx += 0;
+                    } else {
+                        brc20_prog_tx_idx += 1;
+                    }
                 }
             } else {
                 tracing::warn!("Unknown event type: {}", event_type_id);
@@ -1714,7 +1721,14 @@ impl Brc20Indexer {
                                     if event.spent_pk_script.unwrap_or_default()
                                         == BRC20_PROG_OP_RETURN_PKSCRIPT
                                     {
-                                        brc20_prog_tx_idx += 1;
+                                        if (block_height < self.config.first_brc20_prog_all_tickers_height
+                                                && event.original_ticker.as_bytes().len() < 6)
+                                                || block_height < self.config.first_brc20_prog_phase_one_height
+                                                || !self.config.brc20_prog_enabled {
+                                            brc20_prog_tx_idx += 0;
+                                        } else {
+                                            brc20_prog_tx_idx += 1;
+                                        }
                                     }
                                 }
                                 Err(e) => {
