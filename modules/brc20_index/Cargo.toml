@@ -1,6 +1,6 @@
 [package]
 name = "brc20-index"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -8,7 +8,7 @@ axum = "0.8.4"
 axum-server = "0.7.2"
 base64 = "0.22.1"
 bitcoin = "0.32.6"
-brc20-prog = { version = "0.11.2", default-features = false }
+brc20-prog = { version = "0.11.3", default-features = false }
 db_reader = { path = "../../ord/db_reader", default-features = false }
 dotenvy = "0.15.7"
 hex = "0.4.3"
