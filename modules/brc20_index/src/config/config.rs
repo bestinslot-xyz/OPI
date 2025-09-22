@@ -101,6 +101,9 @@ pub const SAVEPOINT_INTERVAL_DEFAULT: i32 = 10;
 pub const MAX_SAVEPOINTS_KEY: &str = "MAX_SAVEPOINTS";
 pub const MAX_SAVEPOINTS_DEFAULT: i32 = 2;
 
+pub const NON_INTERACTIVE: &str = "NON_INTERACTIVE";
+pub const NON_INTERACTIVE_DEFAULT: &str = "false";
+
 pub const PROTOCOL_KEY: &str = "p";
 pub const PROTOCOL_BRC20: &str = "brc-20";
 pub const PROTOCOL_BRC20_PROG: &str = "brc20-prog";
@@ -255,6 +258,8 @@ pub struct Brc20IndexerConfig {
 
     pub bitcoin_rpc_cache_enabled: bool,
     pub bitcoin_rpc_url: String,
+
+    pub non_interactive: bool,
 }
 
 impl Default for Brc20IndexerConfig {
@@ -356,6 +361,10 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| BITCOIN_RPC_URL_DEFAULT.to_string()),
             bitcoin_rpc_cache_enabled: std::env::var(BITCOIN_RPC_CACHE_ENABLED_KEY)
                 .unwrap_or_else(|_| BITCOIN_RPC_CACHE_ENABLED_DEFAULT.to_string())
+                == "true",
+
+            non_interactive: std::env::var(NON_INTERACTIVE)
+                .unwrap_or_else(|_| NON_INTERACTIVE_DEFAULT.to_string())
                 == "true",
         };
 
