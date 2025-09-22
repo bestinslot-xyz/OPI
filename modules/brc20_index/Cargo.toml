@@ -28,3 +28,4 @@ sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "bigdecimal
 tokio = { version = "1.45.0", features = ["rt", "macros"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
+versions = "7.0.0"

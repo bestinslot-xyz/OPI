@@ -3,12 +3,13 @@ use std::error::Error;
 use brc20_prog::Brc20ProgApiClient;
 use jsonrpsee::http_client::HttpClient;
 use tokio::task::JoinHandle;
+use versions::{Requirement, Versioning};
 
 use crate::{
     client::{EventProviderClient, OpiClient},
     config::{
         AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_MINE_BATCH_SIZE,
-        BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION, Brc20IndexerConfig,
+        BRC20_PROG_OP_RETURN_PKSCRIPT, BRC20_PROG_VERSION_REQUIREMENT, Brc20IndexerConfig,
         CONTRACT_ADDRESS_KEY, DATA_KEY, DB_VERSION, DECIMALS_KEY, HASH_KEY, INSCRIPTION_ID_KEY,
         LIMIT_PER_MINT_KEY, MAX_AMOUNT, MAX_SUPPLY_KEY, MODULE_KEY, OPERATION_BRC20_PROG_CALL,
         OPERATION_BRC20_PROG_CALL_SHORT, OPERATION_BRC20_PROG_DEPLOY,
@@ -105,10 +106,19 @@ impl Brc20Indexer {
 
         if self.config.brc20_prog_enabled {
             let brc20_prog_version = self.brc20_prog_client.brc20_version().await?;
-            if brc20_prog_version != BRC20_PROG_VERSION {
+            let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).expect(
+                format!(
+                    "Invalid BRC20_PROG_VERSION requirement: {}",
+                    BRC20_PROG_VERSION_REQUIREMENT
+                )
+                .as_str(),
+            );
+            let version = Versioning::new(&brc20_prog_version)
+                .expect(format!("Invalid brc20_prog version: {}", brc20_prog_version).as_str());
+            if !requirement.matches(&version) {
                 return Err(format!(
                     "brc20_prog version mismatch, expected {}, got {}",
-                    BRC20_PROG_VERSION, brc20_prog_version
+                    BRC20_PROG_VERSION_REQUIREMENT, brc20_prog_version
                 )
                 .into());
             }
@@ -912,9 +922,10 @@ impl Brc20Indexer {
                 .await?;
                 if event.spent_pk_script.unwrap_or_default() == BRC20_PROG_OP_RETURN_PKSCRIPT {
                     if (block_height < self.config.first_brc20_prog_all_tickers_height
-                            && event.original_ticker.as_bytes().len() < 6)
-                            || block_height < self.config.first_brc20_prog_phase_one_height
-                            || !self.config.brc20_prog_enabled {
+                        && event.original_ticker.as_bytes().len() < 6)
+                        || block_height < self.config.first_brc20_prog_phase_one_height
+                        || !self.config.brc20_prog_enabled
+                    {
                         brc20_prog_tx_idx += 0;
                     } else {
                         brc20_prog_tx_idx += 1;
@@ -1721,10 +1732,13 @@ impl Brc20Indexer {
                                     if event.spent_pk_script.unwrap_or_default()
                                         == BRC20_PROG_OP_RETURN_PKSCRIPT
                                     {
-                                        if (block_height < self.config.first_brc20_prog_all_tickers_height
-                                                && event.original_ticker.as_bytes().len() < 6)
-                                                || block_height < self.config.first_brc20_prog_phase_one_height
-                                                || !self.config.brc20_prog_enabled {
+                                        if (block_height
+                                            < self.config.first_brc20_prog_all_tickers_height
+                                            && event.original_ticker.as_bytes().len() < 6)
+                                            || block_height
+                                                < self.config.first_brc20_prog_phase_one_height
+                                            || !self.config.brc20_prog_enabled
+                                        {
                                             brc20_prog_tx_idx += 0;
                                         } else {
                                             brc20_prog_tx_idx += 1;
