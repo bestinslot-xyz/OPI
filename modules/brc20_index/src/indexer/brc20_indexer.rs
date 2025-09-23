@@ -690,7 +690,7 @@ impl Brc20Indexer {
                     &mut event,
                     0,
                 )?;
-                EventProcessor::brc20_prog_deploy_transfer(
+                match EventProcessor::brc20_prog_deploy_transfer(
                     &self.brc20_prog_client,
                     block_height,
                     block_time,
@@ -699,8 +699,16 @@ impl Brc20Indexer {
                     &inscription_id,
                     &event,
                 )
-                .await?;
-                brc20_prog_tx_idx += 1;
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += tx_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgDeployTransferEvent: {}", e);
+                        return Err(e.into());
+                    }
+                }
             } else if event_type_id == Brc20ProgCallInscribeEvent::event_id() {
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
@@ -718,7 +726,7 @@ impl Brc20Indexer {
                     &mut event,
                     0,
                 )?;
-                EventProcessor::brc20_prog_call_transfer(
+                match EventProcessor::brc20_prog_call_transfer(
                     &self.brc20_prog_client,
                     block_height,
                     block_time,
@@ -727,8 +735,16 @@ impl Brc20Indexer {
                     &inscription_id,
                     &mut event,
                 )
-                .await?;
-                brc20_prog_tx_idx += 1;
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += tx_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgCallTransferEvent: {}", e);
+                        return Err(e.into());
+                    }
+                }
             } else if event_type_id == Brc20ProgTransactInscribeEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgTransactInscribeEvent>(event_type_id, &event_record)?;
@@ -908,7 +924,7 @@ impl Brc20Indexer {
                     &mut event,
                     ticker.decimals,
                 )?;
-                EventProcessor::brc20_transfer_transfer(
+                match EventProcessor::brc20_transfer_transfer(
                     &self.brc20_prog_client,
                     block_height,
                     block_time,
@@ -919,16 +935,14 @@ impl Brc20Indexer {
                     &event,
                     &self.config,
                 )
-                .await?;
-                if event.spent_pk_script.unwrap_or_default() == BRC20_PROG_OP_RETURN_PKSCRIPT {
-                    if (block_height < self.config.first_brc20_prog_all_tickers_height
-                        && event.original_ticker.as_bytes().len() < 6)
-                        || block_height < self.config.first_brc20_prog_phase_one_height
-                        || !self.config.brc20_prog_enabled
-                    {
-                        brc20_prog_tx_idx += 0;
-                    } else {
-                        brc20_prog_tx_idx += 1;
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += tx_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process TransferTransferEvent: {}", e);
+                        return Err(e.into());
                     }
                 }
             } else {
@@ -1097,7 +1111,7 @@ impl Brc20Indexer {
                         .await
                         {
                             Ok(event) => {
-                                EventProcessor::brc20_prog_deploy_transfer(
+                                match EventProcessor::brc20_prog_deploy_transfer(
                                     &self.brc20_prog_client,
                                     block_height,
                                     block_time,
@@ -1106,8 +1120,19 @@ impl Brc20Indexer {
                                     &transfer.inscription_id,
                                     &event,
                                 )
-                                .await?;
-                                brc20_prog_tx_idx += 1;
+                                .await
+                                {
+                                    Ok(tx_executed) => {
+                                        brc20_prog_tx_idx += tx_executed.count;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to process BRC20 Prog deploy transfer event: {}",
+                                            e
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
                             Err(e) => {
                                 tracing::debug!(
@@ -1161,7 +1186,7 @@ impl Brc20Indexer {
                         .await
                         {
                             Ok(event) => {
-                                EventProcessor::brc20_prog_call_transfer(
+                                match EventProcessor::brc20_prog_call_transfer(
                                     &self.brc20_prog_client,
                                     block_height,
                                     block_time,
@@ -1170,8 +1195,19 @@ impl Brc20Indexer {
                                     &transfer.inscription_id,
                                     &event,
                                 )
-                                .await?;
-                                brc20_prog_tx_idx += 1;
+                                .await
+                                {
+                                    Ok(tx_executed) => {
+                                        brc20_prog_tx_idx += tx_executed.count;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to process BRC20 Prog call transfer event: {}",
+                                            e
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -1728,22 +1764,8 @@ impl Brc20Indexer {
                             )
                             .await
                             {
-                                Ok(_) => {
-                                    if event.spent_pk_script.unwrap_or_default()
-                                        == BRC20_PROG_OP_RETURN_PKSCRIPT
-                                    {
-                                        if (block_height
-                                            < self.config.first_brc20_prog_all_tickers_height
-                                            && event.original_ticker.as_bytes().len() < 6)
-                                            || block_height
-                                                < self.config.first_brc20_prog_phase_one_height
-                                            || !self.config.brc20_prog_enabled
-                                        {
-                                            brc20_prog_tx_idx += 0;
-                                        } else {
-                                            brc20_prog_tx_idx += 1;
-                                        }
-                                    }
+                                Ok(txes_executed) => {
+                                    brc20_prog_tx_idx += txes_executed.count;
                                 }
                                 Err(e) => {
                                     tracing::debug!(
