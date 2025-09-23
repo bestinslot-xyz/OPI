@@ -760,7 +760,7 @@ impl Brc20Indexer {
                 .await
                 {
                     Ok(txes_executed) => {
-                        brc20_prog_tx_idx += txes_executed;
+                        brc20_prog_tx_idx += txes_executed.count;
                     }
                     Err(e) => {
                         tracing::error!("Failed to process Brc20ProgTransactTransferEvent: {}", e);
@@ -822,7 +822,7 @@ impl Brc20Indexer {
                 .await
                 {
                     Ok(tx_executed) => {
-                        brc20_prog_tx_idx += if tx_executed { 1 } else { 0 }; // Increment tx index if event was executed
+                        brc20_prog_tx_idx += tx_executed.count;
                     }
                     Err(e) => {
                         tracing::error!("Failed to process Brc20ProgWithdrawTransferEvent: {}", e);
@@ -1228,7 +1228,7 @@ impl Brc20Indexer {
                                 .await
                                 {
                                     Ok(txes_executed) => {
-                                        brc20_prog_tx_idx += txes_executed;
+                                        brc20_prog_tx_idx += txes_executed.count;
                                     }
                                     _ => {}
                                 }
@@ -1387,7 +1387,7 @@ impl Brc20Indexer {
                     .await
                     {
                         Ok(tx_executed) => {
-                            brc20_prog_tx_idx += if tx_executed { 1 } else { 0 };
+                            brc20_prog_tx_idx += tx_executed.count;
                         }
                         Err(e) => {
                             tracing::error!(
