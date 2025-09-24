@@ -20,7 +20,9 @@ pub fn build_brc20_prog_http_client(config: &Brc20IndexerConfig) -> HttpClient {
             );
         }
     }
-    HttpClient::builder()
+    HttpClient::builder()        
+        .max_request_size(100 * 1024 * 1024)
+        .max_response_size(100 * 1024 * 1024)  
         .set_headers(headers)
         .request_timeout(Duration::from_secs(10))
         .build(config.brc20_prog_rpc_url.clone())
