@@ -115,6 +115,8 @@ spec:
             value: "full"
           - name: RUST_LOG
             value: "TRACE"
+          - name: NON_INTERACTIVE
+            value: "true" 
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

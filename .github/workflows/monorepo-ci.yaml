@@ -1,0 +1,108 @@
+name: OPI-Monorepo-CI
+
+on:
+  push:
+    branches: [kubernetes]
+  pull_request:
+  create:
+    tags: ['*-v[0-9]*']
+
+permissions:
+  packages: write      # only needed to read GHCR caches, harmless
+  id-token: write      # likewise harmless; can remove later
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+# ── 3.1  find services that changed ────────────────────────────────────
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event.repository.default_branch }}
+          filters: |
+            ord:             ord/**
+            bitmap_api:      modules/bitmap_api/**
+            bitmap_index:    modules/bitmap_index/**
+            brc20_api:       modules/brc20_api/**
+            main_index:      modules/main_index/**
+            pow20_api:       modules/pow20_api/**
+            pow20_index:     modules/pow20_index/**
+            runes_api:       modules/runes_api/**
+            runes_index:     modules/runes_index/**
+            sns_api:         modules/sns_api/**
+            sns_index:       modules/sns_index/**
+      - id: set
+        run: |
+          list=$(jq -nc '{include: []}')
+          for svc in ord bitmap_api bitmap_index brc20_api main_index \
+                     pow20_api pow20_index runes_api runes_index \
+                     sns_api sns_index; do
+            if [[ "${{ steps.filter.outputs[$svc] }}" == "true" ]]; then
+              list=$(echo "$list" | jq ".include += [\"$svc\"]")
+            fi
+          done
+          echo "matrix=$list" >>"$GITHUB_OUTPUT"
+
+# ── 3.2  build & push per service (no signing) ─────────────────────────
+  build:
+    needs: detect
+    if: ${{ fromJSON(needs.detect.outputs.matrix).include != '' }}
+    runs-on: self-hosted         # ARC runner pod
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.detect.outputs.matrix).include }}
+
+    env:                          # available to every step
+      REGISTRY_URL: ${{ env.REGISTRY_URL }}          # set inside runner pod
+      REGISTRY_USERNAME: ${{ env.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ env.REGISTRY_PASSWORD }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with: { fetch-depth: 0 }
+
+    - uses: docker/setup-qemu-action@v3
+    - uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: image=moby/buildkit:v0.14
+
+    # log in to the private registry
+    - uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY_URL }}
+        username: ${{ env.REGISTRY_USERNAME }}
+        password: ${{ env.REGISTRY_PASSWORD }}
+
+    # build + push the image
+    - id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: ${{ matrix.service == 'ord' && 'ord' || format('modules/{0}', matrix.service) }}
+        push: true
+        tags: |
+          ${{ env.REGISTRY_URL }}/${{ matrix.service }}:${{ github.sha }}
+        platforms: linux/amd64,linux/arm64
+        cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/cache/${{ matrix.service }}
+        cache-to:   type=registry,ref=${{ env.REGISTRY_URL }}/cache/${{ matrix.service }},mode=max
+        sbom: true            # harmless; drop if your registry dislikes it
+        provenance: false     # disables the extra SLSA layer for now
+
+    # Helm chart (stored in the same registry under /charts)
+    - uses: azure/setup-helm@v4
+    - run: |
+        CHART_DIR=helm/${{ matrix.service }}
+        [[ -d "$CHART_DIR" ]] || { echo "No chart for ${{ matrix.service }}"; exit 0; }
+        helm lint "$CHART_DIR"
+        VERSION=$(yq '.version' "$CHART_DIR/Chart.yaml")
+        helm package "$CHART_DIR"
+        helm push "${{ matrix.service }}-$VERSION.tgz" \
+          oci://${{ env.REGISTRY_URL }}/charts
