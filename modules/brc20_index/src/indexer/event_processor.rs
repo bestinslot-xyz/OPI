@@ -26,6 +26,24 @@ static SPAN: &str = "EventProcessor";
 
 pub struct EventProcessor;
 
+pub struct Brc20ProgTxesExecuted {
+    pub count: u64,
+}
+
+impl Brc20ProgTxesExecuted {
+    pub fn none() -> Self {
+        Self { count: 0 }
+    }
+
+    pub fn one() -> Self {
+        Self { count: 1 }
+    }
+
+    pub fn count(count: u64) -> Self {
+        Self { count }
+    }
+}
+
 impl EventProcessor {
     pub async fn brc20_prog_deploy_inscribe(
         block_height: i32,
@@ -48,7 +66,7 @@ impl EventProcessor {
         brc20_prog_tx_idx: u64,
         inscription_id: &str,
         event: &Brc20ProgDeployTransferEvent,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_deploy_transfer", block_height);
         get_brc20_database()
             .lock()
@@ -73,7 +91,7 @@ impl EventProcessor {
             .expect("Failed to deploy smart contract, please check your brc20_prog node");
 
         stop_timer(&function_timer).await;
-        Ok(())
+        Ok(Brc20ProgTxesExecuted::one())
     }
 
     pub async fn brc20_prog_call_inscribe(
@@ -97,7 +115,7 @@ impl EventProcessor {
         brc20_prog_tx_idx: u64,
         inscription_id: &str,
         event: &Brc20ProgCallTransferEvent,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_call_transfer", block_height);
         get_brc20_database()
             .lock()
@@ -137,7 +155,7 @@ impl EventProcessor {
             .expect("Failed to call smart contract, please check your brc20_prog node");
 
         stop_timer(&function_timer).await;
-        Ok(())
+        Ok(Brc20ProgTxesExecuted::one())
     }
 
     pub async fn brc20_prog_transact_inscribe(
@@ -161,7 +179,7 @@ impl EventProcessor {
         block_time: u64,
         brc20_prog_tx_idx: u64,
         event: &Brc20ProgTransactTransferEvent,
-    ) -> Result<u64, Box<dyn Error>> {
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_transact_transfer", block_height);
         get_brc20_database()
             .lock()
@@ -185,7 +203,7 @@ impl EventProcessor {
             .expect("Failed to run transact, please check your brc20_prog node");
 
         stop_timer(&function_timer).await;
-        Ok(transact_result.len() as u64)
+        Ok(Brc20ProgTxesExecuted::count(transact_result.len() as u64))
     }
 
     pub async fn brc20_prog_withdraw_inscribe(
@@ -210,7 +228,7 @@ impl EventProcessor {
         inscription_id: &str,
         event_id: i64,
         event: &Brc20ProgWithdrawTransferEvent,
-    ) -> Result<bool, Box<dyn Error>> {
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer", block_height);
         if event
             .spent_pk_script
@@ -226,7 +244,7 @@ impl EventProcessor {
                 "New pkscript is OP_RETURN for withdraw inscription ID: {}",
                 inscription_id
             );
-            return Ok(false);
+            return Ok(Brc20ProgTxesExecuted::count(0));
         }
 
         get_brc20_database()
@@ -301,7 +319,7 @@ impl EventProcessor {
         }
 
         stop_timer(&function_timer).await;
-        Ok(true)
+        Ok(Brc20ProgTxesExecuted::one())
     }
 
     pub async fn brc20_deploy_inscribe(
@@ -425,8 +443,9 @@ impl EventProcessor {
         event_id: i64,
         event: &TransferTransferEvent,
         config: &Brc20IndexerConfig,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_transfer_transfer", block_height);
+        let mut prog_tx_count = 0;
 
         let TransferValidity::Valid = get_brc20_database()
             .lock()
@@ -442,7 +461,7 @@ impl EventProcessor {
                 "Skipping transfer {} as transfer is not valid",
                 inscription_id
             );
-            return Ok(());
+            return Ok(Brc20ProgTxesExecuted::none());
         };
 
         // TODO: Reduce overall balance of the source wallet
@@ -505,7 +524,7 @@ impl EventProcessor {
                     event.amount,
                     event.ticker
                 );
-                return Ok(());
+                return Ok(Brc20ProgTxesExecuted::none());
             } else {
                 source_balance.overall_balance -= event.amount;
 
@@ -535,6 +554,8 @@ impl EventProcessor {
                     block_height,
                     -event_id, // Negate to create a unique event ID
                 )?;
+
+                prog_tx_count += 1;
                 prog_client
                     .brc20_deposit(
                         event.source_pk_script.clone(),
@@ -621,6 +642,6 @@ impl EventProcessor {
             .set_transfer_validity(&inscription_id, TransferValidity::Used);
 
         stop_timer(&function_timer).await;
-        Ok(())
+        Ok(Brc20ProgTxesExecuted::count(prog_tx_count))
     }
 }
