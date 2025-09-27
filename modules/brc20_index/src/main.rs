@@ -152,6 +152,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("BRC20 Indexer v{}", env!("CARGO_PKG_VERSION"));
     let config = Brc20IndexerConfig::default();
+    let non_interactive = config.non_interactive;
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
     let mut brc20_indexer = Brc20Indexer::new(config);
     if let Some(report_height) = args.report_block_height {
@@ -160,7 +161,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if let Some(reorg_height) = args.reorg_height {
-        if confirm(
+        if non_interactive || confirm(
             "Are you sure you want to reorg the indexer? This will reset the state to the specified height.",
         ) {
             brc20_indexer.reorg(reorg_height).await?;
@@ -172,7 +173,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     if args.is_reset {
-        if confirm(
+        if non_interactive || confirm(
             "Are you sure you want to reset the indexer? This will delete all data and start fresh.",
         ) {
             brc20_indexer.reset().await?;
