@@ -92,7 +92,6 @@ pub const BRC20_PROG_RPC_URL_DEFAULT: &str = "http://localhost:18545";
 pub const BRC20_PROG_RPC_USER_KEY: &str = "BRC20_PROG_RPC_USER";
 pub const BRC20_PROG_RPC_PASSWORD_KEY: &str = "BRC20_PROG_RPC_PASSWORD";
 
-<<<<<<< HEAD
 pub const BRC20_PROG_BALANCE_SERVER_ADDR_KEY: &str = "BRC20_PROG_BALANCE_SERVER_ADDR";
 pub const BRC20_PROG_BALANCE_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18546";
 
@@ -105,8 +104,6 @@ pub const MAX_SAVEPOINTS_DEFAULT: i32 = 2;
 pub const NON_INTERACTIVE: &str = "NON_INTERACTIVE";
 pub const NON_INTERACTIVE_DEFAULT: &str = "false";
 
-=======
->>>>>>> main
 pub const PROTOCOL_KEY: &str = "p";
 pub const PROTOCOL_BRC20: &str = "brc-20";
 pub const PROTOCOL_BRC20_PROG: &str = "brc20-prog";
