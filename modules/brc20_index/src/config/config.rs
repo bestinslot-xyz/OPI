@@ -89,9 +89,6 @@ pub const BRC20_PROG_RPC_URL_DEFAULT: &str = "http://localhost:18545";
 pub const BRC20_PROG_RPC_USER_KEY: &str = "BRC20_PROG_RPC_USER";
 pub const BRC20_PROG_RPC_PASSWORD_KEY: &str = "BRC20_PROG_RPC_PASSWORD";
 
-pub const BRC20_PROG_BALANCE_SERVER_ADDR_KEY: &str = "BRC20_PROG_BALANCE_SERVER_ADDR";
-pub const BRC20_PROG_BALANCE_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18546";
-
 pub const PROTOCOL_KEY: &str = "p";
 pub const PROTOCOL_BRC20: &str = "brc-20";
 pub const PROTOCOL_BRC20_PROG: &str = "brc20-prog";
@@ -178,7 +175,7 @@ pub const OPERATION_MODE_LIGHT: &str = "light";
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 7;
 pub const EVENT_HASH_VERSION: i32 = 2;
-pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.12.0";
+pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.13.0";
 pub const INDEXER_VERSION: &str = "opi-brc20-rs-node v0.1.0";
 pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-rs-node-light v0.1.0";
 
@@ -235,8 +232,6 @@ pub struct Brc20IndexerConfig {
     pub brc20_prog_rpc_url: String,
     pub brc20_prog_rpc_user: Option<String>,
     pub brc20_prog_rpc_password: Option<String>,
-
-    pub brc20_prog_balance_server_addr: String,
 
     pub brc20_prog_bitcoin_rpc_proxy_server_enabled: bool,
     pub brc20_prog_bitcoin_rpc_proxy_server_addr: String,
@@ -311,8 +306,6 @@ impl Default for Brc20IndexerConfig {
                 .ok()
                 .filter(|s| !s.is_empty()),
 
-            brc20_prog_balance_server_addr: std::env::var(BRC20_PROG_BALANCE_SERVER_ADDR_KEY)
-                .unwrap_or_else(|_| BRC20_PROG_BALANCE_SERVER_ADDR_DEFAULT.to_string()),
             light_client_mode: std::env::var(OPERATION_MODE_KEY)
                 .unwrap_or_else(|_| OPERATION_MODE_FULL.to_string())
                 == OPERATION_MODE_LIGHT,

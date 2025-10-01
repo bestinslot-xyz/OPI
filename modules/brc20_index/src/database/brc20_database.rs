@@ -1382,49 +1382,6 @@ impl Brc20Database {
         Ok(balance)
     }
 
-    pub async fn get_balance_nonmutable(
-        &self,
-        ticker: &str,
-        pkscript: &str,
-    ) -> Result<Brc20Balance, Box<dyn Error>> {
-        if let Some(balance) = self.balance_cache.get(&format!("{}:{}", ticker, pkscript)) {
-            return Ok(balance.clone());
-        }
-
-        let row = sqlx::query!(
-            "SELECT 
-                overall_balance, available_balance
-                FROM brc20_historic_balances
-                WHERE pkscript = $1 AND tick = $2
-                ORDER BY block_height DESC, id DESC LIMIT 1;",
-            pkscript,
-            ticker
-        )
-        .fetch_optional(&self.client)
-        .await?;
-
-        if row.is_none() {
-            return Ok(Brc20Balance {
-                overall_balance: 0,
-                available_balance: 0,
-            });
-        }
-
-        let Some(overall_balance) = row.as_ref().and_then(|r| r.overall_balance.to_u128()) else {
-            return Err("Invalid overall balance".into());
-        };
-
-        let Some(available_balance) = row.as_ref().and_then(|r| r.available_balance.to_u128())
-        else {
-            return Err("Invalid available balance".into());
-        };
-
-        Ok(Brc20Balance {
-            overall_balance,
-            available_balance,
-        })
-    }
-
     pub fn update_balance(
         &mut self,
         ticker: &str,

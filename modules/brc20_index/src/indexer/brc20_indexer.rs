@@ -25,7 +25,6 @@ use crate::{
     },
     indexer::{
         EventGenerator, EventProcessor,
-        brc20_prog_balance_server::run_balance_server,
         brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
         brc20_prog_client::{build_brc20_prog_http_client, calculate_brc20_prog_traces_hash},
         brc20_reporter::Brc20Reporter,
@@ -52,7 +51,6 @@ pub struct Brc20Indexer {
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
     brc20_reporter: Brc20Reporter,
-    server_handle: Option<JoinHandle<()>>,
     bitcoin_proxy_server_handle: Option<JoinHandle<()>>,
 }
 
@@ -73,7 +71,6 @@ impl Brc20Indexer {
             brc20_prog_client,
             brc20_reporter,
             event_provider_client,
-            server_handle: None,
             bitcoin_proxy_server_handle: None,
         }
     }
@@ -123,15 +120,6 @@ impl Brc20Indexer {
             }
 
             // Wait for the servers to start
-            let wait_seconds = get_startup_wait_secs();
-            tracing::info!(
-                "Waiting for the server to start for {} seconds...",
-                wait_seconds
-            );
-            let url_clone = self.config.brc20_prog_balance_server_addr.clone();
-            self.server_handle = Some(tokio::spawn(async move {
-                run_balance_server(url_clone).await;
-            }));
             if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
                 let bitcoin_rpc_proxy_addr_clone =
                     self.config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
@@ -147,9 +135,15 @@ impl Brc20Indexer {
                     )
                     .await
                 }));
+
+                let wait_seconds = get_startup_wait_secs();
+                tracing::info!(
+                    "Waiting for the server to start for {} seconds...",
+                    wait_seconds
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
+                tracing::debug!("Continuing initialization...");
             }
-            tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
-            tracing::debug!("Continuing initialization...");
 
             let brc20_prog_block_height =
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
