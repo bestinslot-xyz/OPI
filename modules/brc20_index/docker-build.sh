@@ -62,7 +62,7 @@ docker buildx build \
     --platform linux/amd64 \
     --build-arg DATABASE_URL="postgres://postgres:postgres@${HOST_IP}:54322/brc20_index" \
     --add-host=postgres-host:${HOST_IP} \
-    -t registry.bestinslot.xyz/brc20-index:0.0.7 \
+    -t registry.bestinslot.xyz/brc20-index:0.0.16 \
     --push \
     .
 

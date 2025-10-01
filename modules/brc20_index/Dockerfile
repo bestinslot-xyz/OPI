@@ -1,5 +1,5 @@
 # Stage 1: Build the Rust application
-FROM rust:1.86.0-bookworm AS builder
+FROM rust:1.87.0-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
 
 # Set the working directory
 WORKDIR /usr/src/app
-COPY db_reader /usr/db_reader
+COPY db_reader /usr/ord/db_reader
 # Copy the Cargo.toml and Cargo.lock files
 COPY Cargo.toml Cargo.lock ./
 
