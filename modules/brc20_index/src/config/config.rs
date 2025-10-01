@@ -248,14 +248,11 @@ pub struct Brc20IndexerConfig {
     pub brc20_prog_rpc_user: Option<String>,
     pub brc20_prog_rpc_password: Option<String>,
 
-<<<<<<< HEAD
     pub savepoint_interval: i32,
     pub max_savepoints: i32,
 
     pub brc20_prog_balance_server_addr: String,
 
-=======
->>>>>>> main
     pub brc20_prog_bitcoin_rpc_proxy_server_enabled: bool,
     pub brc20_prog_bitcoin_rpc_proxy_server_addr: String,
 
@@ -331,7 +328,6 @@ impl Default for Brc20IndexerConfig {
                 .ok()
                 .filter(|s| !s.is_empty()),
 
-<<<<<<< HEAD
             savepoint_interval: std::env::var(SAVEPOINT_INTERVAL_KEY)
                 .unwrap_or_else(|_| SAVEPOINT_INTERVAL_DEFAULT.to_string())
                 .parse::<i32>()
@@ -344,8 +340,6 @@ impl Default for Brc20IndexerConfig {
 
             brc20_prog_balance_server_addr: std::env::var(BRC20_PROG_BALANCE_SERVER_ADDR_KEY)
                 .unwrap_or_else(|_| BRC20_PROG_BALANCE_SERVER_ADDR_DEFAULT.to_string()),
-=======
->>>>>>> main
             light_client_mode: std::env::var(OPERATION_MODE_KEY)
                 .unwrap_or_else(|_| OPERATION_MODE_FULL.to_string())
                 == OPERATION_MODE_LIGHT,
