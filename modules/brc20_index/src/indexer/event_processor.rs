@@ -84,8 +84,8 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
-                Some(event.byte_len as u64),
+                inscription_id.to_string(),
+                event.byte_len as u64,
             )
             .await
             .expect("Failed to deploy smart contract, please check your brc20_prog node");
@@ -148,8 +148,8 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
-                Some(event.byte_len as u64),
+                inscription_id.to_string(),
+                event.byte_len as u64,
             )
             .await
             .expect("Failed to call smart contract, please check your brc20_prog node");
@@ -196,8 +196,8 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
-                Some(event.byte_len as u64),
+                inscription_id.to_string(),
+                event.byte_len as u64,
             )
             .await
             .expect("Failed to run transact, please check your brc20_prog node");
@@ -260,7 +260,7 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
+                inscription_id.to_string(),
             )
             .await
             .expect("Failed to run withdraw, please check your brc20_prog node");
@@ -564,7 +564,7 @@ impl EventProcessor {
                         block_time,
                         block_hash.try_into()?,
                         brc20_prog_tx_idx,
-                        Some(inscription_id.to_string()),
+                        inscription_id.to_string(),
                     )
                     .await?;
             }
