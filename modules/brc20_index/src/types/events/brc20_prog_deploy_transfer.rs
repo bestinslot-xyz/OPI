@@ -18,6 +18,8 @@ pub struct Brc20ProgDeployTransferEvent {
     pub base64_data: Option<String>,
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub byte_len: i32,
+    #[serde(rename = "btc_txId")]
+    pub btc_txid: Option<String>,
 }
 
 impl Event for Brc20ProgDeployTransferEvent {
@@ -30,16 +32,30 @@ impl Event for Brc20ProgDeployTransferEvent {
     }
 
     fn get_event_str(&self, inscription_id: &str, _decimals: u8) -> String {
-        format!(
-            "{};{};{};{};{};{};{}",
-            Self::event_name(),
-            inscription_id,
-            self.source_pk_script,
-            self.spent_pk_script,
-            self.data.clone().unwrap_or_default(),
-            self.base64_data.clone().unwrap_or_default(),
-            self.byte_len
-        )
+        if let Some(btc_txid) = &self.btc_txid {
+            return format!(
+                "{};{};{};{};{};{};{};{}",
+                Self::event_name(),
+                inscription_id,
+                self.source_pk_script,
+                self.spent_pk_script,
+                self.data.clone().unwrap_or_default(),
+                self.base64_data.clone().unwrap_or_default(),
+                self.byte_len,
+                btc_txid
+            );
+        } else {
+            format!(
+                "{};{};{};{};{};{};{}",
+                Self::event_name(),
+                inscription_id,
+                self.source_pk_script,
+                self.spent_pk_script,
+                self.data.clone().unwrap_or_default(),
+                self.base64_data.clone().unwrap_or_default(),
+                self.byte_len
+            )
+        }
     }
 
     fn calculate_wallets(&mut self, network: bitcoin::Network) {

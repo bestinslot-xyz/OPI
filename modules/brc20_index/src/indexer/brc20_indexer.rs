@@ -1097,6 +1097,7 @@ impl Brc20Indexer {
                     if transfer.old_satpoint.is_some() {
                         match EventGenerator::brc20_prog_deploy_transfer(
                             block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
                             data,
                             base64_data,
                             transfer,
@@ -1164,6 +1165,7 @@ impl Brc20Indexer {
                     if transfer.old_satpoint.is_some() {
                         match EventGenerator::brc20_prog_call_transfer(
                             block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
                             transfer
                                 .content
                                 .get(CONTRACT_ADDRESS_KEY)
@@ -1238,6 +1240,7 @@ impl Brc20Indexer {
                     if transfer.old_satpoint.is_some() {
                         match EventGenerator::brc20_prog_transact_transfer(
                             block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
                             data,
                             base64_data,
                             transfer,
