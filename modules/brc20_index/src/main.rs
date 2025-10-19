@@ -22,6 +22,7 @@ use crate::{
 struct Args {
     is_setup: bool,
     is_reset: bool,
+    is_validate: bool,
     report_block_height: Option<i32>,
     reorg_height: Option<i32>,
 }
@@ -39,19 +40,25 @@ fn confirm(prompt: &str) -> bool {
 }
 
 fn parse_args() -> Result<Args, Box<dyn Error>> {
-    let mut is_setup = false;
-    let mut is_reset = false;
-    let mut reorg_height: Option<i32> = None;
-    let mut report_block_height: Option<i32> = None;
+    let mut args = Args {
+        is_setup: false,
+        is_reset: false,
+        is_validate: false,
+        report_block_height: None,
+        reorg_height: None,
+    };
+
+    let mut log_level = Level::WARN;
 
     for (idx, arg) in std::env::args().enumerate() {
         match arg.as_str() {
-            "--setup" => is_setup = true,
-            "--reset" => is_reset = true,
+            "--setup" => args.is_setup = true,
+            "--reset" => args.is_reset = true,
+            "--validate" => args.is_validate = true,
             "--report" => {
                 if let Some(height_str) = std::env::args().nth(idx + 1) {
                     if let Ok(height) = height_str.parse::<i32>() {
-                        report_block_height = Some(height);
+                        args.report_block_height = Some(height);
                     } else {
                         return Err("Invalid height for --report".into());
                     }
@@ -62,7 +69,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
             "--reorg" => {
                 if let Some(height_str) = std::env::args().nth(idx + 1) {
                     if let Ok(height) = height_str.parse::<i32>() {
-                        reorg_height = Some(height);
+                        args.reorg_height = Some(height);
                     } else {
                         return Err("Invalid height for --reorg".into());
                     }
@@ -73,46 +80,12 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
             "--log-level" | "-l" => {
                 if let Some(level) = std::env::args().nth(idx + 1) {
                     match level.as_str() {
-                        "trace" => tracing::subscriber::set_global_default(
-                            tracing_subscriber::fmt()
-                                .with_target(false)
-                                .with_max_level(Level::TRACE)
-                                .finish(),
-                        )
-                        .expect("Failed to set global subscriber"),
-                        "debug" => tracing::subscriber::set_global_default(
-                            tracing_subscriber::fmt()
-                                .with_target(false)
-                                .with_max_level(Level::DEBUG)
-                                .finish(),
-                        )
-                        .expect("Failed to set global subscriber"),
-                        "info" => tracing::subscriber::set_global_default(
-                            tracing_subscriber::fmt()
-                                .with_target(false)
-                                .with_max_level(Level::INFO)
-                                .finish(),
-                        )
-                        .expect("Failed to set global subscriber"),
-                        "warn" => tracing::subscriber::set_global_default(
-                            tracing_subscriber::fmt()
-                                .with_target(false)
-                                .with_max_level(Level::WARN)
-                                .finish(),
-                        )
-                        .expect("Failed to set global subscriber"),
-                        "error" => tracing::subscriber::set_global_default(
-                            tracing_subscriber::fmt()
-                                .with_target(false)
-                                .with_max_level(Level::ERROR)
-                                .finish(),
-                        )
-                        .expect("Failed to set global subscriber"),
-                        _ => {
-                            return Err(
-                                "Invalid log level. Use trace, debug, info, warn, or error.".into(),
-                            );
-                        }
+                        "trace" => log_level = Level::TRACE,
+                        "debug" => log_level = Level::DEBUG,
+                        "info" => log_level = Level::INFO,
+                        "warn" => log_level = Level::WARN,
+                        "error" => log_level = Level::ERROR,
+                        _ => return Err("Invalid log level".into()),
                     }
                 } else {
                     return Err("No log level provided after --level".into());
@@ -134,12 +107,14 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         }
     }
 
-    Ok(Args {
-        is_setup,
-        is_reset,
-        reorg_height,
-        report_block_height,
-    })
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_target(false)
+            .with_max_level(log_level)
+            .finish(),
+    )?;
+
+    Ok(args)
 }
 
 #[tokio::main]
@@ -154,6 +129,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config = Brc20IndexerConfig::default();
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
     let mut brc20_indexer = Brc20Indexer::new(config);
+    if args.is_validate {
+        println!("Validating BRC20 indexer data against OPI...");
+        brc20_indexer.validate().await?;
+        println!("Validation completed successfully.");
+        return Ok(());
+    }
     if let Some(report_height) = args.report_block_height {
         tracing::info!("Reporting block at height {}", report_height);
         brc20_indexer.report_block(report_height).await?;
