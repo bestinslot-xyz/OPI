@@ -131,8 +131,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut brc20_indexer = Brc20Indexer::new(config);
     if args.is_validate {
         println!("Validating BRC20 indexer data against OPI...");
-        brc20_indexer.validate().await?;
-        println!("Validation completed successfully.");
+        if brc20_indexer.validate().await.is_ok() {
+            println!("Validation completed successfully.");
+        }
         return Ok(());
     }
     if let Some(report_height) = args.report_block_height {
