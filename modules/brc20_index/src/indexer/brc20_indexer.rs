@@ -517,8 +517,15 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
 
-        if self.validate_block(last_indexed_block_height).await.is_err() {
-            tracing::error!("Hash mismatch found at height {}", last_indexed_block_height);
+        if self
+            .validate_block(last_indexed_block_height)
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                "Hash mismatch found at height {}",
+                last_indexed_block_height
+            );
             tracing::warn!("Running a search to find the first mismatched block...");
         } else {
             tracing::info!("All blocks are valid up to {}", last_indexed_block_height);
@@ -538,24 +545,26 @@ impl Brc20Indexer {
         if low > last_indexed_block_height {
             tracing::info!("All blocks are valid up to {}", last_indexed_block_height);
         } else {
-            tracing::error!("Hash mismatch found at height {}", low);
+            tracing::error!("Hash mismatch found above height {}", low);
             if last_indexed_block_height - low - 1 <= 10 {
                 tracing::error!(
-                    "Please reorg the indexer to height using `--reorg {}` and re-validate.",
+                    "Please reorg the indexer using `--reorg {}` and re-validate.",
                     low - 1
                 )
             } else {
-                tracing::error!(
-                    "Please re-index from scratch using `--reset` and re-validate.",
-                )
+                tracing::error!("Please re-index from scratch using `--reset`.");
             }
         }
         Ok(())
     }
 
     pub async fn validate_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
-        tracing::info!("Validating block {}", block_height);
-        let block_data = self.event_provider_client.get_block_info_with_retries(block_height).await?;
+        tracing::warn!("Validating block {}", block_height);
+
+        let block_data = self
+            .event_provider_client
+            .get_block_info_with_retries(block_height)
+            .await?;
 
         let Some(cumulative_events_hash) = get_brc20_database()
             .lock()
@@ -563,8 +572,18 @@ impl Brc20Indexer {
             .get_cumulative_events_hash(block_height)
             .await?
         else {
-            return Err(format!("Cumulative events hash not found for block {}", block_height).into());
+            return Err(format!(
+                "Cumulative events hash not found for block {}",
+                block_height
+            )
+            .into());
         };
+
+        tracing::warn!("Cumulative events hash: {}", cumulative_events_hash);
+        tracing::warn!(
+            "OPI network events hash: {}",
+            block_data.best_cumulative_hash
+        );
 
         if cumulative_events_hash != block_data.best_cumulative_hash {
             return Err(format!(
@@ -574,24 +593,34 @@ impl Brc20Indexer {
             .into());
         }
 
-        let Some(cumulative_trace_hash) = get_brc20_database()
-            .lock()
-            .await
-            .get_cumulative_traces_hash(block_height)
-            .await?
-        else {
-            return Err(format!("Cumulative traces hash not found for block {}", block_height).into());
-        };
-
-        if let Some(expected_trace_hash) = block_data.best_cumulative_trace_hash {
-            if cumulative_trace_hash != expected_trace_hash {
+        if block_height >= self.config.first_brc20_prog_phase_one_height {
+            let Some(cumulative_trace_hash) = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_traces_hash(block_height)
+                .await?
+            else {
                 return Err(format!(
-                    "Cumulative traces hash mismatch at block {}: expected {}, got {}",
-                    block_height, expected_trace_hash, cumulative_trace_hash
+                    "Cumulative traces hash not found for block {}",
+                    block_height
                 )
                 .into());
+            };
+
+            if let Some(expected_trace_hash) = block_data.best_cumulative_trace_hash {
+                tracing::warn!("Local traces hash: {}", cumulative_trace_hash);
+                tracing::warn!("OPI network traces hash: {}", expected_trace_hash);
+                if cumulative_trace_hash != expected_trace_hash {
+                    return Err(format!(
+                        "Cumulative traces hash mismatch at block {}: expected {}, got {}",
+                        block_height, expected_trace_hash, cumulative_trace_hash
+                    )
+                    .into());
+                }
             }
         }
+
+        tracing::warn!("Block {} is valid", block_height);
 
         Ok(())
     }

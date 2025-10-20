@@ -92,12 +92,16 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                 }
             }
             "--help" | "-h" => {
-                println!("Usage: brc20_indexer [--setup] [--reset] [--validate] [--report <height>] [--reorg <height>] [--log-level <level>] [--help]");
+                println!(
+                    "Usage: brc20_indexer [--setup] [--reset] [--validate] [--report <height>] [--reorg <height>] [--log-level <level>] [--help]"
+                );
                 println!("Options:");
                 println!("  --setup   Set up the config and env file.");
                 println!("  --reset   Reset the database to its initial state.");
                 println!("  --validate   Validate the indexed data against OPI.");
-                println!("  --report <height>  Report the BRC20 data at the specified block height to OPI.");
+                println!(
+                    "  --report <height>  Report the BRC20 data at the specified block height to OPI."
+                );
                 println!(
                     "  --log-level, -l <level>  Set the log level (trace, debug, info, warn, error)."
                 );
