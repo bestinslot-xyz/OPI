@@ -510,6 +510,121 @@ impl Brc20Indexer {
         }
     }
 
+    pub async fn validate(&mut self) -> Result<(), Box<dyn Error>> {
+        let last_indexed_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+
+        if self
+            .validate_block(last_indexed_block_height)
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                "Hash mismatch found at height {}",
+                last_indexed_block_height
+            );
+            tracing::warn!("Running a search to find the first mismatched block...");
+        } else {
+            tracing::info!("All blocks are valid up to {}", last_indexed_block_height);
+            return Ok(());
+        }
+
+        let mut low = self.config.first_brc20_height;
+        let mut high = last_indexed_block_height;
+        while low <= high {
+            let mid = (low + high) / 2;
+            if self.validate_block(mid).await.is_err() {
+                high = mid - 1;
+            } else {
+                low = mid + 1;
+            }
+        }
+        if low > last_indexed_block_height {
+            tracing::info!("All blocks are valid up to {}", last_indexed_block_height);
+        } else {
+            tracing::error!("Hash mismatch found above height {}", low);
+            if last_indexed_block_height - low - 1 <= 10 {
+                tracing::error!(
+                    "Please reorg the indexer using `--reorg {}` and re-validate.",
+                    low - 1
+                )
+            } else {
+                tracing::error!("Please re-index from scratch using `--reset`.");
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn validate_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        tracing::warn!("Validating block {}", block_height);
+
+        let block_data = self
+            .event_provider_client
+            .get_block_info_with_retries(block_height)
+            .await?;
+
+        let Some(cumulative_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!(
+                "Cumulative events hash not found for block {}",
+                block_height
+            )
+            .into());
+        };
+
+        tracing::warn!("Cumulative events hash: {}", cumulative_events_hash);
+        tracing::warn!(
+            "OPI network events hash: {}",
+            block_data.best_cumulative_hash
+        );
+
+        if cumulative_events_hash != block_data.best_cumulative_hash {
+            return Err(format!(
+                "Cumulative events hash mismatch at block {}: expected {}, got {}",
+                block_height, block_data.best_cumulative_hash, cumulative_events_hash
+            )
+            .into());
+        }
+
+        if block_height >= self.config.first_brc20_prog_phase_one_height {
+            let Some(cumulative_trace_hash) = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_traces_hash(block_height)
+                .await?
+            else {
+                return Err(format!(
+                    "Cumulative traces hash not found for block {}",
+                    block_height
+                )
+                .into());
+            };
+
+            if let Some(expected_trace_hash) = block_data.best_cumulative_trace_hash {
+                tracing::warn!("Local traces hash: {}", cumulative_trace_hash);
+                tracing::warn!("OPI network traces hash: {}", expected_trace_hash);
+                if cumulative_trace_hash != expected_trace_hash {
+                    return Err(format!(
+                        "Cumulative traces hash mismatch at block {}: expected {}, got {}",
+                        block_height, expected_trace_hash, cumulative_trace_hash
+                    )
+                    .into());
+                }
+            }
+        }
+
+        tracing::warn!("Block {} is valid", block_height);
+
+        Ok(())
+    }
+
     pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         if self.config.light_client_mode {
             return Err("Reporting is not supported in light client mode".into());
@@ -1097,6 +1212,7 @@ impl Brc20Indexer {
                     if transfer.old_satpoint.is_some() {
                         match EventGenerator::brc20_prog_deploy_transfer(
                             block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
                             data,
                             base64_data,
                             transfer,
@@ -1164,6 +1280,7 @@ impl Brc20Indexer {
                     if transfer.old_satpoint.is_some() {
                         match EventGenerator::brc20_prog_call_transfer(
                             block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
                             transfer
                                 .content
                                 .get(CONTRACT_ADDRESS_KEY)
@@ -1238,6 +1355,7 @@ impl Brc20Indexer {
                     if transfer.old_satpoint.is_some() {
                         match EventGenerator::brc20_prog_transact_transfer(
                             block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
                             data,
                             base64_data,
                             transfer,

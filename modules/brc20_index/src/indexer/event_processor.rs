@@ -2,12 +2,12 @@ use std::error::Error;
 
 use brc20_prog::{
     Brc20ProgApiClient,
-    types::{Base64Bytes, RawBytes},
+    types::{B256ED, Base64Bytes, RawBytes},
 };
 use jsonrpsee::http_client::HttpClient;
 
 use crate::{
-    config::{BRC20_PROG_OP_RETURN_PKSCRIPT, Brc20IndexerConfig, NO_WALLET, OP_RETURN},
+    config::{BRC20_PROG_OP_RETURN_PKSCRIPT, Brc20IndexerConfig, NO_TX_ID, NO_WALLET, OP_RETURN},
     database::{
         Brc20Balance, TransferValidity, get_brc20_database,
         timer::{start_timer, stop_timer},
@@ -84,8 +84,9 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
-                Some(event.byte_len as u64),
+                inscription_id.to_string(),
+                event.byte_len as u64,
+                string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
             )
             .await
             .expect("Failed to deploy smart contract, please check your brc20_prog node");
@@ -148,8 +149,9 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
-                Some(event.byte_len as u64),
+                inscription_id.to_string(),
+                event.byte_len as u64,
+                string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
             )
             .await
             .expect("Failed to call smart contract, please check your brc20_prog node");
@@ -196,8 +198,9 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
-                Some(event.byte_len as u64),
+                inscription_id.to_string(),
+                event.byte_len as u64,
+                string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
             )
             .await
             .expect("Failed to run transact, please check your brc20_prog node");
@@ -260,7 +263,7 @@ impl EventProcessor {
                 block_time,
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
-                Some(inscription_id.to_string()),
+                inscription_id.to_string(),
             )
             .await
             .expect("Failed to run withdraw, please check your brc20_prog node");
@@ -564,7 +567,7 @@ impl EventProcessor {
                         block_time,
                         block_hash.try_into()?,
                         brc20_prog_tx_idx,
-                        Some(inscription_id.to_string()),
+                        inscription_id.to_string(),
                     )
                     .await?;
             }
@@ -644,4 +647,10 @@ impl EventProcessor {
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::count(prog_tx_count))
     }
+}
+
+fn string_to_b256ed(s: &str) -> B256ED {
+    let bytes = hex::decode(s).expect("Decoding hex string failed");
+    let array: [u8; 32] = bytes.try_into().expect("Invalid length for B256ED");
+    array.into()
 }

@@ -42,6 +42,16 @@ lazy_static::lazy_static! {
         map.insert(Network::Signet, 230_000);
         map
     };
+
+    pub static ref BRC20_PROG_PRAGUE_HEIGHTS: HashMap<Network, i32> = {
+        let mut map = HashMap::new();
+        map.insert(Network::Bitcoin, 923_369);
+        map.insert(Network::Testnet, 0);
+        map.insert(Network::Testnet4, 0);
+        map.insert(Network::Regtest, 0);
+        map.insert(Network::Signet, 275_000);
+        map
+    };
 }
 
 pub const DB_HOST_KEY: &str = "DB_HOST";
@@ -167,6 +177,7 @@ pub const OPERATION_BRC20_PROG_TRANSACT_SHORT: &str = "t";
 
 pub const BRC20_PROG_OP_RETURN_PKSCRIPT: &str = "6a09425243323050524f47";
 pub const OP_RETURN: &str = "6a";
+pub const NO_TX_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 pub const NO_WALLET: &str = "";
 
@@ -190,7 +201,7 @@ pub const OPERATION_MODE_LIGHT: &str = "light";
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 7;
 pub const EVENT_HASH_VERSION: i32 = 2;
-pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.13.0";
+pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.15.0";
 pub const INDEXER_VERSION: &str = "opi-brc20-rs-node v0.1.0";
 pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-rs-node-light v0.1.0";
 
@@ -242,6 +253,8 @@ pub struct Brc20IndexerConfig {
     pub first_brc20_prog_phase_one_height: i32,
     /// Phase 2 adds support for all tickers.
     pub first_brc20_prog_all_tickers_height: i32,
+    /// Height at which tx_id field was added to brc20_prog events.
+    pub first_brc20_prog_prague_height: i32,
 
     pub brc20_prog_enabled: bool,
     pub brc20_prog_rpc_url: String,
@@ -313,6 +326,9 @@ impl Default for Brc20IndexerConfig {
                 .get(&network_type)
                 .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
             first_brc20_prog_all_tickers_height: *FIRST_BRC20_PROG_PHASE_2_HEIGHTS
+                .get(&network_type)
+                .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
+            first_brc20_prog_prague_height: *BRC20_PROG_PRAGUE_HEIGHTS
                 .get(&network_type)
                 .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
 

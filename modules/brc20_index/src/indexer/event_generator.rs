@@ -54,6 +54,7 @@ impl EventGenerator {
 
     pub async fn brc20_prog_deploy_transfer(
         block_height: i32,
+        include_txid: bool,
         data: Option<&str>,
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
@@ -106,6 +107,11 @@ impl EventGenerator {
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
             byte_len: transfer.byte_len as i32,
+            btc_txid: if include_txid {
+                Some(transfer.txid.clone())
+            } else {
+                None
+            },
         };
         get_brc20_database().lock().await.add_event(
             block_height,
@@ -124,6 +130,7 @@ impl EventGenerator {
 
     pub async fn brc20_prog_call_transfer(
         block_height: i32,
+        include_txid: bool,
         contract_address: Option<&str>,
         contract_inscription_id: Option<&str>,
         data: Option<&str>,
@@ -176,6 +183,11 @@ impl EventGenerator {
             byte_len: transfer.byte_len as u64,
             contract_address: contract_address.map(|s| s.to_string()),
             contract_inscription_id: contract_inscription_id.map(|s| s.to_string()),
+            btc_txid: if include_txid {
+                Some(transfer.txid.clone())
+            } else {
+                None
+            },
         };
         get_brc20_database().lock().await.add_event(
             block_height,
@@ -256,6 +268,7 @@ impl EventGenerator {
 
     pub async fn brc20_prog_transact_transfer(
         block_height: i32,
+        include_txid: bool,
         data: Option<&str>,
         base64_data: Option<&str>,
         transfer: &BRC20Tx,
@@ -304,6 +317,11 @@ impl EventGenerator {
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
             byte_len: transfer.byte_len as i32,
+            btc_txid: if include_txid {
+                Some(transfer.txid.clone())
+            } else {
+                None
+            },
         };
         get_brc20_database().lock().await.add_event(
             block_height,
