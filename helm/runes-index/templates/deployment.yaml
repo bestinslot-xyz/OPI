@@ -27,8 +27,6 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "runes-index.serviceAccountName" . }}
-      nodeSelector:
-        role: cloud
       podAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
         - labelSelector:
@@ -111,7 +109,7 @@ spec:
             valueFrom:
               configMapKeyRef:
                 name: bis-config
-                key: rpc.host
+                key: rpc.url
           - name: ORD_BINARY
             value: "ord"
           - name: ORD_FOLDER
@@ -128,7 +126,7 @@ spec:
                 name: bis-config
                 key: networkType
           - name: NODE_OPTIONS
-            value: "--max-old-space-size=8192"
+            value: "--max-old-space-size=10000"
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

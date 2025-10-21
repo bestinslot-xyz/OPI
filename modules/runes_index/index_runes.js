@@ -172,7 +172,7 @@ async function main_index() {
     } else if (network_type == 'testnet4') {
       network_argument = " --testnet4"
     }
-    let ord_index_cmd = ord_binary + " --no-index-inscriptions --index-runes" + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
+    let ord_index_cmd = ord_binary + " --no-index-inscriptions --index-runes" + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) +  rpc_argument + " index run"
     try {
       let version_string = execSync(ord_version_cmd).toString()
       console.log("ord version: " + version_string)
