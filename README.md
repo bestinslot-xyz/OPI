@@ -28,6 +28,7 @@ EVENT_SEPARATOR = '|'
 ## max_supply, limit_per_mint, amount decimal count is the same as ticker's decimals (no trailing dot if decimals is 0)
 ## ticker_lowercase = lower(ticker)
 ## ticker_original is the ticker on inscription
+## PRAGUE_ACTIVATION_HEIGHT marks support for PRAGUE EVM on BRC2.0 and it's 923369 on Mainnet and 275000 on Signet
 for event in block_events:
   if event is 'predeploy-inscribe':
     block_str += 'predeploy-inscribe;<inscr_id>;<predeployer_pkscript>;<hash>;<block_height>' + EVENT_SEPARATOR
@@ -43,15 +44,24 @@ for event in block_events:
   if event is 'brc20prog-deploy-inscribe':
     block_str += 'brc20prog-deploy-inscribe;<inscr_id>;<source_pkscript>;<data>;<base64_data>' + EVENT_SEPARATOR
   if event is 'brc20prog-deploy-transfer':
-    block_str += 'brc20prog-deploy-transfer;<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
+    if block_height >= PRAGUE_ACTIVATION_HEIGHT:
+      block_str += 'brc20prog-deploy-transfer;<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>;<op_return_tx_id>' + EVENT_SEPARATOR
+    else:
+      block_str += 'brc20prog-deploy-transfer;<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
   if event is 'brc20prog-call-inscribe':
     block_str += '<inscr_id>;<source_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>' + EVENT_SEPARATOR
   if event is 'brc20prog-call-transfer':
-    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>' + EVENT_SEPARATOR
+    if block_height >= PRAGUE_ACTIVATION_HEIGHT:
+      block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>;<byte_len>;<op_return_tx_id>' + EVENT_SEPARATOR
+    else:
+      block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<contract_address>;<contract_inscription_id>;<data>;<base64_data>' + EVENT_SEPARATOR
   if event is 'brc20prog-transact-inscribe':
     block_str += '<inscr_id>;<source_pkscript>;<data>;<base64_data>' + EVENT_SEPARATOR
   if event is 'brc20prog-transact-transfer':
-    block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
+    if block_height >= PRAGUE_ACTIVATION_HEIGHT:
+      block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>;<op_return_tx_id>' + EVENT_SEPARATOR
+    else:
+      block_str += '<inscr_id>;<source_pkscript>;<spent_pkscript>;<data>;<base64_data>;<byte_len>' + EVENT_SEPARATOR
   if event is 'brc20prog-withdraw-inscribe':
     block_str += '<inscr_id>;<source_pkscript>;<ticker_lowercase>;<ticker_original>;<amount>' + EVENT_SEPARATOR
   if event is 'brc20prog-withdraw-transfer':
