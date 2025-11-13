@@ -22,6 +22,17 @@ lazy_static::lazy_static! {
         map
     };
 
+    /// Height at which self-minting is activated
+    pub static ref SELF_MINT_ACTIVATION_HEIGHTS: HashMap<Network, i32> = {
+        let mut map = HashMap::new();
+        map.insert(Network::Bitcoin, 837_090);
+        map.insert(Network::Testnet, 2_413_343);
+        map.insert(Network::Testnet4, 0);
+        map.insert(Network::Regtest, 0);
+        map.insert(Network::Signet, 0);
+        map
+    };
+
     /// During phase 1, only 6 byte tickers can get deposited into programmable module.
     pub static ref FIRST_BRC20_PROG_PHASE_1_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
@@ -43,6 +54,7 @@ lazy_static::lazy_static! {
         map
     };
 
+    /// Height at which brc20_prog events include the tx_id field (Prague upgrade).
     pub static ref BRC20_PROG_PRAGUE_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
         map.insert(Network::Bitcoin, 923_369);
@@ -176,8 +188,6 @@ pub const BRC20_PROG_MINE_BATCH_SIZE: i32 = 50000;
 
 pub const EVENT_SEPARATOR: &str = "|";
 
-pub const SELF_MINT_ENABLE_HEIGHT: i32 = 837090;
-
 pub const OPERATION_MODE_KEY: &str = "OPERATION_MODE";
 pub const OPERATION_MODE_FULL: &str = "full";
 pub const OPERATION_MODE_LIGHT: &str = "light";
@@ -240,6 +250,8 @@ pub struct Brc20IndexerConfig {
     pub first_brc20_prog_all_tickers_height: i32,
     /// Height at which tx_id field was added to brc20_prog events.
     pub first_brc20_prog_prague_height: i32,
+    /// Self mint activation height
+    pub self_mint_activation_height: i32,
 
     pub brc20_prog_enabled: bool,
     pub brc20_prog_rpc_url: String,
@@ -307,6 +319,9 @@ impl Default for Brc20IndexerConfig {
                 .get(&network_type)
                 .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
             first_brc20_prog_prague_height: *BRC20_PROG_PRAGUE_HEIGHTS
+                .get(&network_type)
+                .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
+            self_mint_activation_height: *SELF_MINT_ACTIVATION_HEIGHTS
                 .get(&network_type)
                 .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
 

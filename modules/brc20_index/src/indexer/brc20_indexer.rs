@@ -16,8 +16,8 @@ use crate::{
         OPERATION_BRC20_PROG_TRANSACT, OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY,
         OPERATION_KEY, OPERATION_MINT, OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
         PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20,
-        PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY,
-        SELF_MINT_ENABLE_HEIGHT, SELF_MINT_KEY, TICKER_KEY, get_startup_wait_secs,
+        PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY, SELF_MINT_KEY,
+        TICKER_KEY, get_startup_wait_secs,
     },
     database::{
         get_brc20_database,
@@ -1624,7 +1624,7 @@ impl Brc20Indexer {
 
                 let mut is_self_mint = false;
                 if ticker_length == 5 {
-                    if block_height < SELF_MINT_ENABLE_HEIGHT {
+                    if block_height < self.config.self_mint_activation_height {
                         tracing::debug!(
                             "Skipping transfer {} as self mint is not enabled yet",
                             transfer.inscription_id
