@@ -16,7 +16,7 @@ use tracing::Level;
 
 use crate::{
     config::Brc20IndexerConfig,
-    database::{Brc20Database, set_brc20_database},
+    database::{Brc20Database, get_brc20_database, set_brc20_database},
 };
 
 struct Args {
@@ -25,6 +25,7 @@ struct Args {
     is_validate: bool,
     report_block_height: Option<i32>,
     reorg_height: Option<i32>,
+    reindex_extras: bool,
 }
 
 fn confirm(prompt: &str) -> bool {
@@ -46,6 +47,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         is_validate: false,
         report_block_height: None,
         reorg_height: None,
+        reindex_extras: false,
     };
 
     let mut log_level = Level::WARN;
@@ -76,6 +78,9 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                 } else {
                     return Err("No height provided after --reorg".into());
                 }
+            }
+            "--reindex-extras" => {
+                args.reindex_extras = true;
             }
             "--log-level" | "-l" => {
                 if let Some(level) = std::env::args().nth(idx + 1) {
@@ -156,6 +161,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Ok(());
         } else {
             tracing::error!("Reorg cancelled.");
+            return Ok(());
+        }
+    }
+    if args.reindex_extras {
+        if confirm(
+            "Are you sure you want to reindex extra data? This may take a long time.",
+        ) {
+            get_brc20_database().lock().await.initial_index_of_extra_tables().await?;
+            tracing::info!("Reindexing of extra data completed successfully.");
+            return Ok(());
+        } else {
+            tracing::error!("Reindexing cancelled.");
             return Ok(());
         }
     }
