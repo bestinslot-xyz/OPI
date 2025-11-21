@@ -43,6 +43,15 @@ first_inscription_heights = {
 }
 first_inscription_height = first_inscription_heights[network_type]
 
+save_point_intervals = {
+  "mainnet": 10,
+  "testnet4": 50,
+  "testnet": 50,
+  "regtest": 10,
+  "signet": 10,
+}
+save_point_interval = save_point_intervals[network_type]
+
 report_to_indexer = (os.getenv("REPORT_TO_INDEXER") or "true") == "true"
 report_url = os.getenv("REPORT_URL") or "https://api.opi.network/report_block"
 report_retries = int(os.getenv("REPORT_RETRIES") or "10")
@@ -342,7 +351,7 @@ def check_for_reorg():
   if last_block_ord == last_block[1]: return None ## last block hashes are the same, no reorg
 
   print("REORG DETECTED!!")
-  cur.execute('select block_height, block_hash from sns_block_hashes order by block_height desc limit 10;')
+  cur.execute('select block_height, block_hash from sns_block_hashes order by block_height desc limit %s;', (2*save_point_interval,))
   hashes = cur.fetchall() ## get last 10 hashes
   for h in hashes:
     block = get_block_hash_by_height(h[0])
