@@ -73,6 +73,11 @@ impl Brc20Reporter {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     if retries >= self.report_retries {
+                        tracing::warn!(
+                            "Failed to report BRC20 event hashes after {} retries: {}",
+                            self.report_retries,
+                            e
+                        );
                         return Err(Box::new(e));
                     }
                     retries += 1;
