@@ -625,6 +625,22 @@ impl Brc20Indexer {
         Ok(())
     }
 
+    pub async fn get_block_event_string(
+        &mut self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        get_brc20_database().lock().await.init().await?;
+        let Some(block_event_str) = get_brc20_database()
+            .lock()
+            .await
+            .get_block_events_str(block_height)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(block_event_str))
+    }
+
     pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         if self.config.light_client_mode {
             return Err("Reporting is not supported in light client mode".into());

@@ -21,7 +21,10 @@ use tokio::sync::Mutex;
 
 use crate::{
     config::{Brc20IndexerConfig, EVENT_SEPARATOR},
-    types::{Ticker, events::Event},
+    types::{
+        Ticker,
+        events::{Event, load_event_str},
+    },
 };
 
 lazy_static! {
@@ -274,6 +277,31 @@ impl Brc20Database {
                 + 1
         };
         Ok(())
+    }
+
+    pub async fn get_block_events_str(
+        &self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        let row = sqlx::query!(
+            "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1",
+            block_height
+        )
+        .fetch_all(&self.client)
+        .await?;
+        let mut block_event_str = Vec::new();
+        for row in row {
+            block_event_str.push(load_event_str(
+                row.event_type,
+                &row.event,
+                &row.inscription_id,
+                &self.tickers,
+            )?);
+        }
+        if block_event_str.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(block_event_str.join(EVENT_SEPARATOR)))
     }
 
     pub async fn set_block_hashes(

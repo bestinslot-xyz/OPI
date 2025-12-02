@@ -23,6 +23,7 @@ struct Args {
     is_setup: bool,
     is_reset: bool,
     is_validate: bool,
+    get_event_str: Option<i32>,
     report_block_height: Option<i32>,
     reorg_height: Option<i32>,
     reindex_extras: bool,
@@ -48,6 +49,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         report_block_height: None,
         reorg_height: None,
         reindex_extras: false,
+        get_event_str: None,
     };
 
     let mut log_level = Level::WARN;
@@ -96,6 +98,17 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     return Err("No log level provided after --level".into());
                 }
             }
+            "--block-event-str" => {
+                if let Some(height_str) = std::env::args().nth(idx + 1) {
+                    if let Ok(height) = height_str.parse::<i32>() {
+                        args.get_event_str = Some(height);
+                    } else {
+                        return Err("Invalid height for --block-event-str".into());
+                    }
+                } else {
+                    return Err("No height provided after --block-event-str".into());
+                }
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: brc20_indexer [--setup] [--reset] [--validate] [--report <height>] [--reorg <height>] [--log-level <level>] [--help]"
@@ -110,6 +123,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                 println!(
                     "  --log-level, -l <level>  Set the log level (trace, debug, info, warn, error)."
                 );
+                println!("  --block-event-str <height>  Get the block event string at the specified height.");
                 println!("  --reorg <height>  Reorganize the indexer to the specified height.");
                 println!("  --help    Show this help message.");
                 std::process::exit(0);
@@ -144,6 +158,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Validating BRC20 indexer data against OPI...");
         if brc20_indexer.validate().await.is_ok() {
             println!("Validation completed successfully.");
+        }
+        return Ok(());
+    }
+    if let Some(event_height) = args.get_event_str {
+        tracing::info!("Getting block event string at height {}", event_height);
+        if let Some(event_str) = brc20_indexer.get_block_event_string(event_height).await? {
+            println!("Block Event String at height {}:\n{}", event_height, event_str);
+        } else {
+            println!("No events found at height {}", event_height);
         }
         return Ok(());
     }

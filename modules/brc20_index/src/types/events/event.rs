@@ -1,10 +1,16 @@
+use std::collections::HashMap;
+
 use bitcoin::Network;
 
-use crate::types::events::{
-    Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
-    Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent, Brc20ProgTransactTransferEvent,
-    Brc20ProgWithdrawInscribeEvent, Brc20ProgWithdrawTransferEvent, DeployInscribeEvent,
-    MintInscribeEvent, PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent,
+use crate::types::{
+    Ticker,
+    events::{
+        Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
+        Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
+        Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
+        Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, MintInscribeEvent,
+        PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent,
+    },
 };
 
 pub trait Event {
@@ -30,6 +36,98 @@ pub fn number_string_with_full_decimals(number: u128, decimals: u8) -> String {
     }
 
     number_str
+}
+
+pub fn load_event_str(
+    event_type_id: i32,
+    event_record: &serde_json::Value,
+    inscription_id: &str,
+    tickers: &HashMap<String, Ticker>,
+) -> Result<String, String> {
+    match event_type_id {
+        id if id == Brc20ProgCallInscribeEvent::event_id() => {
+            let event: Brc20ProgCallInscribeEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == Brc20ProgCallTransferEvent::event_id() => {
+            let event: Brc20ProgCallTransferEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == Brc20ProgDeployInscribeEvent::event_id() => {
+            let event: Brc20ProgDeployInscribeEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == Brc20ProgDeployTransferEvent::event_id() => {
+            let event: Brc20ProgDeployTransferEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == Brc20ProgTransactInscribeEvent::event_id() => {
+            let event: Brc20ProgTransactInscribeEvent =
+                serde_json::from_value(event_record.clone())
+                    .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == Brc20ProgTransactTransferEvent::event_id() => {
+            let event: Brc20ProgTransactTransferEvent =
+                serde_json::from_value(event_record.clone())
+                    .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == Brc20ProgWithdrawInscribeEvent::event_id() => {
+            let event: Brc20ProgWithdrawInscribeEvent =
+                serde_json::from_value(event_record.clone())
+                    .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == Brc20ProgWithdrawTransferEvent::event_id() => {
+            let event: Brc20ProgWithdrawTransferEvent =
+                serde_json::from_value(event_record.clone())
+                    .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == PreDeployInscribeEvent::event_id() => {
+            let event: PreDeployInscribeEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            Ok(event.get_event_str(inscription_id, 0))
+        }
+        id if id == DeployInscribeEvent::event_id() => {
+            let event: DeployInscribeEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            let Some(ticker_info) = tickers.get(&event.ticker) else {
+                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+            };
+            Ok(event.get_event_str(inscription_id, ticker_info.decimals))
+        }
+        id if id == MintInscribeEvent::event_id() => {
+            let event: MintInscribeEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            let Some(ticker_info) = tickers.get(&event.ticker) else {
+                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+            };
+            Ok(event.get_event_str(inscription_id, ticker_info.decimals))
+        }
+        id if id == TransferInscribeEvent::event_id() => {
+            let event: TransferInscribeEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            let Some(ticker_info) = tickers.get(&event.ticker) else {
+                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+            };
+            Ok(event.get_event_str(inscription_id, ticker_info.decimals))
+        }
+        id if id == TransferTransferEvent::event_id() => {
+            let event: TransferTransferEvent = serde_json::from_value(event_record.clone())
+                .map_err(|e| format!("Failed to deserialize event: {}", e))?;
+            let Some(ticker_info) = tickers.get(&event.ticker) else {
+                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+            };
+            Ok(event.get_event_str(inscription_id, ticker_info.decimals))
+        }
+        _ => Err(format!("Unknown event type ID: {}", event_type_id)),
+    }
 }
 
 pub fn load_event<T>(event_type_id: i32, event_record: &serde_json::Value) -> Result<T, String>
