@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1",
+  "query": "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1 ORDER BY id ASC",
   "describe": {
     "columns": [
       {
@@ -30,5 +30,5 @@
       false
     ]
   },
-  "hash": "a79979626b55e1c3cb4bafab15d6459773e65b4c2d1b108e837312702f6c6c5c"
+  "hash": "1739ac75852fbd5c4c30b97b2c610b6993816124e95ef022194749109a6fe952"
 }

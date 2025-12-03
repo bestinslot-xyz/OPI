@@ -284,7 +284,7 @@ impl Brc20Database {
         block_height: i32,
     ) -> Result<Option<String>, Box<dyn Error>> {
         let row = sqlx::query!(
-            "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1",
+            "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1 ORDER BY id ASC",
             block_height
         )
         .fetch_all(&self.client)
