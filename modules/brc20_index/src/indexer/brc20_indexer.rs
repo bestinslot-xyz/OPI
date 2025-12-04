@@ -26,7 +26,10 @@ use crate::{
     indexer::{
         EventGenerator, EventProcessor,
         brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
-        brc20_prog_client::{build_brc20_prog_http_client, calculate_brc20_prog_traces_hash},
+        brc20_prog_client::{
+            build_brc20_prog_http_client, calculate_brc20_prog_traces_hash,
+            calculate_brc20_prog_traces_str,
+        },
         brc20_reporter::Brc20Reporter,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
@@ -639,6 +642,15 @@ impl Brc20Indexer {
             return Ok(None);
         };
         Ok(Some(block_event_str))
+    }
+
+    pub async fn get_block_trace_string(
+        &mut self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        return Ok(Some(
+            calculate_brc20_prog_traces_str(&self.brc20_prog_client, block_height).await?,
+        ));
     }
 
     pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {

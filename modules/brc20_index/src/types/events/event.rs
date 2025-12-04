@@ -98,7 +98,10 @@ pub fn load_event_str(
             let event: DeployInscribeEvent = serde_json::from_value(event_record.clone())
                 .map_err(|e| format!("Failed to deserialize event: {}", e))?;
             let Some(ticker_info) = tickers.get(&event.ticker) else {
-                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+                return Err(format!(
+                    "Ticker info not found for ticker: {}",
+                    event.ticker
+                ));
             };
             Ok(event.get_event_str(inscription_id, ticker_info.decimals))
         }
@@ -106,7 +109,10 @@ pub fn load_event_str(
             let event: MintInscribeEvent = serde_json::from_value(event_record.clone())
                 .map_err(|e| format!("Failed to deserialize event: {}", e))?;
             let Some(ticker_info) = tickers.get(&event.ticker) else {
-                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+                return Err(format!(
+                    "Ticker info not found for ticker: {}",
+                    event.ticker
+                ));
             };
             Ok(event.get_event_str(inscription_id, ticker_info.decimals))
         }
@@ -114,7 +120,10 @@ pub fn load_event_str(
             let event: TransferInscribeEvent = serde_json::from_value(event_record.clone())
                 .map_err(|e| format!("Failed to deserialize event: {}", e))?;
             let Some(ticker_info) = tickers.get(&event.ticker) else {
-                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+                return Err(format!(
+                    "Ticker info not found for ticker: {}",
+                    event.ticker
+                ));
             };
             Ok(event.get_event_str(inscription_id, ticker_info.decimals))
         }
@@ -122,7 +131,10 @@ pub fn load_event_str(
             let event: TransferTransferEvent = serde_json::from_value(event_record.clone())
                 .map_err(|e| format!("Failed to deserialize event: {}", e))?;
             let Some(ticker_info) = tickers.get(&event.ticker) else {
-                return Err(format!("Ticker info not found for ticker: {}", event.ticker));
+                return Err(format!(
+                    "Ticker info not found for ticker: {}",
+                    event.ticker
+                ));
             };
             Ok(event.get_event_str(inscription_id, ticker_info.decimals))
         }

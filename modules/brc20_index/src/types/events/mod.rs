@@ -1,5 +1,7 @@
 mod event;
-pub use event::{Event, event_name_to_id, load_event, load_event_str, number_string_with_full_decimals};
+pub use event::{
+    Event, event_name_to_id, load_event, load_event_str, number_string_with_full_decimals,
+};
 
 mod deploy_inscribe;
 pub use deploy_inscribe::DeployInscribeEvent;

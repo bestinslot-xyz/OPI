@@ -33,6 +33,14 @@ pub async fn calculate_brc20_prog_traces_hash(
     client: &HttpClient,
     block_height: i32,
 ) -> Result<String, Box<dyn Error>> {
+    let traces_hash_str = calculate_brc20_prog_traces_str(client, block_height).await?;
+    Ok(sha256::digest(traces_hash_str))
+}
+
+pub async fn calculate_brc20_prog_traces_str(
+    client: &HttpClient,
+    block_height: i32,
+) -> Result<String, Box<dyn Error>> {
     let mut traces_hash_str = String::new();
     let block = client
         .eth_get_block_by_number(format!("{}", block_height), Some(true))
@@ -61,14 +69,7 @@ pub async fn calculate_brc20_prog_traces_hash(
             traces_hash_str.push_str(EVENT_SEPARATOR);
         }
     }
-    tracing::debug!(
-        "Calculated traces for block {}: {}",
-        block_height,
-        traces_hash_str
-    );
-    Ok(sha256::digest(
-        traces_hash_str
-            .trim_end_matches(EVENT_SEPARATOR)
-            .to_string(),
-    ))
+    Ok(traces_hash_str
+        .trim_end_matches(EVENT_SEPARATOR)
+        .to_string())
 }
