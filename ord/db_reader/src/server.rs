@@ -274,22 +274,10 @@ fn is_valid_brc20(inscription_info: &InscriptionInfo) -> bool {
     return false;
   };
 
-  if !decoded_content_type.starts_with("application/json")
-    && !decoded_content_type.starts_with("text/plain")
-  {
-    return false;
-  }
-
-  if decoded_content_type.starts_with("application/json")
-    && decoded_content_type != "application/json"
-    && !decoded_content_type.starts_with("application/json;")
-  {
-    return false;
-  }
-
-  if decoded_content_type.starts_with("text/plain")
-    && decoded_content_type != "text/plain"
+  if !decoded_content_type.eq("text/plain")
     && !decoded_content_type.starts_with("text/plain;")
+    && !decoded_content_type.eq("application/json")
+    && !decoded_content_type.starts_with("application/json;")
   {
     return false;
   }
