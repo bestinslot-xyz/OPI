@@ -256,6 +256,14 @@ impl Brc20Indexer {
                 .get_next_block_height()
                 .await?;
 
+            if next_block >= self.config.height_limit {
+                tracing::info!(
+                    "Reached height limit of {}, stopping indexer.",
+                    self.config.height_limit
+                );
+                return Ok(());
+            }
+
             // Check if a new block is available
             let last_opi_block = self.last_opi_block;
             if next_block > last_opi_block {

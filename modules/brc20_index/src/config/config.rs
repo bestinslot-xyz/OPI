@@ -111,6 +111,9 @@ pub const BRC20_PROG_RPC_URL_DEFAULT: &str = "http://localhost:18545";
 pub const BRC20_PROG_RPC_USER_KEY: &str = "BRC20_PROG_RPC_USER";
 pub const BRC20_PROG_RPC_PASSWORD_KEY: &str = "BRC20_PROG_RPC_PASSWORD";
 
+pub const HEIGHT_LIMIT_KEY: &str = "HEIGHT_LIMIT";
+pub const HEIGHT_LIMIT_DEFAULT: i32 = i32::MAX;
+
 pub const PROTOCOL_KEY: &str = "p";
 pub const PROTOCOL_BRC20: &str = "brc-20";
 pub const PROTOCOL_BRC20_PROG: &str = "brc20-prog";
@@ -263,6 +266,8 @@ pub struct Brc20IndexerConfig {
 
     pub bitcoin_rpc_cache_enabled: bool,
     pub bitcoin_rpc_url: String,
+
+    pub height_limit: i32,
 }
 
 impl Default for Brc20IndexerConfig {
@@ -359,6 +364,11 @@ impl Default for Brc20IndexerConfig {
             bitcoin_rpc_cache_enabled: std::env::var(BITCOIN_RPC_CACHE_ENABLED_KEY)
                 .unwrap_or_else(|_| BITCOIN_RPC_CACHE_ENABLED_DEFAULT.to_string())
                 == "true",
+
+            height_limit: std::env::var(HEIGHT_LIMIT_KEY)
+                .unwrap_or_else(|_| HEIGHT_LIMIT_DEFAULT.to_string())
+                .parse::<i32>()
+                .unwrap_or(HEIGHT_LIMIT_DEFAULT),
         };
 
         config
