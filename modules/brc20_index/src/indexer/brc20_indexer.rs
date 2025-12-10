@@ -208,6 +208,13 @@ impl Brc20Indexer {
 
         for block_height in start_block..=end_block {
             if block_height > self.config.first_brc20_prog_phase_one_height {
+                if block_height % 1000 == 0 {
+                    tracing::info!(
+                        "Regenerating trace hash for block height {}/{}",
+                        block_height,
+                        end_block
+                    );
+                }
                 let Some(block_trace_hash) = self
                     .brc20_prog_client
                     .debug_get_block_trace_hash(block_height.to_string())
