@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{cmp::min, error::Error};
 
 use brc20_prog::Brc20ProgApiClient;
 use jsonrpsee::http_client::HttpClient;
@@ -191,15 +191,18 @@ impl Brc20Indexer {
 
     pub async fn regenerate_and_validate_trace_hashes(&mut self) -> Result<(), Box<dyn Error>> {
         tracing::info!("Updating BRC2.0 event/trace hashes...");
-        let start_block = if self.config.report_all_blocks {
-            self.config.first_brc20_height // Re-generate all blocks
-        } else {
-            self.config.first_brc20_prog_phase_one_height // Only re-generate from BRC2.0 phase one
-        };
         let last_reported_block = self
             .event_provider_client
             .get_best_verified_block_with_retries()
             .await?;
+        let start_block = min(
+            if self.config.report_all_blocks {
+                self.config.first_brc20_height // Re-generate all blocks
+            } else {
+                self.config.first_brc20_prog_phase_one_height // Only re-generate from BRC2.0 phase one
+            },
+            last_reported_block + 1,
+        );
         let end_block = get_brc20_database()
             .lock()
             .await
