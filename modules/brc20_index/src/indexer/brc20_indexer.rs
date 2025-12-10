@@ -196,6 +196,10 @@ impl Brc20Indexer {
         } else {
             self.config.first_brc20_prog_phase_one_height // Only re-generate from BRC2.0 phase one
         };
+        let last_reported_block = self
+            .event_provider_client
+            .get_best_verified_block_with_retries()
+            .await?;
         let end_block = get_brc20_database()
             .lock()
             .await
@@ -243,13 +247,9 @@ impl Brc20Indexer {
                     .update_trace_hash(block_height, &block_trace_hash)
                     .await?;
             }
-            if self.config.report_all_blocks { // Report every block if re-generating all
+            if self.config.report_all_blocks || block_height > last_reported_block {
                 if block_height % 1000 == 0 {
-                    tracing::info!(
-                        "Reporting block height {}/{}",
-                        block_height,
-                        end_block
-                    );
+                    tracing::info!("Reporting block height {}/{}", block_height, end_block);
                 }
                 self.report_block(block_height).await?;
             }
