@@ -257,7 +257,9 @@ impl Brc20Indexer {
                     .update_trace_hash(block_height, &block_trace_hash)
                     .await?;
             }
-            if self.config.report_all_blocks || block_height > last_reported_block {
+            if !self.config.light_client_mode
+                && (self.config.report_all_blocks || block_height > last_reported_block)
+            {
                 if block_height % 1000 == 0 {
                     tracing::info!("Reporting block height {}/{}", block_height, end_block);
                 }
