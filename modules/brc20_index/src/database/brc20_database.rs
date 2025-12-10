@@ -20,7 +20,7 @@ use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
 use crate::{
-    config::{Brc20IndexerConfig, EVENT_SEPARATOR},
+    config::{Brc20IndexerConfig, EVENT_HASH_VERSION, EVENT_SEPARATOR, INDEXER_VERSION},
     types::{
         Ticker,
         events::{Event, load_event_str},
@@ -257,6 +257,51 @@ impl Brc20Database {
             start_time.elapsed().as_millis() as f64 / 1000.0
         );
 
+        Ok(())
+    }
+
+    pub async fn requires_trace_hash_upgrade(&self) -> Result<bool, Box<dyn Error>> {
+        static TRACE_HASH_UPGRADE_EVENT_HASH_VERSION: i32 = 2;
+        if sqlx::query!("SELECT event_hash_version FROM brc20_indexer_version LIMIT 1")
+            .fetch_one(&self.client)
+            .await?
+            .event_hash_version
+            == TRACE_HASH_UPGRADE_EVENT_HASH_VERSION
+        {
+            return Ok(true);
+        } else {
+            return Ok(false);
+        }
+    }
+
+    pub async fn update_trace_hash(
+        &self,
+        block_height: i32,
+        block_trace_hash: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let previous_cumulative_trace_hash =
+            self.get_cumulative_traces_hash(block_height - 1).await?;
+        let cumulative_trace_hash =
+            sha256::digest(previous_cumulative_trace_hash.unwrap_or_default() + block_trace_hash);
+        sqlx::query!(
+            "UPDATE brc20_cumulative_event_hashes SET block_trace_hash = $1, cumulative_trace_hash = $2 WHERE block_height = $3",
+            block_trace_hash,
+            cumulative_trace_hash,
+            block_height
+        )
+        .execute(&self.client)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_event_hash_and_indexer_version(&self) -> Result<(), Box<dyn Error>> {
+        sqlx::query!(
+            "UPDATE brc20_indexer_version SET event_hash_version = $1, indexer_version = $2",
+            EVENT_HASH_VERSION,
+            INDEXER_VERSION
+        )
+        .execute(&self.client)
+        .await?;
         Ok(())
     }
 

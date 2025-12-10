@@ -26,10 +26,7 @@ use crate::{
     indexer::{
         EventGenerator, EventProcessor,
         brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
-        brc20_prog_client::{
-            build_brc20_prog_http_client, calculate_brc20_prog_traces_hash,
-            calculate_brc20_prog_traces_str,
-        },
+        brc20_prog_client::{build_brc20_prog_http_client, retrieve_brc20_prog_traces_hash},
         brc20_reporter::Brc20Reporter,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
@@ -80,6 +77,21 @@ impl Brc20Indexer {
 
     async fn init(&mut self) -> Result<(), Box<dyn Error>> {
         get_brc20_database().lock().await.init().await?;
+
+        if get_brc20_database()
+            .lock()
+            .await
+            .requires_trace_hash_upgrade()
+            .await?
+        {
+            self.regenerate_and_validate_trace_hashes().await?;
+        }
+
+        get_brc20_database()
+            .lock()
+            .await
+            .update_event_hash_and_indexer_version()
+            .await?;
 
         self.event_provider_client.load_providers().await?;
         self.last_opi_block = self.get_opi_block_height().await?;
@@ -177,6 +189,75 @@ impl Brc20Indexer {
         Ok(())
     }
 
+    pub async fn regenerate_and_validate_trace_hashes(&mut self) -> Result<(), Box<dyn Error>> {
+        tracing::info!("Updating BRC2.0 event/trace hashes...");
+        let start_block = if self.config.report_all_blocks {
+            self.config.first_brc20_height // Re-generate all blocks
+        } else {
+            self.config.first_brc20_prog_phase_one_height // Only re-generate from BRC2.0 phase one
+        };
+        let end_block = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+
+        for block_height in start_block..=end_block {
+            if block_height > self.config.first_brc20_prog_phase_one_height {
+                let Some(block_trace_hash) = self
+                    .brc20_prog_client
+                    .debug_get_block_trace_hash(block_height.to_string())
+                    .await?
+                else {
+                    return Err("Trace hash regeneration failed".into());
+                };
+                if self.config.light_client_mode {
+                    // Validate with OPI client if in light client mode
+                    let Some(opi_trace_hash) = self
+                        .event_provider_client
+                        .get_block_info_with_retries(block_height)
+                        .await?
+                        .best_cumulative_trace_hash
+                    else {
+                        return Err("Failed to get OPI trace hash for validation".into());
+                    };
+                    if block_trace_hash != opi_trace_hash {
+                        return Err(format!(
+                            "Trace hash mismatch at block {}: expected {}, got {}",
+                            block_height, opi_trace_hash, block_trace_hash
+                        )
+                        .into());
+                    }
+                }
+                if block_height % 1000 == 0 {
+                    tracing::info!(
+                        "Updating trace hash for block height {}/{}: {}",
+                        block_height,
+                        end_block,
+                        block_trace_hash
+                    );
+                }
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .update_trace_hash(block_height, &block_trace_hash)
+                    .await?;
+            }
+            if self.config.report_all_blocks { // Report every block if re-generating all
+                if block_height % 1000 == 0 {
+                    tracing::info!(
+                        "Reporting block height {}/{}",
+                        block_height,
+                        end_block
+                    );
+                }
+                self.report_block(block_height).await?;
+            }
+        }
+        tracing::info!("BRC2.0 trace hash update complete.");
+        Ok(())
+    }
+
     pub async fn clear_caches(&mut self) -> Result<(), Box<dyn Error>> {
         let current_block_height = get_brc20_database()
             .lock()
@@ -241,6 +322,15 @@ impl Brc20Indexer {
                 .await
                 .get_next_block_height()
                 .await?;
+
+            if next_block >= self.config.height_limit {
+                // Check height limit
+                tracing::info!(
+                    "Reached height limit of {}, stopping indexer.",
+                    self.config.height_limit
+                );
+                return Ok(());
+            }
 
             let loop_timer = start_timer(SPAN, "run_single_block", next_block);
 
@@ -403,12 +493,11 @@ impl Brc20Indexer {
             }
             stop_timer(&index_extras_timer).await;
 
-            let trace_hash_timer =
-                start_timer(SPAN, "calculate_brc20_prog_traces_hash", next_block);
+            let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
             let block_traces_hash = if self.config.brc20_prog_enabled
                 && next_block >= self.config.first_brc20_prog_phase_one_height
             {
-                calculate_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
+                retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
             } else {
                 String::new()
             };
@@ -656,9 +745,14 @@ impl Brc20Indexer {
         &mut self,
         block_height: i32,
     ) -> Result<Option<String>, Box<dyn Error>> {
-        return Ok(Some(
-            calculate_brc20_prog_traces_str(&self.brc20_prog_client, block_height).await?,
-        ));
+        let Ok(Some(trace_string)) = self
+            .brc20_prog_client
+            .debug_get_block_trace_string(block_height.to_string())
+            .await
+        else {
+            return Ok(None);
+        };
+        Ok(Some(trace_string))
     }
 
     pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
@@ -700,7 +794,7 @@ impl Brc20Indexer {
         let block_traces_hash = if self.config.brc20_prog_enabled
             && block_height >= self.config.first_brc20_prog_phase_one_height
         {
-            calculate_brc20_prog_traces_hash(&self.brc20_prog_client, block_height).await?
+            retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, block_height).await?
         } else {
             String::new()
         };
