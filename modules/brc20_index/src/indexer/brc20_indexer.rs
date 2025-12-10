@@ -225,6 +225,19 @@ impl Brc20Indexer {
                 else {
                     return Err("Trace hash regeneration failed".into());
                 };
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .update_trace_hash(block_height, &block_trace_hash)
+                    .await?;
+                let Some(cumulative_trace_hash) = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_cumulative_traces_hash(block_height)
+                    .await?
+                else {
+                    return Err("Cumulative trace hash not found".into());
+                };
                 if self.config.light_client_mode {
                     // Validate with OPI client if in light client mode
                     let Some(opi_trace_hash) = self
@@ -235,27 +248,14 @@ impl Brc20Indexer {
                     else {
                         return Err("Failed to get OPI trace hash for validation".into());
                     };
-                    if block_trace_hash != opi_trace_hash {
+                    if cumulative_trace_hash != opi_trace_hash {
                         return Err(format!(
                             "Trace hash mismatch at block {}: expected {}, got {}",
-                            block_height, opi_trace_hash, block_trace_hash
+                            block_height, opi_trace_hash, cumulative_trace_hash
                         )
                         .into());
                     }
                 }
-                if block_height % 1000 == 0 {
-                    tracing::info!(
-                        "Updating trace hash for block height {}/{}: {}",
-                        block_height,
-                        end_block,
-                        block_trace_hash
-                    );
-                }
-                get_brc20_database()
-                    .lock()
-                    .await
-                    .update_trace_hash(block_height, &block_trace_hash)
-                    .await?;
             }
             if !self.config.light_client_mode
                 && (self.config.report_all_blocks || block_height > last_reported_block)
