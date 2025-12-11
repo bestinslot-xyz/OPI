@@ -283,6 +283,12 @@ impl Brc20Database {
             self.get_cumulative_traces_hash(block_height - 1).await?;
         let cumulative_trace_hash =
             sha256::digest(previous_cumulative_trace_hash.unwrap_or_default() + block_trace_hash);
+        tracing::debug!(
+            "Updating trace hash for block height {}: block_trace_hash={}, cumulative_trace_hash={}",
+            block_height,
+            block_trace_hash,
+            cumulative_trace_hash
+        );
         sqlx::query!(
             "UPDATE brc20_cumulative_event_hashes SET block_trace_hash = $1, cumulative_trace_hash = $2 WHERE block_height = $3",
             block_trace_hash,
