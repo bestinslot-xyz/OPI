@@ -209,6 +209,8 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
 
+        tracing::info!("Starting trace hash regeneration from block {} to {}", start_block, end_block);
+
         for block_height in start_block..=end_block {
             if block_height > self.config.first_brc20_prog_phase_one_height {
                 if block_height % 1000 == 0 {
