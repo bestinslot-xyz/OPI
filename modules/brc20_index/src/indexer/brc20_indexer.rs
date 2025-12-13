@@ -92,6 +92,8 @@ impl Brc20Indexer {
             parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
         );
 
+        self.reorg_to_last_synced_block_height().await?; // Ensure no residue before proceeding
+
         if get_brc20_database()
             .lock()
             .await
