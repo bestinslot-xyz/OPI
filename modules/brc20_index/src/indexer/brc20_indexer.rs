@@ -78,6 +78,20 @@ impl Brc20Indexer {
     async fn init(&mut self) -> Result<(), Box<dyn Error>> {
         get_brc20_database().lock().await.init().await?;
 
+        tracing::info!(
+            "OPI Block Height: {}",
+            get_brc20_database()
+                .lock()
+                .await
+                .get_current_block_height()
+                .await?
+        );
+
+        tracing::info!(
+            "Prog Block Height: {}",
+            parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
+        );
+
         if get_brc20_database()
             .lock()
             .await
@@ -197,7 +211,7 @@ impl Brc20Indexer {
             .await?;
         let start_block = min(
             if self.config.report_all_blocks {
-                self.config.first_brc20_height // Re-generate all blocks
+                self.config.first_inscription_height // Re-generate all blocks
             } else {
                 self.config.first_brc20_prog_phase_one_height // Only re-generate from BRC2.0 phase one
             },
@@ -209,10 +223,14 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
 
-        tracing::info!("Starting trace hash regeneration from block {} to {}", start_block, end_block);
+        tracing::info!(
+            "Starting trace hash regeneration from block {} to {}",
+            start_block,
+            end_block
+        );
 
         for block_height in start_block..=end_block {
-            if block_height > self.config.first_brc20_prog_phase_one_height {
+            if block_height >= self.config.first_brc20_prog_phase_one_height {
                 if block_height % 1000 == 0 {
                     tracing::info!(
                         "Regenerating trace hash for block height {}/{}",
