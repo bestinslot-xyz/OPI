@@ -20,7 +20,10 @@ use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
 use crate::{
-    config::{Brc20IndexerConfig, EVENT_HASH_VERSION, EVENT_SEPARATOR, INDEXER_VERSION},
+    config::{
+        Brc20IndexerConfig, EVENT_HASH_VERSION, EVENT_SEPARATOR, INDEXER_VERSION,
+        LIGHT_CLIENT_VERSION,
+    },
     types::{
         Ticker,
         events::{Event, load_event_str},
@@ -304,7 +307,11 @@ impl Brc20Database {
         sqlx::query!(
             "UPDATE brc20_indexer_version SET event_hash_version = $1, indexer_version = $2",
             EVENT_HASH_VERSION,
-            INDEXER_VERSION
+            if self.light_client_mode {
+                LIGHT_CLIENT_VERSION
+            } else {
+                INDEXER_VERSION
+            }
         )
         .execute(&self.client)
         .await?;

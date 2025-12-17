@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "brc20-index"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "axum",
  "axum-server",

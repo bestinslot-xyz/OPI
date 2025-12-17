@@ -200,8 +200,9 @@ pub const OPERATION_MODE_LIGHT: &str = "light";
 pub const DB_VERSION: i32 = 7;
 pub const EVENT_HASH_VERSION: i32 = 3;
 pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.15.9";
-pub const INDEXER_VERSION: &str = "opi-brc20-rs-node v2.0.0";
-pub const LIGHT_CLIENT_VERSION: &str = "opi-brc20-rs-node-light v2.0.0";
+pub const INDEXER_VERSION: &str = concat!("opi-brc20-rs-node v", env!("CARGO_PKG_VERSION"));
+pub const LIGHT_CLIENT_VERSION: &str =
+    concat!("opi-brc20-rs-node-light v", env!("CARGO_PKG_VERSION"));
 
 pub const OPI_URL: &str = "https://api.opi.network";
 
