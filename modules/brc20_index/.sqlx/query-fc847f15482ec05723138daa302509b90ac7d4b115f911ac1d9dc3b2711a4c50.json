@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE brc20_indexer_version SET event_hash_version = $1, indexer_version = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fc847f15482ec05723138daa302509b90ac7d4b115f911ac1d9dc3b2711a4c50"
+}

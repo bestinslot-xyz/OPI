@@ -20,8 +20,14 @@ use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
 use crate::{
-    config::{Brc20IndexerConfig, EVENT_SEPARATOR},
-    types::{Ticker, events::Event},
+    config::{
+        Brc20IndexerConfig, EVENT_HASH_VERSION, EVENT_SEPARATOR, INDEXER_VERSION,
+        LIGHT_CLIENT_VERSION,
+    },
+    types::{
+        Ticker,
+        events::{Event, load_event_str},
+    },
 };
 
 lazy_static! {
@@ -257,6 +263,61 @@ impl Brc20Database {
         Ok(())
     }
 
+    pub async fn requires_trace_hash_upgrade(&self) -> Result<bool, Box<dyn Error>> {
+        static TRACE_HASH_UPGRADE_EVENT_HASH_VERSION: i32 = 2;
+        if sqlx::query!("SELECT event_hash_version FROM brc20_indexer_version LIMIT 1")
+            .fetch_one(&self.client)
+            .await?
+            .event_hash_version
+            == TRACE_HASH_UPGRADE_EVENT_HASH_VERSION
+        {
+            return Ok(true);
+        } else {
+            return Ok(false);
+        }
+    }
+
+    pub async fn update_trace_hash(
+        &self,
+        block_height: i32,
+        block_trace_hash: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let previous_cumulative_trace_hash =
+            self.get_cumulative_traces_hash(block_height - 1).await?;
+        let cumulative_trace_hash =
+            sha256::digest(previous_cumulative_trace_hash.unwrap_or_default() + block_trace_hash);
+        tracing::debug!(
+            "Updating trace hash for block height {}: block_trace_hash={}, cumulative_trace_hash={}",
+            block_height,
+            block_trace_hash,
+            cumulative_trace_hash
+        );
+        sqlx::query!(
+            "UPDATE brc20_cumulative_event_hashes SET block_trace_hash = $1, cumulative_trace_hash = $2 WHERE block_height = $3",
+            block_trace_hash,
+            cumulative_trace_hash,
+            block_height
+        )
+        .execute(&self.client)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_event_hash_and_indexer_version(&self) -> Result<(), Box<dyn Error>> {
+        sqlx::query!(
+            "UPDATE brc20_indexer_version SET event_hash_version = $1, indexer_version = $2",
+            EVENT_HASH_VERSION,
+            if self.light_client_mode {
+                LIGHT_CLIENT_VERSION
+            } else {
+                INDEXER_VERSION
+            }
+        )
+        .execute(&self.client)
+        .await?;
+        Ok(())
+    }
+
     pub async fn fetch_current_event_id(&mut self) -> Result<(), Box<dyn Error>> {
         self.current_event_id = if self.light_client_mode {
             sqlx::query!("SELECT COALESCE(MAX(id), -1) AS max_event_id FROM brc20_light_events")
@@ -274,6 +335,31 @@ impl Brc20Database {
                 + 1
         };
         Ok(())
+    }
+
+    pub async fn get_block_events_str(
+        &self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        let row = sqlx::query!(
+            "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1 ORDER BY id ASC",
+            block_height
+        )
+        .fetch_all(&self.client)
+        .await?;
+        let mut block_event_str = Vec::new();
+        for row in row {
+            block_event_str.push(load_event_str(
+                row.event_type,
+                &row.event,
+                &row.inscription_id,
+                &self.tickers,
+            )?);
+        }
+        if block_event_str.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(block_event_str.join(EVENT_SEPARATOR)))
     }
 
     pub async fn set_block_hashes(

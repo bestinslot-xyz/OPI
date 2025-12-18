@@ -23,6 +23,8 @@ struct Args {
     is_setup: bool,
     is_reset: bool,
     is_validate: bool,
+    get_event_str: Option<i32>,
+    get_trace_str: Option<i32>,
     report_block_height: Option<i32>,
     reorg_height: Option<i32>,
     reindex_extras: bool,
@@ -48,6 +50,8 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         report_block_height: None,
         reorg_height: None,
         reindex_extras: false,
+        get_event_str: None,
+        get_trace_str: None,
     };
 
     let mut log_level = Level::WARN;
@@ -96,6 +100,28 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     return Err("No log level provided after --level".into());
                 }
             }
+            "--block-event-str" => {
+                if let Some(height_str) = std::env::args().nth(idx + 1) {
+                    if let Ok(height) = height_str.parse::<i32>() {
+                        args.get_event_str = Some(height);
+                    } else {
+                        return Err("Invalid height for --block-event-str".into());
+                    }
+                } else {
+                    return Err("No height provided after --block-event-str".into());
+                }
+            }
+            "--block-trace-str" => {
+                if let Some(height_str) = std::env::args().nth(idx + 1) {
+                    if let Ok(height) = height_str.parse::<i32>() {
+                        args.get_trace_str = Some(height);
+                    } else {
+                        return Err("Invalid height for --block-trace-str".into());
+                    }
+                } else {
+                    return Err("No height provided after --block-trace-str".into());
+                }
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: brc20_indexer [--setup] [--reset] [--validate] [--report <height>] [--reorg <height>] [--log-level <level>] [--help]"
@@ -109,6 +135,12 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                 );
                 println!(
                     "  --log-level, -l <level>  Set the log level (trace, debug, info, warn, error)."
+                );
+                println!(
+                    "  --block-event-str <height>  Get the block event string at the specified height."
+                );
+                println!(
+                    "  --block-trace-str <height>  Get the block trace string at the specified height."
                 );
                 println!("  --reorg <height>  Reorganize the indexer to the specified height.");
                 println!("  --help    Show this help message.");
@@ -148,6 +180,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
+    if let Some(event_height) = args.get_event_str {
+        tracing::info!("Getting block event string at height {}", event_height);
+        if let Some(event_str) = brc20_indexer.get_block_event_string(event_height).await? {
+            println!(
+                "Block Event String at height {}:\n{}",
+                event_height, event_str
+            );
+        } else {
+            println!("No events found at height {}", event_height);
+        }
+        return Ok(());
+    }
+    if let Some(trace_height) = args.get_trace_str {
+        tracing::info!("Getting block trace string at height {}", trace_height);
+        if let Some(trace_str) = brc20_indexer.get_block_trace_string(trace_height).await? {
+            println!(
+                "Block Trace String at height {}:\n{}",
+                trace_height, trace_str
+            );
+        } else {
+            println!("No traces found at height {}", trace_height);
+        }
+        return Ok(());
+    }
     if let Some(report_height) = args.report_block_height {
         tracing::info!("Reporting block at height {}", report_height);
         brc20_indexer.report_block(report_height).await?;
@@ -166,10 +222,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     if args.reindex_extras {
-        if confirm(
-            "Are you sure you want to reindex extra data? This may take a long time.",
-        ) {
-            get_brc20_database().lock().await.initial_index_of_extra_tables().await?;
+        if confirm("Are you sure you want to reindex extra data? This may take a long time.") {
+            get_brc20_database()
+                .lock()
+                .await
+                .initial_index_of_extra_tables()
+                .await?;
             tracing::info!("Reindexing of extra data completed successfully.");
             return Ok(());
         } else {

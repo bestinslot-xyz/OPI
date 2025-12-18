@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 rocksdb = { version = "0.23.0", optional = true }
 rlimit = { version = "0.10.2", optional = true }
-jsonrpsee = { version = "0.25.1", features = [
+jsonrpsee = { version = "0.26.0", features = [
     "server",
     "client",
     "macros",
