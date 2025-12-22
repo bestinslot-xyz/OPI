@@ -122,6 +122,10 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     return Err("No height provided after --block-trace-str".into());
                 }
             }
+            "--version" | "-v" => {
+                println!("v{}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: brc20_indexer [--setup] [--reset] [--validate] [--report <height>] [--reorg <height>] [--log-level <level>] [--help]"
@@ -143,6 +147,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     "  --block-trace-str <height>  Get the block trace string at the specified height."
                 );
                 println!("  --reorg <height>  Reorganize the indexer to the specified height.");
+                println!("  --version, -v    Show the version information.");
                 println!("  --help    Show this help message.");
                 std::process::exit(0);
             }
