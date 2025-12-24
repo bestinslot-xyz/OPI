@@ -189,3 +189,44 @@ pub struct SatInscriptions {
   pub more: bool,
   pub page: u64,
 }
+
+// API v1 Runes Endpoints
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct OutpointBalance {
+  pub outpoint: OutPoint,
+  pub rune_ids: Vec<RuneId>,
+  pub balances: Vec<u128>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuneMetadata {
+  pub rune_id: RuneId,
+  pub rune_name: String,
+  pub rune_block: u64,
+  pub burned: u128,
+  pub divisibility: u8,
+  pub etching: Txid,
+  pub mints: u128,
+  pub number: u64,
+  pub premine: u128,
+  pub spacers: u32,
+  pub symbol: Option<char>,
+  pub terms_amount: Option<u128>,
+  pub terms_cap: Option<u128>,
+  pub terms_height_l: Option<u64>,
+  pub terms_height_h: Option<u64>,
+  pub terms_offset_l: Option<u64>,
+  pub terms_offset_h: Option<u64>,
+  pub timestamp: u64,
+  pub turbo: bool,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlockHeight {
+  pub height: u32,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlockHashResponse {
+  pub hash: String,
+}
