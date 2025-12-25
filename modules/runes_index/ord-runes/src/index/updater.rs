@@ -6,8 +6,6 @@ use {
   tokio::sync::mpsc::{error::TryRecvError, Receiver, Sender},
 };
 
-use std::fs::File;
-
 mod inscription_updater;
 mod rune_updater;
 
@@ -318,24 +316,6 @@ impl<'index> Updater<'index> {
     block: BlockData,
     value_cache: &mut HashMap<OutPoint, u64>,
   ) -> Result<()> {
-    lazy_static! {
-      static ref RUNES_OUTPUT_BLOCKS: Mutex<Option<File>> = Mutex::new(None);
-    }
-    let mut runes_output_blocks = RUNES_OUTPUT_BLOCKS.lock().unwrap();
-    if runes_output_blocks.as_ref().is_none() {
-      let chain_folder: String = match self.index.settings.chain() { 
-        Chain::Mainnet => String::from(""),
-        Chain::Testnet => String::from("testnet3/"),
-        Chain::Testnet4 => String::from("testnet4/"),
-        Chain::Signet => String::from("signet/"),
-        Chain::Regtest => String::from("regtest/"),
-      };
-      *runes_output_blocks = Some(File::options().append(true).open(format!("{chain_folder}runes_output_blocks.txt")).unwrap());
-    }
-    println!("cmd;{0};new_block;{1};{2}", self.height, &block.header.block_hash(), &block.header.time);
-    writeln!(runes_output_blocks.as_ref().unwrap(), "cmd;{0};new_block;{1};{2}", self.height, &block.header.block_hash(), &block.header.time)?;
-    (runes_output_blocks.as_ref().unwrap()).flush()?;
-
     Reorg::detect_reorg(&block, self.height, self.index)?;
 
     let start = Instant::now();
