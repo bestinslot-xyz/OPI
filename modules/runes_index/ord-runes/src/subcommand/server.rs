@@ -256,6 +256,10 @@ impl Server {
         .route("/rune/:rune", get(Self::rune))
         .route("/runes", get(Self::runes))
         .route("/runes/balances", get(Self::runes_balances))
+        .route("/api/v1/runes/outpoints", post(Self::api_outpoints_balances))
+        .route("/api/v1/runes/list", get(Self::api_runes_list))
+        .route("/api/v1/block/height", get(Self::api_block_height))
+        .route("/api/v1/block/:height/hash", get(Self::api_block_hash))
         .route("/sat/:sat", get(Self::sat))
         .route("/search", get(Self::search_by_query))
         .route("/search/*query", get(Self::search_by_path))
@@ -739,6 +743,88 @@ impl Server {
           .page(server_config)
           .into_response()
       })
+    })
+  }
+
+  async fn api_outpoints_balances(
+    Extension(index): Extension<Arc<Index>>,
+    Json(outpoints): Json<Vec<OutPoint>>,
+  ) -> ServerResult<Json<Vec<api::OutpointBalance>>> {
+    task::block_in_place(|| {
+      let balances = index.get_rune_balances_for_outpoints(outpoints)?;
+
+      let results = balances
+        .into_iter()
+        .map(|(outpoint, rune_balances)| {
+          let (rune_ids, amounts): (Vec<_>, Vec<_>) = rune_balances.into_iter().unzip();
+          api::OutpointBalance {
+            outpoint,
+            rune_ids,
+            balances: amounts,
+          }
+        })
+        .collect();
+
+      Ok(Json(results))
+    })
+  }
+
+  async fn api_runes_list(
+    Extension(index): Extension<Arc<Index>>,
+  ) -> ServerResult<Json<Vec<api::RuneMetadata>>> {
+    task::block_in_place(|| {
+      let rune_entries = index.get_all_rune_entries()?;
+
+      let results = rune_entries
+        .into_iter()
+        .map(|(rune_id, rune_entry)| api::RuneMetadata {
+          rune_id,
+          rune_name: rune_entry.spaced_rune.to_string(),
+          rune_block: rune_entry.block,
+          burned: rune_entry.burned,
+          divisibility: rune_entry.divisibility,
+          etching: rune_entry.etching,
+          mints: rune_entry.mints,
+          number: rune_entry.number,
+          premine: rune_entry.premine,
+          spacers: rune_entry.spaced_rune.spacers,
+          symbol: rune_entry.symbol,
+          terms_amount: rune_entry.terms.and_then(|t| t.amount),
+          terms_cap: rune_entry.terms.and_then(|t| t.cap),
+          terms_height_l: rune_entry.terms.and_then(|t| t.height.0),
+          terms_height_h: rune_entry.terms.and_then(|t| t.height.1),
+          terms_offset_l: rune_entry.terms.and_then(|t| t.offset.0),
+          terms_offset_h: rune_entry.terms.and_then(|t| t.offset.1),
+          timestamp: rune_entry.timestamp,
+          turbo: rune_entry.turbo,
+        })
+        .collect();
+
+      Ok(Json(results))
+    })
+  }
+
+  async fn api_block_height(
+    Extension(index): Extension<Arc<Index>>,
+  ) -> ServerResult<Json<api::BlockHeight>> {
+    task::block_in_place(|| {
+      Ok(Json(api::BlockHeight {
+        height: index.block_height()?.ok_or_not_found(|| "block height")?.0,
+      }))
+    })
+  }
+
+  async fn api_block_hash(
+    Extension(index): Extension<Arc<Index>>,
+    Path(height): Path<u32>,
+  ) -> ServerResult<Json<api::BlockHashResponse>> {
+    task::block_in_place(|| {
+      Ok(Json(api::BlockHashResponse {
+        hash: index
+          .block_hash(Some(height))?
+          .ok_or_not_found(|| "block hash")?
+          .to_string(),
+      }))
     })
   }
 
