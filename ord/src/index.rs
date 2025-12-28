@@ -175,14 +175,19 @@ impl Index {
       write_options
     };
 
-    rlimit::Resource::NOFILE.set(
+    match rlimit::Resource::NOFILE.set(
       option_env!("NOFILE_SOFT_LIMIT")
         .and_then(|s| s.parse().ok())
         .unwrap_or(524288),
       option_env!("NOFILE_HARD_LIMIT")
         .and_then(|s| s.parse().ok())
         .unwrap_or(1048576),
-    )?;
+    ) {
+      Ok(_) => (),
+      Err(err) => {
+        eprintln!("Failed to set NOFILE rlimit: {}. If not running as root, you can increase the limit manually before starting the application, otherwise you may encounter issues such as \"too many open files.\"", err);
+      }
+    }
 
     let column_families = vec![
       ColumnFamilyDescriptor::new("height_to_block_header", cf_opts.clone()),
