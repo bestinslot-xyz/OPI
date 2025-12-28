@@ -160,7 +160,7 @@ impl Index {
 
     let mut opts = Options::default();
     opts.create_if_missing(true);
-    opts.set_max_open_files(512000); // 512k
+    opts.set_max_open_files(256);
     opts.set_write_buffer_size(8192 * 1024 * 1024); // 8 GiB
     opts.set_atomic_flush(true);
     opts.create_missing_column_families(true);
