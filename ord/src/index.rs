@@ -178,10 +178,10 @@ impl Index {
     rlimit::Resource::NOFILE.set(
       option_env!("NOFILE_SOFT_LIMIT")
         .and_then(|s| s.parse().ok())
-        .unwrap_or(65536),
+        .unwrap_or(131072),
       option_env!("NOFILE_HARD_LIMIT")
         .and_then(|s| s.parse().ok())
-        .unwrap_or(131072),
+        .unwrap_or(262144),
     )?;
 
     let column_families = vec![

@@ -832,12 +832,9 @@ pub async fn start_rpc_server(config: Config) -> Result<(), Box<dyn Error>> {
 
   let db_path = index_path.join("index.db");
   let sec_db_path = index_path.join("secondary.db");
-  let mut options = Options::default();
-  options.set_max_open_files(32768);
-
   let db = Arc::new(Mutex::new(
     DB::open_cf_descriptors_as_secondary(
-      &options,
+      &Options::default(),
       &db_path,
       &sec_db_path,
       column_families,
