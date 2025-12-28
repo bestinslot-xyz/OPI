@@ -175,7 +175,14 @@ impl Index {
       write_options
     };
 
-    rlimit::Resource::NOFILE.set(65536, 131072)?;
+    rlimit::Resource::NOFILE.set(
+      option_env!("NOFILE_SOFT_LIMIT")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(65536),
+      option_env!("NOFILE_HARD_LIMIT")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(131072),
+    )?;
 
     let column_families = vec![
       ColumnFamilyDescriptor::new("height_to_block_header", cf_opts.clone()),
