@@ -142,12 +142,14 @@ impl EventProviderClient {
                 .get(random_order[i as usize] % self.event_providers.len())
                 .ok_or("No event providers available")?;
 
+            let url = format!(
+                "{}/v1/brc20/bitcoin_rpc_results_on_block?block_height={}",
+                event_provider.url, block_height
+            );
+
             let response = self
                 .client
-                .get(format!(
-                    "{}/v1/brc20/bitcoin_rpc_results_on_block?block_height={}",
-                    event_provider.url, block_height
-                ))
+                .get(&url)
                 .send()
                 .await;
 
@@ -155,9 +157,9 @@ impl EventProviderClient {
                 Ok(resp) => match resp.json().await {
                     Ok(data) => data,
                     Err(e) => {
-                        tracing::error!(
-                            "Error parsing JSON response from {}: {}",
-                            event_provider.url,
+                        tracing::warn!(
+                            "Error parsing JSON response from {}: {}. Retrying...",
+                            url,
                             e
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -165,9 +167,9 @@ impl EventProviderClient {
                     }
                 },
                 Err(e) => {
-                    tracing::error!(
-                        "Error fetching Bitcoin RPC results from {}: {}",
-                        event_provider.url,
+                    tracing::warn!(
+                        "Error fetching Bitcoin RPC results from {}: {}. Retrying...",
+                        url,
                         e
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -176,7 +178,7 @@ impl EventProviderClient {
             };
 
             if let Some(error) = response.error {
-                tracing::error!("Error in response from {}: {}", event_provider.url, error);
+                tracing::error!("Error in response from {}: {}", url, error);
                 continue; // Retry if there's an error
             }
 
@@ -202,22 +204,20 @@ impl EventProviderClient {
                 .get(random_order[i as usize] % self.event_providers.len())
                 .ok_or("No event providers available")?;
 
-            let response = self
-                .client
-                .get(format!(
-                    "{}/v1/brc20/activity_on_block?block_height={}",
-                    event_provider.url, block_height
-                ))
-                .send()
-                .await;
+            let url = format!(
+                "{}/v1/brc20/activity_on_block?block_height={}",
+                event_provider.url, block_height
+            );
+
+            let response = self.client.get(&url).send().await;
 
             let response: BlockActivityResponse = match response {
                 Ok(resp) => match resp.json().await {
                     Ok(data) => data,
                     Err(e) => {
-                        tracing::error!(
-                            "Error parsing JSON response from {}: {}",
-                            event_provider.url,
+                        tracing::warn!(
+                            "Error parsing JSON response from {}: {}. Retrying...",
+                            url,
                             e
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -225,14 +225,14 @@ impl EventProviderClient {
                     }
                 },
                 Err(e) => {
-                    tracing::error!("Error fetching events from {}: {}", event_provider.url, e);
+                    tracing::warn!("Error fetching events from {}: {}. Retrying...", url, e);
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue; // Retry on error
                 }
             };
 
             if let Some(error) = response.error {
-                tracing::error!("Error in response from {}: {}", event_provider.url, error);
+                tracing::error!("Error in response from {}: {}", url, error);
                 continue; // Retry if there's an error
             }
 
@@ -295,4 +295,21 @@ pub struct BestBlockResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BestBlockData {
     pub best_verified_block: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn load_block_930255() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut client =
+                super::EventProviderClient::new(&crate::config::Brc20IndexerConfig::default())
+                    .unwrap();
+            client.load_providers().await.unwrap();
+            let block_info = client.get_events(930255).await.unwrap();
+            println!("{:#?}", block_info);
+        });
+    }
 }
