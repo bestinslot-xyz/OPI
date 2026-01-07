@@ -1421,6 +1421,46 @@ impl Brc20Database {
             .insert(inscription_id.to_string(), validity);
     }
 
+    pub async fn get_balance_all_tickers(
+        &mut self,
+        pkscript: &str,
+    ) -> Result<HashMap<String, Brc20Balance>, Box<dyn Error>> {
+        let rows = sqlx::query!(
+            "SELECT 
+                tick, overall_balance, available_balance
+                FROM brc20_historic_balances
+                WHERE pkscript = $1
+                ORDER BY block_height DESC, id DESC;",
+            pkscript
+        )
+        .fetch_all(&self.client)
+        .await?;
+
+        let mut balances = HashMap::new();
+
+        for row in rows {
+            let Some(overall_balance) = row.overall_balance.to_u128() else {
+                return Err("Invalid overall balance".into());
+            };
+
+            let Some(available_balance) = row.available_balance.to_u128() else {
+                return Err("Invalid available balance".into());
+            };
+
+            if !balances.contains_key(&row.tick) {
+                let balance = Brc20Balance {
+                    overall_balance,
+                    available_balance,
+                };
+                self.balance_cache
+                    .insert(format!("{}:{}", row.tick, pkscript), balance.clone());
+                balances.insert(row.tick.clone(), balance);
+            }
+        }
+
+        Ok(balances)
+    }
+
     pub async fn get_balance(
         &mut self,
         ticker: &str,

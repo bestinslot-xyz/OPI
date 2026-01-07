@@ -622,7 +622,7 @@ impl EventGenerator {
 
     pub async fn brc20_transfer_transfer(
         block_height: i32,
-        ticker: &mut Ticker,
+        ticker: &Ticker,
         original_ticker: &str,
         amount: u128,
         transfer: &BRC20Tx,

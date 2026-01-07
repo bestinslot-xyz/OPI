@@ -28,6 +28,7 @@ use crate::{
         brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
         brc20_prog_client::{build_brc20_prog_http_client, retrieve_brc20_prog_traces_hash},
         brc20_reporter::Brc20Reporter,
+        brc20_swap_refund::Brc20SwapRefund,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
     no_default,
@@ -1260,6 +1261,16 @@ impl Brc20Indexer {
         static METHOD_SPAN: &str = "generate_and_process_events";
         let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
         let mut brc20_prog_tx_idx: u64 = 0;
+
+        if block_height == self.config.brc20_swap_refund_activation_height {
+            Brc20SwapRefund::generate_and_process_refunds(
+                block_height,
+                &self.brc20_prog_client,
+                &self.config,
+                block_time,
+                block_hash,
+            ).await?;
+        }
 
         let get_transfers_timer = start_timer(SPAN, "get_transfers", block_height);
         let transfers = self.main_db.get_transfers(block_height).await?;
