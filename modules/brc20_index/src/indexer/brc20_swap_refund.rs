@@ -122,7 +122,7 @@ impl Brc20SwapRefund {
                     block_time,
                     &block_hash,
                     0,
-                    &get_inscription_id_for_ticker_refund_hex(&ticker.ticker),
+                    &inscription_id,
                     transfer_event_id,
                     &transfer_event,
                     config,
