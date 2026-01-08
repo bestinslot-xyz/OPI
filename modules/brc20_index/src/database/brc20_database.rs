@@ -1,6 +1,6 @@
 use core::panic;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     error::Error,
     sync::Arc,
     time::{Duration, Instant},
@@ -1424,7 +1424,7 @@ impl Brc20Database {
     pub async fn get_balance_all_tickers(
         &mut self,
         pkscript: &str,
-    ) -> Result<HashMap<String, Brc20Balance>, Box<dyn Error>> {
+    ) -> Result<BTreeMap<String, Brc20Balance>, Box<dyn Error>> {
         let rows = sqlx::query!(
             "SELECT 
                 tick, overall_balance, available_balance
@@ -1436,7 +1436,7 @@ impl Brc20Database {
         .fetch_all(&self.client)
         .await?;
 
-        let mut balances = HashMap::new();
+        let mut balances = BTreeMap::new();
 
         for row in rows {
             let Some(overall_balance) = row.overall_balance.to_u128() else {
