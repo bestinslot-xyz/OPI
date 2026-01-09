@@ -900,7 +900,7 @@ impl Brc20Indexer {
             self.brc20_prog_client
                 .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
                 .await?;
-            if is_synced || block_height % 100 == 0 {
+            if is_synced || block_height % 10 == 0 {
                 self.brc20_prog_client.brc20_commit_to_database().await?;
             }
             stop_timer(&function_timer).await;
