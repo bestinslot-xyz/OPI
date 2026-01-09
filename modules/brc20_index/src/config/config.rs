@@ -241,7 +241,10 @@ pub const INDEXER_VERSION: &str = concat!("opi-brc20-rs-node v", env!("CARGO_PKG
 pub const LIGHT_CLIENT_VERSION: &str =
     concat!("opi-brc20-rs-node-light v", env!("CARGO_PKG_VERSION"));
 
-pub const OPI_URL: &str = "https://api.opi.network";
+pub const OPI_API_URL: &str = match option_env!("OPI_API_URL") {
+    Some(url) => url,
+    None => "https://api.opi.network",
+};
 
 pub fn get_startup_wait_secs() -> u64 {
     std::env::var(STARTUP_WAIT_SECONDS_KEY)

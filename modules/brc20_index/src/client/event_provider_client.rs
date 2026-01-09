@@ -3,7 +3,7 @@ use std::error::Error;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Brc20IndexerConfig, EVENT_HASH_VERSION, OPI_URL};
+use crate::config::{Brc20IndexerConfig, EVENT_HASH_VERSION, OPI_API_URL};
 
 pub struct EventProviderClient {
     client: reqwest::Client,
@@ -32,7 +32,7 @@ impl EventProviderClient {
             .client
             .get(format!(
                 "{}/lc/get_verified_event_providers?event_hash_version={}",
-                OPI_URL, EVENT_HASH_VERSION
+                OPI_API_URL, EVENT_HASH_VERSION
             ))
             .send()
             .await?
@@ -54,7 +54,7 @@ impl EventProviderClient {
                     if retries >= RETRY_COUNT {
                         return Err(format!(
                             "Failed to fetch block info from {} for block {}: {}",
-                            OPI_URL, block_height, e
+                            OPI_API_URL, block_height, e
                         )
                         .into());
                     }
@@ -73,7 +73,7 @@ impl EventProviderClient {
             .client
             .get(format!(
                 "{}/lc/get_best_hashes_for_block/{}?network_type={}&event_hash_version={}",
-                OPI_URL, block_height, self.network_type, EVENT_HASH_VERSION
+                OPI_API_URL, block_height, self.network_type, EVENT_HASH_VERSION
             ))
             .send()
             .await?;
@@ -108,7 +108,7 @@ impl EventProviderClient {
             .client
             .get(format!(
                 "{}/lc/get_best_verified_block?event_hash_version={}&network_type={}",
-                OPI_URL, EVENT_HASH_VERSION, self.network_type
+                OPI_API_URL, EVENT_HASH_VERSION, self.network_type
             ))
             .send()
             .await?;
