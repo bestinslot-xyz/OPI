@@ -44,9 +44,10 @@ lazy_static::lazy_static! {
         map
     };
 
+    /// During phase 2, all tickers can get deposited into programmable module.
     pub static ref FIRST_BRC20_PROG_PHASE_2_HEIGHTS: HashMap<Network, i32> = {
         let mut map = HashMap::new();
-        map.insert(Network::Bitcoin, 9_999_999); // Unset, waiting for finalization
+        map.insert(Network::Bitcoin, 934_888);
         map.insert(Network::Testnet, 0);
         map.insert(Network::Testnet4, 0);
         map.insert(Network::Regtest, 0);
@@ -62,6 +63,42 @@ lazy_static::lazy_static! {
         map.insert(Network::Testnet4, 0);
         map.insert(Network::Regtest, 0);
         map.insert(Network::Signet, 275_000);
+        map
+    };
+
+    /// Height for BRC20 swap module refunds activation
+    /// Proposal: https://github.com/brc20-devs/brc20-proposals/blob/main/bp08-module-swap-refund/proposal.md
+    pub static ref BRC20_SWAP_REFUND_ACTIVATION_HEIGHTS: HashMap<Network, i32> = {
+        let mut map = HashMap::new();
+        map.insert(Network::Bitcoin, 932_888); // Per proposal
+        map.insert(Network::Testnet, i32::MAX); // Unset
+        map.insert(Network::Testnet4, i32::MAX); // Unset
+        map.insert(Network::Regtest, i32::MAX); // Unset
+        map.insert(Network::Signet, 283_888); // Per proposal
+        map
+    };
+
+    /// BRC20 swap refund addresses per network
+    /// Proposal: https://github.com/brc20-devs/brc20-proposals/blob/main/bp08-module-swap-refund/proposal.md
+    pub static ref BRC20_SWAP_REFUND_ADDRESS: HashMap<Network, & 'static str> = {
+        let mut map = HashMap::new();
+        map.insert(Network::Bitcoin, "bc1qrj03km5h9ag24cpynyn3l5tvny9cyd0x0le42u");
+        map.insert(Network::Testnet, "");
+        map.insert(Network::Testnet4, "");
+        map.insert(Network::Regtest, "");
+        map.insert(Network::Signet, "tb1qkrewl9zclku2qngth52eezdyrwmjpcspttdypa");
+        map
+    };
+
+    /// BRC20 swap module OP_RETURN pkScripts per network
+    /// Proposal: https://github.com/brc20-devs/brc20-proposals/blob/main/bp08-module-swap-refund/proposal.md
+    pub static ref BRC20_SWAP_MODULE_PKSCRIPT: HashMap<Network, & 'static str> = {
+        let mut map = HashMap::new();
+        map.insert(Network::Bitcoin, "6a208cbc2ac9896cac98d304aa42f43b98208ce8ae31c25e48d84ee852834a1a8066");
+        map.insert(Network::Testnet, "");
+        map.insert(Network::Testnet4, "");
+        map.insert(Network::Regtest, "");
+        map.insert(Network::Signet, "6a2031152ea2364a6dbaab9013be8d656a34256d7e89f0c30714bbb04a9d85e63e5b");
         map
     };
 }
@@ -219,7 +256,10 @@ pub const INDEXER_VERSION: &str = concat!("opi-brc20-rs-node v", env!("CARGO_PKG
 pub const LIGHT_CLIENT_VERSION: &str =
     concat!("opi-brc20-rs-node-light v", env!("CARGO_PKG_VERSION"));
 
-pub const OPI_URL: &str = "https://api.opi.network";
+pub const OPI_API_URL: &str = match option_env!("OPI_API_URL") {
+    Some(url) => url,
+    None => "https://api.opi.network",
+};
 
 pub fn get_startup_wait_secs() -> u64 {
     std::env::var(STARTUP_WAIT_SECONDS_KEY)
@@ -271,6 +311,13 @@ pub struct Brc20IndexerConfig {
     pub first_brc20_prog_prague_height: i32,
     /// Self mint activation height
     pub self_mint_activation_height: i32,
+
+    /// BRC20 swap refund activation height
+    pub brc20_swap_refund_activation_height: i32,
+    /// BRC20 swap refund address
+    pub brc20_swap_refund_address: String,
+    /// BRC20 swap module pkScript
+    pub brc20_swap_module_pkscript: String,
 
     pub brc20_prog_enabled: bool,
     pub brc20_prog_rpc_url: String,
@@ -351,6 +398,17 @@ impl Default for Brc20IndexerConfig {
             self_mint_activation_height: *SELF_MINT_ACTIVATION_HEIGHTS
                 .get(&network_type)
                 .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
+            brc20_swap_refund_activation_height: *BRC20_SWAP_REFUND_ACTIVATION_HEIGHTS
+                .get(&network_type)
+                .unwrap_or_else(|| panic!("Invalid network type: {}", network_type)),
+            brc20_swap_refund_address: BRC20_SWAP_REFUND_ADDRESS
+                .get(&network_type)
+                .unwrap_or(&"")
+                .to_string(),
+            brc20_swap_module_pkscript: BRC20_SWAP_MODULE_PKSCRIPT
+                .get(&network_type)
+                .unwrap_or(&"")
+                .to_string(),
 
             brc20_prog_enabled: std::env::var(BRC20_PROG_ENABLED_KEY)
                 .unwrap_or_else(|_| BRC20_PROG_ENABLED_DEFAULT.to_string())
