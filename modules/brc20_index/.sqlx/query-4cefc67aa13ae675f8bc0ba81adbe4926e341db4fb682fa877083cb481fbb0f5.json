@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \n                tick, overall_balance, available_balance\n                FROM brc20_historic_balances\n                WHERE pkscript = $1\n                ORDER BY block_height DESC, id DESC;",
+  "query": "SELECT DISTINCT ON (tick)\n                tick,\n                overall_balance,\n                available_balance\n            FROM brc20_historic_balances\n            WHERE pkscript = $1\n            ORDER BY tick, block_height DESC, id DESC;",
   "describe": {
     "columns": [
       {
@@ -30,5 +30,5 @@
       false
     ]
   },
-  "hash": "35d74b575302797c64eb803e0e514de05c4a0170c853b9742d38788b5455e222"
+  "hash": "4cefc67aa13ae675f8bc0ba81adbe4926e341db4fb682fa877083cb481fbb0f5"
 }
