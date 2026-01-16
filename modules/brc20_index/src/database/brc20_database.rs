@@ -1426,11 +1426,13 @@ impl Brc20Database {
         pkscript: &str,
     ) -> Result<BTreeMap<String, Brc20Balance>, Box<dyn Error>> {
         let rows = sqlx::query!(
-            "SELECT 
-                tick, overall_balance, available_balance
-                FROM brc20_historic_balances
-                WHERE pkscript = $1
-                ORDER BY block_height DESC, id DESC;",
+            "SELECT DISTINCT ON (tick)
+                tick,
+                overall_balance,
+                available_balance
+            FROM brc20_historic_balances
+            WHERE pkscript = $1
+            ORDER BY tick, block_height DESC, id DESC;",
             pkscript
         )
         .fetch_all(&self.client)
