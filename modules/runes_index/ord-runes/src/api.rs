@@ -3,6 +3,77 @@ use {
   serde_hex::{SerHex, Strict},
 };
 
+// Custom serialization for u128 to ensure it's always serialized as a string
+mod u128_as_string {
+  use serde::{Deserialize, Deserializer, Serializer};
+
+  pub fn serialize<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    serializer.serialize_str(&value.to_string())
+  }
+
+  pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let s = String::deserialize(deserializer)?;
+    s.parse::<u128>().map_err(serde::de::Error::custom)
+  }
+}
+
+mod u128_option_as_string {
+  use serde::{Deserialize, Deserializer, Serializer};
+
+  pub fn serialize<S>(value: &Option<u128>, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    match value {
+      Some(v) => serializer.serialize_some(&v.to_string()),
+      None => serializer.serialize_none(),
+    }
+  }
+
+  pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u128>, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let opt = Option::<String>::deserialize(deserializer)?;
+    opt
+      .map(|s| s.parse::<u128>().map_err(serde::de::Error::custom))
+      .transpose()
+  }
+}
+
+mod u128_vec_as_string {
+  use serde::{Deserialize, Deserializer, Serializer};
+
+  pub fn serialize<S>(values: &Vec<u128>, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    use serde::ser::SerializeSeq;
+    let mut seq = serializer.serialize_seq(Some(values.len()))?;
+    for value in values {
+      seq.serialize_element(&value.to_string())?;
+    }
+    seq.end()
+  }
+
+  pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u128>, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let strings = Vec::<String>::deserialize(deserializer)?;
+    strings
+      .into_iter()
+      .map(|s| s.parse::<u128>().map_err(serde::de::Error::custom))
+      .collect()
+  }
+}
+
 pub use crate::templates::{
   BlocksHtml as Blocks, RuneHtml as Rune, RunesHtml as Runes, StatusHtml as Status,
   TransactionHtml as Transaction,
@@ -188,4 +259,51 @@ pub struct SatInscriptions {
   pub ids: Vec<InscriptionId>,
   pub more: bool,
   pub page: u64,
+}
+
+// API v1 Runes Endpoints
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct OutpointBalance {
+  pub outpoint: OutPoint,
+  pub rune_ids: Vec<RuneId>,
+  #[serde(with = "u128_vec_as_string")]
+  pub balances: Vec<u128>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuneMetadata {
+  pub rune_id: RuneId,
+  pub rune_name: String,
+  pub rune_block: u64,
+  #[serde(with = "u128_as_string")]
+  pub burned: u128,
+  pub divisibility: u8,
+  pub etching: Txid,
+  #[serde(with = "u128_as_string")]
+  pub mints: u128,
+  pub number: u64,
+  #[serde(with = "u128_as_string")]
+  pub premine: u128,
+  pub spacers: u32,
+  pub symbol: Option<char>,
+  #[serde(with = "u128_option_as_string")]
+  pub terms_amount: Option<u128>,
+  #[serde(with = "u128_option_as_string")]
+  pub terms_cap: Option<u128>,
+  pub terms_height_l: Option<u64>,
+  pub terms_height_h: Option<u64>,
+  pub terms_offset_l: Option<u64>,
+  pub terms_offset_h: Option<u64>,
+  pub timestamp: u64,
+  pub turbo: bool,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlockHeight {
+  pub height: u32,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlockHashResponse {
+  pub hash: String,
 }
