@@ -25,9 +25,7 @@ use crate::{
     },
     types::{
         Ticker,
-        events::{
-            Event, MintInscribeEvent, load_event_str,
-        },
+        events::{Event, MintInscribeEvent, load_event_str},
     },
 };
 
@@ -274,16 +272,30 @@ impl Brc20Database {
         }
 
         // Check if first event of refund_height is '.com' ticker
-        let row = sqlx::query!(
-            "SELECT id, event_type, event->>'tick' AS tick FROM brc20_events WHERE block_height = $1 AND inscription_id LIKE '%00000000i0' ORDER BY id ASC LIMIT 1",
-            refund_height
-        ).fetch_one(&self.client).await;
-        if let Ok(row) = row {
-            if row.tick.as_deref() == Some(".com") {
-                return Ok(false);
+        if self.light_client_mode {
+            let row = sqlx::query!(
+                "SELECT id, event_type, event->>'tick' AS tick FROM brc20_light_events WHERE block_height = $1 AND inscription_id LIKE '%00000000i0' ORDER BY id ASC LIMIT 1",
+                refund_height
+            ).fetch_one(&self.client).await;
+            if let Ok(row) = row {
+                if row.tick.as_deref() == Some(".com") {
+                    return Ok(false);
+                }
+            } else {
+                return Err("BRC20 Swap Refund events not found".into());
             }
         } else {
-            return Err("BRC20 Swap Refund events not found".into());
+            let row = sqlx::query!(
+                "SELECT id, event_type, event->>'tick' AS tick FROM brc20_events WHERE block_height = $1 AND inscription_id LIKE '%00000000i0' ORDER BY id ASC LIMIT 1",
+                refund_height
+            ).fetch_one(&self.client).await;
+            if let Ok(row) = row {
+                if row.tick.as_deref() == Some(".com") {
+                    return Ok(false);
+                }
+            } else {
+                return Err("BRC20 Swap Refund events not found".into());
+            }
         }
 
         let mut tx = self.client.begin().await?;
