@@ -26,7 +26,7 @@ use crate::{
     types::{
         Ticker,
         events::{
-            self, Event, MintInscribeEvent, TransferInscribeEvent, load_event, load_event_str,
+            Event, MintInscribeEvent, load_event_str,
         },
     },
 };
