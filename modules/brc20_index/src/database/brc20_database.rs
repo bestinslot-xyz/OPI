@@ -262,7 +262,7 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn maybe_fix_refund_order(&self, refund_height: i32) -> Result<bool, Box<dyn Error>> {
+    pub async fn maybe_fix_refund_order(&mut self, refund_height: i32) -> Result<bool, Box<dyn Error>> {
         if self.network != Network::Bitcoin {
             return Ok(false);
         }
@@ -352,9 +352,10 @@ impl Brc20Database {
     }
 
     pub async fn recalculate_cumulative_event_hashes(
-        &self,
+        &mut self,
         from_height: i32,
     ) -> Result<(), Box<dyn Error>> {
+        self.init().await?;
         let current_height = self.get_current_block_height().await?;
         for height in from_height..=current_height {
             let block_event_str = self.get_block_events_str(height).await?;
