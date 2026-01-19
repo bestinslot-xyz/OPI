@@ -107,6 +107,12 @@ impl Brc20Indexer {
         get_brc20_database()
             .lock()
             .await
+            .maybe_fix_refund_order(self.config.brc20_swap_refund_activation_height)
+            .await?;
+
+        get_brc20_database()
+            .lock()
+            .await
             .update_event_hash_and_indexer_version()
             .await?;
 
@@ -1269,7 +1275,8 @@ impl Brc20Indexer {
                 &self.config,
                 block_time,
                 block_hash,
-            ).await?;
+            )
+            .await?;
         }
 
         let get_transfers_timer = start_timer(SPAN, "get_transfers", block_height);

@@ -9,7 +9,6 @@ use std::{
 
 use axum::body::Bytes;
 use bitcoin::Network;
-use brc20_index::types::events;
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
 use once_cell::sync::OnceCell;
@@ -26,7 +25,9 @@ use crate::{
     },
     types::{
         Ticker,
-        events::{Event, load_event_str},
+        events::{
+            self, Event, MintInscribeEvent, TransferInscribeEvent, load_event, load_event_str,
+        },
     },
 };
 
@@ -261,6 +262,111 @@ impl Brc20Database {
         );
 
         Ok(())
+    }
+
+    pub async fn maybe_fix_refund_order(&self, refund_height: i32) -> Result<bool, Box<dyn Error>> {
+        if self.network != Network::Bitcoin {
+            return Ok(false);
+        }
+        let current_height = self.get_current_block_height().await?;
+        if current_height < refund_height {
+            return Ok(false);
+        }
+
+        // Check if first event of refund_height is '.com' ticker
+        let row = sqlx::query!(
+            "SELECT id, event_type, event->>'tick' AS tick FROM brc20_events WHERE block_height = $1 AND inscription_id LIKE '%00000000i0' ORDER BY id ASC LIMIT 1",
+            refund_height
+        ).fetch_one(&self.client).await;
+        if let Ok(row) = row {
+            if row.tick.as_deref() == Some(".com") {
+                return Ok(false);
+            }
+        } else {
+            return Err("BRC20 Swap Refund events not found".into());
+        }
+
+        let mut tx = self.client.begin().await?;
+
+        // Fix the order of refund events at block height 932888
+        sqlx::raw_sql(format!("
+            WITH filtered AS (
+                SELECT
+                    id,
+                    row_number() OVER (ORDER BY case when event->>'tick' like '.com' then 'aaaa' else event->>'tick' end, id) AS rn_tick
+                FROM {}
+                WHERE block_height = 932888
+                    AND inscription_id LIKE '%00000000000000000000000000i0'
+                ),
+            ids_sorted AS (
+                SELECT
+                    id,
+                    row_number() OVER (ORDER BY id) AS rn_id
+                FROM filtered
+            ),
+            mapping AS (
+                SELECT
+                    f.id        AS old_id,
+                    i.id        AS new_id
+                FROM filtered f
+                JOIN ids_sorted i
+                    ON i.rn_id = f.rn_tick
+            )
+            UPDATE {} t
+            SET id = -m.new_id
+            FROM mapping m
+            WHERE t.id = m.old_id;
+        ", self.events_table, self.events_table).as_str()).execute(&mut *tx).await?;
+
+        sqlx::raw_sql(
+            format!(
+                "UPDATE {}
+                SET id = -id
+                WHERE id < 0;",
+                self.events_table
+            )
+            .as_str(),
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Recalculate cumulative event hashes from refund_height to current_height
+        for height in refund_height..=current_height {
+            let row = sqlx::query!(
+                "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1 ORDER BY id ASC",
+                height
+            )
+            .fetch_all(&mut *tx)
+            .await?;
+            let mut block_event_str = Vec::new();
+            for row in row {
+                block_event_str.push(load_event_str(
+                    row.event_type,
+                    &row.event,
+                    &row.inscription_id,
+                    &self.tickers,
+                )?);
+            }
+            let block_event_str = block_event_str.join(EVENT_SEPARATOR);
+            let block_events_hash = sha256::digest(&block_event_str);
+            let cumulative_event_hash = self.get_cumulative_events_hash(height - 1).await?;
+            let cumulative_event_hash = match cumulative_event_hash {
+                Some(hash) => sha256::digest(hash + &block_events_hash),
+                None => block_events_hash.clone(),
+            };
+            sqlx::query!(
+                "UPDATE brc20_cumulative_event_hashes SET block_event_hash = $1, cumulative_event_hash = $2 WHERE block_height = $3",
+                block_events_hash,
+                cumulative_event_hash,
+                height
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        Ok(true)
     }
 
     pub async fn requires_trace_hash_upgrade(&self) -> Result<bool, Box<dyn Error>> {
@@ -830,13 +936,13 @@ impl Brc20Database {
             "SELECT event FROM {} WHERE event_type = $1 AND block_height > $2",
             self.events_table
         ))
-        .bind(crate::types::events::MintInscribeEvent::event_id())
+        .bind(MintInscribeEvent::event_id())
         .bind(block_height)
         .fetch_all(&mut *tx)
         .await?;
         let mut ticker_changes = HashMap::new();
         for row in res {
-            let event: events::MintInscribeEvent = serde_json::from_value(row.get("event"))?;
+            let event: MintInscribeEvent = serde_json::from_value(row.get("event"))?;
             let ticker = event.ticker.clone();
             let amount = event.amount;
             // add amount to ticker_changes
