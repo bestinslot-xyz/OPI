@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT event_type, inscription_id, event FROM brc20_light_events WHERE block_height = $1 ORDER BY id ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "event",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "66bb0b83d07041c0488bc3485f4a3bcc8973bb967221a5b295bd0cd55b2204a4"
+}

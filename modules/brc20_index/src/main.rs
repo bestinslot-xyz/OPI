@@ -27,6 +27,7 @@ struct Args {
     get_trace_str: Option<i32>,
     report_block_height: Option<i32>,
     reorg_height: Option<i32>,
+    recalculate_hashes_height: Option<i32>,
     reindex_extras: bool,
 }
 
@@ -52,6 +53,7 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         reindex_extras: false,
         get_event_str: None,
         get_trace_str: None,
+        recalculate_hashes_height: None,
     };
 
     let mut log_level = Level::WARN;
@@ -81,6 +83,17 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
                     }
                 } else {
                     return Err("No height provided after --reorg".into());
+                }
+            }
+            "--recalculate-hashes" => {
+                if let Some(height_str) = std::env::args().nth(idx + 1) {
+                    if let Ok(height) = height_str.parse::<i32>() {
+                        args.recalculate_hashes_height = Some(height);
+                    } else {
+                        return Err("Invalid height for --recalculate-hashes".into());
+                    }
+                } else {
+                    return Err("No height provided after --recalculate-hashes".into());
                 }
             }
             "--reindex-extras" => {
@@ -182,6 +195,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if brc20_indexer.validate().await.is_ok() {
             println!("Validation completed successfully.");
         }
+        return Ok(());
+    }
+    if let Some(recalc_height) = args.recalculate_hashes_height {
+        tracing::info!(
+            "Recalculating cumulative event hashes from height {} to the latest indexed block...",
+            recalc_height
+        );
+        get_brc20_database()
+            .lock()
+            .await
+            .recalculate_cumulative_event_hashes(recalc_height)
+            .await?;
+        tracing::info!("Recalculation of cumulative event hashes completed successfully.");
         return Ok(());
     }
     if let Some(event_height) = args.get_event_str {

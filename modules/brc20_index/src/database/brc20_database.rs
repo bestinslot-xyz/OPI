@@ -342,25 +342,28 @@ impl Brc20Database {
         .execute(&mut *tx)
         .await?;
 
+        tx.commit().await?;
+
         // Recalculate cumulative event hashes from refund_height to current_height
-        for height in refund_height..=current_height {
-            let row = sqlx::query!(
-                "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1 ORDER BY id ASC",
-                height
-            )
-            .fetch_all(&mut *tx)
+        self.recalculate_cumulative_event_hashes(refund_height)
             .await?;
-            let mut block_event_str = Vec::new();
-            for row in row {
-                block_event_str.push(load_event_str(
-                    row.event_type,
-                    &row.event,
-                    &row.inscription_id,
-                    &self.tickers,
-                )?);
-            }
-            let block_event_str = block_event_str.join(EVENT_SEPARATOR);
-            let block_events_hash = sha256::digest(&block_event_str);
+
+        Ok(true)
+    }
+
+    pub async fn recalculate_cumulative_event_hashes(
+        &self,
+        from_height: i32,
+    ) -> Result<(), Box<dyn Error>> {
+        let current_height = self.get_current_block_height().await?;
+        for height in from_height..=current_height {
+            let block_event_str = self.get_block_events_str(height).await?;
+            let block_events_hash = sha256::digest(
+                block_event_str
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim_end_matches(EVENT_SEPARATOR),
+            );
             let cumulative_event_hash = self.get_cumulative_events_hash(height - 1).await?;
             let cumulative_event_hash = match cumulative_event_hash {
                 Some(hash) => sha256::digest(hash + &block_events_hash),
@@ -372,13 +375,10 @@ impl Brc20Database {
                 cumulative_event_hash,
                 height
             )
-            .execute(&mut *tx)
+            .execute(&self.client)
             .await?;
         }
-
-        tx.commit().await?;
-
-        Ok(true)
+        Ok(())
     }
 
     pub async fn requires_trace_hash_upgrade(&self) -> Result<bool, Box<dyn Error>> {
@@ -459,25 +459,47 @@ impl Brc20Database {
         &self,
         block_height: i32,
     ) -> Result<Option<String>, Box<dyn Error>> {
-        let row = sqlx::query!(
+        if self.light_client_mode {
+            let row = sqlx::query!(
+            "SELECT event_type, inscription_id, event FROM brc20_light_events WHERE block_height = $1 ORDER BY id ASC",
+            block_height
+        )
+        .fetch_all(&self.client)
+        .await?;
+            let mut block_event_str = Vec::new();
+            for row in row {
+                block_event_str.push(load_event_str(
+                    row.event_type,
+                    &row.event,
+                    &row.inscription_id,
+                    &self.tickers,
+                )?);
+            }
+            if block_event_str.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(block_event_str.join(EVENT_SEPARATOR)))
+        } else {
+            let row = sqlx::query!(
             "SELECT event_type, inscription_id, event FROM brc20_events WHERE block_height = $1 ORDER BY id ASC",
             block_height
         )
         .fetch_all(&self.client)
         .await?;
-        let mut block_event_str = Vec::new();
-        for row in row {
-            block_event_str.push(load_event_str(
-                row.event_type,
-                &row.event,
-                &row.inscription_id,
-                &self.tickers,
-            )?);
+            let mut block_event_str = Vec::new();
+            for row in row {
+                block_event_str.push(load_event_str(
+                    row.event_type,
+                    &row.event,
+                    &row.inscription_id,
+                    &self.tickers,
+                )?);
+            }
+            if block_event_str.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(block_event_str.join(EVENT_SEPARATOR)))
         }
-        if block_event_str.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(block_event_str.join(EVENT_SEPARATOR)))
     }
 
     pub async fn set_block_hashes(
