@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, event_type, event->>'tick' AS tick FROM brc20_light_events WHERE block_height = $1 AND inscription_id LIKE '%00000000i0' ORDER BY id ASC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "tick",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "9ba36b20a141c2712bc718932deae61c0d111346446901a014138efbf293e1fd"
+}
