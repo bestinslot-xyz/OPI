@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE brc20_cumulative_event_hashes SET block_event_hash = $1, cumulative_event_hash = $2 WHERE block_height = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "91eb8b24b64bf29015759c9c7076a0feb053425d5b464b010c4e7e3ae5b118f7"
+}
