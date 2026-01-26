@@ -2,20 +2,20 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::{
   BRC20Tx, BitmapInscription, BlockInfo, Brc20ApiServer, IndexTimes, InscriptionEntry,
   InscriptionInfo, InscriptionInformation, SNSInscription, UTXOInfo,
 };
-use bitcoin::Network::{self, Bitcoin, Regtest, Signet, Testnet, Testnet4};
+use bitcoin::Network::{self};
 use hyper::Method;
 use jsonrpsee::core::middleware::RpcServiceBuilder;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::server::Server;
 use jsonrpsee::types::{ErrorObject, ErrorObjectOwned};
-use rocksdb::{ColumnFamilyDescriptor, DB, IteratorMode, Options};
+use parking_lot::ReentrantMutex;
+use rocksdb::{DB, IteratorMode};
 use signal_hook::consts::SIGINT;
 use signal_hook::iterator::Signals;
 use tower::ServiceBuilder;
@@ -24,7 +24,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::Config;
 
 struct RpcServer {
-  db: Arc<Mutex<DB>>,
+  db: Arc<ReentrantMutex<DB>>,
   network: Network,
 }
 
@@ -385,7 +385,7 @@ fn get_outpoint_key(outpoint: &str) -> Vec<u8> {
 #[async_trait]
 impl Brc20ApiServer for RpcServer {
   async fn get_block_index_times(&self, block_height: u32) -> RpcResult<Option<IndexTimes>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let ord_index_stats = db.cf_handle("ord_index_stats").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -404,7 +404,7 @@ impl Brc20ApiServer for RpcServer {
     let mut inscription_info_map = std::collections::HashMap::new();
     let mut invalid_brc20_map = std::collections::HashMap::new();
 
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let ord_transfers = db.cf_handle("ord_transfers").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -485,7 +485,7 @@ impl Brc20ApiServer for RpcServer {
   }
 
   async fn get_block_hash_and_ts(&self, block_height: u32) -> RpcResult<Option<BlockInfo>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let height_to_block_header = db.cf_handle("height_to_block_header").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -508,7 +508,7 @@ impl Brc20ApiServer for RpcServer {
   }
 
   async fn get_latest_block_height(&self) -> RpcResult<Option<u32>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let height_to_block_header = db.cf_handle("height_to_block_header").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -530,7 +530,7 @@ impl Brc20ApiServer for RpcServer {
     &self,
     inscription_id: String,
   ) -> RpcResult<Option<InscriptionInformation>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let ord_inscription_info = db.cf_handle("ord_inscription_info").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -569,7 +569,6 @@ impl Brc20ApiServer for RpcServer {
     let entry_raw = self
       .db
       .lock()
-      .expect("DB Error")
       .get_cf(
         sequence_number_to_inscription_entry,
         &sequence_number.to_be_bytes(),
@@ -594,7 +593,7 @@ impl Brc20ApiServer for RpcServer {
   }
 
   async fn get_utxo_info(&self, outpoint: String) -> RpcResult<Option<UTXOInfo>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let outpoint_to_utxo_entry = db.cf_handle("outpoint_to_utxo_entry").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -616,7 +615,7 @@ impl Brc20ApiServer for RpcServer {
     &self,
     sequence_number: u32,
   ) -> RpcResult<Option<InscriptionInformation>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let ord_inscription_info = db.cf_handle("ord_inscription_info").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -647,7 +646,6 @@ impl Brc20ApiServer for RpcServer {
     if let Some(raw) = self
       .db
       .lock()
-      .expect("DB Error")
       .get_cf(ord_inscription_info, &inscription_id_key)
       .unwrap()
     {
@@ -663,7 +661,7 @@ impl Brc20ApiServer for RpcServer {
     &self,
     block_height: u32,
   ) -> RpcResult<Option<Vec<BitmapInscription>>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let ord_transfers = db.cf_handle("ord_transfers").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -733,7 +731,7 @@ impl Brc20ApiServer for RpcServer {
     &self,
     block_height: u32,
   ) -> RpcResult<Option<Vec<SNSInscription>>> {
-    let db = self.db.lock().expect("DB Error");
+    let db = self.db.lock();
     let ord_transfers = db.cf_handle("ord_transfers").ok_or_else(|| {
       wrap_rpc_error(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -801,46 +799,11 @@ impl Brc20ApiServer for RpcServer {
   }
 }
 
-pub async fn start_rpc_server(config: Config) -> Result<(), Box<dyn Error>> {
+pub async fn start_rpc_server(
+  config: Config,
+  db: Arc<ReentrantMutex<DB>>,
+) -> Result<(), Box<dyn Error>> {
   let mut signals = Signals::new([SIGINT]).expect("Failed to create signal handler");
-
-  let index_path = if let Some(db_path) = config.db_path {
-    db_path
-  } else {
-    match config.network {
-      Bitcoin => PathBuf::from("../../../ord/target/release/dbs"),
-      Testnet => PathBuf::from("../../../ord/target/release/testnet/dbs"),
-      Testnet4 => PathBuf::from("../../../ord/target/release/testnet4/dbs"),
-      Signet => PathBuf::from("../../../ord/target/release/signet/dbs"),
-      Regtest => PathBuf::from("../../../ord/target/release/regtest/dbs"),
-      _ => {
-        eprintln!("Unsupported network specified.");
-        std::process::exit(1);
-      }
-    }
-  };
-
-  let column_families = vec![
-    ColumnFamilyDescriptor::new("height_to_block_header", Options::default()),
-    ColumnFamilyDescriptor::new("inscription_id_to_sequence_number", Options::default()),
-    ColumnFamilyDescriptor::new("sequence_number_to_inscription_entry", Options::default()),
-    ColumnFamilyDescriptor::new("outpoint_to_utxo_entry", Options::default()),
-    ColumnFamilyDescriptor::new("ord_transfers", Options::default()),
-    ColumnFamilyDescriptor::new("ord_inscription_info", Options::default()),
-    ColumnFamilyDescriptor::new("ord_index_stats", Options::default()),
-  ];
-
-  let db_path = index_path.join("index.db");
-  let sec_db_path = index_path.join("secondary.db");
-  let db = Arc::new(Mutex::new(
-    DB::open_cf_descriptors_as_secondary(
-      &Options::default(),
-      &db_path,
-      &sec_db_path,
-      column_families,
-    )
-    .expect("Failed to open database"),
-  ));
 
   let cors = CorsLayer::new()
         // Allow `POST` when accessing the resource
@@ -852,7 +815,7 @@ pub async fn start_rpc_server(config: Config) -> Result<(), Box<dyn Error>> {
   let http_middleware = ServiceBuilder::new().layer(cors);
   let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
   let module = RpcServer {
-    db: db.clone(),
+    db,
     network: config.network,
   }
   .into_rpc();
@@ -888,12 +851,6 @@ pub async fn start_rpc_server(config: Config) -> Result<(), Box<dyn Error>> {
       println!("Received SIGINT, stopping RPC server...");
       break; // Exit the loop on SIGINT
     }
-
-    db.lock()
-      .expect("DB Error")
-      .try_catch_up_with_primary()
-      .map_err(|e| eprintln!("Failed to catch up with primary: {}", e))
-      .ok();
   }
 
   println!("RPC server stopped.");

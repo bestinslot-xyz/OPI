@@ -26,9 +26,9 @@ pub(super) struct Flotsam<'a> {
 
 lazy_static! {
   pub static ref TX_LIMITS: HashMap<String, i16> = {
-      let mut m = HashMap::<String, i16>::new();
-      m.insert("default".into(), 2);
-      m
+    let mut m = HashMap::<String, i16>::new();
+    m.insert("default".into(), 2);
+    m
   };
 }
 
@@ -171,14 +171,23 @@ impl<'a> InscriptionUpdater<'a> {
           if *count > 1 {
             Some(Curse::Reinscription)
           } else {
-            let initial_inscription_sequence_number =
-              u32::from_be_bytes(self.db.get_cf(self.id_to_sequence_number, id.store())?.unwrap().try_into().unwrap());
+            let initial_inscription_sequence_number = u32::from_be_bytes(
+              self
+                .db
+                .get_cf(self.id_to_sequence_number, id.store())?
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            );
 
             let entry = InscriptionEntry::load(
               self
                 .db
-                .get_cf(self.sequence_number_to_entry, initial_inscription_sequence_number.to_be_bytes())?
-                .unwrap()
+                .get_cf(
+                  self.sequence_number_to_entry,
+                  initial_inscription_sequence_number.to_be_bytes(),
+                )?
+                .unwrap(),
             );
 
             let initial_inscription_was_cursed_or_vindicated =
@@ -296,7 +305,8 @@ impl<'a> InscriptionUpdater<'a> {
 
         new_locations.push((
           new_satpoint,
-          sent_to_coinbase, txout,
+          sent_to_coinbase,
+          txout,
           inscriptions.next().unwrap(),
           txout.script_pubkey.is_op_return(),
         ));
@@ -308,7 +318,6 @@ impl<'a> InscriptionUpdater<'a> {
     for (new_satpoint, sent_to_coinbase, tx_out, flotsam, op_return) in new_locations.into_iter() {
       let output_utxo_entry =
         &mut output_utxo_entries[usize::try_from(new_satpoint.outpoint.vout).unwrap()];
-
 
       let tx = flotsam.tx_option.clone().unwrap();
       self.update_inscription_location(
@@ -358,7 +367,9 @@ impl<'a> InscriptionUpdater<'a> {
         // ord indexes sent as fee transfers at the end of the block but it would make more sense if they were indexed as soon as they are sent
         // self.write_to_file(format!("cmd;{0};insert;early_transfer_sent_as_fee;{1}", self.height, flotsam.inscription_id), true)?;
         self.transfer_idx += 1;
-        self.early_transfer_info.insert(flotsam.inscription_id, self.transfer_idx);
+        self
+          .early_transfer_info
+          .insert(flotsam.inscription_id, self.transfer_idx);
       }
       self.reward += total_input_value - output_value;
       Ok(())
@@ -366,7 +377,9 @@ impl<'a> InscriptionUpdater<'a> {
   }
 
   fn get_json_tx_limit(inscription_content_option: &Option<Vec<u8>>) -> i16 {
-    if inscription_content_option.is_none() { return 0; }
+    if inscription_content_option.is_none() {
+      return 0;
+    }
     let inscription_content = inscription_content_option.as_ref().unwrap();
 
     let json = serde_json::from_slice::<Value>(&inscription_content);
@@ -379,12 +392,16 @@ impl<'a> InscriptionUpdater<'a> {
   }
 
   fn is_text(inscription_content_type_option: &Option<Vec<u8>>) -> bool {
-    if inscription_content_type_option.is_none() { return false; }
+    if inscription_content_type_option.is_none() {
+      return false;
+    }
 
     let inscription_content_type = inscription_content_type_option.as_ref().unwrap();
     let inscription_content_type_str = std::str::from_utf8(&inscription_content_type).unwrap_or("");
-    return inscription_content_type_str == "text/plain" || inscription_content_type_str.starts_with("text/plain;") ||
-            inscription_content_type_str == "application/json" || inscription_content_type_str.starts_with("application/json;"); // NOTE: added application/json for JSON5 etc.
+    return inscription_content_type_str == "text/plain"
+      || inscription_content_type_str.starts_with("text/plain;")
+      || inscription_content_type_str == "application/json"
+      || inscription_content_type_str.starts_with("application/json;"); // NOTE: added application/json for JSON5 etc.
   }
 
   /*fn write_to_file(
@@ -422,9 +439,7 @@ impl<'a> InscriptionUpdater<'a> {
     Ok(())
   }*/
 
-  pub(super) fn end_block(
-    &mut self,
-  ) -> Result {
+  pub(super) fn end_block(&mut self) -> Result {
     /*if !self.first_in_block {
       println!("cmd;{0};block_end", self.height);
       self.write_to_file(format!("cmd;{0};block_end", self.height), true)?;
@@ -470,11 +485,19 @@ impl<'a> InscriptionUpdater<'a> {
     let tx = tx_option.unwrap();
     let txid = tx.compute_txid();
     let inscription_id = flotsam.inscription_id;
-    let txcnt_of_inscr: i64 = self.db.get_cf(self.id_to_txcnt, &inscription_id.store())?
-        .map(|txcnt| i64::from_be_bytes(txcnt.try_into().unwrap()))
-        .unwrap_or(0) + 1;
+    let txcnt_of_inscr: i64 = self
+      .db
+      .get_cf(self.id_to_txcnt, &inscription_id.store())?
+      .map(|txcnt| i64::from_be_bytes(txcnt.try_into().unwrap()))
+      .unwrap_or(0)
+      + 1;
     if txcnt_of_inscr == 1 {
-      self.db.put_cf_opt(self.id_to_txcnt, &inscription_id.store(), &txcnt_of_inscr.to_be_bytes(), self.write_options)?;
+      self.db.put_cf_opt(
+        self.id_to_txcnt,
+        &inscription_id.store(),
+        &txcnt_of_inscr.to_be_bytes(),
+        self.write_options,
+      )?;
     }
 
     let (unbound, sequence_number) = match flotsam.origin {
@@ -492,23 +515,22 @@ impl<'a> InscriptionUpdater<'a> {
           })?;
         }
 
-        let entry = self.db.get_cf(self.sequence_number_to_entry, &sequence_number.to_be_bytes())?;
-        let entry = entry
-          .map(|entry| InscriptionEntry::load(entry))
-          .unwrap();
+        let entry = self.db.get_cf(
+          self.sequence_number_to_entry,
+          &sequence_number.to_be_bytes(),
+        )?;
+        let entry = entry.map(|entry| InscriptionEntry::load(entry)).unwrap();
         let is_json_or_text = entry.is_json_or_text;
         let txcnt_limit = entry.txcnt_limit;
-        if is_json_or_text && txcnt_of_inscr <= txcnt_limit.into() { // only track non-cursed and first two transactions
+        if is_json_or_text && txcnt_of_inscr <= txcnt_limit.into() {
+          // only track non-cursed and first two transactions
           let transfer_idx = if self.early_transfer_info.contains_key(&inscription_id) {
             self.early_transfer_info[&inscription_id]
           } else {
             self.transfer_idx += 1;
             self.transfer_idx
           };
-          let transfer_key = [
-            self.height.to_be_bytes(),
-            transfer_idx.to_be_bytes(),
-          ].concat();
+          let transfer_key = [self.height.to_be_bytes(), transfer_idx.to_be_bytes()].concat();
           let transfer_data = [
             flotsam.inscription_id.store(),
             old_satpoint.store().to_vec(),
@@ -516,17 +538,31 @@ impl<'a> InscriptionUpdater<'a> {
             vec![send_to_coinbase as u8],
             new_output_value.unwrap_or(&0).to_be_bytes().to_vec(),
             txid.store().to_vec(),
-            new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes(),
-          ].concat();
-          self.db.put_cf_opt(self.ord_transfers, &transfer_key, &transfer_data, self.write_options)?;
+            new_script_pubkey
+              .unwrap_or(&ScriptBuf::new())
+              .clone()
+              .into_bytes(),
+          ]
+          .concat();
+          self.db.put_cf_opt(
+            self.ord_transfers,
+            &transfer_key,
+            &transfer_data,
+            self.write_options,
+          )?;
 
           /* self.write_to_file(format!("cmd;{0};insert;transfer;{1};{old_satpoint};{new_satpoint};{send_to_coinbase};{2};{3}",
-                    self.height, flotsam.inscription_id,
-                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()),
-                    new_output_value.unwrap_or(&0)), false)?; */
+          self.height, flotsam.inscription_id,
+          hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()),
+          new_output_value.unwrap_or(&0)), false)?; */
 
           if txcnt_of_inscr != 1 {
-            self.db.put_cf_opt(self.id_to_txcnt, &inscription_id.store(), &txcnt_of_inscr.to_be_bytes(), self.write_options)?;
+            self.db.put_cf_opt(
+              self.id_to_txcnt,
+              &inscription_id.store(),
+              &txcnt_of_inscr.to_be_bytes(),
+              self.write_options,
+            )?;
           }
         }
 
@@ -554,14 +590,18 @@ impl<'a> InscriptionUpdater<'a> {
         let sequence_number = self.next_sequence_number;
         self.next_sequence_number += 1;
 
-        self
-          .db
-          .put_cf_opt(self.inscription_number_to_sequence_number, inscription_number.to_be_bytes(), sequence_number.to_be_bytes(), self.write_options)?;
+        self.db.put_cf_opt(
+          self.inscription_number_to_sequence_number,
+          inscription_number.to_be_bytes(),
+          sequence_number.to_be_bytes(),
+          self.write_options,
+        )?;
 
         let inscription = ParsedEnvelope::from_transaction(&tx)
-            .get(flotsam.inscription_id.index as usize)
-            .unwrap()
-            .payload.clone();
+          .get(flotsam.inscription_id.index as usize)
+          .unwrap()
+          .payload
+          .clone();
         let inscription_content = inscription.body;
         let inscription_content_type = inscription.content_type;
         let inscription_metaprotocol = inscription.metaprotocol;
@@ -575,17 +615,42 @@ impl<'a> InscriptionUpdater<'a> {
           let inscription_info_data = [
             inscription_number.to_be_bytes().to_vec(),
             vec![cursed_for_brc20 as u8],
-            parents.get(0).map(|p| p.store()).unwrap_or(InscriptionId::from_str("0000000000000000000000000000000000000000000000000000000000000000i0")?.store()),
+            parents.get(0).map(|p| p.store()).unwrap_or(
+              InscriptionId::from_str(
+                "0000000000000000000000000000000000000000000000000000000000000000i0",
+              )?
+              .store(),
+            ),
             vec![is_json as u8],
-            inscription_content.as_ref().map(|content| content.len() as u32).unwrap_or(0).to_be_bytes().to_vec(),
+            inscription_content
+              .as_ref()
+              .map(|content| content.len() as u32)
+              .unwrap_or(0)
+              .to_be_bytes()
+              .to_vec(),
             inscription_content.unwrap_or(Vec::new()),
-            inscription_content_type.as_ref().map(|content_type| content_type.len() as u32).unwrap_or(0).to_be_bytes().to_vec(),
+            inscription_content_type
+              .as_ref()
+              .map(|content_type| content_type.len() as u32)
+              .unwrap_or(0)
+              .to_be_bytes()
+              .to_vec(),
             inscription_content_type.unwrap_or(Vec::new()),
-            inscription_metaprotocol.as_ref().map(|metaprotocol| metaprotocol.len() as u32).unwrap_or(0).to_be_bytes().to_vec(),
+            inscription_metaprotocol
+              .as_ref()
+              .map(|metaprotocol| metaprotocol.len() as u32)
+              .unwrap_or(0)
+              .to_be_bytes()
+              .to_vec(),
             inscription_metaprotocol.unwrap_or(Vec::new()),
-          ].concat();
-          self.db.put_cf_opt(self.ord_inscription_info, &inscription_id_key, &inscription_info_data, self.write_options)?;
-
+          ]
+          .concat();
+          self.db.put_cf_opt(
+            self.ord_inscription_info,
+            &inscription_id_key,
+            &inscription_info_data,
+            self.write_options,
+          )?;
 
           //self.write_to_file(format!("cmd;{0};insert;number_to_id;{1};{2};{3};{4}", self.height, inscription_number, flotsam.inscription_id, if cursed_for_brc20 {"1"} else {"0"}, parents.get(0).map(|p| p.to_string()).unwrap_or(String::from(""))), false)?;
           // write content as minified json
@@ -673,9 +738,12 @@ impl<'a> InscriptionUpdater<'a> {
           self.write_options,
         )?;
 
-        self
-          .db
-          .put_cf_opt(self.id_to_sequence_number, &inscription_id.store(), sequence_number.to_be_bytes(), self.write_options)?;
+        self.db.put_cf_opt(
+          self.id_to_sequence_number,
+          &inscription_id.store(),
+          sequence_number.to_be_bytes(),
+          self.write_options,
+        )?;
 
         if !unbound && is_json_or_text {
           let transfer_idx = if self.early_transfer_info.contains_key(&inscription_id) {
@@ -684,28 +752,36 @@ impl<'a> InscriptionUpdater<'a> {
             self.transfer_idx += 1;
             self.transfer_idx
           };
-          let transfer_key = [
-            self.height.to_be_bytes(),
-            transfer_idx.to_be_bytes(),
-          ].concat();
+          let transfer_key = [self.height.to_be_bytes(), transfer_idx.to_be_bytes()].concat();
           let transfer_data = [
             flotsam.inscription_id.store(),
             SatPoint {
               outpoint: OutPoint::null(),
               offset: 0,
-            }.store().to_vec(),
+            }
+            .store()
+            .to_vec(),
             new_satpoint.store().to_vec(),
             vec![send_to_coinbase as u8],
             new_output_value.unwrap_or(&0).to_be_bytes().to_vec(),
             txid.store().to_vec(),
-            new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes(),
-          ].concat();
-          self.db.put_cf_opt(self.ord_transfers, &transfer_key, &transfer_data, self.write_options)?;
+            new_script_pubkey
+              .unwrap_or(&ScriptBuf::new())
+              .clone()
+              .into_bytes(),
+          ]
+          .concat();
+          self.db.put_cf_opt(
+            self.ord_transfers,
+            &transfer_key,
+            &transfer_data,
+            self.write_options,
+          )?;
 
           /* self.write_to_file(format!("cmd;{0};insert;transfer;{1};;{new_satpoint};{send_to_coinbase};{2};{3}",
-                    self.height, flotsam.inscription_id,
-                    hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()),
-                    new_output_value.unwrap_or(&0)), false)?; */
+          self.height, flotsam.inscription_id,
+          hex::encode(new_script_pubkey.unwrap_or(&ScriptBuf::new()).clone().into_bytes()),
+          new_output_value.unwrap_or(&0)), false)?; */
         }
 
         (unbound, sequence_number)
