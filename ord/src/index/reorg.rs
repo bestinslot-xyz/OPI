@@ -54,22 +54,12 @@ impl Reorg {
   pub(crate) fn is_savepoint_required(index: &Index, height: u32) -> Result<bool> {
     let height = u64::from(height);
 
-    let db = &index.db.lock();
-
-    let statistic_to_count = db
-      .cf_handle("statistic_to_count")
+    let statistic_to_count = index.db.cf_handle("statistic_to_count")
       .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?;
 
-    let last_savepoint_height = db
-      .get_cf(
-        statistic_to_count,
-        &Statistic::LastSavepointHeight.key().to_be_bytes(),
-      )?
-      .map(|last_savepoint_height| {
-        u64::from(u32::from_be_bytes(
-          last_savepoint_height.try_into().unwrap(),
-        ))
-      })
+    let last_savepoint_height = index.db
+      .get_cf(statistic_to_count, &Statistic::LastSavepointHeight.key().to_be_bytes())?
+      .map(|last_savepoint_height| u64::from(u32::from_be_bytes(last_savepoint_height.try_into().unwrap())))
       .unwrap_or(0);
 
     let blocks = index.client.get_blockchain_info()?.headers;
@@ -113,14 +103,15 @@ impl Reorg {
 
     backup_engine.restore_from_backup(db_dir, wal_dir, &opts, backup_id)?;
 
-    println!("successfully rolled back database");
+    println!(
+      "successfully rolled back database"
+    );
 
     Ok(())
   }
 
   pub(crate) fn update_savepoints(index: &Index, height: u32) -> Result {
     if Self::is_savepoint_required(index, height)? {
-      let db = &index.db.lock();
       let backup_opts = BackupEngineOptions::new(&index.path.join("backup"))?;
       let mut backup_engine = BackupEngine::open(&backup_opts, &rocksdb::Env::new()?)?;
 
@@ -128,24 +119,20 @@ impl Reorg {
 
       println!("Creating savepoint at height {}", height);
 
-      backup_engine.create_new_backup(&db)?;
+      backup_engine.create_new_backup(&index.db)?;
 
       println!("Savepoint created successfully");
 
-      let statistic_to_count = db
-        .cf_handle("statistic_to_count")
+      let statistic_to_count = index.db.cf_handle("statistic_to_count")
         .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?;
 
-      db.put_cf_opt(
-        statistic_to_count,
-        &Statistic::LastSavepointHeight.key().to_be_bytes(),
-        height.to_be_bytes(),
-        &index.write_options,
-      )?;
+      index.db
+        .put_cf_opt(statistic_to_count, &Statistic::LastSavepointHeight.key().to_be_bytes(), height.to_be_bytes(), &index.write_options)?;
+
       let mut flush_opts = rocksdb::FlushOptions::default();
       flush_opts.set_wait(true);
 
-      db.flush_cf_opt(statistic_to_count, &flush_opts)?;
+      index.db.flush_cf_opt(statistic_to_count, &flush_opts)?;
     }
 
     Ok(())

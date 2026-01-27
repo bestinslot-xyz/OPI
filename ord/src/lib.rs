@@ -23,12 +23,15 @@ use {
   anyhow::{anyhow, bail, ensure, Context, Error},
   bitcoin::{
     address::{Address, NetworkUnchecked},
-    blockdata::constants::MAX_SCRIPT_ELEMENT_SIZE,
+    blockdata::{
+      constants::MAX_SCRIPT_ELEMENT_SIZE,
+    },
     consensus::{self, Decodable, Encodable},
     hash_types::BlockHash,
     hashes::Hash,
-    script, Amount, Block, Network, OutPoint, Script, ScriptBuf, SignedAmount, Transaction, TxOut,
-    Txid, Witness,
+    script,
+    Amount, Block, Network, OutPoint, Script, ScriptBuf, SignedAmount,
+    Transaction, TxOut, Txid, Witness,
   },
   bitcoincore_rpc::{Client, RpcApi},
   chrono::{DateTime, TimeZone, Utc},
@@ -36,9 +39,12 @@ use {
   clap::{ArgGroup, Parser},
   error::{ResultExt, SnafuError},
   lazy_static::lazy_static,
-  ordinals::{Charm, Height, Rune, RuneId, Sat, SatPoint, SpacedRune},
+  ordinals::{
+    Charm, Height, Rune, RuneId,
+    Sat, SatPoint, SpacedRune,
+  },
   regex::Regex,
-  serde::{Deserialize, Serialize},
+  serde::{Deserialize, Deserializer, Serialize},
   serde_with::{DeserializeFromStr, SerializeDisplay},
   snafu::{Backtrace, ErrorCompat, Snafu},
   std::{
@@ -75,6 +81,7 @@ pub use self::{
 pub mod arguments;
 pub mod chain;
 pub mod decimal;
+mod deserialize_from_str;
 mod error;
 mod fee_rate;
 pub mod index;

@@ -1,4 +1,8 @@
-use {ordinals::varint, ref_cast::RefCast, std::ops::Deref};
+use {
+  ordinals::varint,
+  ref_cast::RefCast,
+  std::ops::Deref,
+};
 
 enum Sats {
   Value(u64),
@@ -89,7 +93,9 @@ pub struct UtxoEntryBuf {
 
 impl UtxoEntryBuf {
   pub fn new() -> Self {
-    Self { vec: Vec::new() }
+    Self {
+      vec: Vec::new(),
+    }
   }
 
   pub fn new_with_values(vec: Vec<u8>) -> Self {

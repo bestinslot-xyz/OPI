@@ -1,7 +1,7 @@
 [package]
 name = "opi-ord"
 description = "◉ Ordinal wallet and block explorer"
-version = "0.23.2-4"
+version = "0.23.2-3"
 autotests = false
 autobins = false
 
@@ -113,7 +113,6 @@ tower-http = { version = "0.6.2", features = [
     "set-header",
 ] }
 urlencoding = "2.1.3"
-parking_lot = "0.12.5"
 
 [dev-dependencies]
 criterion = "0.6.0"

@@ -1,12 +1,8 @@
 use {
-  self::inscription_updater::{InscriptionUpdater, TX_LIMITS},
-  super::{fetcher::Fetcher, *},
-  futures::future::try_join_all,
-  rocksdb::ColumnFamily,
-  tokio::sync::{
+  self::inscription_updater::{InscriptionUpdater, TX_LIMITS}, super::{fetcher::Fetcher, *}, futures::future::try_join_all, rocksdb::ColumnFamily, tokio::sync::{
     broadcast::{self, error::TryRecvError},
     mpsc::{self},
-  },
+  }
 };
 
 mod inscription_updater;
@@ -73,7 +69,8 @@ impl Updater<'_> {
 
     println!(
       "Indexing blocks from height {} to {}…",
-      self.height, starting_height
+      self.height,
+      starting_height
     );
 
     let mut uncommitted = 0;
@@ -81,6 +78,8 @@ impl Updater<'_> {
     let mut tm = Instant::now();
     let mut last_stat_print_height = self.height;
     let mut gtms = [0; 3];
+    let ord_index_stats = self.index.db.cf_handle("ord_index_stats")
+      .ok_or_else(|| anyhow!("Failed to open column family 'ord_index_stats'"))?;
     let mut last_flush_bytes: u64 = 0;
     while let Ok(block) = rx.recv() {
       let mut tms = [0; 3];
@@ -88,67 +87,61 @@ impl Updater<'_> {
       gtms[0] += tms[0];
       tm = Instant::now();
 
-      {
-        let db = &self.index.db.lock();
-        db.property_value("rocksdb.cur-size-all-mem-tables")
-          .map(|size| {
-            if size.is_none() {
-              println!("RocksDB memtable size is not available");
-              return;
-            }
+      self.index.db.property_value("rocksdb.cur-size-all-mem-tables")
+        .map(|size| {
+          if size.is_none() {
+            println!("RocksDB memtable size is not available");
+            return;
+          }
 
-            if let Ok(size) = size.unwrap().parse::<u64>() {
-              if size > 1024 * 1024 {
-                println!("RocksDB memtable size is too large: {size} bytes");
-              } else {
-                log::debug!("RocksDB memtable size: {size} bytes");
-              }
+          if let Ok(size) = size.unwrap().parse::<u64>() {
+            if size > 1024 * 1024 {
+              println!("RocksDB memtable size is too large: {size} bytes");
+            } else {
+              log::debug!("RocksDB memtable size: {size} bytes");
             }
-          })
-          .unwrap_or_else(|err| log::error!("Failed to get RocksDB memtable size: {err}"));
+          }
+        })
+        .unwrap_or_else(|err| log::error!("Failed to get RocksDB memtable size: {err}"));
 
-        db.property_value("rocksdb.options-statistics")
-          .map(|stats| {
-            if stats.is_none() {
-              println!("RocksDB options-statistics is not available");
-              return;
-            }
 
-            let stats_unw = stats.unwrap();
-            // find the line starting with "rocksdb.flush.write.bytes"
-            if let Some(line) = stats_unw
-              .lines()
-              .find(|line| line.starts_with("rocksdb.flush.write.bytes"))
-            {
-              // split line from : and parse the right part as u64
-              if let Some(value) = line.split_once(": ") {
-                if let Ok(value) = value.1.trim().parse::<u64>() {
-                  if value != last_flush_bytes {
-                    let diff = value.saturating_sub(last_flush_bytes);
-                    let diff_mb = diff as f64 / (1024.0 * 1024.0);
-                    println!("RocksDB incr. flush write: {diff_mb:.3} MB");
-                    last_flush_bytes = value;
-                  }
+      self.index.db.property_value("rocksdb.options-statistics")
+        .map(|stats| {
+          if stats.is_none() {
+            println!("RocksDB options-statistics is not available");
+            return;
+          }
+
+          let stats_unw = stats.unwrap();
+          // find the line starting with "rocksdb.flush.write.bytes"
+          if let Some(line) = stats_unw.lines().find(|line| line.starts_with("rocksdb.flush.write.bytes")) {
+            // split line from : and parse the right part as u64
+            if let Some(value) = line.split_once(": ") {
+              if let Ok(value) = value.1.trim().parse::<u64>() {
+                if value != last_flush_bytes {
+                  let diff = value.saturating_sub(last_flush_bytes);
+                  let diff_mb = diff as f64 / (1024.0 * 1024.0);
+                  println!(
+                    "RocksDB incr. flush write: {diff_mb:.3} MB"
+                  );
+                  last_flush_bytes = value;
                 }
               }
             }
-            if let Some(line) = stats_unw
-              .lines()
-              .find(|line| line.starts_with("rocksdb.wal.bytes"))
-            {
-              // split line from : and parse the right part as u64
-              if let Some(value) = line.split_once(": ") {
-                if let Ok(value) = value.1.trim().parse::<u64>() {
-                  if value != 0 {
-                    let value_kb = value as f64 / (1024.0);
-                    println!("RocksDB total WAL size: {value_kb:.3} KB");
-                  }
+          }
+          if let Some(line) = stats_unw.lines().find(|line| line.starts_with("rocksdb.wal.bytes")) {
+            // split line from : and parse the right part as u64
+            if let Some(value) = line.split_once(": ") {
+              if let Ok(value) = value.1.trim().parse::<u64>() {
+                if value != 0 {
+                  let value_kb = value as f64 / (1024.0);
+                  println!("RocksDB total WAL size: {value_kb:.3} KB");
                 }
               }
             }
-          })
-          .unwrap_or_else(|err| println!("Failed to get RocksDB options-statistics: {err}"));
-      }
+          }
+        })
+        .unwrap_or_else(|err| println!("Failed to get RocksDB options-statistics: {err}"));
 
       self.index_block(
         &mut output_sender,
@@ -185,7 +178,10 @@ impl Updater<'_> {
 
         let height = self.index.block_count()?;
         if height != self.height {
-          println!("Height changed from {} to {}!!!", self.height, height);
+          println!(
+            "Height changed from {} to {}!!!",
+            self.height, height
+          );
           // another update has run between committing and beginning the new
           // write transaction
           break;
@@ -206,21 +202,13 @@ impl Updater<'_> {
         tms[1].to_be_bytes(),
         tms[2].to_be_bytes(),
         (tms[0] + tms[1] + tms[2]).to_be_bytes(),
-      ]
-      .concat();
-
-      {
-        let db = &self.index.db.lock();
-        let ord_index_stats = db
-          .cf_handle("ord_index_stats")
-          .ok_or_else(|| anyhow!("Failed to open column family 'ord_index_stats'"))?;
-        db.put_cf_opt(
-          ord_index_stats,
-          &ord_index_stat_key,
-          &ord_index_stat_data,
-          &self.index.write_options,
-        )?;
-      }
+      ].concat();
+      self.index.db.put_cf_opt(
+        ord_index_stats,
+        &ord_index_stat_key,
+        &ord_index_stat_data,
+        &self.index.write_options,
+      )?;
 
       if self.height % 500 == 430 {
         println!(
@@ -252,35 +240,31 @@ impl Updater<'_> {
       progress_bar.finish_and_clear();
     }
 
-    {
-      let db = &self.index.db.lock();
-      db.property_value("rocksdb.options-statistics")
-        .map(|stats| {
-          if stats.is_none() {
-            println!("RocksDB options-statistics is not available");
-            return;
-          }
+    self.index.db.property_value("rocksdb.options-statistics")
+      .map(|stats| {
+        if stats.is_none() {
+          println!("RocksDB options-statistics is not available");
+          return;
+        }
 
-          let stats_unw = stats.unwrap();
-          // find the line starting with "rocksdb.flush.write.bytes"
-          if let Some(line) = stats_unw
-            .lines()
-            .find(|line| line.starts_with("rocksdb.flush.write.bytes"))
-          {
-            // split line from : and parse the right part as u64
-            if let Some(value) = line.split_once(": ") {
-              if let Ok(value) = value.1.trim().parse::<u64>() {
-                let diff = value.saturating_sub(last_flush_bytes);
-                let diff_mb = diff as f64 / (1024.0 * 1024.0);
-                println!("RocksDB incr. flush write: {diff_mb:.3} MB");
-                let value_mb = value as f64 / (1024.0 * 1024.0);
-                println!("RocksDB total flush write: {value_mb:.3} MB");
-              }
+        let stats_unw = stats.unwrap();
+        // find the line starting with "rocksdb.flush.write.bytes"
+        if let Some(line) = stats_unw.lines().find(|line| line.starts_with("rocksdb.flush.write.bytes")) {
+          // split line from : and parse the right part as u64
+          if let Some(value) = line.split_once(": ") {
+            if let Ok(value) = value.1.trim().parse::<u64>() {
+              let diff = value.saturating_sub(last_flush_bytes);
+              let diff_mb = diff as f64 / (1024.0 * 1024.0);
+              println!(
+                "RocksDB incr. flush write: {diff_mb:.3} MB"
+              );
+              let value_mb = value as f64 / (1024.0 * 1024.0);
+              println!("RocksDB total flush write: {value_mb:.3} MB");
             }
           }
-        })
-        .unwrap_or_else(|err| println!("Failed to get RocksDB options-statistics: {err}"));
-    }
+        }
+      })
+      .unwrap_or_else(|err| println!("Failed to get RocksDB options-statistics: {err}"));
 
     Ok(())
   }
@@ -479,29 +463,30 @@ impl Updater<'_> {
       block.txdata.len()
     );
 
+    let height_to_block_header = self.index.db.cf_handle("height_to_block_header")
+      .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+    let inscription_id_to_sequence_number = self.index.db.cf_handle("inscription_id_to_sequence_number")
+      .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_sequence_number'"))?;
+    let statistic_to_count = self.index.db.cf_handle("statistic_to_count")
+      .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?;
+
     self.index_utxo_entries(
       &block,
       txout_receiver,
       output_sender,
       utxo_cache,
+      inscription_id_to_sequence_number,
+      statistic_to_count,
       &mut sat_ranges_written,
       &mut outputs_in_block,
     )?;
 
-    {
-      let db = &self.index.db.lock();
-
-      let height_to_block_header = db
-        .cf_handle("height_to_block_header")
-        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
-
-      db.put_cf_opt(
-        height_to_block_header,
-        &self.height.to_be_bytes(),
-        &block.header.store(),
-        &self.index.write_options,
-      )?;
-    }
+    self.index.db.put_cf_opt(
+      height_to_block_header,
+      &self.height.to_be_bytes(),
+      &block.header.store(),
+      &self.index.write_options,
+    )?;
 
     self.height += 1;
     self.outputs_traversed += outputs_in_block;
@@ -515,22 +500,24 @@ impl Updater<'_> {
   }
 
   /* else if let Some(entry) = outpoint_to_utxo_entry.remove(&outpoint)? {
-    entry.value().to_buf()
-  } */
+              entry.value().to_buf()
+            } */
   fn get_and_remove_if_exists(
     &mut self,
     column_family: &ColumnFamily,
     key: &[u8],
   ) -> Option<UtxoEntryBuf> {
-    let db = &self.index.db.lock();
-    let res = db.get_cf(column_family, key).unwrap();
+    let res = self.index.db.get_cf(column_family, key).unwrap();
 
     if res.is_none() {
       return None;
     }
 
-    db.delete_cf_opt(column_family, key, &self.index.write_options)
-      .unwrap();
+    self.index.db.delete_cf_opt(
+      column_family,
+      key,
+      &self.index.write_options,
+    ).unwrap();
     Some(UtxoEntryBuf::new_with_values(res.unwrap()))
   }
 
@@ -540,40 +527,24 @@ impl Updater<'_> {
     txout_receiver: &mut broadcast::Receiver<TxOut>,
     output_sender: &mut mpsc::Sender<OutPoint>,
     utxo_cache: &mut HashMap<OutPoint, UtxoEntryBuf>,
+    inscription_id_to_sequence_number: &ColumnFamily,
+    statistic_to_count: &ColumnFamily,
     _sat_ranges_written: &mut u64,
     _outputs_in_block: &mut u64,
   ) -> Result<(), Error> {
-    let db = &self.index.db.lock();
-    let inscription_id_to_sequence_number = db
-      .cf_handle("inscription_id_to_sequence_number")
-      .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_sequence_number'"))?;
-    let statistic_to_count = db
-      .cf_handle("statistic_to_count")
-      .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?;
-    let height_to_last_sequence_number = db
-      .cf_handle("height_to_last_sequence_number")
+    let height_to_last_sequence_number = self.index.db.cf_handle("height_to_last_sequence_number")
       .ok_or_else(|| anyhow!("Failed to open column family 'height_to_last_sequence_number'"))?;
-    let inscription_number_to_sequence_number = db
-      .cf_handle("inscription_number_to_sequence_number")
-      .ok_or_else(|| {
-        anyhow!("Failed to open column family 'inscription_number_to_sequence_number'")
-      })?;
-    let outpoint_to_utxo_entry = db
-      .cf_handle("outpoint_to_utxo_entry")
+    let inscription_number_to_sequence_number = self.index.db.cf_handle("inscription_number_to_sequence_number")
+      .ok_or_else(|| anyhow!("Failed to open column family 'inscription_number_to_sequence_number'"))?;
+    let outpoint_to_utxo_entry = self.index.db.cf_handle("outpoint_to_utxo_entry")
       .ok_or_else(|| anyhow!("Failed to open column family 'outpoint_to_utxo_entry'"))?;
-    let inscription_id_to_txcnt = db
-      .cf_handle("inscription_id_to_txcnt")
+    let inscription_id_to_txcnt = self.index.db.cf_handle("inscription_id_to_txcnt")
       .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_txcnt'"))?;
-    let sequence_number_to_inscription_entry = db
-      .cf_handle("sequence_number_to_inscription_entry")
-      .ok_or_else(|| {
-        anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'")
-      })?;
-    let ord_transfers = db
-      .cf_handle("ord_transfers")
+    let sequence_number_to_inscription_entry = self.index.db.cf_handle("sequence_number_to_inscription_entry")
+      .ok_or_else(|| anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'"))?;
+    let ord_transfers = self.index.db.cf_handle("ord_transfers")
       .ok_or_else(|| anyhow!("Failed to open column family 'ord_transfers'"))?;
-    let ord_inscription_info = db
-      .cf_handle("ord_inscription_info")
+    let ord_inscription_info = self.index.db.cf_handle("ord_inscription_info")
       .ok_or_else(|| anyhow!("Failed to open column family 'ord_inscription_info'"))?;
 
     let index_inscriptions = self.height >= self.index.settings.first_inscription_height();
@@ -612,10 +583,7 @@ impl Updater<'_> {
             continue;
           }
           // We don't need inputs we already have in our database
-          if db
-            .get_cf(outpoint_to_utxo_entry, &prev_output.store())?
-            .is_some()
-          {
+          if self.index.db.get_cf(outpoint_to_utxo_entry, &prev_output.store())?.is_some() {
             continue;
           }
           // Send this outpoint to background thread to be fetched
@@ -624,23 +592,17 @@ impl Updater<'_> {
       }
     }
 
-    let cursed_inscription_count = db
-      .get_cf(
-        statistic_to_count,
-        &Statistic::CursedInscriptions.key().to_be_bytes(),
-      )?
+    let cursed_inscription_count = self.index.db
+      .get_cf(statistic_to_count, &Statistic::CursedInscriptions.key().to_be_bytes())?
       .map(|count| u64::from_be_bytes(count.try_into().unwrap()))
       .unwrap_or(0);
 
-    let blessed_inscription_count = db
-      .get_cf(
-        statistic_to_count,
-        &Statistic::BlessedInscriptions.key().to_be_bytes(),
-      )?
+    let blessed_inscription_count = self.index.db
+      .get_cf(statistic_to_count, &Statistic::BlessedInscriptions.key().to_be_bytes())?
       .map(|count| u64::from_be_bytes(count.try_into().unwrap()))
       .unwrap_or(0);
 
-    let next_sequence_number = db
+    let next_sequence_number = self.index.db
       .iterator_cf(sequence_number_to_inscription_entry, IteratorMode::End)
       .next()
       .transpose()?
@@ -652,9 +614,9 @@ impl Updater<'_> {
       cursed_inscription_count,
       flotsam: Vec::new(),
       height: self.height,
-      db,
+      db: &self.index.db,
       id_to_sequence_number: inscription_id_to_sequence_number,
-      inscription_number_to_sequence_number,
+      inscription_number_to_sequence_number: inscription_number_to_sequence_number,
       id_to_txcnt: inscription_id_to_txcnt,
       next_sequence_number,
       reward: Height(self.height).subsidy(),
@@ -686,9 +648,7 @@ impl Updater<'_> {
             let entry = if let Some(entry) = utxo_cache.remove(&OutPoint::load(outpoint)) {
               self.outputs_cached += 1;
               entry
-            } else if let Some(entry) =
-              self.get_and_remove_if_exists(outpoint_to_utxo_entry, &outpoint)
-            {
+            } else if let Some(entry) = self.get_and_remove_if_exists(outpoint_to_utxo_entry, &outpoint) {
               entry
             } else {
               assert!(!self.index.have_full_utxo_index());
@@ -748,22 +708,23 @@ impl Updater<'_> {
 
     if index_inscriptions {
       inscription_updater.end_block()?;
-      db.put_cf_opt(
-        height_to_last_sequence_number,
-        &self.height.to_be_bytes(),
-        inscription_updater.next_sequence_number.to_be_bytes(),
-        &self.index.write_options,
-      )?;
+      self.index.db
+        .put_cf_opt(
+          height_to_last_sequence_number,
+          &self.height.to_be_bytes(),
+          inscription_updater.next_sequence_number.to_be_bytes(),
+          &self.index.write_options
+        )?;
     }
 
-    db.put_cf_opt(
+    self.index.db.put_cf_opt(
       statistic_to_count,
       &Statistic::CursedInscriptions.key().to_be_bytes(),
       &inscription_updater.cursed_inscription_count.to_be_bytes(),
       &self.index.write_options,
     )?;
 
-    db.put_cf_opt(
+    self.index.db.put_cf_opt(
       statistic_to_count,
       &Statistic::BlessedInscriptions.key().to_be_bytes(),
       &inscription_updater.blessed_inscription_count.to_be_bytes(),
@@ -773,7 +734,10 @@ impl Updater<'_> {
     Ok(())
   }
 
-  fn commit(&mut self, utxo_cache: HashMap<OutPoint, UtxoEntryBuf>) -> Result {
+  fn commit(
+    &mut self,
+    utxo_cache: HashMap<OutPoint, UtxoEntryBuf>,
+  ) -> Result {
     log::info!(
       "Committing at block height {}, {} outputs traversed, {} in map, {} cached",
       self.height,
@@ -792,9 +756,7 @@ impl Updater<'_> {
     );
 
     {
-      let db = &self.index.db.lock();
-      let outpoint_to_utxo_entry = &db
-        .cf_handle("outpoint_to_utxo_entry")
+      let outpoint_to_utxo_entry = &self.index.db.cf_handle("outpoint_to_utxo_entry")
         .ok_or_else(|| anyhow!("Failed to open column family 'outpoint_to_utxo_entry'"))?;
 
       for (outpoint, utxo_entry) in utxo_cache {
@@ -813,12 +775,7 @@ impl Updater<'_> {
           continue;
         }*/
 
-        db.put_cf_opt(
-          outpoint_to_utxo_entry,
-          &outpoint.store(),
-          utxo_entry.vec,
-          &self.index.write_options,
-        )?;
+        self.index.db.put_cf_opt(outpoint_to_utxo_entry, &outpoint.store(), utxo_entry.vec, &self.index.write_options)?;
       }
     }
 
@@ -831,44 +788,33 @@ impl Updater<'_> {
     let mut flush_opts = rocksdb::FlushOptions::default();
     flush_opts.set_wait(true);
 
-    {
-      let db = &self.index.db.lock();
-      let cfs = vec![
-        db.cf_handle("height_to_block_header")
-          .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?,
-        db.cf_handle("height_to_last_sequence_number")
-          .ok_or_else(|| {
-            anyhow!("Failed to open column family 'height_to_last_sequence_number'")
-          })?,
-        db.cf_handle("outpoint_to_utxo_entry")
-          .ok_or_else(|| anyhow!("Failed to open column family 'outpoint_to_utxo_entry'"))?,
-        db.cf_handle("inscription_id_to_sequence_number")
-          .ok_or_else(|| {
-            anyhow!("Failed to open column family 'inscription_id_to_sequence_number'")
-          })?,
-        db.cf_handle("inscription_number_to_sequence_number")
-          .ok_or_else(|| {
-            anyhow!("Failed to open column family 'inscription_number_to_sequence_number'")
-          })?,
-        db.cf_handle("inscription_id_to_txcnt")
-          .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_txcnt'"))?,
-        db.cf_handle("sequence_number_to_inscription_entry")
-          .ok_or_else(|| {
-            anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'")
-          })?,
-        db.cf_handle("statistic_to_count")
-          .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?,
-        db.cf_handle("ord_transfers")
-          .ok_or_else(|| anyhow!("Failed to open column family 'ord_transfers'"))?,
-        db.cf_handle("ord_inscription_info")
-          .ok_or_else(|| anyhow!("Failed to open column family 'ord_inscription_info'"))?,
-        db.cf_handle("ord_index_stats")
-          .ok_or_else(|| anyhow!("Failed to open column family 'ord_index_stats'"))?,
-      ];
+    let cfs = vec! [
+      self.index.db.cf_handle("height_to_block_header")
+        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?,
+      self.index.db.cf_handle("height_to_last_sequence_number")
+        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_last_sequence_number'"))?,
+      self.index.db.cf_handle("outpoint_to_utxo_entry")
+        .ok_or_else(|| anyhow!("Failed to open column family 'outpoint_to_utxo_entry'"))?,
+      self.index.db.cf_handle("inscription_id_to_sequence_number")
+        .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_sequence_number'"))?,
+      self.index.db.cf_handle("inscription_number_to_sequence_number")
+        .ok_or_else(|| anyhow!("Failed to open column family 'inscription_number_to_sequence_number'"))?,
+      self.index.db.cf_handle("inscription_id_to_txcnt")
+        .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_txcnt'"))?,
+      self.index.db.cf_handle("sequence_number_to_inscription_entry")
+        .ok_or_else(|| anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'"))?,
+      self.index.db.cf_handle("statistic_to_count")
+        .ok_or_else(|| anyhow!("Failed to open column family 'statistic_to_count'"))?,
+      self.index.db.cf_handle("ord_transfers")
+        .ok_or_else(|| anyhow!("Failed to open column family 'ord_transfers'"))?,
+      self.index.db.cf_handle("ord_inscription_info")
+        .ok_or_else(|| anyhow!("Failed to open column family 'ord_inscription_info'"))?,
+      self.index.db.cf_handle("ord_index_stats")
+        .ok_or_else(|| anyhow!("Failed to open column family 'ord_index_stats'"))?,
+    ];
 
-      //self.index.db.flush_opt(&flush_opts)?;
-      db.flush_cfs_opt(&cfs, &flush_opts)?;
-    }
+    //self.index.db.flush_opt(&flush_opts)?;
+    self.index.db.flush_cfs_opt(&cfs, &flush_opts)?;
 
     println!("First commit done in {} ms", st_tm_2.elapsed().as_millis());
     let st_tm_3 = Instant::now();
