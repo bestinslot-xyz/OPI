@@ -1,6 +1,6 @@
 use super::*;
-use crate::index::reorg::Reorg;
 use crate::index::reorg::Error as ReorgError;
+use crate::index::reorg::Reorg;
 
 pub(crate) fn run(settings: Settings) -> SubcommandResult {
   loop {

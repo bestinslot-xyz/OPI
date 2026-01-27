@@ -12,11 +12,12 @@ use {
   db_reader::{start_rpc_server, Config},
   indicatif::{ProgressBar, ProgressStyle},
   log::log_enabled,
+  parking_lot::ReentrantMutex,
   rocksdb::{
     backup::{BackupEngine, BackupEngineOptions},
     ColumnFamilyDescriptor, IteratorMode, Options, DB,
   },
-  std::collections::HashMap,
+  std::{collections::HashMap, sync::Arc},
   tokio::runtime::Runtime,
 };
 
@@ -124,7 +125,7 @@ impl<T> BitcoinCoreRpcResultExt<T> for Result<T, bitcoincore_rpc::Error> {
 
 pub struct Index {
   pub(crate) client: Client,
-  db: DB,
+  db: Arc<ReentrantMutex<DB>>,
   event_sender: Option<tokio::sync::mpsc::Sender<Event>>,
   height_limit: Option<u32>,
   settings: Settings,
@@ -245,28 +246,31 @@ impl Index {
     let first_index_height = settings.first_inscription_height();
 
     let chain = settings.chain();
-    let db_path = path.clone();
     let runtime = Runtime::new()?;
+    let db_mutex = Arc::new(ReentrantMutex::new(db));
+    let db_mutex_clone = db_mutex.clone();
     runtime.spawn(async move {
       println!("Starting RPC server for index at {}", db_path.display());
-      start_rpc_server(Config {
-        network: match chain {
-          Chain::Mainnet => bitcoin::Network::Bitcoin,
-          Chain::Testnet => bitcoin::Network::Testnet,
-          Chain::Testnet4 => bitcoin::Network::Testnet4,
-          Chain::Signet => bitcoin::Network::Signet,
-          Chain::Regtest => bitcoin::Network::Regtest,
+      start_rpc_server(
+        Config {
+          network: match chain {
+            Chain::Mainnet => bitcoin::Network::Bitcoin,
+            Chain::Testnet => bitcoin::Network::Testnet,
+            Chain::Testnet4 => bitcoin::Network::Testnet4,
+            Chain::Signet => bitcoin::Network::Signet,
+            Chain::Regtest => bitcoin::Network::Regtest,
+          },
+          api_url: std::env::var("DB_READER_API_URL").ok(),
         },
-        db_path: Some(db_path.canonicalize().unwrap()),
-        api_url: std::env::var("DB_READER_API_URL").ok(),
-      })
+        db_mutex_clone,
+      )
       .await
       .unwrap()
     });
 
     Ok(Self {
       client,
-      db,
+      db: db_mutex,
       event_sender,
       first_index_height,
       height_limit: settings.height_limit(),
@@ -297,21 +301,8 @@ impl Index {
         return Ok(());
       }
 
-      let height_to_block_header = self
-        .db
-        .cf_handle("height_to_block_header")
-        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
-
-      let blocks_indexed = self
-        .db
-        .iterator_cf(height_to_block_header, IteratorMode::End)
-        .next()
-        .transpose()?
-        .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()) + 1)
-        .unwrap_or(0);
-
       let mut updater = Updater {
-        height: blocks_indexed,
+        height: self.block_count()?,
         index: self,
         outputs_cached: 0,
         outputs_traversed: 0,
@@ -346,13 +337,12 @@ impl Index {
   }
 
   pub fn block_count(&self) -> Result<u32> {
-    let height_to_block_header = self
-      .db
+    let db = self.db.lock();
+    let height_to_block_header = db
       .cf_handle("height_to_block_header")
       .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
-    let blocks_indexed = self
-      .db
+    let blocks_indexed = db
       .iterator_cf(height_to_block_header, IteratorMode::End)
       .next()
       .transpose()?
@@ -363,13 +353,12 @@ impl Index {
   }
 
   pub fn block_height(&self) -> Result<Option<Height>> {
-    let height_to_block_header = self
-      .db
+    let db = self.db.lock();
+    let height_to_block_header = db
       .cf_handle("height_to_block_header")
       .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
-    let block_height = self
-      .db
+    let block_height = db
       .iterator_cf(height_to_block_header, IteratorMode::End)
       .next()
       .transpose()?
@@ -379,19 +368,17 @@ impl Index {
   }
 
   pub fn block_hash(&self, height: Option<u32>) -> Result<Option<BlockHash>> {
-    let height_to_block_header = self
-      .db
+    let db = self.db.lock();
+    let height_to_block_header = db
       .cf_handle("height_to_block_header")
       .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
     Ok(
       match height {
-        Some(height) => self
-          .db
+        Some(height) => db
           .get_cf(height_to_block_header, &height.to_be_bytes())
           .unwrap(),
-        None => self
-          .db
+        None => db
           .iterator_cf(height_to_block_header, IteratorMode::End)
           .next()
           .transpose()?
@@ -402,15 +389,14 @@ impl Index {
   }
 
   pub fn blocks(&self, take: usize) -> Result<Vec<(u32, BlockHash)>> {
-    let height_to_block_header = self
-      .db
+    let db = self.db.lock();
+    let height_to_block_header = db
       .cf_handle("height_to_block_header")
       .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
 
     let mut blocks = Vec::with_capacity(take);
 
-    for next in self
-      .db
+    for next in db
       .iterator_cf(height_to_block_header, IteratorMode::End)
       .take(take)
     {
@@ -428,28 +414,25 @@ impl Index {
     &self,
     inscription_id: InscriptionId,
   ) -> Result<Option<InscriptionEntry>> {
-    let inscription_id_to_sequence_number = self
-      .db
+    let db = self.db.lock();
+    let inscription_id_to_sequence_number = db
       .cf_handle("inscription_id_to_sequence_number")
       .ok_or_else(|| anyhow!("Failed to open column family 'inscription_id_to_sequence_number'"))?;
 
-    let Some(sequence_number) = self
-      .db
+    let Some(sequence_number) = db
       .get_cf(inscription_id_to_sequence_number, &inscription_id.store())?
       .map(|value| u32::from_be_bytes(value.try_into().unwrap()))
     else {
       return Ok(None);
     };
 
-    let sequence_number_to_inscription_entry = self
-      .db
+    let sequence_number_to_inscription_entry = db
       .cf_handle("sequence_number_to_inscription_entry")
       .ok_or_else(|| {
         anyhow!("Failed to open column family 'sequence_number_to_inscription_entry'")
       })?;
 
-    let entry = self
-      .db
+    let entry = db
       .get_cf(
         sequence_number_to_inscription_entry,
         &sequence_number.to_be_bytes(),
