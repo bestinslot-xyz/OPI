@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ord-opi-runes-backup
+  namespace: default
+spec:
+  schedule: "0 */6 * * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          imagePullSecrets:
+            - name: bispullsecret
+          containers:
+          - name: redb-backup
+            image: registry.bestinslot.xyz/ord-opi-runes:0.0.2
+            workingDir: /runes-index
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                BLOCK_COUNT=$(curl -s --user "$BITCOIN_RPC_USER:$BITCOIN_RPC_PASSWD" \
+                  --data-binary '{"jsonrpc":"1.0","id":"curltext","method":"getblockcount","params":[]}' \
+                  -H 'content-type: text/plain;' \
+                  "$BITCOIN_RPC_URL" | jq -r '.result')
+                ord \
+                --bitcoin-data-dir ~/.bitcoin/ \
+                --data-dir . \
+                --height-limit "$((BLOCK_COUNT - 100))" \
+                --bitcoin-rpc-url "$BITCOIN_RPC_URL" \
+                --bitcoin-rpc-username "$BITCOIN_RPC_USER" \
+                --bitcoin-rpc-password "$BITCOIN_RPC_PASSWD" \
+                index run
+            env:
+            - name: BITCOIN_RPC_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: bis-config
+                  key: rpc.user
+            - name: BITCOIN_RPC_PASSWD
+              valueFrom:
+                secretKeyRef:
+                  name: rpc-credentials
+                  key: password
+            - name: BITCOIN_RPC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: bis-config
+                  key: rpc.host
+            volumeMounts:
+            - name: ord-opi-runes
+              mountPath: /runes-index
+          restartPolicy: OnFailure
+          nodeSelector:
+            role: cloud2
+          volumes:
+          - name: ord-opi-runes
+            persistentVolumeClaim:
+              claimName: ord-opi-runes-backup-pvc

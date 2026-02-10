@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "main-index.fullname" . }}
+  {{- if .Values.namespace }}
+  namespace: {{ .Values.namespace }}
+  {{- end }}
+  labels:
+    {{- include "main-index.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "main-index.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "main-index.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "main-index.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "index"
+            - "run"
+          env:
+          - name: ORD_BITCOIN_RPC_USERNAME
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.configMapName }}
+                key: rpc.user
+          - name: ORD_BITCOIN_RPC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rpc-credentials
+                key: password
+          - name: ORD_BITCOIN_RPC_URL
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.configMapName }}
+                key: rpc.host
+          - name: ORD_CHAIN
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.configMapName }}
+                key: networkType
+          - name: ORD_DATA_DIR
+            value: "/ord"
+          - name: ORD_SAVEPOINT_INTERVAL
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.configMapName }}
+                key: savepointInterval
+          - name: ORD_MAX_SAVEPOINTS
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.configMapName }}
+                key: maxSavepoints
+          - name: ORD_COMMIT_INTERVAL
+            valueFrom:
+              configMapKeyRef:
+                name: {{ .Values.configMapName }}
+                key: commitInterval
+          - name: DB_READER_API_URL
+            value: "0.0.0.0:{{ .Values.service.port }}"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: opi-main-index
+              mountPath: /ord
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+      volumes:
+        - name: opi-main-index
+          persistentVolumeClaim:
+            claimName: {{ include "main-index.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

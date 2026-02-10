@@ -82,6 +82,15 @@ const first_rune_heights = {
   'signet': 173831,
   'regtest': 0,
 }
+
+const save_point_intervals = {
+  "mainnet": 10,
+  "testnet4": 50,
+  "testnet": 50,
+  "regtest": 10,
+  "signet": 10,
+}
+
 const first_rune_height = first_rune_heights[network_type]
 const fast_index_below = first_rune_height + 1000
 
@@ -132,7 +141,13 @@ async function main_index() {
     }
 
     let ord_index_st_tm = +(new Date())
+    const save_point_interval = save_point_intervals[network_type]
     let ord_end_block_height = ord_last_block_height + 500
+    if (ord_end_block_height > 74000){
+      ord_end_block_height = ord_last_block_height + save_point_interval
+    }
+
+    ord_end_block_height = Math.ceil(ord_end_block_height / save_point_interval) * save_point_interval
 
     let cookie_arg = cookie_file ? ` --cookie-file=${cookie_file} ` : ""
 
@@ -157,7 +172,7 @@ async function main_index() {
     } else if (network_type == 'testnet4') {
       network_argument = " --testnet4"
     }
-    let ord_index_cmd = ord_binary + " --no-index-inscriptions --index-runes" + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) + " " + rpc_argument + " index run"
+    let ord_index_cmd = ord_binary + " --no-index-inscriptions --index-runes" + network_argument + " --bitcoin-data-dir " + chain_folder + " --data-dir " + ord_datadir + cookie_arg + " --height-limit " + (ord_end_block_height) +  rpc_argument + " index run"
     try {
       let version_string = execSync(ord_version_cmd).toString()
       console.log("ord version: " + version_string)
@@ -165,7 +180,11 @@ async function main_index() {
         console.error("ord-runes version mismatch, please recompile ord-runes via 'cargo build --release' in ord-runes folder.")
         process.exit(1)
       }
-      execSync(ord_index_cmd, {stdio: 'inherit'})
+      if(process.env.DEBUG){
+        execSync(`RUST_BACKTRACE=full RUST_LOG=trace ${ord_index_cmd}`, {stdio: 'inherit'})
+      }else {
+        execSync(`RUST_BACKTRACE=full ${ord_index_cmd}`, {stdio: 'inherit'})
+      }
     }
     catch (err) {
       console.error("ERROR ON ORD!!!")
@@ -574,7 +593,7 @@ async function main_index() {
       let block_height = parseInt(k)
       let blockhash = to_be_inserted_hashes[k][0]
       let blocktime = to_be_inserted_hashes[k][1]
-      await db_pool.query(`INSERT into runes_block_hashes (block_height, block_hash, block_time) values ($1, $2, $3) ON CONFLICT (block_height) DO NOTHING;`, [block_height, blockhash, blocktime])
+      await db_pool.query(`INSERT into runes_block_hashes (block_height, block_hash, block_time) values ($1, $2, $3) ON CONFLICT (block_height) DO UPDATE SET block_hash = excluded.block_hash;`, [block_height, blockhash, blocktime])
     }
     
     let ord_sql_tm = +(new Date()) - ord_sql_st_tm

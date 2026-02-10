@@ -182,7 +182,7 @@ impl<T> BitcoinCoreRpcResultExt<T> for Result<T, bitcoincore_rpc::Error> {
 
 pub struct Index {
   pub(crate) client: Client,
-  database: Database,
+  pub(crate) database: Database,
   durability: redb::Durability,
   event_sender: Option<tokio::sync::mpsc::Sender<Event>>,
   first_inscription_height: u32,
@@ -1048,6 +1048,53 @@ impl Index {
     }
 
     Ok(result)
+  }
+
+  pub(crate) fn get_rune_balances_for_outpoints(
+    &self,
+    outpoints: Vec<OutPoint>,
+  ) -> Result<Vec<(OutPoint, Vec<(RuneId, u128)>)>> {
+    let rtx = self.database.begin_read()?;
+    let outpoint_to_balances = rtx.open_table(OUTPOINT_TO_RUNE_BALANCES)?;
+
+    let mut result = Vec::new();
+
+    for outpoint in outpoints {
+      let Some(balances_raw) = outpoint_to_balances.get(&outpoint.store())? else {
+        continue;
+      };
+
+      let balances_buffer = balances_raw.value();
+      let mut balances = Vec::new();
+      let mut i = 0;
+
+      while i < balances_buffer.len() {
+        let ((id, amount), length) = Index::decode_rune_balance(&balances_buffer[i..]).unwrap();
+        i += length;
+        balances.push((id, amount));
+      }
+
+      result.push((outpoint, balances));
+    }
+
+    Ok(result)
+  }
+
+  pub(crate) fn get_all_rune_entries(&self) -> Result<Vec<(RuneId, RuneEntry)>> {
+    use crate::index::entry::Entry;
+
+    let rtx = self.database.begin_read()?;
+    let rune_entries = rtx.open_table(RUNE_ID_TO_RUNE_ENTRY)?;
+
+    let mut results = Vec::new();
+    for entry in rune_entries.iter()? {
+      let (id, value) = entry?;
+      let rune_id = RuneId::load(id.value());
+      let rune_entry = RuneEntry::load(value.value());
+      results.push((rune_id, rune_entry));
+    }
+
+    Ok(results)
   }
 
   pub(crate) fn block_header(&self, hash: BlockHash) -> Result<Option<Header>> {
