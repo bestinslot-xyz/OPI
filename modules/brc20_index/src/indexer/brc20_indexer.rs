@@ -331,11 +331,6 @@ impl Brc20Indexer {
 
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         tracing::info!("Reorganizing BRC20 indexer database...");
-        get_brc20_database()
-            .lock()
-            .await
-            .reorg(block_height)
-            .await?;
         if self.config.brc20_prog_enabled
             && block_height >= self.config.first_brc20_prog_phase_one_height
         {
@@ -343,6 +338,11 @@ impl Brc20Indexer {
                 .brc20_reorg(block_height as u64)
                 .await?;
         }
+        get_brc20_database()
+            .lock()
+            .await
+            .reorg(block_height)
+            .await?;
         tracing::info!("BRC20 indexer database reorg complete.");
         Ok(())
     }
