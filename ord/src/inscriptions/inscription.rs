@@ -109,6 +109,20 @@ impl Inscription {
     })
   }
 
+  #[cfg(test)]
+  pub(crate) fn to_witness(&self) -> Witness {
+    let builder = script::Builder::new();
+
+    let script = self.append_reveal_script_to_builder(builder).into_script();
+
+    let mut witness = Witness::new();
+
+    witness.push(script);
+    witness.push([]);
+
+    witness
+  }
+
   pub fn pointer_value(pointer: u64) -> Vec<u8> {
     let mut bytes = pointer.to_le_bytes().to_vec();
 

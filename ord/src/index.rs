@@ -30,6 +30,9 @@ pub(crate) mod reorg;
 mod updater;
 mod utxo_entry;
 
+#[cfg(test)]
+pub(crate) mod testing;
+
 const SCHEMA_VERSION: u64 = 99100030;
 
 #[derive(Copy, Clone)]
@@ -291,57 +294,61 @@ impl Index {
     outpoint == OutPoint::null() || outpoint == unbound_outpoint()
   }
 
+  pub fn update_once(&self) -> Result {
+    let height_to_block_header = self
+      .db
+      .cf_handle("height_to_block_header")
+      .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+
+    let blocks_indexed = self
+      .db
+      .iterator_cf(height_to_block_header, IteratorMode::End)
+      .next()
+      .transpose()?
+      .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()) + 1)
+      .unwrap_or(0);
+
+    let mut updater = Updater {
+      height: blocks_indexed,
+      index: self,
+      outputs_cached: 0,
+      outputs_traversed: 0,
+      sat_ranges_since_flush: 0,
+    };
+
+    match updater.update_index() {
+      Ok(_ok) => Ok(()),
+      Err(err) => {
+        log::info!("{err}");
+
+        match err.downcast_ref() {
+          Some(&reorg::Error::Recoverable {
+            height: _,
+            depth: _,
+          }) => {
+            Err(err) // Reorg::handle_reorg(self, height, depth)?;
+          }
+          Some(&reorg::Error::Unrecoverable) => {
+            self
+              .unrecoverably_reorged
+              .store(true, atomic::Ordering::Relaxed);
+            Err(anyhow!(reorg::Error::Unrecoverable))
+          }
+          _ => Err(err),
+        }
+      }
+    }
+  }
+
   pub fn update(&self) -> Result {
     loop {
       if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
         return Ok(());
       }
 
-      let height_to_block_header = self
-        .db
-        .cf_handle("height_to_block_header")
-        .ok_or_else(|| anyhow!("Failed to open column family 'height_to_block_header'"))?;
+      self.update_once()?;
 
-      let blocks_indexed = self
-        .db
-        .iterator_cf(height_to_block_header, IteratorMode::End)
-        .next()
-        .transpose()?
-        .map(|(height, _header)| u32::from_be_bytes((*height).try_into().unwrap()) + 1)
-        .unwrap_or(0);
-
-      let mut updater = Updater {
-        height: blocks_indexed,
-        index: self,
-        outputs_cached: 0,
-        outputs_traversed: 0,
-        sat_ranges_since_flush: 0,
-      };
-
-      match updater.update_index() {
-        Ok(_ok) => {
-          thread::sleep(Duration::from_secs(5));
-        }
-        Err(err) => {
-          log::info!("{err}");
-
-          match err.downcast_ref() {
-            Some(&reorg::Error::Recoverable {
-              height: _,
-              depth: _,
-            }) => {
-              return Err(err); // Reorg::handle_reorg(self, height, depth)?;
-            }
-            Some(&reorg::Error::Unrecoverable) => {
-              self
-                .unrecoverably_reorged
-                .store(true, atomic::Ordering::Relaxed);
-              return Err(anyhow!(reorg::Error::Unrecoverable));
-            }
-            _ => return Err(err),
-          };
-        }
-      }
+      thread::sleep(Duration::from_secs(5));
     }
   }
 
@@ -456,5 +463,68 @@ impl Index {
       )?
       .map(|value| InscriptionEntry::load(value.try_into().unwrap()));
     Ok(entry)
+  }
+}
+
+
+#[cfg(test)]
+mod tests {
+  use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash, Witness, absolute::LockTime, hashes::Hash, transaction::Version};
+  use crate::{Inscription, InscriptionId, default, index::testing::Context, inscriptions::inscription};
+
+  #[test]
+  fn same_tx_forward_parent_reference_does_not_panic() {
+    for context in Context::configurations() {
+      context.mine_blocks(2);
+
+      let coinbase_1 = context.core.tx(1, 0);
+      let coinbase_2 = context.core.tx(2, 0);
+
+      let mut tx = Transaction {
+        version: Version(2),
+        lock_time: LockTime::ZERO,
+        input: vec![
+          TxIn {
+            previous_output: OutPoint::new(coinbase_1.compute_txid(), 0),
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+          },
+          TxIn {
+            previous_output: OutPoint::new(coinbase_2.compute_txid(), 0),
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+          },
+        ],
+        output: vec![TxOut {
+          value: coinbase_1.output[0].value + coinbase_2.output[0].value,
+          script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+        }],
+      };
+
+      let txid = tx.compute_txid();
+
+      let forward_parent_id = InscriptionId { txid, index: 1 };
+
+      tx.input[0].witness = Inscription {
+        content_type: Some("text/plain".into()),
+        body: Some("foo".into()),
+        parents: vec![forward_parent_id.value()],
+        ..default()
+      }
+      .to_witness();
+
+      tx.input[1].witness = Inscription {
+        content_type: Some("text/plain".into()),
+        body: Some("bar".into()),
+        ..default()
+      }
+      .to_witness();
+
+      context.core.state().mempool.push(tx);
+
+      context.mine_blocks(1);
+    }
   }
 }
