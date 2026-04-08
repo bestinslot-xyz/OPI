@@ -470,7 +470,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
   use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash, Witness, absolute::LockTime, hashes::Hash, transaction::Version};
-  use crate::{Inscription, InscriptionId, default, index::testing::Context, inscriptions::inscription};
+  use crate::{Inscription, InscriptionId, default, index::testing::Context};
 
   #[test]
   fn same_tx_forward_parent_reference_does_not_panic() {
