@@ -718,55 +718,45 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        tracing::info!("Selecting unused txes");
+        tracing::info!("Inserting unused txes");
 
-        let unused_txes = sqlx::query(&format!(
-            "with tempp as (
-                  select inscription_id, event, id, block_height
-                  from {}
-                  where event_type = $1
-                ), tempp2 as (
-                  select inscription_id, event
-                  from {}
-                  where event_type = $2
-                )
-                select t.event, t.id, t.block_height, t.inscription_id
-                from tempp t
-                left join tempp2 t2 on t.inscription_id = t2.inscription_id
-                where t2.inscription_id is null;",
-            self.events_table, self.events_table
+        // Rebuild brc20_unused_txes entirely inside Postgres: select every
+        // transfer-inscribe event with no matching transfer-transfer event
+        // (the "unused" transfers) and insert them in a single statement.
+        // This avoids pulling ~1M rows into the app and inserting them one by
+        // one, which turned this step into a multi-hour operation.
+        //
+        // The old per-row loop survived any server-side statement_timeout
+        // because each tiny insert reset the clock; this single large
+        // statement would not, so disable the timeout for this transaction
+        // only. SET LOCAL reverts on commit and has no global effect.
+        sqlx::query("SET LOCAL statement_timeout = 0")
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(&format!(
+            "insert into brc20_unused_txes
+                    (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                 select t.inscription_id,
+                        coalesce(t.event->>'tick', ''),
+                        (t.event->>'amount')::numeric,
+                        t.event->>'source_pkScript',
+                        t.event->>'source_wallet',
+                        t.id,
+                        t.block_height
+                 from {events} t
+                 where t.event_type = $1
+                   and not exists (
+                       select 1 from {events} t2
+                       where t2.event_type = $2
+                         and t2.inscription_id = t.inscription_id
+                   );",
+            events = self.events_table
         ))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
-        .fetch_all(&mut *tx)
+        .execute(&mut *tx)
         .await?;
-
-        tracing::info!("Inserting unused txes");
-
-        for (index, row) in unused_txes.iter().enumerate() {
-            if index % 1000 == 0 {
-                tracing::info!("Inserting unused txes: {}/{}", index, unused_txes.len());
-            }
-
-            let inscription_id: String = row.get("inscription_id");
-            let new_event: serde_json::Value = row.get("event");
-            let event_id: i64 = row.get("id");
-            let block_height: i32 = row.get("block_height");
-
-            sqlx::query!(
-                "INSERT INTO brc20_unused_txes (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                inscription_id,
-                new_event.get("tick").unwrap().as_str().unwrap_or(""),
-                BigDecimal::from(new_event.get("amount").unwrap().as_str().unwrap().parse::<u128>().unwrap()),
-                new_event.get("source_pkScript").unwrap().as_str().unwrap(),
-                new_event.get("source_wallet").unwrap().as_str().unwrap(),
-                event_id,
-                block_height
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
 
         tracing::info!("Resetting brc20_current_balances");
 
@@ -1102,55 +1092,45 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        tracing::info!("Selecting unused txes");
+        tracing::info!("Inserting unused txes");
 
-        let unused_txes = sqlx::query(&format!(
-            "with tempp as (
-                  select inscription_id, event, id, block_height
-                  from {}
-                  where event_type = $1
-                ), tempp2 as (
-                  select inscription_id, event
-                  from {}
-                  where event_type = $2
-                )
-                select t.event, t.id, t.block_height, t.inscription_id
-                from tempp t
-                left join tempp2 t2 on t.inscription_id = t2.inscription_id
-                where t2.inscription_id is null;",
-            self.events_table, self.events_table
+        // Rebuild brc20_unused_txes entirely inside Postgres: select every
+        // transfer-inscribe event with no matching transfer-transfer event
+        // (the "unused" transfers) and insert them in a single statement.
+        // This avoids pulling ~1M rows into the app and inserting them one by
+        // one, which turned this step into a multi-hour operation.
+        //
+        // The old per-row loop survived any server-side statement_timeout
+        // because each tiny insert reset the clock; this single large
+        // statement would not, so disable the timeout for this transaction
+        // only. SET LOCAL reverts on commit and has no global effect.
+        sqlx::query("SET LOCAL statement_timeout = 0")
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(&format!(
+            "insert into brc20_unused_txes
+                    (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+                 select t.inscription_id,
+                        coalesce(t.event->>'tick', ''),
+                        (t.event->>'amount')::numeric,
+                        t.event->>'source_pkScript',
+                        t.event->>'source_wallet',
+                        t.id,
+                        t.block_height
+                 from {events} t
+                 where t.event_type = $1
+                   and not exists (
+                       select 1 from {events} t2
+                       where t2.event_type = $2
+                         and t2.inscription_id = t.inscription_id
+                   );",
+            events = self.events_table
         ))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
-        .fetch_all(&mut *tx)
+        .execute(&mut *tx)
         .await?;
-
-        tracing::info!("Inserting unused txes");
-
-        for (index, row) in unused_txes.iter().enumerate() {
-            if index % 1000 == 0 {
-                tracing::info!("Inserting unused txes: {}/{}", index, unused_txes.len());
-            }
-
-            let inscription_id: String = row.get("inscription_id");
-            let new_event: serde_json::Value = row.get("event");
-            let event_id: i64 = row.get("id");
-            let block_height: i32 = row.get("block_height");
-
-            sqlx::query!(
-                "INSERT INTO brc20_unused_txes (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                inscription_id,
-                new_event.get("tick").unwrap().as_str().unwrap_or(""),
-                BigDecimal::from(new_event.get("amount").unwrap().as_str().unwrap().parse::<u128>().unwrap()),
-                new_event.get("source_pkScript").unwrap().as_str().unwrap(),
-                new_event.get("source_wallet").unwrap().as_str().unwrap(),
-                event_id,
-                block_height
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
 
         tx.commit().await?;
 
