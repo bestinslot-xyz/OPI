@@ -738,7 +738,7 @@ impl Brc20Database {
             "insert into brc20_unused_txes
                     (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
                  select t.inscription_id,
-                        coalesce(t.event->>'tick', ''),
+                        t.event->>'tick',
                         (t.event->>'amount')::numeric,
                         t.event->>'source_pkScript',
                         t.event->>'source_wallet',
@@ -1112,7 +1112,7 @@ impl Brc20Database {
             "insert into brc20_unused_txes
                     (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
                  select t.inscription_id,
-                        coalesce(t.event->>'tick', ''),
+                        t.event->>'tick',
                         (t.event->>'amount')::numeric,
                         t.event->>'source_pkScript',
                         t.event->>'source_wallet',
