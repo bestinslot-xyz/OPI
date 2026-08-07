@@ -1,0 +1,4 @@
+python-dotenv
+psycopg2
+requests
+json5

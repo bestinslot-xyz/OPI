@@ -19,44 +19,7 @@ pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) chain: Chain,
 }
 
-use std::fs::File;
-
 impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
-  fn write_to_file(
-    &mut self,
-    to_write: String,
-    flush: bool,
-  ) -> Result {
-    lazy_static! {
-      static ref RUNES_OUTPUT: Mutex<Option<File>> = Mutex::new(None);
-    }
-    let mut runes_output = RUNES_OUTPUT.lock().unwrap();
-    if runes_output.as_ref().is_none() {
-      let chain_folder: String = match self.chain { 
-        Chain::Mainnet => String::from(""),
-        Chain::Testnet => String::from("testnet3/"),
-        Chain::Testnet4 => String::from("testnet4/"),
-        Chain::Signet => String::from("signet/"),
-        Chain::Regtest => String::from("regtest/"),
-      };
-      *runes_output = Some(File::options().append(true).open(format!("{chain_folder}runes_output.txt")).unwrap());
-    }
-    if to_write != "" {
-      if self.first_in_block {
-        println!("cmd;{0};block_start", self.height,);
-        writeln!(runes_output.as_ref().unwrap(), "cmd;{0};block_start", self.height,)?;
-      }
-      self.first_in_block = false;
-
-      writeln!(runes_output.as_ref().unwrap(), "{}", to_write)?;
-    }
-    if flush {
-      (runes_output.as_ref().unwrap()).flush()?;
-    }
-
-    Ok(())
-  }
-
   pub(super) fn index_runes(&mut self, tx_index: u32, tx: &Transaction, txid: Txid) -> Result<()> {
     let artifact = Runestone::decipher(tx);
 
@@ -213,14 +176,11 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
 
     for (outpoint, balances) in tx_inputs {
       for (rune_id, amount) in balances {
-        self.write_to_file(format!("cmd;{0};tx_events_input;{1};{2};{3};{4}", self.height, txid, outpoint, rune_id, amount), false)?;
       }
     }
     for (rune_id, amount) in new_rune_allocations {
-      self.write_to_file(format!("cmd;{0};tx_events_new_rune_allocation;{1};{2};{3}", self.height, txid, rune_id, amount), false)?;
     }
     for (rune_id, amount) in mints {
-      self.write_to_file(format!("cmd;{0};tx_events_mint;{1};{2};{3}", self.height, txid, rune_id, amount), false)?;
     }
 
     // update outpoint balances
@@ -258,7 +218,6 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         balances_str += &format!("{0}-{1},", id, balance.n());
         let scriptpubkeyhex = hex::encode(tx.output[vout].script_pubkey.clone().into_bytes());
 
-        self.write_to_file(format!("cmd;{0};tx_events_output;{1};{2};{3};{4};{5}", self.height, txid, outpoint, id, balance.n(), scriptpubkeyhex), false)?;
       }
 
       self.outpoint_to_balances.insert(
@@ -266,13 +225,11 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
         buffer.as_slice(),
       )?;
 
-      self.write_to_file(format!("cmd;{0};outpoint_to_balances_insert;{1};{2};{3}", self.height, scriptpubkeyhex, outpoint, balances_str), false)?;
     }
 
     // increment entries with burned runes
     for (id, amount) in burned {
       *self.burned.entry(id).or_default() += amount;
-      self.write_to_file(format!("cmd;{0};tx_events_burn;{1};{2};{3}", self.height, txid, id, amount.n()), false)?;
     }
 
     Ok(())
@@ -289,20 +246,13 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     let minted_clone = self.minted.clone();
     for (rune_id, _burned) in &burned_clone {
       let entry = RuneEntry::load(self.id_to_entry.get(&rune_id.store())?.unwrap().value());
-      self.write_to_file(format!("cmd;{0};id_to_entry_update;{1};{2};{3}", self.height, rune_id, entry.burned, entry.mints), false)?;
     }
 
     for (rune_id, _amount) in &minted_clone {
       let burned_amount = burned_clone.get(&rune_id);
       if burned_amount.is_none() {
         let entry = RuneEntry::load(self.id_to_entry.get(&rune_id.store())?.unwrap().value());
-        self.write_to_file(format!("cmd;{0};id_to_entry_update;{1};{2};{3}", self.height, rune_id, entry.burned, entry.mints), false)?;
       }
-    }
-    
-    if !self.first_in_block {
-      println!("cmd;{0};block_end", self.height);
-      self.write_to_file(format!("cmd;{0};block_end", self.height), true)?;
     }
 
     Ok(())
@@ -374,26 +324,6 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
     };
 
     self.id_to_entry.insert(id.store(), entry.store())?;
-    let mut buff_for_symbol = [0; 4];
-    if entry.symbol.is_some() {
-      entry.symbol.unwrap().encode_utf8(&mut buff_for_symbol);
-    }
-    let mut terms_str = String::new();
-    if let Some(terms) = entry.terms {
-      let amount = terms.amount.map_or("null".to_string(), |a| a.to_string());
-      let cap = terms.cap.map_or("null".to_string(), |c| c.to_string());
-      let height_l = terms.height.0.map_or("null".to_string(), |h| h.to_string());
-      let height_h = terms.height.1.map_or("null".to_string(), |h| h.to_string());
-      let offset_l = terms.offset.0.map_or("null".to_string(), |o| o.to_string());
-      let offset_h = terms.offset.1.map_or("null".to_string(), |o| o.to_string());
-      terms_str = format!("{0}-{1}-{2}-{3}-{4}-{5}", amount, cap, height_l, height_h, offset_l, offset_h);
-    }
-    let turbo_str = if entry.turbo { "true" } else { "false" };
-    self.write_to_file(format!("cmd;{0};id_to_entry_insert;{1};{2};{3};{4};{5};{6};{7};{8};{9};{10};{11};{12};{13};{14}", 
-            self.height, id, entry.block, entry.burned, entry.divisibility, 
-            entry.etching, terms_str, entry.mints, entry.number, entry.premine, entry.spaced_rune.rune, entry.spaced_rune.spacers, 
-            entry.symbol.map_or(String::from("null"), |_| hex::encode(buff_for_symbol)), entry.timestamp, turbo_str), false)?;
-
 
     let inscription_id = InscriptionId { txid, index: 0 };
 
@@ -574,7 +504,6 @@ impl<'a, 'tx, 'client> RuneUpdater<'a, 'tx, 'client> {
       }
       
       if removed {
-        self.write_to_file(format!("cmd;{0};outpoint_to_balances_remove;{1}", self.height, input.previous_output), false)?;
       }
     }
 

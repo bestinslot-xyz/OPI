@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ord-opi-main-backup
+  namespace: default
+spec:
+  schedule: "0 */6 * * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          imagePullSecrets:
+            - name: bispullsecret
+          containers:
+          - name: redb-backup
+            image: registry.bestinslot.xyz/ord-opi-main:0.0.1
+            workingDir: /main-index
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                BLOCK_COUNT=$(curl -s --user "$BITCOIN_RPC_USER:$BITCOIN_RPC_PASSWD" \
+                  --data-binary '{"jsonrpc":"1.0","id":"curltext","method":"getblockcount","params":[]}' \
+                  -H 'content-type: text/plain;' \
+                  "$BITCOIN_RPC_URL" | jq -r '.result')
+                ord \
+                --bitcoin-data-dir ~/.bitcoin/ \
+                --data-dir . \
+                --rpc-url "$BITCOIN_RPC_URL" \
+                --height-limit "$((BLOCK_COUNT - 100))" \
+                --bitcoin-rpc-user "$BITCOIN_RPC_USER" \
+                --bitcoin-rpc-pass "$BITCOIN_RPC_PASSWD" \
+                index run
+            env:
+            - name: BITCOIN_RPC_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: bis-config
+                  key: rpc.user
+            - name: BITCOIN_RPC_PASSWD
+              valueFrom:
+                secretKeyRef:
+                  name: rpc-credentials
+                  key: password
+            - name: BITCOIN_RPC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: bis-config
+                  key: rpc.host
+            volumeMounts:
+            - name: ord-opi-main
+              mountPath: /main-index
+          restartPolicy: OnFailure
+          nodeSelector:
+            role: cloud2
+          volumes:
+          - name: ord-opi-main
+            persistentVolumeClaim:
+              claimName: ord-opi-main-backup-pvc
