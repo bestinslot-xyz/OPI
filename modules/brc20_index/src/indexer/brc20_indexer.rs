@@ -142,7 +142,11 @@ impl Brc20Indexer {
             .update_event_hash_and_indexer_version()
             .await?;
 
-        self.event_provider_client.load_providers().await?;
+        // Event providers serve light clients and block reporting; a full indexer
+        // that does not report computes every event itself.
+        if self.config.light_client_mode || self.config.report_to_indexer {
+            self.event_provider_client.load_providers().await?;
+        }
         self.last_opi_block = self.get_opi_block_height().await?;
 
         if self.config.report_to_indexer {
