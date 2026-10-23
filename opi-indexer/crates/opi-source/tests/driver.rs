@@ -3,7 +3,7 @@ mod support;
 use {
     bitcoin::OutPoint,
     opi_core::BlockSource,
-    opi_source::driver::spawn_source,
+    opi_source::{driver::spawn_source, journal::Journal},
     ord::Chain,
     std::time::Duration,
     support::{
@@ -146,6 +146,39 @@ fn finalize_retries_after_upstream_errors() {
 
     source.shutdown();
     source.join().unwrap();
+}
+
+#[test]
+fn journal_open_recovers_from_interrupted_init() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("journal.redb");
+    let init = tmp.path().join("journal.redb.init");
+    std::fs::write(&init, b"torn garbage").unwrap();
+
+    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    assert!(journal.created());
+    drop(journal);
+    assert!(!init.exists());
+
+    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    assert!(!journal.created());
+}
+
+#[test]
+fn ord_index_init_is_atomic() {
+    let harness = chain_with_inscriptions(4);
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("ord").join("regtest");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.redb.init"), b"torn garbage").unwrap();
+
+    let source = start(&harness, tmp.path());
+    wait_for_tip(&source.reader(), harness.height());
+    source.shutdown();
+    source.join().unwrap();
+
+    assert!(dir.join("index.redb").exists());
+    assert!(!dir.join("index.redb.init").exists());
 }
 
 #[test]

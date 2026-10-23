@@ -56,6 +56,33 @@ pub struct Journal {
     created: bool,
 }
 
+/// The scratch path a file is built at before being renamed to `path`.
+pub fn init_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".init");
+    name.into()
+}
+
+/// Deletes `path` when it exists.
+pub(crate) fn remove_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
+/// Fsyncs the directory holding `path`, making a rename into it durable.
+pub(crate) fn sync_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("syncing {}", parent.display()))
+}
+
 /// Definition of the journal table called `name`.
 pub fn table(name: &'static str) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
     TableDefinition::new(name)
@@ -67,14 +94,29 @@ impl Journal {
     ///
     /// redb holds an exclusive file lock while the database is open, so a
     /// second `open` of the same path from another process fails.
+    ///
+    /// A new journal is built at `<path>.init` and renamed into place once
+    /// complete, so a crash during creation leaves no half-made journal.
     pub fn open(path: &Path, chain: Chain) -> Result<Journal> {
+        let init = init_path(path);
+        let created = if path.exists() {
+            remove_if_exists(&init)?;
+            false
+        } else {
+            remove_if_exists(&init)?;
+            Self::initialize(&init, chain)?;
+            std::fs::rename(&init, path)
+                .with_context(|| format!("renaming {} into place", init.display()))?;
+            sync_parent(path)?;
+            true
+        };
         let db = Database::create(path)
             .with_context(|| format!("opening journal at {}", path.display()))?;
         let chain = chain.to_string();
 
         let mut journal = Journal {
             db: Arc::new(db),
-            created: false,
+            created,
         };
         let tx = journal.begin_write()?;
         {
@@ -107,6 +149,24 @@ impl Journal {
         tx.commit()?;
 
         Ok(journal)
+    }
+
+    /// Creates the journal file at `path` with every table and the meta rows
+    /// in one durable transaction.
+    fn initialize(path: &Path, chain: Chain) -> Result<()> {
+        let db = Database::create(path)
+            .with_context(|| format!("creating journal at {}", path.display()))?;
+        let tx = db.begin_write()?;
+        {
+            for name in ALL_TABLES {
+                tx.open_table(table(name))?;
+            }
+            let mut meta = tx.open_table(table(cf::META))?;
+            meta.insert(META_CHAIN, chain.to_string().as_bytes())?;
+            meta.insert(META_SCHEMA, SCHEMA_VERSION.to_be_bytes().as_slice())?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Begins a write transaction that commits with `Durability::Immediate`

@@ -5,7 +5,7 @@ use {
     crate::{
         journal::{
             ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalReader, finalize_range,
-            reorg_check,
+            init_path, remove_if_exists, reorg_check, sync_parent,
         },
         ord_settings,
         proxy::{GateProxy, ProxyConfig, UpstreamAuth},
@@ -16,7 +16,7 @@ use {
     bitcoin::{Block, BlockHash},
     ord::{Chain, Index, settings::Settings},
     std::{
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{Arc, Condvar, Mutex, OnceLock, Weak},
         thread,
         time::Duration,
@@ -163,7 +163,8 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     let stager_task = runtime.spawn(stager.run());
 
     let started = (|| {
-        let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, &proxy.url())?;
+        let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, &proxy.url(), None)?;
+        init_ord_index(&cfg, &proxy.url(), settings.index())?;
         let index = Arc::new(Index::open_with_event_sender(&settings, Some(events))?);
         opened.set(Arc::downgrade(&index)).ok();
         check_startup(&journal, &index, &settings)?;
@@ -209,6 +210,24 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
         stager: Some(stager_task),
         runtime: Some(runtime),
     })
+}
+
+/// Makes sure ord's index file at `index` exists in a fully initialized state.
+///
+/// ord creates the file and its tables in separate steps, so a crash between
+/// them leaves a table-less file. A missing index is therefore built at
+/// `<index>.init` by an open that indexes no blocks, then renamed into place.
+fn init_ord_index(cfg: &SourceConfig, rpc_url: &str, index: &Path) -> Result<()> {
+    let init = init_path(index);
+    remove_if_exists(&init)?;
+    if index.exists() {
+        return Ok(());
+    }
+    let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, rpc_url, Some(&init))?;
+    drop(Index::open_with_event_sender(&settings, None)?);
+    std::fs::rename(&init, index)
+        .with_context(|| format!("renaming {} into place", init.display()))?;
+    sync_parent(index)
 }
 
 /// Refuses a journal whose raw event log can't hold every event of ord's
