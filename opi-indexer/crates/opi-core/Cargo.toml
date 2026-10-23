@@ -4,3 +4,4 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+anyhow = "1"
