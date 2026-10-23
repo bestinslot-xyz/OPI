@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pow20-index.fullname" . }}
+  labels:
+    {{- include "pow20-index.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pow20-index.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pow20-index.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pow20-index.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: DB_USER
+            value: {{ .Values.db.user }}
+          - name: DB_HOST
+            value: {{ .Values.db.host }}
+          - name: DB_PORT
+            value: {{ .Values.db.port }}
+          - name: DB_DATABASE
+            value: {{ .Values.db.database }}
+          - name: DB_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.db.secretName }}
+                key: {{ .Values.db.secretKey }}
+          - name: DB_METAPROTOCOL_USER
+            value: {{ .Values.metaProtocolDb.user }}
+          - name: DB_METAPROTOCOL_HOST
+            value: {{ .Values.metaProtocolDb.host }}
+          - name: DB_METAPROTOCOL_PORT
+            value: {{ .Values.metaProtocolDb.port }}
+          - name: DB_METAPROTOCOL_DATABASE
+            value: {{ .Values.metaProtocolDb.database }}
+          - name: DB_METAPROTOCOL_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.metaProtocolDb.secretName }}
+                key: {{ .Values.metaProtocolDb.secretKey }}
+          - name: REPORT_TO_INDEXER
+            value: "true"
+          - name: REPORT_URL
+            value: "https://api.opi.network/report_block"
+          - name: REPORT_RETRIES
+            value: "10"
+          - name: REPORT_NAME
+            value: "opi_pow20_indexer"
+          - name: CREATE_EXTRA_TABLES
+            value: "false"
+          - name: NETWORK_TYPE
+            value: {{ .Values.networkType }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

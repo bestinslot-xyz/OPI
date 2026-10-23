@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sns-index.fullname" . }}
+  labels:
+    {{- include "sns-index.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sns-index.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "sns-index.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "sns-index.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+          - name: DB_USER
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.user
+          - name: DB_HOST
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.host
+          - name: DB_PORT
+            value: "5432"
+          - name: DB_DATABASE
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.database
+          - name: DB_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: metadb-app
+                key: password
+          - name: DB_METAPROTOCOL_USER
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.user
+          - name: DB_METAPROTOCOL_HOST
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.host
+          - name: DB_METAPROTOCOL_PORT
+            value: "5432"
+          - name: DB_METAPROTOCOL_DATABASE
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: metaDb.database
+          - name: DB_METAPROTOCOL_PASSWD
+            valueFrom:
+              secretKeyRef:
+                name: metadb-app
+                key: password
+          - name: NETWORK_TYPE
+            valueFrom:
+              configMapKeyRef:
+                name: bis-config
+                key: networkType
+          - name: REPORT_TO_INDEXER
+            value: "false"
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
