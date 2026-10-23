@@ -5,14 +5,17 @@ version.workspace = true
 
 [dependencies]
 anyhow = "1"
+bitcoin = { version = "0.32.5", features = ["serde"] }
 clap = "4"
 hex = "0.4"
 opi-core = { path = "../opi-core" }
 ord = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
+ordinals = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
+postcard = { version = "1", features = ["alloc", "use-std"] }
 rocksdb = "0.24"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-bitcoin = "0.32.5"
 mockcore = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
 tempfile = "3"
 tokio = { version = "1", features = ["sync"] }
