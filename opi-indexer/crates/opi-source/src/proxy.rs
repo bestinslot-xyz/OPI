@@ -92,7 +92,10 @@ impl GateProxy {
         let state = Arc::new(ProxyState {
             upstream_url: cfg.upstream_url,
             auth: cfg.auth,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .context("building bitcoind client")?,
             barriers,
             chunk_end: AtomicI64::new(-1),
             highest_served: AtomicI64::new(-1),
@@ -127,7 +130,9 @@ impl GateProxy {
         self.state.chunk_end.store(height.into(), Ordering::SeqCst);
     }
 
-    /// Ends the chunk at the highest height served so far.
+    /// Ends the chunk at the highest height served so far. A `getblockhash`
+    /// already past the gate may still serve one height beyond it, which is
+    /// harmless.
     pub fn close(&self) {
         let served = self.state.highest_served.load(Ordering::SeqCst);
         self.state.chunk_end.store(served, Ordering::SeqCst);

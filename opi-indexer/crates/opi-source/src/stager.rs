@@ -21,38 +21,67 @@ use {
     tokio::sync::{mpsc, oneshot},
 };
 
-/// Returns ord's committed block count.
+/// Returns ord's committed block count. It runs on a blocking thread while
+/// ord's updater may be held at a barrier, so it must not call bitcoind
+/// through the proxy: that call would wait on its own barrier and deadlock.
 pub type CommitGuard = Arc<dyn Fn() -> Result<u32> + Send + Sync>;
 
-type DrainRequest = oneshot::Sender<Result<()>>;
+type Reply = oneshot::Sender<Result<()>>;
+
+/// A request from a [`StagerHandle`].
+enum Request {
+    Drain(Reply),
+    Discard(Reply),
+}
 
 /// Buffers ord's events by height and writes them to `raw_events` and
 /// `raw_heights` at each barrier, in one durable write transaction.
+///
+/// When ord's `update()` fails, the events of the block it was indexing may
+/// be pending without that block's barrier. The driver calls
+/// [`StagerHandle::discard_pending`] after a failed `update()` and before
+/// retrying it, so the retry's events replace that partial block.
 pub struct Stager {
     journal: Journal,
     events: mpsc::Receiver<Event>,
     barriers: mpsc::Receiver<BarrierRequest>,
-    drains: mpsc::Receiver<DrainRequest>,
-    drain_sender: mpsc::Sender<DrainRequest>,
+    requests: mpsc::Receiver<Request>,
+    request_sender: mpsc::Sender<Request>,
     proxy: GateProxy,
     guard: Option<CommitGuard>,
     staged_tip: Arc<AtomicU32>,
 }
 
-/// Cloneable handle that requests a drain-and-sync outside a proxy barrier.
+/// Cloneable handle for driver requests outside a proxy barrier.
 #[derive(Clone)]
 pub struct StagerHandle {
-    drains: mpsc::Sender<DrainRequest>,
+    requests: mpsc::Sender<Request>,
 }
 
 impl StagerHandle {
     /// Drains the event channel and syncs everything pending, with the same
     /// commit guard check as a barrier. Fails when the stager has stopped or
     /// the sync fails; a failed sync also stops the stager.
+    ///
+    /// Call it only while ord's updater is idle (before the first `update()`
+    /// or after one returns). A sync replaces each pending height, so a sync
+    /// in the middle of a block would store part of it, and the barrier that
+    /// follows would replace that part with the block's remaining events.
     pub async fn drain_now(&self) -> Result<()> {
+        self.request(Request::Drain).await
+    }
+
+    /// Drains the event channel and drops every pending event, keeping any
+    /// pending rewind. It writes nothing. The driver calls it after a failed
+    /// `update()` and before retrying it.
+    pub async fn discard_pending(&self) -> Result<()> {
+        self.request(Request::Discard).await
+    }
+
+    async fn request(&self, request: fn(Reply) -> Request) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.drains
-            .send(tx)
+        self.requests
+            .send(request(tx))
             .await
             .map_err(|_| anyhow!("stager stopped"))?;
         rx.await.map_err(|_| anyhow!("stager stopped"))?
@@ -66,13 +95,13 @@ impl Stager {
         barriers: mpsc::Receiver<BarrierRequest>,
         proxy: GateProxy,
     ) -> Stager {
-        let (drain_sender, drains) = mpsc::channel(1);
+        let (request_sender, requests) = mpsc::channel(1);
         Stager {
             journal,
             events,
             barriers,
-            drains,
-            drain_sender,
+            requests,
+            request_sender,
             proxy,
             guard: None,
             staged_tip: Arc::default(),
@@ -87,7 +116,7 @@ impl Stager {
 
     pub fn handle(&self) -> StagerHandle {
         StagerHandle {
-            drains: self.drain_sender.clone(),
+            requests: self.request_sender.clone(),
         }
     }
 
@@ -105,8 +134,8 @@ impl Stager {
             journal,
             events,
             barriers,
-            drains,
-            drain_sender: _,
+            requests,
+            request_sender: _,
             proxy,
             guard,
             staged_tip,
@@ -121,7 +150,7 @@ impl Stager {
             rewind_to: None,
         };
         runner.publish();
-        runner.run(events, barriers, drains).await
+        runner.run(events, barriers, requests).await
     }
 }
 
@@ -144,7 +173,7 @@ impl Runner {
         &mut self,
         mut events: mpsc::Receiver<Event>,
         mut barriers: mpsc::Receiver<BarrierRequest>,
-        mut drains: mpsc::Receiver<DrainRequest>,
+        mut requests: mpsc::Receiver<Request>,
     ) -> Result<()> {
         loop {
             tokio::select! {
@@ -156,15 +185,30 @@ impl Runner {
                     self.sync(&mut events).await?;
                     reply.send(()).ok();
                 }
-                Some(reply) = drains.recv() => {
-                    if let Err(err) = self.sync(&mut events).await {
-                        reply.send(Err(anyhow!("{err:#}"))).ok();
-                        return Err(err);
+                Some(request) = requests.recv() => match request {
+                    Request::Drain(reply) => {
+                        if let Err(err) = self.sync(&mut events).await {
+                            reply.send(Err(anyhow!("{err:#}"))).ok();
+                            return Err(err);
+                        }
+                        reply.send(Ok(())).ok();
                     }
-                    reply.send(Ok(())).ok();
-                }
+                    Request::Discard(reply) => {
+                        self.discard(&mut events);
+                        reply.send(Ok(())).ok();
+                    }
+                },
             }
         }
+    }
+
+    /// Drains the event channel and drops every pending event. `rewind_to`
+    /// stays, so the next sync still deletes rows above a replay's start.
+    fn discard(&mut self, events: &mut mpsc::Receiver<Event>) {
+        while let Ok(event) = events.try_recv() {
+            self.buffer(event);
+        }
+        self.pending.clear();
     }
 
     /// Adds `event` to its height. An event below the highest pending or
@@ -185,7 +229,10 @@ impl Runner {
     /// Drains the event channel and writes every pending height, tagged with
     /// its block hash, in one durable transaction.
     async fn sync(&mut self, events: &mut mpsc::Receiver<Event>) -> Result<()> {
-        let committed = self.guard.as_ref().map(|guard| guard()).transpose()?;
+        let committed = match self.guard.clone() {
+            Some(guard) => Some(tokio::task::spawn_blocking(move || guard()).await??),
+            None => None,
+        };
         while let Ok(event) = events.try_recv() {
             self.buffer(event);
         }

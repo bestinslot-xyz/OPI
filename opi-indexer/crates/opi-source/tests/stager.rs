@@ -10,9 +10,12 @@ use {
     ordinals::RuneId,
     redb::{Database, ReadableTable},
     serde_json::json,
-    std::sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
+    std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        },
+        time::Duration,
     },
     tokio::{
         sync::{mpsc, oneshot},
@@ -246,24 +249,54 @@ async fn stager_drains_more_events_than_channel_capacity() {
     let mut s = setup(10, 4).await;
     let _run = s.run();
 
+    // Mirrors ord's updater thread: events, then a barrier it blocks on.
     let sender = s.events.clone();
+    let barriers = s.barriers.clone();
     let producer = std::thread::spawn(move || {
         for height in 1..=10 {
             for tx in 0..10 {
                 sender.blocking_send(event(height, tx)).unwrap();
             }
         }
+        let (tx, rx) = oneshot::channel();
+        barriers.blocking_send(tx).unwrap();
+        rx.blocking_recv().unwrap();
     });
-    tokio::task::spawn_blocking(move || producer.join().unwrap())
-        .await
-        .unwrap();
-    s.barrier().await;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || producer.join().unwrap()),
+    )
+    .await
+    .expect("producer deadlocked")
+    .unwrap();
 
     let expected: Vec<_> = (1..=10)
         .flat_map(|height| (0..10).map(move |tx| (height, tx, event(height, tx))))
         .collect();
     assert_eq!(raw_rows(&s.db), rows(expected));
     assert_eq!(raw_heights(&s.db).len(), 10);
+}
+
+#[tokio::test]
+async fn discard_pending_drops_partial_block_before_retry() {
+    let mut s = setup(3, 16).await;
+    let handle = s.stager.as_ref().unwrap().handle();
+    let _run = s.run();
+
+    s.send([event(2, 0), event(2, 1)]).await;
+    handle.discard_pending().await.unwrap();
+    assert_eq!(raw_rows(&s.db), []);
+    s.send([event(2, 0), event(2, 1), event(2, 2)]).await;
+    s.barrier().await;
+
+    assert_eq!(
+        raw_rows(&s.db),
+        rows([
+            (2, 0, event(2, 0)),
+            (2, 1, event(2, 1)),
+            (2, 2, event(2, 2))
+        ])
+    );
 }
 
 #[tokio::test]
