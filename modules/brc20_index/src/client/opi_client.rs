@@ -3,6 +3,8 @@ use std::error::Error;
 use db_reader::{BRC20Tx, Brc20ApiClient};
 use jsonrpsee::http_client::HttpClient;
 
+use super::Brc20Source;
+
 pub struct OpiClient {
     client: HttpClient,
 }
@@ -16,8 +18,11 @@ impl OpiClient {
                 .expect("Failed to create HTTP client"),
         }
     }
+}
 
-    pub async fn get_current_block_height(&self) -> Result<i32, Box<dyn Error>> {
+#[async_trait::async_trait]
+impl Brc20Source for OpiClient {
+    async fn get_current_block_height(&self) -> Result<i32, Box<dyn Error>> {
         self.client
             .get_latest_block_height()
             .await?
@@ -25,7 +30,7 @@ impl OpiClient {
             .ok_or("Failed to get current block height".into())
     }
 
-    pub async fn get_block_hash(&self, block_height: i32) -> Result<String, Box<dyn Error>> {
+    async fn get_block_hash(&self, block_height: i32) -> Result<String, Box<dyn Error>> {
         self.client
             .get_block_hash_and_ts(block_height as u32)
             .await?
@@ -33,7 +38,7 @@ impl OpiClient {
             .ok_or("Block hash not found".into())
     }
 
-    pub async fn get_block_hash_and_time(
+    async fn get_block_hash_and_time(
         &self,
         block_height: i32,
     ) -> Result<(String, i64), Box<dyn Error>> {
@@ -44,7 +49,7 @@ impl OpiClient {
             .ok_or("Block hash and time not found".into())
     }
 
-    pub async fn get_transfers(&self, block_height: i32) -> Result<Vec<BRC20Tx>, Box<dyn Error>> {
+    async fn get_transfers(&self, block_height: i32) -> Result<Vec<BRC20Tx>, Box<dyn Error>> {
         self.client
             .get_block_brc20_txes(block_height as u32)
             .await?

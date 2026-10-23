@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use versions::{Requirement, Versioning};
 
 use crate::{
-    client::{EventProviderClient, OpiClient},
+    client::{Brc20Source, EventProviderClient},
     config::{
         AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_MINE_BATCH_SIZE,
         BRC20_PROG_VERSION_REQUIREMENT, Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY,
@@ -45,7 +45,7 @@ use crate::{
 static SPAN: &str = "Brc20Indexer";
 
 pub struct Brc20Indexer {
-    main_db: OpiClient,
+    main_db: Box<dyn Brc20Source>,
     event_provider_client: EventProviderClient,
     last_opi_block: i32,
     last_reported_block: Option<i32>,
@@ -56,9 +56,7 @@ pub struct Brc20Indexer {
 }
 
 impl Brc20Indexer {
-    pub fn new(config: Brc20IndexerConfig) -> Self {
-        let main_db = OpiClient::new(config.opi_db_url.clone());
-
+    pub fn new(config: Brc20IndexerConfig, main_db: Box<dyn Brc20Source>) -> Self {
         let brc20_prog_client = build_brc20_prog_http_client(&config);
         let brc20_reporter = Brc20Reporter::new(&config);
         let event_provider_client =

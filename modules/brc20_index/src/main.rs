@@ -1,23 +1,17 @@
-mod client;
-mod config;
-mod database;
-mod indexer;
-mod types;
-
 use std::{
     error::Error,
     io::{self, Write},
     sync::Arc,
 };
 
-use indexer::Brc20Indexer;
-use tokio::sync::Mutex;
-use tracing::Level;
-
-use crate::{
+use brc20_index::{
+    client::OpiClient,
     config::Brc20IndexerConfig,
     database::{Brc20Database, get_brc20_database, set_brc20_database},
+    indexer::Brc20Indexer,
 };
+use tokio::sync::Mutex;
+use tracing::Level;
 
 struct Args {
     is_setup: bool,
@@ -189,7 +183,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("BRC20 Indexer v{}", env!("CARGO_PKG_VERSION"));
     let config = Brc20IndexerConfig::default();
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
-    let mut brc20_indexer = Brc20Indexer::new(config);
+    let main_db = Box::new(OpiClient::new(config.opi_db_url.clone()));
+    let mut brc20_indexer = Brc20Indexer::new(config, main_db);
     if args.is_validate {
         println!("Validating BRC20 indexer data against OPI...");
         if brc20_indexer.validate().await.is_ok() {
