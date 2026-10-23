@@ -10,8 +10,12 @@ use {
     },
     clap::{Parser, Subcommand},
     config::Config,
+    futures::FutureExt,
     opi_source::driver::{SourceHandle, spawn_source},
     std::{
+        any::Any,
+        future::Future,
+        panic::AssertUnwindSafe,
         process::ExitCode,
         sync::Arc,
         time::{Duration, Instant},
@@ -69,6 +73,15 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let config = Config::from_env()?;
     let network = config.network();
+    if config.brc20_enabled {
+        let brc20 = Brc20IndexerConfig::default();
+        if brc20.network_type != network {
+            bail!(
+                "NETWORK_TYPE {:?} does not match OPI_CHAIN network {network:?}",
+                brc20.network_type
+            );
+        }
+    }
 
     // The source blocks on its own runtime, so it starts and stops outside
     // the runtime below.
@@ -137,34 +150,94 @@ async fn source_finished(handle: &SourceHandle) {
 /// with exponential backoff. Returns only on a configuration error. When the
 /// indexer ends on its own (height limit) it idles until the supervisor stops.
 async fn run_brc20(handle: &SourceHandle, network: bitcoin::Network) -> Result<()> {
-    let config = Brc20IndexerConfig::default();
-    if config.network_type != network {
-        bail!(
-            "NETWORK_TYPE {:?} does not match OPI_CHAIN network {network:?}",
-            config.network_type
-        );
-    }
-    set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
+    set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(
+        &Brc20IndexerConfig::default(),
+    ))));
+    restart_loop(
+        || async {
+            let source = JournalBrc20Source::new(Arc::new(handle.reader()), network);
+            let mut indexer = Brc20Indexer::new(Brc20IndexerConfig::default(), Box::new(source));
+            indexer.run().await.map_err(|err| err.to_string())
+        },
+        MIN_BACKOFF,
+        MAX_BACKOFF,
+    )
+    .await
+}
 
-    let mut backoff = MIN_BACKOFF;
+/// Calls `attempt` until the supervisor drops this future. An error or a panic
+/// is logged and followed by a backoff that doubles from `min` to `max`; a run
+/// that lasted longer than `max` resets it. An `Ok` ends the loop's work and
+/// idles.
+async fn restart_loop<F, Fut>(mut attempt: F, min: Duration, max: Duration) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    let mut backoff = min;
     loop {
-        let source = JournalBrc20Source::new(Arc::new(handle.reader()), network);
-        let mut indexer = Brc20Indexer::new(Brc20IndexerConfig::default(), Box::new(source));
         let started = Instant::now();
-        let result = indexer.run().await.map_err(|err| err.to_string());
-        match result {
-            Ok(()) => {
+        let outcome = AssertUnwindSafe(async { attempt().await })
+            .catch_unwind()
+            .await;
+        let err = match outcome {
+            Ok(Ok(())) => {
                 tracing::info!("brc20 indexer finished");
                 std::future::pending::<()>().await;
+                unreachable!()
             }
-            Err(err) => {
-                if started.elapsed() > MAX_BACKOFF {
-                    backoff = MIN_BACKOFF;
-                }
-                tracing::error!("brc20 indexer failed, restarting in {backoff:?}: {err}");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
+            Ok(Err(err)) => err,
+            Err(payload) => format!("panic: {}", panic_message(payload.as_ref())),
+        };
+        if started.elapsed() > max {
+            backoff = min;
         }
+        tracing::error!("brc20 indexer failed, restarting in {backoff:?}: {err}");
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(max);
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message.to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string payload".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        std::sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    #[tokio::test]
+    async fn restart_loop_restarts_after_panic_and_error() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let loop_future = restart_loop(
+            move || {
+                let call = counter.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    match call {
+                        0 => panic!("boom"),
+                        1 => Err("failed".to_string()),
+                        _ => Ok(()),
+                    }
+                }
+            },
+            Duration::from_millis(1),
+            Duration::from_millis(4),
+        );
+        // The loop idles after the third call returns Ok.
+        let timed_out = tokio::time::timeout(Duration::from_millis(500), loop_future)
+            .await
+            .is_err();
+        assert!(timed_out);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }

@@ -55,6 +55,14 @@ pub struct Brc20Indexer {
     bitcoin_proxy_server_handle: Option<JoinHandle<()>>,
 }
 
+impl Drop for Brc20Indexer {
+    fn drop(&mut self) {
+        if let Some(handle) = self.bitcoin_proxy_server_handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 impl Brc20Indexer {
     pub fn new(config: Brc20IndexerConfig, main_db: Box<dyn Brc20Source>) -> Self {
         let brc20_prog_client = build_brc20_prog_http_client(&config);

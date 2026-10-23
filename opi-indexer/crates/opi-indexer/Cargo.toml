@@ -9,6 +9,7 @@ bitcoin = "0.32.5"
 brc20-index = { path = "../../../modules/brc20_index" }
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
+futures = "0.3"
 log = "0.4"
 opi-core = { path = "../opi-core" }
 opi-source = { path = "../opi-source" }
