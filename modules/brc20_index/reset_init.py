@@ -92,6 +92,7 @@ if init_env:
   if res != '':
     BRC20_PROG_ENABLED = res
   if BRC20_PROG_ENABLED == 'true':
+    print('If brc20_prog sets BRC20_PROG_ADMIN_RPC_SERVER_URL, use the admin listener URL here (e.g. http://localhost:18546).')
     res = input("BRC20 programmable module RPC URL (Default: http://localhost:18545): ")
     if res != '':
       BRC20_PROG_RPC_URL = res
