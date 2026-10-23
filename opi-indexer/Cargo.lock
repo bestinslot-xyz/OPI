@@ -2531,6 +2531,7 @@ dependencies = [
  "ord",
  "ordinals",
  "postcard",
+ "rand",
  "redb",
  "reqwest",
  "serde",
