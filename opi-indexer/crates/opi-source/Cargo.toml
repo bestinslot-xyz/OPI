@@ -15,13 +15,13 @@ ord = { git = "https://github.com/ordinals/ord", tag = "0.29.1" }
 ordinals = { git = "https://github.com/ordinals/ord", tag = "0.29.1" }
 postcard = { version = "1", features = ["alloc", "use-std"] }
 redb = "=3.1.3"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-zstd = "0.13"
+zstd = "0.14"
 
 [dev-dependencies]
 mockcore = { git = "https://github.com/ordinals/ord", tag = "0.29.1" }
-rand = "0.8"
+rand = "0.10"
 tempfile = "3"

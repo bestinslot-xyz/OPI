@@ -4,7 +4,7 @@ use {
     bitcoin::OutPoint,
     opi_source::driver::spawn_source,
     ord::InscriptionId,
-    rand::{Rng, SeedableRng, rngs::StdRng},
+    rand::{RngExt, SeedableRng, rngs::StdRng},
     std::{
         io::{BufRead, BufReader},
         path::Path,
@@ -219,7 +219,7 @@ fn random_kills_converge_to_uninterrupted_journal() {
     for iteration in 0..ITERATIONS {
         let context = format!("seed {seed}, iteration {iteration}");
         let mut child = SourceProcess::spawn(&harness, killed.path(), &format!("kill-{iteration}"));
-        thread::sleep(Duration::from_millis(rng.gen_range(50..=500)));
+        thread::sleep(Duration::from_millis(rng.random_range(50..=500)));
         child.assert_running(&context);
         child.kill(&context);
     }
