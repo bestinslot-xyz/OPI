@@ -1,3 +1,4 @@
+pub mod order;
 mod schema;
 
 pub use schema::*;
