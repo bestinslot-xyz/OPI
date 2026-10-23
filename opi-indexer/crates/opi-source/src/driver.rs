@@ -3,6 +3,7 @@
 
 use {
     crate::{
+        check_ord_settings,
         journal::{
             ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalReader, finalize_range,
             init_path, remove_if_exists, reorg_check, sync_parent,
@@ -128,7 +129,9 @@ impl Drop for SourceHandle {
 /// Starts the gate proxy, the stager and ord's index, checks the journal
 /// against ord, and spawns the driver thread.
 ///
-/// Fails when the journal belongs to another chain, or when ord's index holds
+/// Fails when ord's settings break the commit barrier (see
+/// [`check_ord_settings`]), when the journal belongs to another chain, or when
+/// ord's index holds
 /// committed blocks the raw event log never logged (a new, older or foreign
 /// journal).
 ///
@@ -172,6 +175,7 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
 
     let started = (|| {
         let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, &proxy.url(), None)?;
+        check_ord_settings(&settings)?;
         init_ord_index(&cfg, &proxy.url(), settings.index())?;
         let index = Arc::new(Index::open_with_event_sender(&settings, Some(events))?);
         opened.set(Arc::downgrade(&index)).ok();
