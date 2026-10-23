@@ -1,4 +1,6 @@
 mod config;
+mod filters;
+mod validate;
 
 use {
     anyhow::{Result, bail},
@@ -42,6 +44,9 @@ struct Cli {
 enum Command {
     /// Index until SIGINT or SIGTERM (default).
     Run,
+    /// Compare the journal with a running db_reader, block by block. Needs
+    /// the journal, so opi-indexer must be stopped.
+    Validate(validate::Args),
 }
 
 /// Why the supervisor stopped.
@@ -59,10 +64,14 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
     let result = match cli.command.unwrap_or(Command::Run) {
-        Command::Run => run(),
+        Command::Run => run().map(|()| true),
+        Command::Validate(args) => {
+            Config::from_env().and_then(|config| validate::run(args, &config))
+        }
     };
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
         Err(err) => {
             tracing::error!("{err:#}");
             ExitCode::FAILURE

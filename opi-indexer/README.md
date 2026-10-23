@@ -49,7 +49,89 @@ minutes; the source keeps running. Log verbosity follows `RUST_LOG`.
 
 ## Validation runbook
 
-To be filled in.
+Status: none of the runs below has been performed yet. The `validate`
+subcommand is implemented and unit-tested; the signet and mainnet gates are
+still to do, and cutover must wait for them.
+
+### `validate`
+
+```
+opi-indexer validate --db-reader-url <url> --from <height> --to <height>
+```
+
+`validate` reads `OPI_CHAIN`, `OPI_JOURNAL_DIR` and the other variables from the
+same environment as `run`, opens the journal itself and compares, for every
+height in `from..=to`:
+
+- BRC-20: `JournalBrc20Source::get_transfers` against `getBlockBRC20Txes`.
+- Bitmap and SNS: journal creations filtered by `is_valid_bitmap` /
+  `is_valid_sns` (the filters copied from `db_reader`) against
+  `getBlockBitmapInscrs` / `getBlockSNSInscrs`. Bitmap is sorted by
+  inscription number.
+- Headers: the journal's block hash and time against `getBlockHashAndTs`.
+
+Equality is on canonical JSON. The one accepted difference is `new_satpoint` of
+an entry with `sent_as_fee` whose `db_reader` satpoint sits at outpoint
+`0000000000000000000000000000000000000000000000000000000000000000:4294967295`;
+the journal carries upstream ord's lost-sats position there.
+
+It prints `OK <from>..<to>` and exits 0 when every height matches. On the first
+divergence it prints the height, the method, and both values (journal and
+`db_reader`) pretty-printed, and exits 1. redb locks the journal file to one
+process, so `validate` exits 1 with `stop opi-indexer before validating` while
+`opi-indexer` or another `validate` holds it. Use `RUST_LOG=info` for progress
+every 1000 heights.
+
+### Gate 11.1: journal against `db_reader`
+
+Run signet first, then mainnet.
+
+1. Sync the old fork's index (with its `db_reader` serving RPC) and
+   `opi-indexer` against the same bitcoind. Both stacks must be at the same
+   chain; the common tip is the lower of the two tips.
+2. Stop `opi-indexer` (SIGTERM; wait for exit 0).
+3. Run `opi-indexer validate --db-reader-url http://<db_reader>:<port> --from
+   <first> --to <common tip>`.
+   - signet: `<first>` is the first inscription height on signet.
+   - mainnet: `<first>` is `767430`.
+   Expected: `OK <first>..<tip>`.
+4. Restart `opi-indexer`.
+
+On a divergence, bisect: the failing height is in the output. Rerun with
+`--from <h> --to <h>` to confirm it is deterministic, then compare the printed
+journal and `db_reader` values field by field. The method name says which side
+of the pipeline to read: `getBlockBRC20Txes` points at the journal's transfer
+rows and `JournalBrc20Source`, the Bitmap/SNS methods at the creation filter
+and inscription info, `getBlockHashAndTs` at the header table. If the cause is
+not obvious, binary-search with `--from`/`--to` over earlier ranges to confirm
+nothing before the reported height differs, and inspect the journal row for the
+height with the opi-source journal reader. Fix the cause in the owning
+component with a regression test, then rerun from the divergent height. Every
+run requires `opi-indexer` stopped.
+
+### Gate 11.3: BRC-20 event hashes (mainnet)
+
+With brc20 on `opi-indexer` synced to the tip, and a second brc20 node fed by
+the fork's `db_reader` synced over the same range:
+
+1. Compare `brc20_cumulative_event_hashes` (`block_height`,
+   `block_event_hash`, `cumulative_event_hash`) at every height between the two
+   databases, with SQL over both (for example `psql` against each database,
+   dumping `SELECT block_height, block_event_hash, cumulative_event_hash FROM
+   brc20_cumulative_event_hashes ORDER BY block_height` and diffing the
+   outputs, or a `dblink` / `postgres_fdw` join that selects rows where the
+   hashes differ). Expected: identical at every height.
+2. Compare the same hashes with the ones the OPI network reports for those
+   heights. Expected: identical at every height.
+
+The first height where they differ is the starting point for a bisect with
+gate 11.1.
+
+### Signet smoke run
+
+Run `opi-indexer` on signet with a fresh brc20 database for at least 1,000
+blocks past the first BRC-20 height. Expected: brc20's current block height
+advances and no errors are logged.
 
 ## ord dependency
 
