@@ -1,7 +1,8 @@
 use {
     opi_core::{InscriptionInfo, InscriptionRecord},
     opi_source::journal::{
-        Journal, cf, decode_info, decode_transfer, encode_info, encode_transfer, transfer_key,
+        Journal, cf, compress_info, decode_info, decode_transfer, decompress_info, encode_info,
+        encode_transfer, table, transfer_key,
     },
     ord::Chain,
 };
@@ -139,50 +140,82 @@ fn info_layout_matches_fork() {
     assert_eq!(&with_parent[37..41], 4u32.to_be_bytes());
 }
 
+fn put_meta(journal: &Journal, key: &[u8], value: &[u8]) {
+    let mut tx = journal.db().begin_write().unwrap();
+    tx.set_durability(redb::Durability::Immediate);
+    {
+        let mut table = tx.open_table(table(cf::META)).unwrap();
+        table.insert(key, value).unwrap();
+    }
+    tx.commit().unwrap();
+}
+
+fn get_meta(journal: &Journal, key: &[u8]) -> Option<Vec<u8>> {
+    let tx = journal.db().begin_read().unwrap();
+    let table = tx.open_table(table(cf::META)).unwrap();
+    table.get(key).unwrap().map(|v| v.value().to_vec())
+}
+
 #[test]
-fn journal_open_writes_meta_and_rejects_other_chain() {
+fn open_creates_tables_and_meta() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
-    {
-        let journal = Journal::open(&path, Chain::Regtest).unwrap();
-        assert_eq!(journal.final_tip().unwrap(), None);
-        let meta = journal.db().cf_handle(cf::META).unwrap();
-        assert_eq!(
-            journal.db().get_cf(&meta, b"chain").unwrap().unwrap(),
-            b"regtest"
-        );
-        assert_eq!(
-            journal.db().get_cf(&meta, b"schema").unwrap().unwrap(),
-            1u32.to_be_bytes()
-        );
-        for name in [
-            cf::TRANSFERS,
-            cf::INFO,
-            cf::HEADERS,
-            cf::RAW_EVENTS,
-            cf::RAW_HEIGHTS,
-        ] {
-            assert!(journal.db().cf_handle(name).is_some(), "{name}");
-        }
+    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    assert_eq!(journal.final_tip().unwrap(), None);
+    assert_eq!(get_meta(&journal, b"chain").unwrap(), b"regtest");
+    assert_eq!(get_meta(&journal, b"schema").unwrap(), 1u32.to_be_bytes());
+    let tx = journal.db().begin_read().unwrap();
+    for name in [
+        cf::TRANSFERS,
+        cf::INFO,
+        cf::HEADERS,
+        cf::RAW_EVENTS,
+        cf::RAW_HEIGHTS,
+        cf::META,
+    ] {
+        tx.open_table(table(name)).expect(name);
     }
-    Journal::open(&path, Chain::Regtest).unwrap();
+}
+
+#[test]
+fn reopen_rejects_chain_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    drop(Journal::open(&path, Chain::Regtest).unwrap());
+    drop(Journal::open(&path, Chain::Regtest).unwrap());
     let err = Journal::open(&path, Chain::Signet).err().unwrap();
     assert!(err.to_string().contains("chain"), "{err}");
 }
 
 #[test]
-fn journal_final_tip_reads_meta() {
+fn reopen_rejects_schema_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     {
         let journal = Journal::open(&path, Chain::Regtest).unwrap();
-        let meta = journal.db().cf_handle(cf::META).unwrap();
-        journal
-            .db()
-            .put_cf(&meta, b"final_tip", 840_000u32.to_be_bytes())
-            .unwrap();
-        assert_eq!(journal.final_tip().unwrap(), Some(840_000));
+        put_meta(&journal, b"schema", &2u32.to_be_bytes());
     }
-    let ro = Journal::open_read_only(&path).unwrap();
-    assert_eq!(ro.final_tip().unwrap(), Some(840_000));
+    let err = Journal::open(&path, Chain::Regtest).err().unwrap();
+    assert!(err.to_string().contains("schema"), "{err}");
+}
+
+#[test]
+fn final_tip_reads_meta() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    put_meta(&journal, b"final_tip", &840_000u32.to_be_bytes());
+    assert_eq!(journal.final_tip().unwrap(), Some(840_000));
+}
+
+#[test]
+fn info_compression_round_trips() {
+    let body = format!(
+        "{{\"p\":\"brc-20\",\"op\":\"mint\",\"tick\":\"ordi\",\"amt\":\"{}\"}}",
+        "1".repeat(4_000)
+    );
+    let value = body.as_bytes()[..4096.min(body.len())].to_vec();
+    let packed = compress_info(&value).unwrap();
+    assert!(packed.len() < value.len() / 2, "{}", packed.len());
+    assert_eq!(decompress_info(&packed).unwrap(), value);
 }

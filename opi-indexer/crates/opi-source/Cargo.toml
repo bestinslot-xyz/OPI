@@ -12,8 +12,9 @@ opi-core = { path = "../opi-core" }
 ord = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
 ordinals = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
 postcard = { version = "1", features = ["alloc", "use-std"] }
-rocksdb = "0.24"
+redb = "=2.5.0"
 serde = { version = "1", features = ["derive"] }
+zstd = "0.13"
 
 [dev-dependencies]
 mockcore = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }

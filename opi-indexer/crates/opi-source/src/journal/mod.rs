@@ -3,13 +3,13 @@ mod schema;
 pub use schema::*;
 
 use {
-    anyhow::{Result, bail, ensure},
+    anyhow::{Context, Result, anyhow, bail},
     ord::Chain,
-    rocksdb::{ColumnFamilyDescriptor, DB, Options},
+    redb::{Database, Durability, ReadableTable, TableDefinition},
     std::{path::Path, sync::Arc},
 };
 
-/// Column family names.
+/// Table names. Each names one redb table mapping `&[u8]` to `&[u8]`.
 pub mod cf {
     pub const TRANSFERS: &str = "ord_transfers";
     pub const INFO: &str = "ord_inscription_info";
@@ -19,7 +19,7 @@ pub mod cf {
     pub const META: &str = "meta";
 }
 
-const ALL_CFS: [&str; 6] = [
+const ALL_TABLES: [&str; 6] = [
     cf::TRANSFERS,
     cf::INFO,
     cf::HEADERS,
@@ -32,78 +32,87 @@ const META_FINAL_TIP: &[u8] = b"final_tip";
 const META_CHAIN: &[u8] = b"chain";
 const META_SCHEMA: &[u8] = b"schema";
 const SCHEMA_VERSION: u32 = 1;
+const ZSTD_LEVEL: i32 = 3;
 
-/// RocksDB-backed journal of finalized ord events.
+/// redb-backed journal of finalized ord events.
 pub struct Journal {
-    db: Arc<DB>,
+    db: Arc<Database>,
+}
+
+/// Definition of the journal table called `name`.
+pub fn table(name: &'static str) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
+    TableDefinition::new(name)
 }
 
 impl Journal {
     /// Opens the journal at `path`, creating it for `chain` when absent.
-    /// Fails when an existing journal belongs to another chain.
+    /// Fails when an existing journal belongs to another chain or schema.
+    ///
+    /// redb holds an exclusive file lock while the database is open, so a
+    /// second `open` of the same path from another process fails.
     pub fn open(path: &Path, chain: Chain) -> Result<Journal> {
-        let mut options = Options::default();
-        options.create_if_missing(true);
-        options.create_missing_column_families(true);
-        let descriptors = ALL_CFS
-            .iter()
-            .map(|name| ColumnFamilyDescriptor::new(*name, Options::default()));
-        let db = Arc::new(DB::open_cf_descriptors(&options, path, descriptors)?);
-        let journal = Journal { db };
-        let meta = journal.meta()?;
+        let db = Database::create(path)
+            .with_context(|| format!("opening journal at {}", path.display()))?;
         let chain = chain.to_string();
-        match journal.db.get_cf(&meta, META_CHAIN)? {
-            Some(existing) => {
-                if existing != chain.as_bytes() {
-                    bail!(
-                        "journal chain mismatch: journal is {}, requested {chain}",
-                        String::from_utf8_lossy(&existing)
-                    );
-                }
+
+        let mut tx = db.begin_write()?;
+        tx.set_durability(Durability::Immediate);
+        {
+            for name in ALL_TABLES {
+                tx.open_table(table(name))?;
             }
-            None => {
-                journal.db.put_cf(&meta, META_CHAIN, chain.as_bytes())?;
-                journal
-                    .db
-                    .put_cf(&meta, META_SCHEMA, SCHEMA_VERSION.to_be_bytes())?;
+            let mut meta = tx.open_table(table(cf::META))?;
+            let existing_chain = meta.get(META_CHAIN)?.map(|v| v.value().to_vec());
+            let existing_schema = meta.get(META_SCHEMA)?.map(|v| v.value().to_vec());
+            match (existing_chain, existing_schema) {
+                (None, None) => {
+                    meta.insert(META_CHAIN, chain.as_bytes())?;
+                    meta.insert(META_SCHEMA, SCHEMA_VERSION.to_be_bytes().as_slice())?;
+                }
+                (Some(existing), schema) => {
+                    if existing != chain.as_bytes() {
+                        bail!(
+                            "journal chain mismatch: journal is {}, requested {chain}",
+                            String::from_utf8_lossy(&existing)
+                        );
+                    }
+                    if schema.as_deref() != Some(SCHEMA_VERSION.to_be_bytes().as_slice()) {
+                        bail!("unsupported journal schema, expected {SCHEMA_VERSION}");
+                    }
+                }
+                (None, Some(_)) => bail!("journal meta has a schema but no chain"),
             }
         }
-        Ok(journal)
-    }
+        tx.commit()?;
 
-    /// Opens an existing journal without write access.
-    pub fn open_read_only(path: &Path) -> Result<Journal> {
-        let db = DB::open_cf_for_read_only(&Options::default(), path, ALL_CFS, false)?;
-        let journal = Journal { db: Arc::new(db) };
-        let meta = journal.meta()?;
-        let schema = journal.db.get_cf(&meta, META_SCHEMA)?;
-        ensure!(
-            schema.as_deref() == Some(&SCHEMA_VERSION.to_be_bytes()[..]),
-            "unsupported journal schema"
-        );
-        Ok(journal)
+        Ok(Journal { db: Arc::new(db) })
     }
 
     /// Highest finalized height, if any block has been finalized.
     pub fn final_tip(&self) -> Result<Option<u32>> {
-        let meta = self.meta()?;
-        let Some(raw) = self.db.get_cf(&meta, META_FINAL_TIP)? else {
+        let tx = self.db.begin_read()?;
+        let meta = tx.open_table(table(cf::META))?;
+        let Some(raw) = meta.get(META_FINAL_TIP)? else {
             return Ok(None);
         };
+        let raw = raw.value();
         let bytes: [u8; 4] = raw
-            .as_slice()
             .try_into()
-            .map_err(|_| anyhow::anyhow!("final_tip is {} bytes, expected 4", raw.len()))?;
+            .map_err(|_| anyhow!("final_tip is {} bytes, expected 4", raw.len()))?;
         Ok(Some(u32::from_be_bytes(bytes)))
     }
 
-    pub fn db(&self) -> &Arc<DB> {
+    pub fn db(&self) -> &Arc<Database> {
         &self.db
     }
+}
 
-    fn meta(&self) -> Result<&rocksdb::ColumnFamily> {
-        self.db
-            .cf_handle(cf::META)
-            .ok_or_else(|| anyhow::anyhow!("missing column family {}", cf::META))
-    }
+/// Compresses an encoded inscription info value with zstd.
+pub fn compress_info(value: &[u8]) -> Result<Vec<u8>> {
+    Ok(zstd::bulk::compress(value, ZSTD_LEVEL)?)
+}
+
+/// Inverse of [`compress_info`].
+pub fn decompress_info(stored: &[u8]) -> Result<Vec<u8>> {
+    Ok(zstd::stream::decode_all(stored)?)
 }
