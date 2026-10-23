@@ -6,7 +6,10 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 clap = "4"
+hex = "0.4"
+opi-core = { path = "../opi-core" }
 ord = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
+rocksdb = "0.24"
 
 [dev-dependencies]
 bitcoin = "0.32.5"
