@@ -3,41 +3,53 @@ use {
     bitcoin::{OutPoint, Txid},
     ord::{InscriptionId, index::event::Event},
     ordinals::{RuneId, SatPoint},
-    serde::{Deserialize, Serialize},
+    serde::{Deserialize, Deserializer, Serialize, Serializer},
 };
 
 /// Serializable mirror of [`ord::index::event::Event`], logged to the journal.
+///
+/// Ord identifiers are stored as their fields in binary form, not as their
+/// display strings. `Txid` and `OutPoint` use bitcoin's own serde form.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum RawEvent {
     InscriptionCreated {
         block_height: u32,
         charms: u16,
+        #[serde(with = "inscription_id")]
         inscription_id: InscriptionId,
+        #[serde(with = "option_satpoint")]
         location: Option<SatPoint>,
+        #[serde(with = "inscription_id_seq")]
         parent_inscription_ids: Vec<InscriptionId>,
         sequence_number: u32,
     },
     InscriptionTransferred {
         block_height: u32,
+        #[serde(with = "inscription_id")]
         inscription_id: InscriptionId,
+        #[serde(with = "satpoint")]
         new_location: SatPoint,
+        #[serde(with = "satpoint")]
         old_location: SatPoint,
         sequence_number: u32,
     },
     RuneBurned {
         amount: u128,
         block_height: u32,
+        #[serde(with = "rune_id")]
         rune_id: RuneId,
         txid: Txid,
     },
     RuneEtched {
         block_height: u32,
+        #[serde(with = "rune_id")]
         rune_id: RuneId,
         txid: Txid,
     },
     RuneMinted {
         amount: u128,
         block_height: u32,
+        #[serde(with = "rune_id")]
         rune_id: RuneId,
         txid: Txid,
     },
@@ -45,9 +57,149 @@ pub enum RawEvent {
         amount: u128,
         block_height: u32,
         outpoint: OutPoint,
+        #[serde(with = "rune_id")]
         rune_id: RuneId,
         txid: Txid,
     },
+}
+
+/// Binary layout of an [`InscriptionId`]: its txid and index.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct InscriptionIdFields {
+    txid: Txid,
+    index: u32,
+}
+
+impl From<InscriptionId> for InscriptionIdFields {
+    fn from(id: InscriptionId) -> Self {
+        Self {
+            txid: id.txid,
+            index: id.index,
+        }
+    }
+}
+
+impl From<InscriptionIdFields> for InscriptionId {
+    fn from(fields: InscriptionIdFields) -> Self {
+        Self {
+            txid: fields.txid,
+            index: fields.index,
+        }
+    }
+}
+
+/// Binary layout of a [`SatPoint`]: its outpoint and offset.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct SatPointFields {
+    outpoint: OutPoint,
+    offset: u64,
+}
+
+impl From<SatPoint> for SatPointFields {
+    fn from(point: SatPoint) -> Self {
+        Self {
+            outpoint: point.outpoint,
+            offset: point.offset,
+        }
+    }
+}
+
+impl From<SatPointFields> for SatPoint {
+    fn from(fields: SatPointFields) -> Self {
+        Self {
+            outpoint: fields.outpoint,
+            offset: fields.offset,
+        }
+    }
+}
+
+/// Binary layout of a [`RuneId`]: its block and transaction index.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct RuneIdFields {
+    block: u64,
+    tx: u32,
+}
+
+impl From<RuneId> for RuneIdFields {
+    fn from(id: RuneId) -> Self {
+        Self {
+            block: id.block,
+            tx: id.tx,
+        }
+    }
+}
+
+impl From<RuneIdFields> for RuneId {
+    fn from(fields: RuneIdFields) -> Self {
+        Self {
+            block: fields.block,
+            tx: fields.tx,
+        }
+    }
+}
+
+mod inscription_id {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(id: &InscriptionId, s: S) -> Result<S::Ok, S::Error> {
+        InscriptionIdFields::from(*id).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<InscriptionId, D::Error> {
+        InscriptionIdFields::deserialize(d).map(InscriptionId::from)
+    }
+}
+
+mod inscription_id_seq {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(ids: &Vec<InscriptionId>, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(ids.iter().map(|id| InscriptionIdFields::from(*id)))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<InscriptionId>, D::Error> {
+        Vec::<InscriptionIdFields>::deserialize(d)
+            .map(|fields| fields.into_iter().map(InscriptionId::from).collect())
+    }
+}
+
+mod satpoint {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(point: &SatPoint, s: S) -> Result<S::Ok, S::Error> {
+        SatPointFields::from(*point).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SatPoint, D::Error> {
+        SatPointFields::deserialize(d).map(SatPoint::from)
+    }
+}
+
+mod option_satpoint {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(point: &Option<SatPoint>, s: S) -> Result<S::Ok, S::Error> {
+        point
+            .as_ref()
+            .map(|point| SatPointFields::from(*point))
+            .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SatPoint>, D::Error> {
+        Option::<SatPointFields>::deserialize(d).map(|fields| fields.map(SatPoint::from))
+    }
+}
+
+mod rune_id {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(id: &RuneId, s: S) -> Result<S::Ok, S::Error> {
+        RuneIdFields::from(*id).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<RuneId, D::Error> {
+        RuneIdFields::deserialize(d).map(RuneId::from)
+    }
 }
 
 impl From<Event> for RawEvent {
@@ -242,5 +394,31 @@ mod tests {
             let bytes = event.encode();
             assert_eq!(RawEvent::decode(&bytes).unwrap(), event);
         }
+    }
+
+    #[test]
+    fn encoding_is_compact() {
+        let event = RawEvent::InscriptionTransferred {
+            block_height: 800_002,
+            inscription_id: inscription_id(0),
+            new_location: satpoint(0),
+            old_location: satpoint(42),
+            sequence_number: 7,
+        };
+
+        let len = event.encode().len();
+        assert!(len < 140, "InscriptionTransferred encodes to {len} bytes");
+    }
+
+    #[test]
+    fn txid_and_outpoint_use_binary_form() {
+        let txid_len = postcard::to_allocvec(&txid()).unwrap().len();
+        let outpoint = OutPoint {
+            txid: txid(),
+            vout: 1,
+        };
+        let outpoint_len = postcard::to_allocvec(&outpoint).unwrap().len();
+
+        assert_eq!((txid_len, outpoint_len), (33, 34));
     }
 }
