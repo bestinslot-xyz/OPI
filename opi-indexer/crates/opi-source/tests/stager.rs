@@ -8,7 +8,7 @@ use {
     },
     ord::{Chain, index::event::Event},
     ordinals::RuneId,
-    redb::{Database, ReadableTable},
+    redb::{Database, ReadableDatabase, ReadableTable},
     serde_json::json,
     std::{
         sync::{

@@ -10,7 +10,7 @@ use {
     anyhow::{Result, anyhow, bail},
     bitcoin::{BlockHash, hashes::Hash},
     ord::index::event::Event,
-    redb::{ReadableTable, Table},
+    redb::{ReadableDatabase, ReadableTable, Table},
     std::{
         collections::BTreeMap,
         sync::{

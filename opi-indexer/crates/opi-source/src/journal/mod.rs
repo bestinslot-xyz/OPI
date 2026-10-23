@@ -14,7 +14,9 @@ pub use {
 use {
     anyhow::{Context, Result, anyhow, bail},
     ord::Chain,
-    redb::{Database, Durability, ReadableTable, TableDefinition, WriteTransaction},
+    redb::{
+        Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+    },
     std::{path::Path, sync::Arc},
 };
 
@@ -173,7 +175,7 @@ impl Journal {
     /// and quick repair, so a reopen after a crash skips the full-file walk.
     pub fn begin_write(&self) -> Result<WriteTransaction> {
         let mut tx = self.db.begin_write()?;
-        tx.set_durability(Durability::Immediate);
+        tx.set_durability(Durability::Immediate)?;
         tx.set_quick_repair(true);
         Ok(tx)
     }

@@ -5,6 +5,7 @@ use {
     anyhow::Result,
     bitcoin::{block::Header, consensus},
     opi_core::{BlockInfo, BlockSource, InscriptionInfo, InscriptionRecord},
+    redb::ReadableDatabase,
 };
 
 /// [`BlockSource`] over the finalized part of a journal. Clones share the

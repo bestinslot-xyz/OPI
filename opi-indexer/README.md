@@ -1,6 +1,6 @@
 # opi-indexer
 
-Rust workspace that links upstream `ord` 0.23.2 as a library. The `opi-indexer`
+Rust workspace that links upstream `ord` 0.29.1 as a library. The `opi-indexer`
 binary runs ord as a journal source and the BRC-20 module in one process.
 
 ## Prerequisites
@@ -135,16 +135,74 @@ advances and no errors are logged.
 
 ## ord dependency
 
-`ord` is a git dependency (`https://github.com/ordinals/ord`, tag `0.23.2`), the
-same source the `mockcore` dev-dependency comes from. With the crates.io `ord`
-alongside the git `mockcore`, Cargo builds two copies of `ord` and `ordinals`, so
-their types do not unify. A single git source gives one copy of each.
+`ord`, `ordinals` and the `mockcore` dev-dependency are git dependencies on one
+source (`https://github.com/ordinals/ord`, tag `0.29.1`). With the crates.io
+`ord` alongside the git `mockcore`, Cargo builds two copies of `ord` and
+`ordinals`, so their types do not unify. A single git source gives one copy of
+each.
 
-`Cargo.lock` is seeded from ord 0.23.2's own lockfile: ord requires `bip322 =
-0.0.9`, which crates.io has yanked, and Cargo only keeps a yanked version that is
-already pinned in the lockfile. Keep that pin when updating the lockfile.
+`redb` is pinned to `=3.1.3`, the version ord 0.29.1's own lockfile holds, so
+the journal and ord's index use the redb release ord is tested with. `bitcoin`
+resolves to 0.32.102, also ord's locked version. `cargo tree -d` shows one copy
+of each of `ord`, `ordinals`, `bitcoin` and `redb`.
 
-The brc20 path dependency needs `axum-server` 0.8 and `bitcoin` 0.32.8 alongside
-ord's `axum-server` 0.7: the lockfile holds `axum-server` 0.7.3 and `bitcoin`
-0.32.8 for them to build together. `bitcoin` 0.32.102 breaks ord's
-`satscard.rs`, so `cargo update` must not move it past 0.32.8.
+An ord index has a schema version: ord 0.29.1 (schema 34) refuses an index
+written by an older ord, and redb 3 refuses a file written in redb 2's format.
+A new ord release with a new schema needs a fresh ord data dir and journal.
+
+## Upstream assumptions
+
+The crash-safety design rests on four properties of ord. Each ord bump re-checks
+them against the new tag's source; ord 0.29.1 holds all four.
+
+**A1: every commit follows a `getblockchaininfo` barrier.** In
+`Updater::update_index` (`src/index/updater.rs`), each block is followed by:
+
+```rust
+uncommitted += 1;
+
+if uncommitted == self.index.settings.commit_interval()
+  || (!self.index.settings.integration_test()
+    && Reorg::is_savepoint_required(self.index, self.height)?)
+{
+  self.commit(wtx, utxo_cache)?;
+```
+
+`--commit-interval 4294967295` makes the first term false, so
+`Reorg::is_savepoint_required` runs, and it calls
+`index.client.get_blockchain_info()` (`src/index/reorg.rs`) on the updater
+thread before any commit decision. It returns early without the call only when
+the index durability is `Durability::None`. The only other commit is `if
+uncommitted > 0 { self.commit(wtx, utxo_cache)?; }` after the loop, which
+follows the last block's barrier. The gate proxy (`opi-source/src/proxy.rs`)
+holds that call until the stager (`opi-source/src/stager.rs`) has synced the
+raw log.
+
+**A2: `getblockhash` error -8 ends the block stream.** The fetcher thread's
+`get_block_with_retries` maps `client.get_block_hash(height).into_option()`
+through `BitcoinCoreRpcResultExt::into_option` (`src/index.rs`), which turns
+`RpcError { code: -8, .. }` into `Ok(None)`, and `Ok(None) => break` ends the
+stream. The proxy answers -8 above the chunk end.
+
+**A3: event shapes and order.** `src/index/event.rs` defines the `Event` enum
+that `RawEvent`'s exhaustive `From<Event>` (`opi-source/src/raw_event.rs`)
+mirrors, so a changed variant fails to compile. Finalize
+(`opi-source/src/journal/finalize.rs`) relies on emission order within a block
+(transactions in block order, coinbase last; fee-bound inscriptions emitted at
+coinbase time) and on `InscriptionCreated.parent_inscription_ids` holding the
+parents ord accepted. In 0.29.1 that list skips a purported parent that has no
+inscription entry yet; 0.23.2 panics on such a parent, so no block indexed by
+the fork carries one.
+
+**A4: durable, non-test settings.** ord opens its index with
+`Durability::Immediate` outside its own unit tests, and `integration_test`
+defaults to false. `ord_settings` passes `--index-runes` and
+`--commit-interval 4294967295` and never sets `--integration-test`; `ORD_*`
+environment variables and an `ord.yaml` in the data dir are merged by
+`Settings::load` and can still set it.
+
+**Inscription rules.** The journal reproduces the fork's numbering and transfer
+rules, which are built on ord 0.23.2. Between 0.23.2 and 0.29.1 ord changes no
+curse, charm, numbering, pointer or fee rule. Envelope parsing recognizes tag
+19 (`property_encoding`, odd, so it never curses), and inscription creation
+adds gallery and collection bookkeeping that emits no events.

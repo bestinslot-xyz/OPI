@@ -23,7 +23,7 @@ use {
         proxy::UpstreamAuth,
     },
     ord::{Chain, InscriptionId},
-    redb::ReadableTable,
+    redb::{ReadableDatabase, ReadableTable},
     serde_json::{Value, json},
     std::{
         path::Path,

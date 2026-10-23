@@ -5,6 +5,7 @@ use {
         encode_transfer, table, transfer_key,
     },
     ord::Chain,
+    redb::ReadableDatabase,
 };
 
 const TXID_A: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -142,7 +143,7 @@ fn info_layout_matches_fork() {
 
 fn put_meta(journal: &Journal, key: &[u8], value: &[u8]) {
     let mut tx = journal.db().begin_write().unwrap();
-    tx.set_durability(redb::Durability::Immediate);
+    tx.set_durability(redb::Durability::Immediate).unwrap();
     {
         let mut table = tx.open_table(table(cf::META)).unwrap();
         table.insert(key, value).unwrap();

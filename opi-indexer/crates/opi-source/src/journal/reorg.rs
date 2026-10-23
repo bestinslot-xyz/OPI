@@ -6,7 +6,7 @@ use {
     anyhow::{Context, Result},
     bitcoin::{BlockHash, block::Header, consensus},
     ord::Index,
-    redb::ReadableTable,
+    redb::{ReadableDatabase, ReadableTable},
 };
 
 /// Compares the finalized header hashes from `final_tip` down with ord's
