@@ -1,0 +1,315 @@
+mod support;
+
+use {
+    bitcoin::{OutPoint, ScriptBuf, WPubkeyHash, hashes::Hash},
+    opi_core::{BlockSource, InscriptionRecord},
+    opi_source::{driver::SourceHandle, journal::JournalReader},
+    ord::InscriptionId,
+    support::{Harness, envelope, envelope_with, start, wait_for_tip},
+};
+
+const JSON: &[u8] = br#"{"p":"brc-20","op":"deploy","tick":"ordi","max":"21000000"}"#;
+const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+const REGTEST_JUBILEE_HEIGHT: u32 = 110;
+
+/// Runs a source over the harness chain until its tip is the harness tip.
+struct Run {
+    _tmp: tempfile::TempDir,
+    source: Option<SourceHandle>,
+    reader: JournalReader,
+}
+
+impl Run {
+    fn new(harness: &Harness) -> Run {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = start(harness, tmp.path());
+        let run = Run {
+            reader: source.reader(),
+            _tmp: tmp,
+            source: Some(source),
+        };
+        wait_for_tip(&run.reader, harness.height());
+        run
+    }
+
+    fn records(&self, height: u32) -> Vec<InscriptionRecord> {
+        self.reader.inscription_records(height).unwrap()
+    }
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        if let Some(source) = self.source.take() {
+            source.shutdown();
+            let result = source.join();
+            if std::thread::panicking() {
+                if let Err(err) = result {
+                    eprintln!("source failed: {err:#}");
+                }
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+}
+
+fn reveal_outpoint(id: InscriptionId) -> OutPoint {
+    OutPoint {
+        txid: id.txid,
+        vout: 0,
+    }
+}
+
+#[test]
+fn creation_is_recorded_with_null_old_satpoint() {
+    let harness = Harness::new();
+    let id = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    let records = run.records(height);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record = &records[0];
+    assert_eq!(record.idx, 1);
+    assert_eq!(record.inscription_id, id.to_string());
+    assert_eq!(record.old_satpoint, None);
+    assert_eq!(record.new_satpoint, format!("{}:0:0", id.txid));
+    assert_eq!(record.txid, id.txid.to_string());
+    assert!(!record.sent_as_fee);
+
+    let info = run
+        .reader
+        .inscription_info(&id.to_string())
+        .unwrap()
+        .unwrap();
+    assert!(info.is_json);
+    assert!(!info.cursed_for_brc20);
+    assert_eq!(info.inscription_number, 0);
+    assert_eq!(info.parent_id, None);
+    assert_eq!(info.content, JSON);
+    assert_eq!(info.content_type, b"text/plain");
+
+    let block = run.reader.block_info(height).unwrap().unwrap();
+    assert_eq!(block.height, height);
+    assert_eq!(
+        block.hash,
+        harness.core.state().hashes[height as usize].to_string()
+    );
+}
+
+#[test]
+fn transfer_records_spending_tx_and_pkscript() {
+    let harness = Harness::new();
+    let id = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    let script = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([7; 20]));
+    let txid = harness.transfer_to(reveal_outpoint(id), &script);
+    let block = harness.mine(1).remove(0);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    let records = run.records(height);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record = &records[0];
+    assert_eq!(record.idx, 1);
+    assert_eq!(record.inscription_id, id.to_string());
+    assert_eq!(record.old_satpoint, Some(format!("{}:0:0", id.txid)));
+    assert_eq!(record.new_satpoint, format!("{txid}:0:0"));
+    assert_eq!(record.txid, txid.to_string());
+    assert_eq!(record.new_pkscript, script.to_bytes());
+    let output = &block.txdata[1].output[0];
+    assert_eq!(record.new_output_value, output.value.to_sat());
+    assert!(!record.sent_as_fee);
+}
+
+#[test]
+fn fee_spend_is_sent_as_fee_with_coinbase_satpoint() {
+    let harness = Harness::new();
+    let id = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    let spend = harness.spend_to_fee(reveal_outpoint(id));
+    let block = harness.mine(1).remove(0);
+    let height = harness.height();
+    let coinbase = &block.txdata[0];
+
+    let run = Run::new(&harness);
+
+    let records = run.records(height);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record = &records[0];
+    assert!(record.sent_as_fee);
+    assert!(
+        record
+            .new_satpoint
+            .starts_with(&format!("{}:0:", coinbase.compute_txid())),
+        "{}",
+        record.new_satpoint
+    );
+    assert_eq!(record.txid, spend.to_string());
+    assert_eq!(
+        record.new_pkscript,
+        coinbase.output[0].script_pubkey.to_bytes()
+    );
+    assert_eq!(record.new_output_value, coinbase.output[0].value.to_sat());
+}
+
+#[test]
+fn lost_inscription_is_sent_as_fee_with_null_satpoint() {
+    let harness = Harness::new();
+    let id = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    let spend = harness.spend_to_fee(reveal_outpoint(id));
+    harness.mine_with_subsidy(0);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    let records = run.records(height);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record = &records[0];
+    assert!(record.sent_as_fee);
+    assert_eq!(
+        record.new_satpoint,
+        format!("{}:{}:0", bitcoin::Txid::all_zeros(), u32::MAX)
+    );
+    assert_eq!(record.txid, spend.to_string());
+    assert!(record.new_pkscript.is_empty());
+    assert_eq!(record.new_output_value, 0);
+}
+
+#[test]
+fn image_inscription_is_untracked() {
+    let harness = Harness::new();
+    let id = harness.inscribe(PNG, "image/png");
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    assert_eq!(run.records(height), Vec::new());
+    assert_eq!(run.reader.inscription_info(&id.to_string()).unwrap(), None);
+}
+
+#[test]
+fn unbound_inscription_is_untracked() {
+    let harness = Harness::new();
+    // An unrecognized even field leaves the inscription unbound.
+    let id = harness.inscribe_witness(envelope_with(&[(&[1], b"text/plain"), (&[22], b"x")], JSON));
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    assert_eq!(run.records(height), Vec::new());
+    assert_eq!(run.reader.inscription_info(&id.to_string()).unwrap(), None);
+}
+
+/// An envelope with its content type tag twice: `Curse::DuplicateField`.
+fn duplicate_field_envelope() -> bitcoin::Witness {
+    envelope_with(&[(&[1], b"text/plain"), (&[1], b"text/plain")], JSON)
+}
+
+#[test]
+fn cursed_inscription_sets_cursed_for_brc20() {
+    let harness = Harness::new();
+    let id = harness.inscribe_witness(duplicate_field_envelope());
+    harness.mine(1);
+    assert!(harness.height() < REGTEST_JUBILEE_HEIGHT);
+
+    let run = Run::new(&harness);
+
+    let info = run
+        .reader
+        .inscription_info(&id.to_string())
+        .unwrap()
+        .unwrap();
+    assert!(info.cursed_for_brc20);
+    assert!(info.inscription_number < 0);
+}
+
+#[test]
+fn vindicated_inscription_sets_cursed_for_brc20() {
+    let harness = Harness::new();
+    harness.mine(REGTEST_JUBILEE_HEIGHT as usize);
+    let id = harness.inscribe_witness(duplicate_field_envelope());
+    harness.mine(1);
+    assert!(harness.height() >= REGTEST_JUBILEE_HEIGHT);
+
+    let run = Run::new(&harness);
+
+    let info = run
+        .reader
+        .inscription_info(&id.to_string())
+        .unwrap()
+        .unwrap();
+    assert!(info.cursed_for_brc20);
+    assert!(info.inscription_number >= 0);
+}
+
+#[test]
+fn fee_bound_idx_matches_fork() {
+    let harness = Harness::new();
+    let a = harness.inscribe(JSON, "text/plain");
+    let b = harness.inscribe(JSON, "text/plain");
+    let image = harness.inscribe(PNG, "image/png");
+    harness.mine(1);
+    harness.spend_to_fee(reveal_outpoint(a));
+    let move_b = harness.transfer(reveal_outpoint(b), 0);
+    harness.spend_to_fee(reveal_outpoint(image));
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    let records = run.records(height);
+    let ids = records
+        .iter()
+        .map(|r| (r.inscription_id.clone(), r.idx, r.sent_as_fee))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![(a.to_string(), 1, true), (b.to_string(), 2, false)]
+    );
+    assert_eq!(records[1].txid, move_b.to_string());
+}
+
+#[test]
+fn reorg_replaces_records() {
+    let harness = Harness::new();
+    harness.mine(2);
+    let a = harness.reveal(1, envelope(b"text/plain", JSON));
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+    let old_hash = run.reader.block_info(height).unwrap().unwrap().hash;
+    let records = run.records(height);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].inscription_id, a.to_string());
+
+    harness.invalidate_tip();
+    let b = harness.reveal(2, envelope(b"application/json", br#"{"b":1}"#));
+    harness.mine(2);
+    let new_hash = harness.core.state().hashes[height as usize].to_string();
+    assert_ne!(old_hash, new_hash);
+
+    wait_for_tip(&run.reader, height + 1);
+
+    assert_eq!(
+        run.reader.block_info(height).unwrap().unwrap().hash,
+        new_hash
+    );
+    let records = run.records(height);
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].inscription_id, b.to_string());
+    assert_eq!(run.reader.inscription_info(&a.to_string()).unwrap(), None);
+    assert!(
+        run.reader
+            .inscription_info(&b.to_string())
+            .unwrap()
+            .is_some()
+    );
+}

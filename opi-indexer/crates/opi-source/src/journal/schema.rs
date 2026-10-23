@@ -81,6 +81,11 @@ fn encode_inscription_id(id: &str) -> Result<[u8; INSCRIPTION_ID_LEN]> {
     Ok(out)
 }
 
+/// `ord_inscription_info` key of an inscription id in `txidi<index>` form.
+pub fn info_key(inscription_id: &str) -> Result<[u8; INSCRIPTION_ID_LEN]> {
+    encode_inscription_id(inscription_id)
+}
+
 fn decode_inscription_id(raw: &[u8]) -> String {
     let index = u32::from_be_bytes(raw[TXID_LEN..INSCRIPTION_ID_LEN].try_into().unwrap());
     format!("{}i{index}", txid_string(&raw[..TXID_LEN]))

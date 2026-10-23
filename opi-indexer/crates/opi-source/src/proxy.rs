@@ -146,6 +146,29 @@ impl GateProxy {
     pub fn cached_block(&self, hash: &BlockHash) -> Option<Block> {
         self.state.blocks.lock().unwrap().get(hash)
     }
+
+    /// Drops the recorded hashes of heights below `height`.
+    pub fn forget_below(&self, height: u32) {
+        let mut hashes = self.state.hashes.lock().unwrap();
+        *hashes = hashes.split_off(&height);
+    }
+}
+
+/// The user and password `auth` presents to bitcoind.
+pub(crate) async fn credentials(auth: &UpstreamAuth) -> Result<(String, String)> {
+    match auth {
+        UpstreamAuth::UserPass(user, pass) => Ok((user.clone(), pass.clone())),
+        UpstreamAuth::Cookie(path) => {
+            let cookie = tokio::fs::read_to_string(path)
+                .await
+                .with_context(|| format!("reading cookie file {}", path.display()))?;
+            let (user, pass) = cookie
+                .trim_end()
+                .split_once(':')
+                .with_context(|| format!("malformed cookie file {}", path.display()))?;
+            Ok((user.into(), pass.into()))
+        }
+    }
 }
 
 async fn handle(
@@ -231,22 +254,6 @@ impl ProxyState {
             .map_err(|_| anyhow!("commit barrier failed: stager did not sync"))
     }
 
-    async fn credentials(&self) -> Result<(String, String)> {
-        match &self.auth {
-            UpstreamAuth::UserPass(user, pass) => Ok((user.clone(), pass.clone())),
-            UpstreamAuth::Cookie(path) => {
-                let cookie = tokio::fs::read_to_string(path)
-                    .await
-                    .with_context(|| format!("reading cookie file {}", path.display()))?;
-                let (user, pass) = cookie
-                    .trim_end()
-                    .split_once(':')
-                    .with_context(|| format!("malformed cookie file {}", path.display()))?;
-                Ok((user.into(), pass.into()))
-            }
-        }
-    }
-
     async fn forward(
         &self,
         uri: &Uri,
@@ -258,7 +265,7 @@ impl ProxyState {
             self.upstream_url.trim_end_matches('/'),
             uri.path_and_query().map_or("/", |p| p.as_str())
         );
-        let (user, pass) = self.credentials().await?;
+        let (user, pass) = credentials(&self.auth).await?;
         let mut request = self
             .client
             .post(url)

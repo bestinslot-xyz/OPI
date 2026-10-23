@@ -9,6 +9,7 @@ axum = "0.8"
 bitcoin = { version = "0.32.5", features = ["serde"] }
 clap = "4"
 hex = "0.4"
+log = "0.4"
 opi-core = { path = "../opi-core" }
 ord = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
 ordinals = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }

@@ -17,6 +17,10 @@ pub struct Located {
 /// order, and fee-bound events reserve one index each after them. Only
 /// tracked events are reported, but untracked fee-bound events still
 /// reserve their index.
+///
+/// Callers pass every inscription event of the block, with `fee` set when its
+/// new location is in the coinbase or is the null outpoint, and `tx_index` the
+/// position of the transaction that moved it.
 pub fn assign_idx(events: &[Located]) -> Vec<(usize, u32)> {
     let mut sorted = events.to_vec();
     sorted.sort_unstable_by_key(|e| (e.tx_index, e.event_index));

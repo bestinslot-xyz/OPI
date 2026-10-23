@@ -2525,6 +2525,7 @@ dependencies = [
  "bitcoin",
  "clap",
  "hex",
+ "log",
  "mockcore",
  "opi-core",
  "ord",

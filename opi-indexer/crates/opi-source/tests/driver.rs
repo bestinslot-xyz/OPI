@@ -1,0 +1,139 @@
+mod support;
+
+use {
+    opi_core::BlockSource,
+    opi_source::driver::spawn_source,
+    ord::Chain,
+    std::time::Duration,
+    support::{Faults, Harness, Shim, dump, source_config, start, wait_for_tip},
+};
+
+const JSON: &[u8] = br#"{"p":"brc-20","op":"mint","tick":"ordi","amt":"1000"}"#;
+
+/// A chain of `blocks` blocks with an inscription revealed at every even
+/// height from 2.
+fn chain_with_inscriptions(blocks: u32) -> Harness {
+    let harness = Harness::new();
+    while harness.height() + 2 <= blocks {
+        harness.inscribe(JSON, "text/plain");
+        harness.mine(1);
+    }
+    let rest = blocks - harness.height();
+    harness.mine(rest as usize);
+    assert_eq!(harness.height(), blocks);
+    harness
+}
+
+#[test]
+fn driver_retries_after_upstream_errors() {
+    let harness = chain_with_inscriptions(6);
+    let target = harness.core.state().hashes[4];
+    let shim = Shim::start(
+        harness.core.url(),
+        Faults {
+            // ord's block fetcher retries these itself.
+            fail_getblock: Some((target, 2)),
+            // These fail ord's `update()`, so the driver retries it.
+            fail_blockchaininfo: Some((4, 2)),
+            ..Faults::default()
+        },
+    );
+    let tmp = tempfile::tempdir().unwrap();
+
+    let source = spawn_source(source_config(tmp.path(), shim.url.clone(), 2)).unwrap();
+    let reader = source.reader();
+    wait_for_tip(&reader, harness.height());
+    assert_eq!(shim.pending_failures(), (0, 0));
+
+    for height in 0..=harness.height() {
+        let block = reader.block_info(height).unwrap().unwrap();
+        assert_eq!(
+            block.hash,
+            harness.core.state().hashes[height as usize].to_string()
+        );
+    }
+    for height in [2, 4, 6] {
+        assert_eq!(reader.inscription_records(height).unwrap().len(), 1);
+    }
+
+    source.shutdown();
+    source.join().unwrap();
+}
+
+#[test]
+fn startup_refuses_when_ord_is_ahead_of_raw_log() {
+    let harness = chain_with_inscriptions(4);
+    let tmp = tempfile::tempdir().unwrap();
+    let source = start(&harness, tmp.path());
+    wait_for_tip(&source.reader(), harness.height());
+    source.shutdown();
+    source.join().unwrap();
+
+    std::fs::remove_dir_all(tmp.path().join("journal")).unwrap();
+
+    for _ in 0..2 {
+        let err = spawn_source(source_config(tmp.path(), harness.core.url(), 2))
+            .err()
+            .expect("startup refuses");
+        assert!(format!("{err:#}").contains("raw event log"), "{err:#}");
+    }
+}
+
+#[test]
+fn startup_refuses_on_chain_mismatch() {
+    let harness = chain_with_inscriptions(2);
+    let tmp = tempfile::tempdir().unwrap();
+    let source = start(&harness, tmp.path());
+    wait_for_tip(&source.reader(), harness.height());
+    source.shutdown();
+    source.join().unwrap();
+
+    let mut config = source_config(tmp.path(), harness.core.url(), 2);
+    config.chain = Chain::Signet;
+    let err = spawn_source(config).err().expect("startup refuses");
+    assert!(format!("{err:#}").contains("chain"), "{err:#}");
+}
+
+#[test]
+fn shutdown_mid_chunk_resumes_cleanly() {
+    let harness = chain_with_inscriptions(30);
+    let tip = harness.height();
+
+    let uninterrupted = tempfile::tempdir().unwrap();
+    let config = source_config(uninterrupted.path(), harness.core.url(), 10);
+    let journal_path = config.journal_path();
+    let source = spawn_source(config).unwrap();
+    wait_for_tip(&source.reader(), tip);
+    source.shutdown();
+    source.join().unwrap();
+    let expected = dump(&journal_path);
+
+    let interrupted = tempfile::tempdir().unwrap();
+    let shim = Shim::start(
+        harness.core.url(),
+        Faults {
+            getblock_delay: Duration::from_millis(40),
+            ..Faults::default()
+        },
+    );
+    let config = source_config(interrupted.path(), shim.url.clone(), 10);
+    let journal_path = config.journal_path();
+    let source = spawn_source(config).unwrap();
+    let reader = source.reader();
+    wait_for_tip(&reader, 0);
+    std::thread::sleep(Duration::from_millis(150));
+    source.shutdown();
+    source.join().unwrap();
+    let stopped_at = reader.tip().unwrap().unwrap();
+    assert!(stopped_at < tip, "shutdown landed after the last chunk");
+    drop(reader);
+
+    let source = spawn_source(source_config(interrupted.path(), harness.core.url(), 10)).unwrap();
+    wait_for_tip(&source.reader(), tip);
+    source.shutdown();
+    source.join().unwrap();
+
+    let actual = dump(&journal_path);
+    assert!(!expected.is_empty());
+    assert_eq!(actual, expected);
+}

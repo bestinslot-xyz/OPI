@@ -1,7 +1,11 @@
+mod finalize;
 pub mod order;
+mod reader;
+mod reorg;
 mod schema;
 
-pub use schema::*;
+pub(crate) use finalize::needs_transactions;
+pub use {finalize::finalize_height, reader::JournalReader, reorg::reorg_check, schema::*};
 
 use {
     anyhow::{Context, Result, anyhow, bail},
@@ -40,6 +44,7 @@ const ZSTD_LEVEL: i32 = 3;
 #[derive(Clone)]
 pub struct Journal {
     db: Arc<Database>,
+    created: bool,
 }
 
 /// Definition of the journal table called `name`.
@@ -58,7 +63,10 @@ impl Journal {
             .with_context(|| format!("opening journal at {}", path.display()))?;
         let chain = chain.to_string();
 
-        let journal = Journal { db: Arc::new(db) };
+        let mut journal = Journal {
+            db: Arc::new(db),
+            created: false,
+        };
         let tx = journal.begin_write()?;
         {
             for name in ALL_TABLES {
@@ -71,6 +79,7 @@ impl Journal {
                 (None, None) => {
                     meta.insert(META_CHAIN, chain.as_bytes())?;
                     meta.insert(META_SCHEMA, SCHEMA_VERSION.to_be_bytes().as_slice())?;
+                    journal.created = true;
                 }
                 (Some(existing), schema) => {
                     if existing != chain.as_bytes() {
@@ -114,9 +123,29 @@ impl Journal {
         Ok(Some(u32::from_be_bytes(bytes)))
     }
 
+    /// Whether this open created the journal's meta, so the journal held no
+    /// data before it.
+    pub fn created(&self) -> bool {
+        self.created
+    }
+
     pub fn db(&self) -> &Arc<Database> {
         &self.db
     }
+}
+
+/// Sets `final_tip` to `height`, or clears it when `None`.
+fn set_final_tip(tx: &WriteTransaction, height: Option<u32>) -> Result<()> {
+    let mut meta = tx.open_table(table(cf::META))?;
+    match height {
+        Some(height) => {
+            meta.insert(META_FINAL_TIP, height.to_be_bytes().as_slice())?;
+        }
+        None => {
+            meta.remove(META_FINAL_TIP)?;
+        }
+    }
+    Ok(())
 }
 
 /// Compresses an encoded inscription info value with zstd.
