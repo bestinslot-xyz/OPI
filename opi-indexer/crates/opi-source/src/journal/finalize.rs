@@ -8,7 +8,7 @@ use {
         raw_event_key, set_final_tip, table, transfer_key,
     },
     crate::raw_event::RawEvent,
-    anyhow::{Context, Result, bail, ensure},
+    anyhow::{Context, Result, ensure},
     bitcoin::{Block, BlockHash, OutPoint, Txid, consensus, hashes::Hash},
     opi_core::{InscriptionInfo, InscriptionRecord},
     ord::{Index, Inscription, InscriptionId, ParsedEnvelope},
@@ -130,6 +130,7 @@ pub fn finalize_range(
         let mut transfers = tx.open_table(table(cf::TRANSFERS))?;
         let mut infos = tx.open_table(table(cf::INFO))?;
         let mut headers = tx.open_table(table(cf::HEADERS))?;
+        let mut first_transfers = tx.open_table(table(cf::FIRST_TRANSFER))?;
         let raw_events = tx.open_table(table(cf::RAW_EVENTS))?;
         let raw_heights = tx.open_table(table(cf::RAW_HEIGHTS))?;
 
@@ -148,8 +149,11 @@ pub fn finalize_range(
                 finalize_events(
                     index,
                     chain,
-                    &mut transfers,
-                    &mut infos,
+                    Tables {
+                        transfers: &mut transfers,
+                        infos: &mut infos,
+                        first_transfers: &mut first_transfers,
+                    },
                     &block,
                     height,
                     events,
@@ -166,19 +170,35 @@ pub fn finalize_range(
     Ok(())
 }
 
-/// Writes the info rows and transfer records of one block's events.
+/// The tables one block's events write.
+struct Tables<'a, 'txn> {
+    transfers: &'a mut RawTable<'txn>,
+    infos: &'a mut RawTable<'txn>,
+    first_transfers: &'a mut RawTable<'txn>,
+}
+
+/// Writes the info rows, transfer records and first-transfer entries of one
+/// block's events.
 fn finalize_events(
     index: &Index,
     chain: &mut dyn ChainData,
-    transfers: &mut RawTable,
-    infos: &mut RawTable,
+    tables: Tables,
     block: &Block,
     height: u32,
     events: Vec<RawEvent>,
 ) -> Result<()> {
+    let Tables {
+        transfers,
+        infos,
+        first_transfers,
+    } = tables;
     let positions = Positions::new(block);
     let mut movements = movements(index, block, &positions, events, |id| {
-        Ok(infos.get(info_key(&id.to_string())?.as_slice())?.is_some())
+        let key = info_key(&id.to_string())?;
+        Ok((
+            infos.get(key.as_slice())?.is_some(),
+            first_transfers.get(key.as_slice())?.is_some(),
+        ))
     })?;
     decide_fees(chain, block, &mut movements)?;
 
@@ -187,6 +207,12 @@ fn finalize_events(
             infos.insert(
                 info_key(&info.inscription_id)?.as_slice(),
                 compress_info(&encode_info(info)?)?.as_slice(),
+            )?;
+        }
+        if movement.tracked && movement.old_location.is_some() {
+            first_transfers.insert(
+                info_key(&movement.inscription_id.to_string())?.as_slice(),
+                height.to_be_bytes().as_slice(),
             )?;
         }
     }
@@ -240,19 +266,23 @@ fn logged_events(
 }
 
 /// Places every inscription event in the block and decides what it tracks.
-/// `has_info` tells whether an inscription created at an earlier height has
-/// an info row. A bound event's fee flag follows from its location; an
-/// unbound creation's is left undecided.
+/// `stored` tells, for an inscription, whether it has an info row and a
+/// first-transfer entry from an earlier height. A transfer is tracked when
+/// the inscription is tracked and the transfer is its first: the fork counts
+/// an inscription's location updates and records a transfer only at count 2.
+/// A bound event's fee flag follows from its location; an unbound creation's
+/// is left undecided.
 fn movements(
     index: &Index,
     block: &Block,
     positions: &Positions,
     events: Vec<RawEvent>,
-    has_info: impl Fn(InscriptionId) -> Result<bool>,
+    stored: impl Fn(InscriptionId) -> Result<(bool, bool)>,
 ) -> Result<Vec<Movement>> {
     let coinbase = *positions.txids.first().context("block has no coinbase")?;
     let mut envelopes = HashMap::<Txid, Vec<ParsedEnvelope>>::new();
     let mut tracked_here = HashSet::new();
+    let mut transferred_here = HashSet::new();
     let mut movements = Vec::with_capacity(events.len());
 
     for event in events {
@@ -304,16 +334,22 @@ fn movements(
                 new_location,
                 old_location,
                 ..
-            } => Movement {
-                inscription_id,
-                old_location: Some(old_location),
-                new_location: Some(new_location),
-                tx_index: positions.spender(old_location.outpoint)?,
-                fee: None,
-                tracked: tracked_here.contains(&inscription_id) || has_info(inscription_id)?,
-                info: None,
-                envelope: None,
-            },
+            } => {
+                let (has_info, has_first_transfer) = stored(inscription_id)?;
+                let tracked = (tracked_here.contains(&inscription_id) || has_info)
+                    && !has_first_transfer
+                    && transferred_here.insert(inscription_id);
+                Movement {
+                    inscription_id,
+                    old_location: Some(old_location),
+                    new_location: Some(new_location),
+                    tx_index: positions.spender(old_location.outpoint)?,
+                    fee: None,
+                    tracked,
+                    info: None,
+                    envelope: None,
+                }
+            }
             _ => continue,
         };
         movement.fee = movement.new_location.map(|location| {
@@ -324,8 +360,11 @@ fn movements(
     Ok(movements)
 }
 
-/// Decides the fee flag of every unbound creation: from the event order when
-/// it settles it, else from the reveal transaction's input values.
+/// Decides the fee flag of every unbound creation whose flag can move a
+/// tracked event's idx: from the event order when it settles it, else from
+/// the reveal transaction's input values. A fee-bound untracked event only
+/// reserves an idx, so an undecided one with no tracked event numbered after
+/// its slot keeps `None`.
 fn decide_fees(chain: &mut dyn ChainData, block: &Block, movements: &mut [Movement]) -> Result<()> {
     let order = movements
         .iter()
@@ -334,7 +373,18 @@ fn decide_fees(chain: &mut dyn ChainData, block: &Block, movements: &mut [Moveme
     for (movement, fee) in movements.iter_mut().zip(fees_from_order(&order)?) {
         movement.fee = fee;
     }
-    if movements.iter().all(|m| m.fee.is_some()) {
+    let numbered_after = |slot: usize| {
+        let (tx_index, event_index) = (movements[slot].tx_index, slot);
+        movements.iter().enumerate().any(|(i, m)| {
+            m.tracked
+                && (m.tx_index > tx_index
+                    || (m.tx_index == tx_index && m.fee == Some(true) && i > event_index))
+        })
+    };
+    let undecided = (0..movements.len())
+        .filter(|&i| movements[i].fee.is_none() && numbered_after(i))
+        .collect::<Vec<_>>();
+    if undecided.is_empty() {
         return Ok(());
     }
 
@@ -346,7 +396,8 @@ fn decide_fees(chain: &mut dyn ChainData, block: &Block, movements: &mut [Moveme
         values.len(),
         block.txdata.len()
     );
-    for movement in movements.iter_mut().filter(|m| m.fee.is_none()) {
+    for slot in undecided {
+        let movement = &mut movements[slot];
         let tx = &block.txdata[movement.tx_index];
         let values = &values[movement.tx_index];
         ensure!(
@@ -364,6 +415,23 @@ fn decide_fees(chain: &mut dyn ChainData, block: &Block, movements: &mut [Moveme
     }
     Ok(())
 }
+
+/// A block's inscription events fit no order ord emits them in, so the
+/// model of ord finalize relies on is wrong. Retrying can't fix it.
+#[derive(Debug)]
+pub struct EmissionOrderError(&'static str);
+
+impl std::fmt::Display for EmissionOrderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "inscription events fit no ord emission order: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for EmissionOrderError {}
 
 /// Fee flags from the order ord emits a block's inscription events in.
 ///
@@ -391,12 +459,11 @@ fn fees_from_order(events: &[(usize, Option<bool>)]) -> Result<Vec<Option<bool>>
             lo = lo.max(drop);
             hi = hi.min(drop);
         }
-        _ => bail!("inscription events fit no ord emission order: mover position drops twice"),
+        _ => return Err(EmissionOrderError("mover position drops twice").into()),
     }
-    ensure!(
-        lo <= hi,
-        "inscription events fit no ord emission order: a fee-bound event precedes a located one"
-    );
+    if lo > hi {
+        return Err(EmissionOrderError("a fee-bound event precedes a located one").into());
+    }
     Ok(events
         .iter()
         .enumerate()

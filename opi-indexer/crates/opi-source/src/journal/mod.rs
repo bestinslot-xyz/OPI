@@ -5,7 +5,7 @@ mod reorg;
 mod schema;
 
 pub use {
-    finalize::{ChainData, FINALIZE_BATCH, finalize_range},
+    finalize::{ChainData, EmissionOrderError, FINALIZE_BATCH, finalize_range},
     reader::JournalReader,
     reorg::reorg_check,
     schema::*,
@@ -26,18 +26,23 @@ pub mod cf {
     pub const RAW_EVENTS: &str = "raw_events";
     pub const RAW_HEIGHTS: &str = "raw_heights";
     pub const META: &str = "meta";
+    /// Inscription id (store form) -> height (`u32` BE) of its recorded
+    /// transfer. The fork records only an inscription's first transfer.
+    pub const FIRST_TRANSFER: &str = "first_transfer";
 }
 
-const ALL_TABLES: [&str; 6] = [
+const ALL_TABLES: [&str; 7] = [
     cf::TRANSFERS,
     cf::INFO,
     cf::HEADERS,
     cf::RAW_EVENTS,
     cf::RAW_HEIGHTS,
     cf::META,
+    cf::FIRST_TRANSFER,
 ];
 
 const META_FINAL_TIP: &[u8] = b"final_tip";
+const META_GATE_LIMIT: &[u8] = b"gate_limit";
 const META_CHAIN: &[u8] = b"chain";
 const META_SCHEMA: &[u8] = b"schema";
 const SCHEMA_VERSION: u32 = 1;
@@ -115,15 +120,35 @@ impl Journal {
 
     /// Highest finalized height, if any block has been finalized.
     pub fn final_tip(&self) -> Result<Option<u32>> {
+        self.meta_u32(META_FINAL_TIP, "final_tip")
+    }
+
+    /// Highest height the gate has ever been opened to, so ord's committed
+    /// height never exceeds it while this journal logs its events.
+    pub fn gate_limit(&self) -> Result<Option<u32>> {
+        self.meta_u32(META_GATE_LIMIT, "gate_limit")
+    }
+
+    /// Durably records `height` as the gate limit, before the gate opens to
+    /// it.
+    pub fn set_gate_limit(&self, height: u32) -> Result<()> {
+        let tx = self.begin_write()?;
+        tx.open_table(table(cf::META))?
+            .insert(META_GATE_LIMIT, height.to_be_bytes().as_slice())?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn meta_u32(&self, key: &[u8], name: &str) -> Result<Option<u32>> {
         let tx = self.db.begin_read()?;
         let meta = tx.open_table(table(cf::META))?;
-        let Some(raw) = meta.get(META_FINAL_TIP)? else {
+        let Some(raw) = meta.get(key)? else {
             return Ok(None);
         };
         let raw = raw.value();
         let bytes: [u8; 4] = raw
             .try_into()
-            .map_err(|_| anyhow!("final_tip is {} bytes, expected 4", raw.len()))?;
+            .map_err(|_| anyhow!("{name} is {} bytes, expected 4", raw.len()))?;
         Ok(Some(u32::from_be_bytes(bytes)))
     }
 

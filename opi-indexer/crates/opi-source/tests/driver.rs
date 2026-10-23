@@ -1,11 +1,14 @@
 mod support;
 
 use {
+    bitcoin::OutPoint,
     opi_core::BlockSource,
     opi_source::driver::spawn_source,
     ord::Chain,
     std::time::Duration,
-    support::{Faults, Harness, Shim, dump, source_config, start, wait_for_tip},
+    support::{
+        Faults, Harness, Shim, dump, envelope, envelope_with, source_config, start, wait_for_tip,
+    },
 };
 
 const JSON: &[u8] = br#"{"p":"brc-20","op":"mint","tick":"ordi","amt":"1000"}"#;
@@ -43,7 +46,7 @@ fn driver_retries_after_upstream_errors() {
     let source = spawn_source(source_config(tmp.path(), shim.url.clone(), 2)).unwrap();
     let reader = source.reader();
     wait_for_tip(&reader, harness.height());
-    assert_eq!(shim.pending_failures(), (0, 0));
+    assert_eq!(shim.pending_failures(), (0, 0, 0));
 
     for height in 0..=harness.height() {
         let block = reader.block_info(height).unwrap().unwrap();
@@ -77,6 +80,72 @@ fn startup_refuses_when_ord_is_ahead_of_raw_log() {
             .expect("startup refuses");
         assert!(format!("{err:#}").contains("raw event log"), "{err:#}");
     }
+}
+
+#[test]
+fn startup_refuses_a_restored_older_journal() {
+    let harness = chain_with_inscriptions(4);
+    let tmp = tempfile::tempdir().unwrap();
+    let config = source_config(tmp.path(), harness.core.url(), 2);
+    let journal_path = config.journal_path();
+    let source = spawn_source(config.clone()).unwrap();
+    wait_for_tip(&source.reader(), harness.height());
+    source.shutdown();
+    source.join().unwrap();
+    let backup = tmp.path().join("journal-backup.redb");
+    std::fs::copy(&journal_path, &backup).unwrap();
+
+    harness.inscribe(JSON, "text/plain");
+    harness.mine(3);
+    let source = spawn_source(config.clone()).unwrap();
+    wait_for_tip(&source.reader(), harness.height());
+    source.shutdown();
+    source.join().unwrap();
+
+    std::fs::copy(&backup, &journal_path).unwrap();
+    let err = spawn_source(config).err().expect("startup refuses");
+    assert!(format!("{err:#}").contains("raw event log"), "{err:#}");
+}
+
+#[test]
+fn finalize_retries_after_upstream_errors() {
+    let harness = Harness::new();
+    harness.mine(2);
+    let a = harness.reveal(1, envelope(b"text/plain", JSON));
+    harness.mine(1);
+    // Tx 1 sends an unbound inscription to fees ahead of tracked A, so
+    // finalize reads the block's input values.
+    harness.reveal_to_fee(
+        2,
+        envelope_with(&[(&[1], b"text/plain"), (&[22], b"x")], JSON),
+    );
+    harness.spend_to_fee(OutPoint {
+        txid: a.txid,
+        vout: 0,
+    });
+    harness.mine(1);
+    let height = harness.height();
+    let shim = Shim::start(
+        harness.core.url(),
+        Faults {
+            fail_prevout_blocks: 2,
+            ..Faults::default()
+        },
+    );
+    let tmp = tempfile::tempdir().unwrap();
+
+    let source = spawn_source(source_config(tmp.path(), shim.url.clone(), 2)).unwrap();
+    let reader = source.reader();
+    wait_for_tip(&reader, height);
+
+    assert_eq!(shim.pending_failures(), (0, 0, 0));
+    assert_eq!(shim.prevout_blocks(), 1);
+    let records = reader.inscription_records(height).unwrap();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].idx, 2);
+
+    source.shutdown();
+    source.join().unwrap();
 }
 
 #[test]

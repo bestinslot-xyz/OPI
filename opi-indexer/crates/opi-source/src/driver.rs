@@ -3,7 +3,10 @@
 
 use {
     crate::{
-        journal::{ChainData, FINALIZE_BATCH, Journal, JournalReader, finalize_range, reorg_check},
+        journal::{
+            ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalReader, finalize_range,
+            reorg_check,
+        },
         ord_settings,
         proxy::{GateProxy, ProxyConfig, UpstreamAuth},
         rpc::BitcoinRpc,
@@ -52,6 +55,9 @@ impl SourceConfig {
 }
 
 /// A running source. Dropping it shuts it down and waits for the driver.
+///
+/// `join` and drop block on the source's own runtime, so use the handle from
+/// a non-async context; async callers use `tokio::task::spawn_blocking`.
 pub struct SourceHandle {
     journal: Journal,
     proxy: GateProxy,
@@ -114,9 +120,12 @@ impl Drop for SourceHandle {
 /// Starts the gate proxy, the stager and ord's index, checks the journal
 /// against ord, and spawns the driver thread.
 ///
-/// Fails when the journal belongs to another chain, or is new while ord's
-/// index already holds inscription-era blocks, whose events the raw event log
-/// would lack.
+/// Fails when the journal belongs to another chain, or when ord's index holds
+/// committed blocks the raw event log never logged (a new, older or foreign
+/// journal).
+///
+/// It blocks on the source's own runtime, so call it from a non-async
+/// context; async callers use `tokio::task::spawn_blocking`.
 pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     ensure!(cfg.chunk > 0, "chunk must be positive");
     std::fs::create_dir_all(&cfg.journal_dir)
@@ -202,15 +211,34 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     })
 }
 
-/// Refuses a new journal next to an ord index that already committed blocks
-/// from the first inscription height, rolls the journal back to the highest
-/// block it shares with ord, and drops raw events above ord's committed tip.
+/// Refuses a journal whose raw event log can't hold every event of ord's
+/// committed blocks, rolls the journal back to the highest block it shares
+/// with ord, and drops raw events above ord's committed tip.
+///
+/// ord never commits above the journal's gate limit while the journal logs
+/// its events, so ord's committed height above it means the journal is new,
+/// an older copy, or another index's. A journal with no gate limit accepts
+/// only an ord index below the first inscription height.
 fn check_startup(journal: &Journal, index: &Index, settings: &Settings) -> Result<()> {
     let count = index.block_count()?;
     if journal.created() && count > settings.first_inscription_height() {
         bail!(
             "ord's index holds {count} committed blocks, but the raw event log is new and lacks \
              their events; delete the ord data dir or restore the journal"
+        );
+    }
+    let ahead = match journal.gate_limit()? {
+        Some(limit) => count
+            .checked_sub(1)
+            .is_some_and(|committed| committed > limit),
+        None => count > settings.first_inscription_height(),
+    };
+    if ahead {
+        bail!(
+            "ord's index holds {count} committed blocks, above what this raw event log has \
+             logged (gate limit {:?}): the journal is stale or belongs to another index; \
+             delete the ord data dir or restore the matching journal",
+            journal.gate_limit()?
         );
     }
     reorg_check(journal, index)?;
@@ -233,14 +261,20 @@ impl Stop {
         self.wake.notify_all();
     }
 
-    /// Opens the gate up to `chunk_end` unless stopped. Returns whether it
-    /// opened.
-    fn open(&self, proxy: &GateProxy, chunk_end: u32) -> bool {
+    /// Opens the gate up to `chunk_end` unless stopped, after durably raising
+    /// the journal's gate limit to it. Returns whether it opened.
+    fn open(&self, journal: &Journal, proxy: &GateProxy, chunk_end: u32) -> Result<bool> {
         let stopped = self.stopped.lock().unwrap();
-        if !*stopped {
-            proxy.set_chunk_end(chunk_end);
+        if *stopped {
+            return Ok(false);
         }
-        !*stopped
+        // The limit only rises, so a bitcoind tip that falls below ord's
+        // committed height can't put ord above it.
+        if journal.gate_limit()?.is_none_or(|limit| limit < chunk_end) {
+            journal.set_gate_limit(chunk_end)?;
+        }
+        proxy.set_chunk_end(chunk_end);
+        Ok(true)
     }
 
     fn is_stopped(&self) -> bool {
@@ -289,7 +323,7 @@ impl Driver {
             };
 
             let chunk_end = tip.min(next.saturating_add(self.chunk - 1));
-            if !self.stop.open(&self.proxy, chunk_end) {
+            if !self.stop.open(&self.journal, &self.proxy, chunk_end)? {
                 return Ok(());
             }
             if let Err(err) = self.index.update() {
@@ -301,11 +335,21 @@ impl Driver {
                 backoff = (backoff * 2).min(MAX_BACKOFF);
                 continue;
             }
-            backoff = MIN_BACKOFF;
-
             self.runtime.block_on(self.stager.drain_now())?;
-            reorg_check(&self.journal, &self.index)?;
-            self.finalize_committed()?;
+            if let Err(err) =
+                reorg_check(&self.journal, &self.index).and_then(|_| self.finalize_committed())
+            {
+                if err.chain().any(|cause| cause.is::<EmissionOrderError>()) {
+                    return Err(err);
+                }
+                log::warn!("finalize failed, retrying in {backoff:?}: {err:#}");
+                if self.stop.sleep(backoff) {
+                    return Ok(());
+                }
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                continue;
+            }
+            backoff = MIN_BACKOFF;
 
             if self.stop.is_stopped() {
                 return Ok(());

@@ -213,8 +213,9 @@ fn unbound_inscription_is_untracked() {
 
     assert_eq!(run.records(height), Vec::new());
     assert_eq!(run.reader.inscription_info(&id.to_string()).unwrap(), None);
-    // A lone unbound creation's fee flag needs the reveal's input values.
-    assert_eq!(shim.prevout_blocks(), 1);
+    // No tracked event follows the lone unbound creation, so its undecided
+    // fee flag can't move an idx and its input values aren't fetched.
+    assert_eq!(shim.prevout_blocks(), 0);
 }
 
 /// A JSON envelope with an unrecognized even field, which leaves the
@@ -367,4 +368,136 @@ fn reorg_replaces_records() {
             .unwrap()
             .is_some()
     );
+}
+
+fn script(byte: u8) -> ScriptBuf {
+    ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([byte; 20]))
+}
+
+/// `(inscription id, idx, txid)` of every record at `height`.
+fn summary(run: &Run, height: u32) -> Vec<(String, u32, String)> {
+    run.records(height)
+        .into_iter()
+        .map(|r| (r.inscription_id, r.idx, r.txid))
+        .collect()
+}
+
+#[test]
+fn only_first_transfer_is_recorded() {
+    let harness = Harness::new();
+    let a = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    let created_at = harness.height();
+    let first = harness.transfer_to(reveal_outpoint(a), &script(7));
+    harness.mine(1);
+    let first_at = harness.height();
+    let second = harness.transfer_to(OutPoint::new(first, 0), &script(7));
+    harness.mine(1);
+    let third = harness.transfer_to(OutPoint::new(second, 0), &script(7));
+    harness.mine(1);
+
+    let run = Run::new(&harness);
+
+    assert_eq!(run.records(created_at).len(), 1);
+    assert_eq!(
+        summary(&run, first_at),
+        vec![(a.to_string(), 1, first.to_string())]
+    );
+    for height in first_at + 1..=harness.height() {
+        assert_eq!(run.records(height), Vec::new(), "height {height}");
+    }
+    assert_ne!(second, third);
+}
+
+#[test]
+fn later_transfer_takes_no_idx() {
+    let harness = Harness::new();
+    let a = harness.inscribe(JSON, "text/plain");
+    let b = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    let first = harness.transfer_to(reveal_outpoint(a), &script(7));
+    harness.mine(1);
+    harness.transfer_to(OutPoint::new(first, 0), &script(7));
+    let move_b = harness.transfer_to(reveal_outpoint(b), &script(7));
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    assert_eq!(
+        summary(&run, height),
+        vec![(b.to_string(), 1, move_b.to_string())]
+    );
+}
+
+#[test]
+fn same_block_create_then_transfer() {
+    let harness = Harness::new();
+    harness.mine(1);
+    let a = harness.reveal(1, envelope(b"text/plain", JSON));
+    let moved = harness.spend_in_mempool(reveal_outpoint(a));
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    let records = run.records(height);
+    assert_eq!(
+        summary(&run, height),
+        vec![
+            (a.to_string(), 1, a.txid.to_string()),
+            (a.to_string(), 2, moved.to_string()),
+        ]
+    );
+    assert_eq!(records[0].old_satpoint, None);
+    assert_eq!(records[1].old_satpoint, Some(format!("{}:0:0", a.txid)));
+}
+
+#[test]
+fn untracked_fee_spend_before_tracked_move_reserves_idx() {
+    let harness = Harness::new();
+    let image = harness.inscribe(PNG, "image/png");
+    let b = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    harness.spend_to_fee(reveal_outpoint(image));
+    let move_b = harness.transfer(reveal_outpoint(b), 0);
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+
+    assert_eq!(
+        summary(&run, height),
+        vec![(b.to_string(), 2, move_b.to_string())]
+    );
+}
+
+#[test]
+fn reorged_first_transfer_is_recorded_again() {
+    let harness = Harness::new();
+    let a = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    let first = harness.transfer_to(reveal_outpoint(a), &script(7));
+    harness.mine(1);
+    let height = harness.height();
+
+    let run = Run::new(&harness);
+    assert_eq!(
+        summary(&run, height),
+        vec![(a.to_string(), 1, first.to_string())]
+    );
+
+    harness.invalidate_tip();
+    harness.restore_utxo(reveal_outpoint(a));
+    let replacement = harness.transfer_to(reveal_outpoint(a), &script(8));
+    harness.mine(2);
+    assert_ne!(first, replacement);
+
+    wait_for_tip(&run.reader, height + 1);
+
+    assert_eq!(
+        summary(&run, height),
+        vec![(a.to_string(), 1, replacement.to_string())]
+    );
+    assert_eq!(run.records(height)[0].new_pkscript, script(8).to_bytes());
 }

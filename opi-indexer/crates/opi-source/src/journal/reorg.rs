@@ -10,8 +10,9 @@ use {
 };
 
 /// Compares the finalized header hashes from `final_tip` down with ord's
-/// block hashes. On a mismatch it deletes every transfer record, header and
-/// info row of an inscription created above the highest agreeing height, sets
+/// block hashes. On a mismatch it deletes every transfer record and header
+/// above the highest agreeing height, the info rows of inscriptions created
+/// and the first-transfer entries of transfers recorded above it, sets
 /// `final_tip` to that height and returns it. Returns `None` when the tip
 /// agrees or nothing is finalized, and fails when no finalized height agrees.
 pub fn reorg_check(journal: &Journal, index: &Index) -> Result<Option<u32>> {
@@ -39,13 +40,24 @@ pub fn reorg_check(journal: &Journal, index: &Index) -> Result<Option<u32>> {
         let mut transfers = tx.open_table(table(cf::TRANSFERS))?;
         let mut infos = tx.open_table(table(cf::INFO))?;
         let mut headers = tx.open_table(table(cf::HEADERS))?;
+        let mut first_transfers = tx.open_table(table(cf::FIRST_TRANSFER))?;
 
+        // Every first-transfer entry above `agreed` belongs to a transfer
+        // record above it, so the records name every entry to delete.
         let first = transfer_key(agreed + 1, 0);
         for row in transfers.range::<&[u8]>(first.as_slice()..)? {
             let (key, value) = row?;
             let record = decode_transfer(key.value(), value.value())?;
+            let id = info_key(&record.inscription_id)?;
             if record.old_satpoint.is_none() {
-                infos.remove(info_key(&record.inscription_id)?.as_slice())?;
+                infos.remove(id.as_slice())?;
+            } else {
+                let above = first_transfers
+                    .get(id.as_slice())?
+                    .is_some_and(|height| height.value() > agreed.to_be_bytes().as_slice());
+                if above {
+                    first_transfers.remove(id.as_slice())?;
+                }
             }
         }
         transfers.retain_in::<&[u8], _>(first.as_slice().., |_, _| false)?;

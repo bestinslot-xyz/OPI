@@ -11,6 +11,7 @@ use {
     bitcoin::{
         Address, Block, BlockHash, Network, OutPoint, ScriptBuf, Transaction, Txid, Witness,
         consensus::encode::deserialize_hex,
+        hashes::Hash as _,
         opcodes,
         script::{self, PushBytesBuf},
     },
@@ -109,6 +110,47 @@ impl Harness {
             outputs: 0,
             ..Default::default()
         })
+    }
+
+    /// Adds to the mempool a transaction spending `outpoint`, confirmed or in
+    /// the mempool, to one output of its whole value. mockcore's templates
+    /// only spend confirmed outputs.
+    pub fn spend_in_mempool(&self, outpoint: OutPoint) -> Txid {
+        let mut state = self.core.state();
+        let value = state
+            .mempool
+            .iter()
+            .chain(state.transactions.values())
+            .find(|tx| tx.compute_txid() == outpoint.txid)
+            .map(|tx| tx.output[outpoint.vout as usize].value)
+            .unwrap();
+        let tx = Transaction {
+            version: bitcoin::transaction::Version(2),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: outpoint,
+                script_sig: ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![bitcoin::TxOut {
+                value,
+                script_pubkey: ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array(
+                    [9; 20],
+                )),
+            }],
+        };
+        let txid = tx.compute_txid();
+        state.mempool.push(tx);
+        txid
+    }
+
+    /// Marks `outpoint` unspent again. mockcore's `invalidate_tip` leaves the
+    /// outputs the dropped block spent marked spent.
+    pub fn restore_utxo(&self, outpoint: OutPoint) {
+        let mut state = self.core.state();
+        let value = state.transactions[&outpoint.txid].output[outpoint.vout as usize].value;
+        state.utxos.insert(outpoint, value);
     }
 
     /// Mines `n` blocks, confirming everything in the mempool in the first.
@@ -221,6 +263,9 @@ pub struct Faults {
     /// Passes the first `.0` `getblockchaininfo` calls, then answers HTTP 500
     /// to the next `.1`.
     pub fail_blockchaininfo: Option<(usize, usize)>,
+    /// Answers HTTP 500 to this many `getblock <hash> 3` calls, which only
+    /// finalize makes.
+    pub fail_prevout_blocks: usize,
     /// Delays every `getblock` reply.
     pub getblock_delay: Duration,
 }
@@ -235,12 +280,14 @@ pub struct Shim {
 }
 
 impl Shim {
-    /// Failures still to inject: `getblock`, then `getblockchaininfo`.
-    pub fn pending_failures(&self) -> (usize, usize) {
+    /// Failures still to inject: `getblock`, `getblockchaininfo`, then
+    /// `getblock <hash> 3`.
+    pub fn pending_failures(&self) -> (usize, usize, usize) {
         let faults = self.state.faults.lock().unwrap();
         (
             faults.fail_getblock.map_or(0, |(_, n)| n),
             faults.fail_blockchaininfo.map_or(0, |(_, n)| n),
+            faults.fail_prevout_blocks,
         )
     }
 
@@ -341,9 +388,32 @@ impl Drop for Shim {
     }
 }
 
+fn injected_fault(request: &Value) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "application/json")],
+        json!({
+            "result": null,
+            "error": {"code": -1, "message": "injected fault"},
+            "id": request["id"],
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
 async fn shim_handle(State(state): State<Arc<ShimState>>, body: Bytes) -> Response {
     let request = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
     if request["method"] == "getblock" && request["params"][1] == 3 {
+        let fail = {
+            let mut faults = state.faults.lock().unwrap();
+            let fail = faults.fail_prevout_blocks > 0;
+            faults.fail_prevout_blocks = faults.fail_prevout_blocks.saturating_sub(1);
+            fail
+        };
+        if fail {
+            return injected_fault(&request);
+        }
         *state.prevout_blocks.lock().unwrap() += 1;
         let block = state.block_with_prevouts(&request["params"][0]).await;
         return (
@@ -385,17 +455,7 @@ async fn shim_handle(State(state): State<Arc<ShimState>>, body: Bytes) -> Respon
         }
     };
     if fail {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(header::CONTENT_TYPE, "application/json")],
-            json!({
-                "result": null,
-                "error": {"code": -1, "message": "injected fault"},
-                "id": request["id"],
-            })
-            .to_string(),
-        )
-            .into_response();
+        return injected_fault(&request);
     }
     tokio::time::sleep(delay).await;
     let response = state
