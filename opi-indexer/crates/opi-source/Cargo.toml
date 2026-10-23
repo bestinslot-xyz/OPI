@@ -1,0 +1,15 @@
+[package]
+name = "opi-source"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = "4"
+ord = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
+
+[dev-dependencies]
+bitcoin = "0.32.5"
+mockcore = { git = "https://github.com/ordinals/ord", tag = "0.23.2" }
+tempfile = "3"
+tokio = { version = "1", features = ["sync"] }
