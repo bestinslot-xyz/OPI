@@ -9,7 +9,9 @@ use {
         response::{IntoResponse, Response},
     },
     bitcoin::{
-        Address, Block, BlockHash, Network, OutPoint, ScriptBuf, Txid, Witness, opcodes,
+        Address, Block, BlockHash, Network, OutPoint, ScriptBuf, Transaction, Txid, Witness,
+        consensus::encode::deserialize_hex,
+        opcodes,
         script::{self, PushBytesBuf},
     },
     mockcore::TransactionTemplate,
@@ -60,6 +62,17 @@ impl Harness {
     pub fn reveal(&self, funding_height: usize, witness: Witness) -> InscriptionId {
         let txid = self.core.broadcast_tx(TransactionTemplate {
             inputs: &[(funding_height, 0, 0, witness)],
+            ..Default::default()
+        });
+        InscriptionId { txid, index: 0 }
+    }
+
+    /// Like [`Harness::reveal`], with no outputs, so the whole value and the
+    /// inscription go to fees.
+    pub fn reveal_to_fee(&self, funding_height: usize, witness: Witness) -> InscriptionId {
+        let txid = self.core.broadcast_tx(TransactionTemplate {
+            inputs: &[(funding_height, 0, 0, witness)],
+            outputs: 0,
             ..Default::default()
         });
         InscriptionId { txid, index: 0 }
@@ -212,7 +225,9 @@ pub struct Faults {
     pub getblock_delay: Duration,
 }
 
-/// A fault-injecting JSON-RPC forwarder in front of a bitcoind.
+/// A fault-injecting JSON-RPC forwarder in front of a bitcoind. It also
+/// answers `getblock <hash> 3`, which mockcore lacks, with each input's
+/// prevout value.
 pub struct Shim {
     pub url: String,
     state: Arc<ShimState>,
@@ -228,12 +243,63 @@ impl Shim {
             faults.fail_blockchaininfo.map_or(0, |(_, n)| n),
         )
     }
+
+    /// Number of `getblock` verbosity 3 calls answered.
+    pub fn prevout_blocks(&self) -> usize {
+        *self.state.prevout_blocks.lock().unwrap()
+    }
 }
 
 struct ShimState {
     upstream: String,
     client: reqwest::Client,
     faults: Mutex<Faults>,
+    prevout_blocks: Mutex<usize>,
+}
+
+impl ShimState {
+    async fn upstream(&self, method: &str, params: Value) -> Value {
+        let reply = self
+            .client
+            .post(&self.upstream)
+            .basic_auth("user", Some("pass"))
+            .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert!(reply["error"].is_null(), "{method}: {reply}");
+        reply["result"].clone()
+    }
+
+    /// `getblock <hash> 3`: transactions with each input's prevout value.
+    async fn block_with_prevouts(&self, hash: &Value) -> Value {
+        let raw = self.upstream("getblock", json!([hash, 0])).await;
+        let block: Block = deserialize_hex(raw.as_str().unwrap()).unwrap();
+        let mut txs = Vec::new();
+        for tx in &block.txdata {
+            let mut vin = Vec::new();
+            for input in &tx.input {
+                if input.previous_output.is_null() {
+                    vin.push(json!({"coinbase": "00"}));
+                    continue;
+                }
+                let raw = self
+                    .upstream(
+                        "getrawtransaction",
+                        json!([input.previous_output.txid.to_string(), false]),
+                    )
+                    .await;
+                let prev: Transaction = deserialize_hex(raw.as_str().unwrap()).unwrap();
+                let value = prev.output[input.previous_output.vout as usize].value;
+                vin.push(json!({"prevout": {"value": value.to_btc()}}));
+            }
+            txs.push(json!({"txid": tx.compute_txid().to_string(), "vin": vin}));
+        }
+        json!({"hash": hash, "tx": txs})
+    }
 }
 
 impl Shim {
@@ -247,6 +313,7 @@ impl Shim {
             upstream,
             client: reqwest::Client::builder().no_proxy().build().unwrap(),
             faults: Mutex::new(faults),
+            prevout_blocks: Mutex::default(),
         });
         let listener = runtime
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
@@ -276,6 +343,15 @@ impl Drop for Shim {
 
 async fn shim_handle(State(state): State<Arc<ShimState>>, body: Bytes) -> Response {
     let request = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    if request["method"] == "getblock" && request["params"][1] == 3 {
+        *state.prevout_blocks.lock().unwrap() += 1;
+        let block = state.block_with_prevouts(&request["params"][0]).await;
+        return (
+            [(header::CONTENT_TYPE, "application/json")],
+            json!({"result": block, "error": null, "id": request["id"]}).to_string(),
+        )
+            .into_response();
+    }
     let (fail, delay) = {
         let mut faults = state.faults.lock().unwrap();
         match request["method"].as_str() {

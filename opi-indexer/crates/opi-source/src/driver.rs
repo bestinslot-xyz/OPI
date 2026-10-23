@@ -3,7 +3,7 @@
 
 use {
     crate::{
-        journal::{Journal, JournalReader, finalize_height, needs_transactions, reorg_check},
+        journal::{ChainData, FINALIZE_BATCH, Journal, JournalReader, finalize_range, reorg_check},
         ord_settings,
         proxy::{GateProxy, ProxyConfig, UpstreamAuth},
         rpc::BitcoinRpc,
@@ -322,29 +322,27 @@ impl Driver {
         let Some(committed) = self.index.block_count()?.checked_sub(1) else {
             return Ok(());
         };
-        let mut height = self.journal.final_tip()?.map_or(0, |tip| tip + 1);
-        while height <= committed {
-            let hash = self
-                .index
-                .block_hash(Some(height))?
-                .with_context(|| format!("ord has no hash for committed height {height}"))?;
-            let block = self.block(height, hash)?;
-            finalize_height(&self.journal, &self.index, &block, height, hash)?;
-            height += 1;
+        let mut first = self.journal.final_tip()?.map_or(0, |tip| tip + 1);
+        while first <= committed {
+            let last = committed.min(first + (FINALIZE_BATCH - 1));
+            finalize_range(&self.journal, &self.index, first..=last, &mut &*self)?;
+            first = last + 1;
         }
         if let Some(tip) = self.journal.final_tip()? {
             self.proxy.forget_below(tip.saturating_sub(HASH_RETENTION));
         }
         Ok(())
     }
+}
 
-    /// The block finalize needs: from the proxy cache, else from bitcoind,
-    /// with only its header when the height has no inscription events.
-    fn block(&self, height: u32, hash: BlockHash) -> Result<Block> {
+/// Blocks come from the proxy cache, else from bitcoind directly, as a header
+/// alone when finalize needs no transactions.
+impl ChainData for &Driver {
+    fn block(&mut self, hash: BlockHash, transactions: bool) -> Result<Block> {
         if let Some(block) = self.proxy.cached_block(&hash) {
             return Ok(block);
         }
-        if needs_transactions(&self.journal, height, hash)? {
+        if transactions {
             return self.runtime.block_on(self.rpc.block(hash));
         }
         let header = self.runtime.block_on(self.rpc.header(hash))?;
@@ -352,5 +350,9 @@ impl Driver {
             header,
             txdata: Vec::new(),
         })
+    }
+
+    fn input_values(&mut self, hash: BlockHash) -> Result<Vec<Vec<u64>>> {
+        self.runtime.block_on(self.rpc.input_values(hash))
     }
 }

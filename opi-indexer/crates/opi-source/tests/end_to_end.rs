@@ -3,9 +3,12 @@ mod support;
 use {
     bitcoin::{OutPoint, ScriptBuf, WPubkeyHash, hashes::Hash},
     opi_core::{BlockSource, InscriptionRecord},
-    opi_source::{driver::SourceHandle, journal::JournalReader},
+    opi_source::{
+        driver::{SourceHandle, spawn_source},
+        journal::JournalReader,
+    },
     ord::InscriptionId,
-    support::{Harness, envelope, envelope_with, start, wait_for_tip},
+    support::{Faults, Harness, Shim, envelope, envelope_with, source_config, wait_for_tip},
 };
 
 const JSON: &[u8] = br#"{"p":"brc-20","op":"deploy","tick":"ordi","max":"21000000"}"#;
@@ -21,8 +24,13 @@ struct Run {
 
 impl Run {
     fn new(harness: &Harness) -> Run {
+        Run::with_url(harness, harness.core.url())
+    }
+
+    /// Like [`Run::new`], reading bitcoind at `url`.
+    fn with_url(harness: &Harness, url: String) -> Run {
         let tmp = tempfile::tempdir().unwrap();
-        let source = start(harness, tmp.path());
+        let source = spawn_source(source_config(tmp.path(), url, 2)).unwrap();
         let run = Run {
             reader: source.reader(),
             _tmp: tmp,
@@ -196,15 +204,62 @@ fn image_inscription_is_untracked() {
 #[test]
 fn unbound_inscription_is_untracked() {
     let harness = Harness::new();
-    // An unrecognized even field leaves the inscription unbound.
-    let id = harness.inscribe_witness(envelope_with(&[(&[1], b"text/plain"), (&[22], b"x")], JSON));
+    let id = harness.inscribe_witness(unbound_envelope());
     harness.mine(1);
     let height = harness.height();
+    let shim = Shim::start(harness.core.url(), Faults::default());
 
-    let run = Run::new(&harness);
+    let run = Run::with_url(&harness, shim.url.clone());
 
     assert_eq!(run.records(height), Vec::new());
     assert_eq!(run.reader.inscription_info(&id.to_string()).unwrap(), None);
+    // A lone unbound creation's fee flag needs the reveal's input values.
+    assert_eq!(shim.prevout_blocks(), 1);
+}
+
+/// A JSON envelope with an unrecognized even field, which leaves the
+/// inscription unbound.
+fn unbound_envelope() -> bitcoin::Witness {
+    envelope_with(&[(&[1], b"text/plain"), (&[22], b"x")], JSON)
+}
+
+/// A block whose tx 1 reveals an unbound inscription, to fees when
+/// `unbound_to_fee`, and whose tx 2 sends tracked inscription A to fees.
+/// Event order alone can't tell whether the unbound one reserved an idx.
+/// Returns A's idx.
+fn idx_after_unbound_creation(unbound_to_fee: bool) -> u32 {
+    let harness = Harness::new();
+    harness.mine(2);
+    let a = harness.reveal(1, envelope(b"text/plain", JSON));
+    harness.mine(1);
+    if unbound_to_fee {
+        harness.reveal_to_fee(2, unbound_envelope());
+    } else {
+        harness.reveal(2, unbound_envelope());
+    }
+    harness.spend_to_fee(reveal_outpoint(a));
+    harness.mine(1);
+    let height = harness.height();
+    let shim = Shim::start(harness.core.url(), Faults::default());
+
+    let run = Run::with_url(&harness, shim.url.clone());
+
+    assert_eq!(shim.prevout_blocks(), 1);
+    let records = run.records(height);
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].inscription_id, a.to_string());
+    assert!(records[0].sent_as_fee);
+    records[0].idx
+}
+
+#[test]
+fn unbound_fee_bound_creation_reserves_idx() {
+    assert_eq!(idx_after_unbound_creation(true), 2);
+}
+
+#[test]
+fn unbound_creation_kept_in_tx_reserves_no_idx() {
+    assert_eq!(idx_after_unbound_creation(false), 1);
 }
 
 /// An envelope with its content type tag twice: `Curse::DuplicateField`.

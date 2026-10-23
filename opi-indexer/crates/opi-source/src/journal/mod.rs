@@ -4,8 +4,12 @@ mod reader;
 mod reorg;
 mod schema;
 
-pub(crate) use finalize::needs_transactions;
-pub use {finalize::finalize_height, reader::JournalReader, reorg::reorg_check, schema::*};
+pub use {
+    finalize::{ChainData, FINALIZE_BATCH, finalize_range},
+    reader::JournalReader,
+    reorg::reorg_check,
+    schema::*,
+};
 
 use {
     anyhow::{Context, Result, anyhow, bail},

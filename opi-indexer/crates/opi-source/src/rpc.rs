@@ -4,7 +4,7 @@
 use {
     crate::proxy::{UpstreamAuth, credentials},
     anyhow::{Context, Result, anyhow},
-    bitcoin::{Block, BlockHash, block::Header, consensus::encode::deserialize_hex},
+    bitcoin::{Amount, Block, BlockHash, block::Header, consensus::encode::deserialize_hex},
     serde_json::{Value, json},
 };
 
@@ -64,6 +64,35 @@ impl BitcoinRpc {
             .hex("getblockheader", json!([hash.to_string(), false]))
             .await?;
         Ok(deserialize_hex(&hex)?)
+    }
+
+    /// The value of every input of every transaction of block `hash`, from
+    /// `getblock` verbosity 3 prevouts. The coinbase has none.
+    pub(crate) async fn input_values(&self, hash: BlockHash) -> Result<Vec<Vec<u64>>> {
+        let block = self.call("getblock", json!([hash.to_string(), 3])).await?;
+        let txs = block["tx"]
+            .as_array()
+            .with_context(|| format!("getblock {hash} 3 returned no transactions"))?;
+        txs.iter()
+            .map(|tx| {
+                let inputs = tx["vin"]
+                    .as_array()
+                    .with_context(|| format!("getblock {hash} 3 returned a tx without vin"))?;
+                inputs
+                    .iter()
+                    .filter(|input| input.get("coinbase").is_none())
+                    .map(|input| {
+                        let btc = input["prevout"]["value"].as_f64().with_context(|| {
+                            format!(
+                                "getblock {hash} 3 returned an input without prevout; \
+                                 bitcoind needs the block's undo data"
+                            )
+                        })?;
+                        Ok(Amount::from_btc(btc)?.to_sat())
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     async fn hex(&self, method: &str, params: Value) -> Result<String> {
