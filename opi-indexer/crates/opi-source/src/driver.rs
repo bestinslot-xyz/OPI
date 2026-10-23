@@ -72,6 +72,14 @@ impl SourceHandle {
         JournalReader::new(self.journal.clone())
     }
 
+    /// Whether the driver thread has exited, by shutdown or by an error that
+    /// [`SourceHandle::join`] reports.
+    pub fn is_finished(&self) -> bool {
+        self.driver
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+    }
+
     /// Closes the gate. ord indexes the blocks it already fetched and commits,
     /// the driver finalizes them and exits.
     pub fn shutdown(&self) {
