@@ -5,7 +5,7 @@ pub use schema::*;
 use {
     anyhow::{Context, Result, anyhow, bail},
     ord::Chain,
-    redb::{Database, Durability, ReadableTable, TableDefinition},
+    redb::{Database, Durability, ReadableTable, TableDefinition, WriteTransaction},
     std::{path::Path, sync::Arc},
 };
 
@@ -34,7 +34,9 @@ const META_SCHEMA: &[u8] = b"schema";
 const SCHEMA_VERSION: u32 = 1;
 const ZSTD_LEVEL: i32 = 3;
 
-/// redb-backed journal of finalized ord events.
+/// redb-backed journal of ord's raw event log and finalized records. Clones
+/// share the database.
+#[derive(Clone)]
 pub struct Journal {
     db: Arc<Database>,
 }
@@ -55,8 +57,8 @@ impl Journal {
             .with_context(|| format!("opening journal at {}", path.display()))?;
         let chain = chain.to_string();
 
-        let mut tx = db.begin_write()?;
-        tx.set_durability(Durability::Immediate);
+        let journal = Journal { db: Arc::new(db) };
+        let tx = journal.begin_write()?;
         {
             for name in ALL_TABLES {
                 tx.open_table(table(name))?;
@@ -85,7 +87,16 @@ impl Journal {
         }
         tx.commit()?;
 
-        Ok(Journal { db: Arc::new(db) })
+        Ok(journal)
+    }
+
+    /// Begins a write transaction that commits with `Durability::Immediate`
+    /// and quick repair, so a reopen after a crash skips the full-file walk.
+    pub fn begin_write(&self) -> Result<WriteTransaction> {
+        let mut tx = self.db.begin_write()?;
+        tx.set_durability(Durability::Immediate);
+        tx.set_quick_repair(true);
+        Ok(tx)
     }
 
     /// Highest finalized height, if any block has been finalized.

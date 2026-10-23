@@ -46,6 +46,11 @@ pub fn transfer_key(height: u32, idx: u32) -> [u8; TRANSFER_KEY_LEN] {
     key
 }
 
+/// Raw event key: height (`u32` BE) ++ sequence within the height (`u32` BE).
+pub fn raw_event_key(height: u32, seq: u32) -> [u8; 8] {
+    transfer_key(height, seq)
+}
+
 fn txid_bytes(txid: &str) -> Result<[u8; TXID_LEN]> {
     let mut bytes: [u8; TXID_LEN] = hex::decode(txid)
         .with_context(|| format!("invalid txid {txid}"))?
