@@ -15,7 +15,7 @@ use once_cell::sync::OnceCell;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
+use sqlx::{AssertSqlSafe, Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -242,9 +242,11 @@ impl Brc20Database {
                 .fetch_one(&self.client)
                 .await
         {
-            sqlx::raw_sql(&SqlFiles::get_sql_file("db_init.sql").unwrap())
-                .execute(&self.client)
-                .await?;
+            sqlx::raw_sql(AssertSqlSafe(
+                SqlFiles::get_sql_file("db_init.sql").unwrap(),
+            ))
+            .execute(&self.client)
+            .await?;
         };
 
         self.fetch_current_event_id().await?;
@@ -301,7 +303,7 @@ impl Brc20Database {
         let mut tx = self.client.begin().await?;
 
         // Fix the order of refund events at block height 932888
-        sqlx::raw_sql(format!("
+        sqlx::raw_sql(AssertSqlSafe(format!("
             WITH filtered AS (
                 SELECT
                     id,
@@ -328,17 +330,14 @@ impl Brc20Database {
             SET id = -m.new_id
             FROM mapping m
             WHERE t.id = m.old_id;
-        ", self.events_table, self.events_table).as_str()).execute(&mut *tx).await?;
+        ", self.events_table, self.events_table))).execute(&mut *tx).await?;
 
-        sqlx::raw_sql(
-            format!(
-                "UPDATE {}
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "UPDATE {}
                 SET id = -id
                 WHERE id < 0;",
-                self.events_table
-            )
-            .as_str(),
-        )
+            self.events_table
+        )))
         .execute(&mut *tx)
         .await?;
 
@@ -734,7 +733,7 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        sqlx::query(&format!(
+        sqlx::query(AssertSqlSafe(format!(
             "insert into brc20_unused_txes
                     (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
                  select t.inscription_id,
@@ -752,7 +751,7 @@ impl Brc20Database {
                          and t2.inscription_id = t.inscription_id
                    );",
             events = self.events_table
-        ))
+        )))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
         .execute(&mut *tx)
@@ -864,12 +863,12 @@ impl Brc20Database {
             .await?;
         }
 
-        let events = sqlx::query(&format!(
-            "select event, id, event_type, inscription_id 
-                 from {} where block_height = $1 and (event_type = $2 or event_type = $3) 
+        let events = sqlx::query(AssertSqlSafe(format!(
+            "select event, id, event_type, inscription_id
+                 from {} where block_height = $1 and (event_type = $2 or event_type = $3)
                  order by id asc;",
             self.events_table
-        ))
+        )))
         .bind(block_height)
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
@@ -918,10 +917,10 @@ impl Brc20Database {
 
     pub async fn check_residue(&self, block_height: i32) -> Result<bool, Box<dyn Error>> {
         for table_name in ALL_TABLES_WITH_BLOCK_HEIGHT.iter() {
-            let row = sqlx::query(&format!(
+            let row = sqlx::query(AssertSqlSafe(format!(
                 "SELECT COALESCE(MAX(block_height), -1) AS max_block_height FROM {}",
                 table_name
-            ))
+            )))
             .fetch_one(&self.client)
             .await;
 
@@ -957,10 +956,10 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        let res = sqlx::query(&format!(
+        let res = sqlx::query(AssertSqlSafe(format!(
             "SELECT event FROM {} WHERE event_type = $1 AND block_height > $2",
             self.events_table
-        ))
+        )))
         .bind(MintInscribeEvent::event_id())
         .bind(block_height)
         .fetch_all(&mut *tx)
@@ -1108,7 +1107,7 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        sqlx::query(&format!(
+        sqlx::query(AssertSqlSafe(format!(
             "insert into brc20_unused_txes
                     (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
                  select t.inscription_id,
@@ -1126,7 +1125,7 @@ impl Brc20Database {
                          and t2.inscription_id = t.inscription_id
                    );",
             events = self.events_table
-        ))
+        )))
         .bind(crate::types::events::TransferInscribeEvent::event_id())
         .bind(crate::types::events::TransferTransferEvent::event_id())
         .execute(&mut *tx)
@@ -1888,9 +1887,11 @@ impl Brc20Database {
     }
 
     pub async fn reset(&mut self) -> Result<(), Box<dyn Error>> {
-        sqlx::raw_sql(&SqlFiles::get_sql_file("db_reset.sql").unwrap())
-            .execute(&self.client)
-            .await?;
+        sqlx::raw_sql(AssertSqlSafe(
+            SqlFiles::get_sql_file("db_reset.sql").unwrap(),
+        ))
+        .execute(&self.client)
+        .await?;
 
         Ok(())
     }

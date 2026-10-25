@@ -25,7 +25,7 @@ serde = "1.0.229"
 serde_json = { version = "1.0.154", features = ["arbitrary_precision"] }
 serde_with = "3.24.0"
 sha256 = "1.6.0"
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "bigdecimal", "time", "tls-rustls"] }
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "bigdecimal", "time", "tls-rustls"] }
 tokio = { version = "1.54.1", features = ["rt", "macros"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
