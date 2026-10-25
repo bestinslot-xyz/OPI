@@ -5,7 +5,7 @@ mod reorg;
 mod schema;
 
 pub use {
-    finalize::{ChainData, EmissionOrderError, FINALIZE_BATCH, finalize_range},
+    finalize::{ChainData, EmissionOrderError, FINALIZE_BATCH, finalize_range, is_json_body},
     reader::JournalReader,
     reorg::reorg_check,
     schema::*,

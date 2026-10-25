@@ -502,10 +502,31 @@ fn lands_in_fee(
 }
 
 fn is_json(payload: &Inscription) -> bool {
-    payload
-        .body
-        .as_deref()
-        .is_some_and(|body| serde_json::from_slice::<Value>(body).is_ok())
+    payload.body.as_deref().is_some_and(is_json_body)
+}
+
+/// Whether `body` is JSON as the fork's ord judges it: it parses, and every
+/// number in it is a finite `f64`. The explicit number check keeps the answer
+/// identical when cargo feature unification turns on serde_json's
+/// `arbitrary_precision`, under which out-of-range numbers parse.
+pub fn is_json_body(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    let mut stack = vec![&value];
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Number(number) => {
+                if !number.as_f64().is_some_and(f64::is_finite) {
+                    return false;
+                }
+            }
+            Value::Array(items) => stack.extend(items),
+            Value::Object(map) => stack.extend(map.values()),
+            Value::Null | Value::Bool(_) | Value::String(_) => {}
+        }
+    }
+    true
 }
 
 fn is_text(payload: &Inscription) -> bool {
@@ -639,5 +660,19 @@ mod tests {
     #[test]
     fn envelope_input_out_of_range_fails() {
         assert!(lands_in_fee(2, None, &[600, 0], 600).is_err());
+    }
+
+    #[test]
+    fn json_numbers_must_be_finite_f64() {
+        let huge_integer = format!("1{}", "0".repeat(400));
+        assert!(!is_json_body(br#"{"a":1e400}"#));
+        assert!(!is_json_body(br#"{"a":-1e400}"#));
+        assert!(!is_json_body(huge_integer.as_bytes()));
+        assert!(is_json_body(br#"{"a":1e-400}"#));
+        assert!(is_json_body(
+            br#"{"p":"brc-20","op":"transfer","tick":"ordi","amt":"1.5"}"#
+        ));
+        assert!(is_json_body(br#"[1, 2.5, {"n": -3}]"#));
+        assert!(!is_json_body(b"not json"));
     }
 }

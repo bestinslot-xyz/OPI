@@ -396,6 +396,35 @@ mod tests {
         }
     }
 
+    /// The encodings of [`samples`], one per variant plus a creation without a
+    /// location. These bytes are the on-disk format of the permanent raw
+    /// event log and must not change: a change makes stored events
+    /// undecodable or decodes them wrongly.
+    const PINNED: [&str; 7] = [
+        "0080ea3005206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000012a02206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d619000000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000207",
+        "0081ea3000206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d619000000000003000008",
+        "0182ea30206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d619000000000000206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d61900000000000100206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000012a07",
+        "02ffffffffffffffffffffffffffffffffffff0383ea30c0a23303206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+        "0384ea30c0a23303206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+        "04e80785ea30c0a23303206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+        "05fa0186ea30206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d619000000000002c0a23303206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+    ];
+
+    #[test]
+    fn raw_event_encoding_is_pinned() {
+        let encoded: Vec<String> = samples()
+            .iter()
+            .map(|event| hex::encode(event.encode()))
+            .collect();
+        assert_eq!(encoded, PINNED, "{encoded:#?}");
+        for (pinned, event) in PINNED.iter().zip(samples()) {
+            assert_eq!(
+                RawEvent::decode(&hex::decode(pinned).unwrap()).unwrap(),
+                event
+            );
+        }
+    }
+
     #[test]
     fn encoding_is_compact() {
         let event = RawEvent::InscriptionTransferred {
