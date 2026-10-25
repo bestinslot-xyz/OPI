@@ -14,7 +14,7 @@ use {
     opi_core::{BlockSource, InscriptionRecord},
     opi_source::journal::{Journal, JournalReader},
     serde::Serialize,
-    serde_json::Value,
+    serde_json::{Number, Value},
     std::{fmt, sync::Arc},
 };
 
@@ -99,7 +99,7 @@ pub fn compare_block(height: u32, journal: &Sides, remote: &Sides) -> Result<(),
         ),
     ];
     for (section, adjusted, journal, remote) in sections {
-        if &adjusted != remote {
+        if canonical_numbers(adjusted) != canonical_numbers(remote.clone()) {
             return Err(Box::new(Divergence {
                 height,
                 section,
@@ -111,8 +111,36 @@ pub fn compare_block(height: u32, journal: &Sides, remote: &Sides) -> Result<(),
     Ok(())
 }
 
+/// Returns `value` with every number in the form both sides share: integers
+/// that fit `i64` or `u64` as they are, any other number through `f64`. A
+/// number with no finite `f64` stays as it is. `db_reader` re-serializes
+/// numbers through `f64` (`1.50` becomes `1.5`) while the journal keeps the
+/// literal text.
+fn canonical_numbers(mut value: Value) -> Value {
+    canonicalize(&mut value);
+    value
+}
+
+fn canonicalize(value: &mut Value) {
+    match value {
+        Value::Number(number) => {
+            if number.as_i64().is_some() || number.as_u64().is_some() {
+                return;
+            }
+            if let Some(float) = number.as_f64().filter(|float| float.is_finite())
+                && let Some(canonical) = Number::from_f64(float)
+            {
+                *number = canonical;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(canonicalize),
+        Value::Object(map) => map.values_mut().for_each(canonicalize),
+        Value::Null | Value::Bool(_) | Value::String(_) => {}
+    }
+}
+
 /// Returns `journal` with `new_satpoint` taken from `remote` for every entry
-/// that was sent as fee and that `remote` places at the lost outpoint.
+/// that both sides report as sent as fee and placed at the lost outpoint.
 fn accept_lost_satpoints(journal: &Value, remote: &Value) -> Value {
     let (Value::Array(journal_txes), Value::Array(remote_txes)) = (journal, remote) else {
         return journal.clone();
@@ -124,7 +152,7 @@ fn accept_lost_satpoints(journal: &Value, remote: &Value) -> Value {
             let mut journal_tx = journal_tx.clone();
             if let Some(remote_tx) = remote_txes.get(index)
                 && is_lost(remote_tx)
-                && journal_tx.get("sent_as_fee") == Some(&Value::Bool(true))
+                && is_lost(&journal_tx)
                 && let Some(satpoint) = remote_tx.get("new_satpoint")
                 && let Some(object) = journal_tx.as_object_mut()
             {
@@ -350,18 +378,45 @@ mod tests {
     #[test]
     fn lost_satpoint_difference_is_allowed() {
         let lost = format!("{LOST_OUTPOINT}:7");
+        let journal_lost = format!("{LOST_OUTPOINT}:123");
         let remote = sides(json!([tx(&lost, true)]));
-        let journal = sides(json!([tx("ff:0:123", true)]));
+        let journal = sides(json!([tx(&journal_lost, true)]));
         assert!(compare_block(100, &journal, &remote).is_ok());
 
         // Not sent as fee: the same difference is reported.
         let remote = sides(json!([tx(&lost, false)]));
-        let journal = sides(json!([tx("ff:0:123", false)]));
+        let journal = sides(json!([tx(&journal_lost, false)]));
         assert!(compare_block(100, &journal, &remote).is_err());
 
-        // Sent as fee but not at the lost outpoint: reported.
+        // Sent as fee but the remote is not at the lost outpoint: reported.
         let remote = sides(json!([tx("ee:1:0", true)]));
+        let journal = sides(json!([tx(&journal_lost, true)]));
+        assert!(compare_block(100, &journal, &remote).is_err());
+
+        // The remote is lost but the journal is at a normal outpoint: reported.
+        let remote = sides(json!([tx(&lost, true)]));
         let journal = sides(json!([tx("ff:0:123", true)]));
+        assert!(compare_block(100, &journal, &remote).is_err());
+    }
+
+    #[test]
+    fn number_formatting_is_not_a_divergence() {
+        let parse = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        // The binary parses with `arbitrary_precision`, so the literal text
+        // survives on the journal side.
+        assert_eq!(parse(r#"{"amt":1.50}"#).to_string(), r#"{"amt":1.50}"#);
+
+        let journal = sides(parse(r#"[{"amt":1.50,"n":1E2,"i":7}]"#));
+        let remote = sides(parse(r#"[{"amt":1.5,"n":100.0,"i":7}]"#));
+        assert!(compare_block(100, &journal, &remote).is_ok());
+
+        let journal = sides(parse(r#"[{"amt":2}]"#));
+        let remote = sides(parse(r#"[{"amt":3}]"#));
+        assert!(compare_block(100, &journal, &remote).is_err());
+
+        // A number with no finite f64 keeps its text, so it still diverges.
+        let journal = sides(parse(r#"[{"amt":1e400}]"#));
+        let remote = sides(parse(r#"[{"amt":2e400}]"#));
         assert!(compare_block(100, &journal, &remote).is_err());
     }
 
