@@ -7,19 +7,23 @@ use {
     brc20_index::{
         client::JournalBrc20Source,
         config::Brc20IndexerConfig,
-        database::{Brc20Database, set_brc20_database},
+        database::{Brc20Database, get_brc20_database, set_brc20_database},
         indexer::Brc20Indexer,
     },
     clap::{Parser, Subcommand},
     config::Config,
     futures::FutureExt,
+    opi_core::BlockSource,
     opi_source::driver::{SourceHandle, spawn_source},
     std::{
         any::Any,
         future::Future,
         panic::AssertUnwindSafe,
         process::ExitCode,
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
         time::{Duration, Instant},
     },
     tokio::{signal::unix::SignalKind, sync::Mutex},
@@ -29,6 +33,7 @@ use {
 const MIN_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 const SOURCE_POLL: Duration = Duration::from_secs(1);
+const TIP_POLL: Duration = Duration::from_secs(2);
 
 #[derive(Parser)]
 #[command(
@@ -155,23 +160,50 @@ async fn source_finished(handle: &SourceHandle) {
     }
 }
 
-/// Runs brc20 against the journal, rebuilding the indexer after every error
-/// with exponential backoff. Returns only on a configuration error. When the
+/// Runs brc20 against the journal once the journal has a finalized block,
+/// rebuilding the indexer and its database after every error with
+/// exponential backoff. Returns only on a configuration error. When the
 /// indexer ends on its own (height limit) it idles until the supervisor stops.
 async fn run_brc20(handle: &SourceHandle, network: bitcoin::Network) -> Result<()> {
-    set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(
-        &Brc20IndexerConfig::default(),
-    ))));
+    wait_for_tip(&handle.reader(), TIP_POLL).await;
+    let installed = &AtomicBool::new(false);
     restart_loop(
         || async {
+            let config = Brc20IndexerConfig::default();
+            install_fresh_database(installed, &config).await;
             let source = JournalBrc20Source::new(Arc::new(handle.reader()), network);
-            let mut indexer = Brc20Indexer::new(Brc20IndexerConfig::default(), Box::new(source));
+            let mut indexer = Brc20Indexer::new(config, Box::new(source));
             indexer.run().await.map_err(|err| err.to_string())
         },
         MIN_BACKOFF,
         MAX_BACKOFF,
     )
     .await
+}
+
+/// Polls `source` every `poll` until it reports a tip.
+async fn wait_for_tip(source: &impl BlockSource, poll: Duration) {
+    loop {
+        match source.tip() {
+            Ok(Some(_)) => return,
+            Ok(None) => tracing::info!("waiting for the journal's first finalized block"),
+            Err(err) => tracing::warn!("reading the journal tip: {err:#}"),
+        }
+        tokio::time::sleep(poll).await;
+    }
+}
+
+/// Puts a freshly constructed database into brc20's global slot, so an
+/// attempt starts from what Postgres holds, with empty caches and no pending
+/// writes. `installed` records whether the slot is set; the slot is set once
+/// and its contents are replaced on every later call.
+async fn install_fresh_database(installed: &AtomicBool, config: &Brc20IndexerConfig) {
+    let database = Brc20Database::new(config);
+    if installed.swap(true, Ordering::SeqCst) {
+        *get_brc20_database().lock().await = database;
+    } else {
+        set_brc20_database(Arc::new(Mutex::new(database)));
+    }
 }
 
 /// Calls `attempt` until the supervisor drops this future. An error or a panic
@@ -219,10 +251,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        std::sync::atomic::{AtomicUsize, Ordering},
-    };
+    use {super::*, std::sync::atomic::AtomicUsize};
 
     #[tokio::test]
     async fn restart_loop_restarts_after_panic_and_error() {
@@ -248,5 +277,109 @@ mod tests {
             .is_err();
         assert!(timed_out);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// Runs the restart loop with attempts that install the database the way
+    /// `run_brc20` does, then leave it dirty the way a mid-block failure does.
+    /// The database's pool connects lazily, so no Postgres is needed.
+    #[tokio::test]
+    async fn each_attempt_starts_from_a_fresh_database() {
+        let installed = &AtomicBool::new(false);
+        let calls = &AtomicUsize::new(0);
+        let seen = &std::sync::Mutex::new(Vec::new());
+        let loop_future = restart_loop(
+            || async move {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                install_fresh_database(installed, &Brc20IndexerConfig::default()).await;
+                {
+                    let database = get_brc20_database();
+                    let mut database = database.lock().await;
+                    seen.lock().unwrap().push((
+                        database.block_event_strings.len(),
+                        database.event_inserts.len(),
+                        database.current_event_id,
+                    ));
+                    database
+                        .block_event_strings
+                        .insert(840_000, "partial".into());
+                    database.current_event_id = 42;
+                }
+                match call {
+                    0 => panic!("boom"),
+                    1 => Err("failed".to_string()),
+                    _ => Ok(()),
+                }
+            },
+            Duration::from_millis(1),
+            Duration::from_millis(4),
+        );
+        let timed_out = tokio::time::timeout(Duration::from_millis(500), loop_future)
+            .await
+            .is_err();
+        assert!(timed_out);
+        assert_eq!(*seen.lock().unwrap(), [(0, 0, 0); 3]);
+        let database = get_brc20_database();
+        let database = database.lock().await;
+        assert_eq!(database.block_event_strings.len(), 1);
+    }
+
+    struct TipAfter {
+        polls: AtomicUsize,
+        ready_at: usize,
+    }
+
+    impl BlockSource for TipAfter {
+        fn tip(&self) -> Result<Option<u32>> {
+            let poll = self.polls.fetch_add(1, Ordering::SeqCst);
+            match poll {
+                0 => Err(anyhow::anyhow!("journal busy")),
+                _ if poll < self.ready_at => Ok(None),
+                _ => Ok(Some(840_000)),
+            }
+        }
+
+        fn block_info(&self, _: u32) -> Result<Option<opi_core::BlockInfo>> {
+            unreachable!()
+        }
+
+        fn inscription_records(&self, _: u32) -> Result<Vec<opi_core::InscriptionRecord>> {
+            unreachable!()
+        }
+
+        fn inscription_info(&self, _: &str) -> Result<Option<opi_core::InscriptionInfo>> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_tip_returns_once_the_journal_has_a_tip() {
+        let source = TipAfter {
+            polls: AtomicUsize::new(0),
+            ready_at: 3,
+        };
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            wait_for_tip(&source, Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(source.polls.load(Ordering::SeqCst), 4);
+    }
+
+    /// This binary links brc20-index, which turns on serde_json's
+    /// `arbitrary_precision`; the first assertion pins that the test runs
+    /// under that feature set.
+    #[test]
+    fn is_json_matches_the_fork_under_arbitrary_precision() {
+        assert!(serde_json::from_str::<serde_json::Value>("1e400").is_ok());
+        let huge_integer = format!("1{}", "0".repeat(400));
+        let is_json = opi_source::journal::is_json_body;
+        assert!(!is_json(br#"{"a":1e400}"#));
+        assert!(!is_json(br#"{"a":-1e400}"#));
+        assert!(!is_json(huge_integer.as_bytes()));
+        assert!(is_json(br#"{"a":1e-400}"#));
+        assert!(is_json(
+            br#"{"p":"brc-20","op":"transfer","tick":"ordi","amt":"1.5"}"#
+        ));
     }
 }

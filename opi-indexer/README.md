@@ -44,14 +44,14 @@ target/release/opi-indexer run
 
 `run` is the default subcommand. SIGINT and SIGTERM close the source gate, stop
 brc20, join the source and exit 0. A source error is logged and exits non-zero.
-A brc20 error restarts brc20 after a backoff of 5 seconds, doubling to 5
-minutes; the source keeps running. Log verbosity follows `RUST_LOG`.
+brc20 starts once the journal has its first finalized block. A brc20 error
+restarts brc20, with a freshly built indexer and database state, after a
+backoff of 5 seconds, doubling to 5 minutes; the source keeps running. Log verbosity follows `RUST_LOG`.
 
 ## Validation runbook
 
-Status: none of the runs below has been performed yet. The `validate`
-subcommand is implemented and unit-tested; the signet and mainnet gates are
-still to do, and cutover must wait for them.
+Cut a deployment over to opi-indexer only after it passes the signet and
+mainnet gates below.
 
 ### `validate`
 
