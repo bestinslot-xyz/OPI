@@ -8,6 +8,11 @@ use super::Brc20Source;
 
 /// Serves BRC-20 block data from an in-process [`BlockSource`], producing the
 /// same `BRC20Tx` values the fork's `db_reader` returns over JSON-RPC.
+///
+/// Each read opens its own journal read transaction, so the reads that make
+/// up one block are not one snapshot. A reorg between two of them surfaces
+/// as a retryable error, and the supervisor's restart of the indexer heals
+/// it.
 pub struct JournalBrc20Source {
     source: Arc<dyn BlockSource>,
     network: Network,
