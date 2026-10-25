@@ -148,7 +148,25 @@ of each of `ord`, `ordinals`, `bitcoin` and `redb`.
 
 An ord index has a schema version: ord 0.29.1 (schema 34) refuses an index
 written by an older ord, and redb 3 refuses a file written in redb 2's format.
-A new ord release with a new schema needs a fresh ord data dir and journal.
+An ord data dir or journal written by ord 0.23.2 (schema 30) or by redb 2 does
+not open; delete both and index again. A new ord release with a new schema
+likewise needs a fresh ord data dir and journal.
+
+## Dependency notes
+
+Dependencies track their latest releases, except:
+
+- `brc20-prog` (in `modules/brc20_index`) stays within
+  `BRC20_PROG_VERSION_REQUIREMENT` (`~0.16.0`), which must match the brc20-prog
+  server the node runs.
+- `redb` stays at `=3.1.3`, ord's locked version (see above), although redb 4
+  is released.
+- `bitcoin` follows ord's lock (0.32.102) rather than a 0.33 pre-release.
+
+`reqwest` 0.13 uses rustls (aws-lc-rs with the platform certificate verifier)
+as its default TLS backend, in both workspaces; ord pulls the same reqwest with
+default features. brc20-index's `sqlx` also uses rustls (`tls-rustls`), so
+neither binary links native-tls.
 
 ## Upstream assumptions
 
@@ -197,9 +215,11 @@ the fork carries one.
 **A4: durable, non-test settings.** ord opens its index with
 `Durability::Immediate` outside its own unit tests, and `integration_test`
 defaults to false. `ord_settings` passes `--index-runes` and
-`--commit-interval 4294967295` and never sets `--integration-test`; `ORD_*`
+`--commit-interval 4294967295` and never sets `--integration-test`. `ORD_*`
 environment variables and an `ord.yaml` in the data dir are merged by
-`Settings::load` and can still set it.
+`Settings::load`, so `spawn_source` checks the merged settings
+(`check_ord_settings` in `opi-source/src/ord_settings.rs`) and refuses to start
+when `integration_test` is on or the commit interval differs.
 
 **Inscription rules.** The journal reproduces the fork's numbering and transfer
 rules, which are built on ord 0.23.2. Between 0.23.2 and 0.29.1 ord changes no
