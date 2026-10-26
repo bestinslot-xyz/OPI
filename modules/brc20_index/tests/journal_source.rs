@@ -34,6 +34,26 @@ impl BlockSource for StubSource {
     fn inscription_info(&self, inscription_id: &str) -> anyhow::Result<Option<InscriptionInfo>> {
         Ok(self.infos.get(inscription_id).cloned())
     }
+
+    fn block_view(&self, height: u32) -> anyhow::Result<Option<opi_core::BlockView>> {
+        let Some(block) = self.block_info(height)? else {
+            return Ok(None);
+        };
+        let records = self.inscription_records(height)?;
+        let mut infos = std::collections::BTreeMap::new();
+        for record in &records {
+            let info = self
+                .inscription_info(&record.inscription_id)?
+                .ok_or_else(|| anyhow::anyhow!("missing info {}", record.inscription_id))?;
+            infos.insert(record.inscription_id.clone(), info);
+        }
+        Ok(Some(opi_core::BlockView {
+            height,
+            hash: block.hash,
+            time: block.time,
+            inscriptions: opi_core::InscriptionFeed { records, infos },
+        }))
+    }
 }
 
 fn inscription_id(index: u32) -> String {

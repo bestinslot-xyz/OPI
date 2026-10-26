@@ -202,16 +202,7 @@ impl Journal {
     }
 
     fn meta_u32(&self, key: &[u8], name: &str) -> Result<Option<u32>> {
-        let tx = self.db.begin_read()?;
-        let meta = tx.open_table(table(cf::META))?;
-        let Some(raw) = meta.get(key)? else {
-            return Ok(None);
-        };
-        let raw = raw.value();
-        let bytes: [u8; 4] = raw
-            .try_into()
-            .map_err(|_| anyhow!("{name} is {} bytes, expected 4", raw.len()))?;
-        Ok(Some(u32::from_be_bytes(bytes)))
+        meta_u32_in(&self.db.begin_read()?, key, name)
     }
 
     /// Whether this open created the journal's meta, so the journal held no
@@ -223,6 +214,24 @@ impl Journal {
     pub fn db(&self) -> &Arc<Database> {
         &self.db
     }
+}
+
+/// Reads the 4-byte big-endian meta value `key` inside `tx`.
+fn meta_u32_in(tx: &redb::ReadTransaction, key: &[u8], name: &str) -> Result<Option<u32>> {
+    let meta = tx.open_table(table(cf::META))?;
+    let Some(raw) = meta.get(key)? else {
+        return Ok(None);
+    };
+    let raw = raw.value();
+    let bytes: [u8; 4] = raw
+        .try_into()
+        .map_err(|_| anyhow!("{name} is {} bytes, expected 4", raw.len()))?;
+    Ok(Some(u32::from_be_bytes(bytes)))
+}
+
+/// Highest finalized height as of `tx`.
+fn final_tip_in(tx: &redb::ReadTransaction) -> Result<Option<u32>> {
+    meta_u32_in(tx, META_FINAL_TIP, "final_tip")
 }
 
 /// Sets `final_tip` to `height`, or clears it when `None`.

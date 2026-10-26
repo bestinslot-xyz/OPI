@@ -357,6 +357,10 @@ mod tests {
         fn inscription_info(&self, _: &str) -> Result<Option<opi_core::InscriptionInfo>> {
             unreachable!()
         }
+
+        fn block_view(&self, _: u32) -> Result<Option<opi_core::BlockView>> {
+            unreachable!()
+        }
     }
 
     #[tokio::test]
