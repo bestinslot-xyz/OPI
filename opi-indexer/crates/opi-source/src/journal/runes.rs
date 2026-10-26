@@ -8,10 +8,10 @@ use {
         rune_counter_log_key, rune_etching_key, rune_event_key, rune_id_key, rune_outpoint_key,
     },
     crate::raw_event::RawEvent,
-    anyhow::{Context, Result, bail, ensure},
+    anyhow::{Result, bail, ensure},
     bitcoin::{Block, OutPoint, Transaction, Txid},
     opi_core::{RuneEtching, RuneEvent, RuneEventKind, RuneTerms},
-    ord::Index,
+    ord::{Index, RuneEntry},
     ordinals::{Artifact, RuneId, Runestone},
     redb::ReadableTable,
     std::collections::{BTreeMap, HashMap},
@@ -169,10 +169,11 @@ pub(super) fn finalize_runes(
         }
         for (id, amount) in &runes.burns {
             let delta = deltas.entry(*id).or_default();
-            delta.burned = delta
-                .burned
-                .checked_add(*amount)
-                .context("burned amount overflows")?;
+            delta.burned = delta.burned.checked_add(*amount).ok_or_else(|| {
+                RuneModelError(format!(
+                    "burned amount of rune {id} in block {height} overflows"
+                ))
+            })?;
         }
     }
 
@@ -194,10 +195,10 @@ pub(super) fn finalize_runes(
         let after = (
             burned
                 .checked_add(delta.burned)
-                .with_context(|| format!("burned total of rune {id} overflows"))?,
+                .ok_or_else(|| RuneModelError(format!("burned total of rune {id} overflows")))?,
             mints
                 .checked_add(delta.mints)
-                .with_context(|| format!("mint total of rune {id} overflows"))?,
+                .ok_or_else(|| RuneModelError(format!("mint total of rune {id} overflows")))?,
         );
         counters.insert(key.as_slice(), encode_rune_counter(after).as_slice())?;
         counter_log.insert(
@@ -237,7 +238,7 @@ fn transaction_events(
         let side = if incoming { into } else { out };
         *side = side
             .checked_add(amount)
-            .with_context(|| format!("rune {rune_id} amounts of {txid} overflow"))?;
+            .ok_or_else(|| RuneModelError(format!("rune {rune_id} amounts of {txid} overflow")))?;
         Ok(())
     };
 
@@ -336,15 +337,31 @@ fn transaction_events(
 }
 
 /// The etching record of rune `id`, etched by `txid` in a block with header
-/// time `time`, from ord's entry for it. Only the entry's immutable fields
-/// are used: its burned and mint totals are those of ord's committed tip.
+/// time `time`, from ord's entry for it. Finalize runs after ord commits the
+/// height, so a missing rune or entry is a [`RuneModelError`].
 fn etching(index: &Index, id: RuneId, txid: Txid, time: u64) -> Result<RuneEtching> {
-    let rune = index
-        .get_rune_by_id(id)?
-        .with_context(|| format!("ord has no rune {id}"))?;
-    let (entry_id, entry, _) = index
+    let Some(rune) = index.get_rune_by_id(id)? else {
+        bail!(RuneModelError(format!("ord has no rune {id}")));
+    };
+    let entry = index
         .rune(rune)?
-        .with_context(|| format!("ord has no entry for rune {rune}"))?;
+        .map(|(entry_id, entry, _)| (entry_id, entry));
+    etching_record(id, txid, time, entry)
+}
+
+/// The etching record of rune `id` from ord's `(id, entry)` for it. Only the
+/// entry's immutable fields are used: its burned and mint totals are those of
+/// ord's committed tip.
+fn etching_record(
+    id: RuneId,
+    txid: Txid,
+    time: u64,
+    entry: Option<(RuneId, RuneEntry)>,
+) -> Result<RuneEtching> {
+    let Some((entry_id, entry)) = entry else {
+        bail!(RuneModelError(format!("ord has no entry for rune {id}")));
+    };
+    let rune = entry.spaced_rune.rune;
     ensure!(
         entry_id == id && entry.etching == txid,
         RuneModelError(format!(
@@ -450,6 +467,22 @@ mod tests {
             ..TxRunes::default()
         };
         assert!(is_model_error(events_of(1, runes)));
+    }
+
+    #[test]
+    fn amount_overflow_is_a_model_error() {
+        let runes = TxRunes {
+            mints: vec![(RUNE, u128::MAX), (RUNE, 1)],
+            ..TxRunes::default()
+        };
+        assert!(is_model_error(events_of(1, runes)));
+    }
+
+    #[test]
+    fn missing_entry_is_a_model_error() {
+        let txid = transaction(1).compute_txid();
+        let error = etching_record(RUNE, txid, 0, None).unwrap_err();
+        assert!(error.chain().any(|cause| cause.is::<RuneModelError>()));
     }
 
     #[test]

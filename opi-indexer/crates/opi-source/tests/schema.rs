@@ -383,6 +383,48 @@ fn reopen_rejects_schema_mismatch() {
     assert!(err.to_string().contains("schema"), "{err}");
 }
 
+/// A journal with a finalized tip and without the rune tables is refused; one
+/// with the rune tables opens.
+#[test]
+fn reopen_rejects_finalized_journal_without_rune_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    {
+        let journal = Journal::open(&path, Chain::Regtest).unwrap();
+        put_meta(&journal, b"final_tip", &10u32.to_be_bytes());
+    }
+    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    assert_eq!(journal.final_tip().unwrap(), Some(10));
+    {
+        let mut tx = journal.db().begin_write().unwrap();
+        tx.set_durability(redb::Durability::Immediate).unwrap();
+        for name in [cf::RUNE_COUNTER_LOG, cf::RUNE_BALANCES] {
+            assert!(tx.delete_table(table(name)).unwrap(), "{name}");
+        }
+        tx.commit().unwrap();
+    }
+    drop(journal);
+    let err = Journal::open(&path, Chain::Regtest).err().unwrap();
+    assert!(err.to_string().contains("predates rune indexing"), "{err}");
+}
+
+/// Without a finalized tip, a journal missing the rune tables gains them.
+#[test]
+fn reopen_adds_rune_tables_before_any_finalize() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    {
+        let journal = Journal::open(&path, Chain::Regtest).unwrap();
+        let mut tx = journal.db().begin_write().unwrap();
+        tx.set_durability(redb::Durability::Immediate).unwrap();
+        assert!(tx.delete_table(table(cf::RUNE_BALANCES)).unwrap());
+        tx.commit().unwrap();
+    }
+    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    let tx = journal.db().begin_read().unwrap();
+    tx.open_table(table(cf::RUNE_BALANCES)).unwrap();
+}
+
 #[test]
 fn final_tip_reads_meta() {
     let dir = tempfile::tempdir().unwrap();

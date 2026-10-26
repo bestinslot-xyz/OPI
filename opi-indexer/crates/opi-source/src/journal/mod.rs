@@ -17,7 +17,8 @@ use {
     anyhow::{Context, Result, anyhow, bail},
     ord::Chain,
     redb::{
-        Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+        Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, TableHandle,
+        WriteTransaction,
     },
     std::{path::Path, sync::Arc},
 };
@@ -56,6 +57,14 @@ const ALL_TABLES: [&str; 12] = [
     cf::RAW_HEIGHTS,
     cf::META,
     cf::FIRST_TRANSFER,
+    cf::RUNE_EVENTS,
+    cf::RUNE_ETCHINGS,
+    cf::RUNE_COUNTERS,
+    cf::RUNE_COUNTER_LOG,
+    cf::RUNE_BALANCES,
+];
+
+const RUNE_TABLES: [&str; 5] = [
     cf::RUNE_EVENTS,
     cf::RUNE_ETCHINGS,
     cf::RUNE_COUNTERS,
@@ -112,7 +121,8 @@ pub fn table(name: &'static str) -> TableDefinition<'static, &'static [u8], &'st
 
 impl Journal {
     /// Opens the journal at `path`, creating it for `chain` when absent.
-    /// Fails when an existing journal belongs to another chain or schema.
+    /// Fails when an existing journal belongs to another chain or schema, or
+    /// has finalized blocks without the rune tables.
     ///
     /// redb holds an exclusive file lock while the database is open, so a
     /// second `open` of the same path from another process fails.
@@ -140,6 +150,9 @@ impl Journal {
             db: Arc::new(db),
             created,
         };
+        if !created {
+            journal.check_rune_tables(path)?;
+        }
         let tx = journal.begin_write()?;
         {
             for name in ALL_TABLES {
@@ -171,6 +184,28 @@ impl Journal {
         tx.commit()?;
 
         Ok(journal)
+    }
+
+    /// Fails when the journal has finalized blocks but lacks a rune table:
+    /// its finalized heights carry no rune state, so the journal and ord's
+    /// data dir are rebuilt together.
+    fn check_rune_tables(&self, path: &Path) -> Result<()> {
+        let tx = self.db.begin_read()?;
+        let names: Vec<String> = tx
+            .list_tables()?
+            .map(|handle| handle.name().to_string())
+            .collect();
+        let missing = RUNE_TABLES
+            .iter()
+            .any(|name| !names.iter().any(|have| have == name));
+        if missing && names.iter().any(|have| have == cf::META) && final_tip_in(&tx)?.is_some() {
+            bail!(
+                "journal at {} predates rune indexing; delete it and ord's data dir and \
+                 index again",
+                path.display()
+            );
+        }
+        Ok(())
     }
 
     /// Creates the journal file at `path` with every table and the meta rows

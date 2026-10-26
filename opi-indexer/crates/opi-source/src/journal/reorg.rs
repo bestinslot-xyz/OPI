@@ -3,11 +3,11 @@
 
 use {
     super::{
-        Journal, OUTPOINT_LEN, cf, decode_rune_counter_log, decode_rune_event, decode_transfer,
-        encode_rune_balance_row, encode_rune_counter, info_key, rune_event_key, rune_outpoint_key,
-        set_final_tip, table, transfer_key,
+        Journal, OUTPOINT_LEN, RuneModelError, cf, decode_rune_counter_log, decode_rune_event,
+        decode_transfer, encode_rune_balance_row, encode_rune_counter, info_key, rune_event_key,
+        rune_outpoint_key, set_final_tip, table, transfer_key,
     },
-    anyhow::{Context, Result},
+    anyhow::{Context, Result, bail},
     bitcoin::{BlockHash, block::Header, consensus},
     opi_core::{RuneEvent, RuneEventKind},
     ord::Index,
@@ -82,10 +82,11 @@ pub fn reorg_check(journal: &Journal, index: &Index) -> Result<Option<u32>> {
 /// above it are undone from the top down, and the transactions of a height
 /// in reverse block order: each drops the outpoints it created from
 /// `rune_outpoint_balances` and puts back the outpoints it spent, rebuilt
-/// from its input events. Each rune in the counter log above `agreed` gets
-/// its totals from before the lowest such height back, or loses its counter
-/// when it had none. The rune event, etching and counter log rows above
-/// `agreed` are deleted.
+/// from its input events. An outpoint to drop that is absent, or one to put
+/// back that is present, is a [`RuneModelError`]. Each rune in the counter
+/// log above `agreed` gets back its totals from before the lowest logged
+/// height, or loses its counter when it had none. The rune event, etching and
+/// counter log rows above `agreed` are deleted.
 fn undo_runes(tx: &WriteTransaction, agreed: u32) -> Result<()> {
     let mut events = tx.open_table(table(cf::RUNE_EVENTS))?;
     let mut etchings = tx.open_table(table(cf::RUNE_ETCHINGS))?;
@@ -105,16 +106,25 @@ fn undo_runes(tx: &WriteTransaction, agreed: u32) -> Result<()> {
     }
     for height_events in by_height.values().rev() {
         for tx_events in height_events.chunk_by(|a, b| a.txid == b.txid).rev() {
-            for event in tx_events {
-                if event.kind == RuneEventKind::Output {
-                    balances.remove(outpoint_key(event)?.as_slice())?;
+            let of_kind = |kind| {
+                tx_events
+                    .iter()
+                    .filter(|event| event.kind == kind)
+                    .collect::<Vec<_>>()
+            };
+            for created in of_kind(RuneEventKind::Output).chunk_by(|a, b| a.outpoint == b.outpoint)
+            {
+                if balances
+                    .remove(outpoint_key(created[0])?.as_slice())?
+                    .is_none()
+                {
+                    bail!(RuneModelError(format!(
+                        "undo of {} finds no balance row for its output {:?}",
+                        created[0].txid, created[0].outpoint
+                    )));
                 }
             }
-            let inputs = tx_events
-                .iter()
-                .filter(|event| event.kind == RuneEventKind::Input)
-                .collect::<Vec<_>>();
-            for spent in inputs.chunk_by(|a, b| a.outpoint == b.outpoint) {
+            for spent in of_kind(RuneEventKind::Input).chunk_by(|a, b| a.outpoint == b.outpoint) {
                 let pkscript = spent[0]
                     .pkscript
                     .as_deref()
@@ -123,10 +133,18 @@ fn undo_runes(tx: &WriteTransaction, agreed: u32) -> Result<()> {
                     .iter()
                     .map(|event| (event.rune_id.clone(), event.amount))
                     .collect::<Vec<_>>();
-                balances.insert(
-                    outpoint_key(spent[0])?.as_slice(),
-                    encode_rune_balance_row(pkscript, &held)?.as_slice(),
-                )?;
+                if balances
+                    .insert(
+                        outpoint_key(spent[0])?.as_slice(),
+                        encode_rune_balance_row(pkscript, &held)?.as_slice(),
+                    )?
+                    .is_some()
+                {
+                    bail!(RuneModelError(format!(
+                        "undo of {} finds a balance row for its spent input {:?}",
+                        spent[0].txid, spent[0].outpoint
+                    )));
+                }
             }
         }
     }

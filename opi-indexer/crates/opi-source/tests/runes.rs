@@ -764,6 +764,59 @@ fn reorg_restores_spent_rune_outpoints() {
 }
 
 #[test]
+fn reorg_restores_both_outpoints_one_transaction_spends() {
+    let harness = Harness::new();
+    let funding = harness.fund();
+    let mut split = etch(Some(1000), None);
+    split.edicts = vec![Edict {
+        id: RuneId::default(),
+        amount: 400,
+        output: 1,
+    }];
+    let etched = harness.runestone(&[funding], 2, split);
+    harness.mine(1);
+    let id = rune_id(&harness, etched);
+
+    // The tip spends both rune outpoints in one transaction.
+    let txid = harness.runestone(&[out(etched, 1), out(etched, 0)], 1, Runestone::default());
+    harness.mine(1);
+    let tip = harness.height();
+    let tmp = tempfile::tempdir().unwrap();
+    let (source, reader) = synced(&harness, tmp.path());
+    assert_eq!(
+        journal_balances(&reader).into_keys().collect::<Vec<_>>(),
+        [out(txid, 0)]
+    );
+
+    harness.invalidate_tip();
+    harness.mine(2);
+    wait_for_tip(&reader, tip + 1);
+    stop(source);
+
+    assert_eq!(
+        journal_balances(&reader),
+        BTreeMap::from([
+            (
+                out(etched, 0),
+                (
+                    pkscript(&harness, out(etched, 0)),
+                    vec![(id.to_string(), 600)]
+                )
+            ),
+            (
+                out(etched, 1),
+                (
+                    pkscript(&harness, out(etched, 1)),
+                    vec![(id.to_string(), 400)]
+                )
+            ),
+        ])
+    );
+    assert!(view(&reader, tip).runes.events.is_empty());
+    assert_runes_match_fresh_run(&harness, &reader);
+}
+
+#[test]
 fn reorg_restores_counters() {
     let harness = Harness::new();
     let fundings = [harness.fund(), harness.fund()];
