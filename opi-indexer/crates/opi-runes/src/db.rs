@@ -26,8 +26,9 @@ pub struct Db {
 impl Db {
     /// Connects, creates the schema and network row on an empty database and
     /// requires `runes_indexer_version.db_version` and `runes_network_type` to
-    /// match otherwise. The stored `indexer_version` is set to the reported
-    /// `INDEXER_VERSION`.
+    /// match otherwise. A database that holds blocks under another
+    /// `indexer_version` is refused; otherwise the stored `indexer_version` is
+    /// set to the reported `INDEXER_VERSION`.
     pub async fn connect(config: &RunesConfig) -> anyhow::Result<Db> {
         let mut options = PgConnectOptions::new()
             .host(&config.db_host)
@@ -89,6 +90,22 @@ impl Db {
             ),
             None => bail!("runes_network_type is empty; the database must be recreated"),
         }
+        let indexer_version: String =
+            sqlx::query_scalar("SELECT indexer_version FROM runes_indexer_version LIMIT 1")
+                .fetch_one(&self.pool)
+                .await?;
+        if indexer_version != INDEXER_VERSION {
+            let has_blocks: bool =
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM runes_block_hashes)")
+                    .fetch_one(&self.pool)
+                    .await?;
+            if has_blocks {
+                bail!(
+                    "the runes database was written by another indexer ({indexer_version}); \
+                     opi-runes needs a fresh database, so point RUNES_DB_DATABASE at a new one"
+                );
+            }
+        }
         sqlx::query("UPDATE runes_indexer_version SET indexer_version = $1")
             .bind(INDEXER_VERSION)
             .execute(&self.pool)
@@ -137,12 +154,13 @@ impl Db {
         )
     }
 
-    /// Highest block height any runes table refers to, if any row exists.
+    /// Highest block height any runes table refers to, if any row exists. A
+    /// spend is written in the same transaction as its block's input events,
+    /// so `runes_events` covers `spent_block_height`.
     pub async fn max_row_height(&self) -> anyhow::Result<Option<u32>> {
         let height: Option<i32> = sqlx::query_scalar(
             "SELECT GREATEST( \
              (SELECT max(block_height) FROM runes_outpoint_to_balances), \
-             (SELECT max(spent_block_height) FROM runes_outpoint_to_balances), \
              (SELECT max(block_height) FROM runes_events), \
              (SELECT max(last_updated_block_height) FROM runes_id_to_entry), \
              (SELECT max(block_height) FROM runes_id_to_entry_changes), \
@@ -153,17 +171,20 @@ impl Db {
         Ok(height.map(|h| h as u32))
     }
 
-    /// Drops every block above `height` in one transaction: rows created
-    /// above it are deleted, outpoints spent above it are unspent, and each
-    /// entry updated above it gets the totals of its latest change at or
-    /// below `height` (0, 0 and its genesis height without one).
-    pub async fn rollback_to(&self, height: u32) -> anyhow::Result<()> {
+    /// Drops every block above `height` in one transaction, or every block
+    /// when `height` is `None`: rows created above it are deleted, outpoints
+    /// that input events above it spend are unspent, and each entry updated
+    /// above it gets the totals of its latest change at or below `height` (0,
+    /// 0 and its genesis height without one).
+    pub async fn rollback_to(&self, height: Option<u32>) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
-        let height = height as i32;
+        let height = height.map_or(-1, i64::from);
         for statement in [
             "DELETE FROM runes_outpoint_to_balances WHERE block_height > $1",
             "UPDATE runes_outpoint_to_balances SET spent = false, spent_block_height = NULL \
-             WHERE spent_block_height > $1",
+             WHERE outpoint IN (SELECT outpoint FROM runes_events \
+                                WHERE block_height > $1 AND event_type = 0) \
+             AND spent_block_height > $1",
             "DELETE FROM runes_events WHERE block_height > $1",
             "DELETE FROM runes_id_to_entry WHERE genesis_height > $1",
             "DELETE FROM runes_id_to_entry_changes WHERE block_height > $1",
@@ -480,7 +501,7 @@ async fn apply_counters(
 }
 
 /// Inserts the events in feed order with ids continuing from the highest
-/// stored id, so ids ascend in event order.
+/// stored id (the first event gets id 0), so ids ascend in event order.
 async fn insert_events(
     tx: &mut Transaction<'_, Postgres>,
     block: &BlockView,
@@ -508,7 +529,7 @@ async fn insert_events(
          rune_id, amount, block_height) \
          SELECT base.id + u.ord, u.event_type, u.txid, u.outpoint, u.pkscript, u.wallet_addr, \
          u.rune_id, u.amount::numeric, $8 \
-         FROM (SELECT coalesce(max(id), 0) AS id FROM runes_events) base, \
+         FROM (SELECT coalesce(max(id), -1) AS id FROM runes_events) base, \
          UNNEST($1::int4[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], \
          $7::text[]) WITH ORDINALITY \
          AS u(event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount, ord) \

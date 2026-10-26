@@ -413,7 +413,7 @@ async fn module_round_trip() {
         .await
         .unwrap();
         let ids: Vec<i64> = events.iter().map(|r| r.get(0)).collect();
-        assert_eq!(ids, (1..=16).collect::<Vec<i64>>());
+        assert_eq!(ids, (0..16).collect::<Vec<i64>>());
         let all: Vec<RuneEvent> = blocks().into_iter().flat_map(|b| b.runes.events).collect();
         for (row, event) in events.iter().zip(&all) {
             assert_eq!(row.get::<i32, _>(1), i32::from(event.kind.id()));
@@ -627,7 +627,7 @@ async fn rollback_restores_entries_and_unspends() {
             .fetch_all(&mut conn)
             .await
             .unwrap();
-        assert_eq!(ids, (1..=16).collect::<Vec<i64>>());
+        assert_eq!(ids, (0..16).collect::<Vec<i64>>());
         let ids: Vec<i64> =
             sqlx::query_scalar("SELECT id FROM runes_outpoint_to_balances ORDER BY id")
                 .fetch_all(&mut conn)
@@ -661,6 +661,126 @@ async fn rollback_restores_entries_and_unspends() {
             entry_totals(&mut conn).await,
             vec![(s("1:1"), s("400"), s("1"), 2)]
         );
+    })
+    .await;
+}
+
+/// Height 1 creates aa:0, height 2 is empty and height 3 spends aa:0 into
+/// gg:0. Rolling back to 2 unspends aa:0 through height 3's input event.
+/// Without a block row and with start height 0, a new instance drops every
+/// row.
+#[tokio::test]
+async fn rollback_unspends_through_input_events() {
+    with_database("unspend", |name| async move {
+        use RuneEventKind::*;
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        let spend = view(
+            3,
+            RuneFeed {
+                events: vec![
+                    located(Input, "g0", outpoint("a0", 0), pk1(), "1:1", 1000),
+                    located(Output, "g0", outpoint("g0", 0), pk2(), "1:1", 1000),
+                ],
+                etchings: Vec::new(),
+                counters: Vec::new(),
+            },
+        );
+        for block in [blocks().remove(0), view(2, RuneFeed::default()), spend] {
+            module.apply(&block).await.unwrap();
+        }
+        let mut conn = connect(&name).await;
+        let state = |rows: Vec<OutpointRow>| -> Vec<(String, bool, Option<i32>)> {
+            rows.iter().map(|r| (r.0.clone(), r.6, r.7)).collect()
+        };
+        assert_eq!(
+            state(outpoint_rows(&mut conn).await),
+            vec![
+                (outpoint("a0", 0), true, Some(3)),
+                (outpoint("g0", 0), false, None),
+            ]
+        );
+
+        module.rollback_to(2).await.unwrap();
+        assert_eq!(
+            state(outpoint_rows(&mut conn).await),
+            vec![(outpoint("a0", 0), false, None)]
+        );
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM runes_events")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(events, 2);
+
+        sqlx::query("DELETE FROM runes_block_hashes")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        drop(module);
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        assert!(module.cursor().await.unwrap().is_none());
+        for table in [
+            "runes_events",
+            "runes_outpoint_to_balances",
+            "runes_id_to_entry",
+            "runes_cumulative_event_hashes",
+        ] {
+            let count: i64 =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                    .fetch_one(&mut conn)
+                    .await
+                    .unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
+    })
+    .await;
+}
+
+/// A database from `db_init.sql` keeps the version string `index_runes.js`
+/// writes. With a block row it is refused; without one it is adopted.
+#[tokio::test]
+async fn database_of_another_indexer_is_refused() {
+    with_database("foreign", |name| async move {
+        let mut conn = connect(&name).await;
+        sqlx::raw_sql(include_str!("../src/db_init.sql"))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO runes_network_type (network_type) VALUES ('regtest')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO runes_block_hashes (block_height, block_hash, block_time) \
+             VALUES (0, 'hash0', to_timestamp(0))",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let error = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .err()
+            .unwrap();
+        let message = format!("{error:#}");
+        assert!(message.contains("OPI-runes-alpha V0.4.2"), "{message}");
+        assert!(message.contains("fresh database"), "{message}");
+
+        sqlx::query("DELETE FROM runes_block_hashes")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        let version: String =
+            sqlx::query_scalar("SELECT indexer_version FROM runes_indexer_version")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(version, opi_runes::INDEXER_VERSION);
     })
     .await;
 }

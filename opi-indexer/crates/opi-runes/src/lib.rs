@@ -134,6 +134,8 @@ impl RunesModule {
         Ok(module)
     }
 
+    /// Drops rows at or above the next height to index: above the cursor, or
+    /// every row when there is no cursor and the start height is 0.
     async fn drop_residue(&mut self) -> anyhow::Result<()> {
         let next = match self.db.cursor().await? {
             Some(cursor) => cursor.height + 1,
@@ -145,8 +147,12 @@ impl RunesModule {
             .await?
             .is_some_and(|height| height >= next)
         {
-            tracing::warn!("runes rows above height {} dropped", next.wrapping_sub(1));
-            self.db.rollback_to(next.wrapping_sub(1)).await?;
+            let keep = next.checked_sub(1);
+            match keep {
+                Some(keep) => tracing::warn!("runes rows above height {keep} dropped"),
+                None => tracing::warn!("all runes rows dropped"),
+            }
+            self.db.rollback_to(keep).await?;
         }
         Ok(())
     }
@@ -200,7 +206,7 @@ impl Module for RunesModule {
     }
 
     async fn rollback_to(&mut self, height: u32) -> anyhow::Result<()> {
-        self.db.rollback_to(height).await
+        self.db.rollback_to(Some(height)).await
     }
 
     /// Writes the block, then reports it when its height is hashed. The block
