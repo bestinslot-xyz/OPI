@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Compares a reference runes database with a candidate runes database.
 
-The reference is written by modules/runes_index/index_runes.js, the candidate by
-the opi-runes module. Both use the schema in modules/runes_index/db_init.sql.
+The reference is written by modules/runes_index/index_runes.js (commit b3379c5
+is the last one that has it), the candidate by the opi-runes module. Both use
+the schema in opi-indexer/crates/opi-runes/src/db_init.sql.
 Every table is streamed per height through server-side cursors, so memory use
 is bounded by one block of rows per side.
 
@@ -392,7 +393,7 @@ def default_to_height(ref, cand):
 
 def main(argv=None):
   p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-  p.add_argument("--reference", required=True, help="Postgres URL of the index_runes.js database")
+  p.add_argument("--reference", required=True, help="Postgres URL of the reference runes database")
   p.add_argument("--candidate", required=True, help="Postgres URL of the opi-runes database")
   p.add_argument("--from-height", type=int, default=0)
   p.add_argument("--to-height", type=int, default=None, help="default: the lower of the two max(runes_block_hashes.block_height)")

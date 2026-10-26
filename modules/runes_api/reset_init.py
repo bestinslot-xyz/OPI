@@ -1,7 +1,6 @@
 # pip install python-dotenv
 
 import os
-from dotenv import load_dotenv, dotenv_values
 
 init_env = True
 
@@ -24,35 +23,20 @@ if init_env:
   API_TRUSTED_PROXY_CNT="0"
   print("Initialising .env file")
   print("leave blank to use default values")
-  use_other_env = False
-  other_env_exists = os.path.isfile('../runes_index/.env')
-  if other_env_exists:
-    res = input(".env on runes_index already exists, do you want to use values from there? (y/n) ")
-    if res == 'y':
-      use_other_env = True
-  if use_other_env:
-    env = dotenv_values(dotenv_path='../runes_index/.env')
-    DB_USER = env.get("DB_USER") or "postgres"
-    DB_HOST = env.get("DB_HOST") or "localhost"
-    DB_PORT = env.get("DB_PORT") or "5432"
-    DB_DATABASE = env.get("DB_DATABASE") or "postgres"
-    DB_PASSWD = env.get("DB_PASSWD")
-    USE_EXTRA_TABLES = env.get("CREATE_EXTRA_TABLES") or "false"
-  else:
-    res = input("Runes Postgres DB username (Default: postgres): ")
-    if res != '':
-      DB_USER = res
-    res = input("Runes Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
-    if res != '':
-      DB_HOST = res
-    res = input("Runes Postgres DB port (Default: 5432): ")
-    if res != '':
-      DB_PORT = res
-    res = input("Runes Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
-    if res != '':
-      DB_DATABASE = res
-    res = input("Runes Postgres DB password: ")
-    DB_PASSWD = res
+  res = input("Runes Postgres DB username (Default: postgres): ")
+  if res != '':
+    DB_USER = res
+  res = input("Runes Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
+  if res != '':
+    DB_HOST = res
+  res = input("Runes Postgres DB port (Default: 5432): ")
+  if res != '':
+    DB_PORT = res
+  res = input("Runes Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
+  if res != '':
+    DB_DATABASE = res
+  res = input("Runes Postgres DB password: ")
+  DB_PASSWD = res
   res = input("Runes Postgres DB use SSL (Default: true) may need to be set to false on Windows machines: ")
   if res != '':
     DB_SSL = res

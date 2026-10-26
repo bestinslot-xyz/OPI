@@ -130,6 +130,7 @@ All next shell script groups assumes that you are in OPI folder cloned by above 
 cd modules/brc20_api; npm install;
 cd ../bitmap_api; npm install;
 cd ../sns_api; npm install;
+cd ../runes_api; npm install;
 cd ../..;
 ```
 
@@ -147,7 +148,7 @@ cd ..;
 
 ## Build opi-indexer:
 
-opi-indexer runs the BRC-20, Bitmap and SNS indexers in one process. See the [opi-indexer README](opi-indexer/README.md) for its configuration.
+opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process. See the [opi-indexer README](opi-indexer/README.md) for its configuration.
 
 ```bash
 sudo apt install build-essential libssl-dev pkg-config clang -y;
@@ -157,18 +158,18 @@ cd ..;
 
 ## Initialise .env configuration and databases
 
-Copy `opi-indexer/.env_sample` to `opi-indexer/.env` and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap` and `sns` run). The BRC-20, Bitmap and SNS databases are created from the schema on first start.
+Copy `opi-indexer/.env_sample` to `opi-indexer/.env` and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start.
 
 Run `reset_init.py` in `modules/brc20_index` and in each API folder to initialise .env file and databases for BRC-20 and the APIs.
 
-`opi-indexer` reads one `.env`, from its working directory. BRC-20's variables (`DB_*`, `BRC20_PROG_*`, `NETWORK_TYPE`, ...), the `.env` that `reset_init.py` writes in `modules/brc20_index`, go into `opi-indexer/.env`. Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
+`opi-indexer` reads one `.env`, from its working directory. BRC-20's variables (`DB_*`, `BRC20_PROG_*`, `NETWORK_TYPE`, ...), the `.env` that `reset_init.py` writes in `modules/brc20_index`, go into `opi-indexer/.env`. Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
 
 # Run
 
 Postgres will auto run on system start. \
 Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 
-**Main Meta-Protocol Indexer (BRC-20, Bitmap and SNS)**
+**Main Meta-Protocol Indexer (BRC-20, Bitmap, SNS and Runes)**
 
 > [!WARNING]
 > Set up and run the brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running opi-indexer with the `brc20` module.
@@ -207,9 +208,14 @@ cd modules/sns_api;
 node api.js;
 ```
 
-**Runes Indexer / API**
+**Runes API**
 
-Runes runs from `modules/runes_index` with its own ord (`modules/runes_index/ord-runes`). See [README.runes.md](README.runes.md).
+This is an optional API and doesn't need to be run. The Runes indexer runs inside opi-indexer when `OPI_MODULES` includes `runes`.
+
+```bash
+cd modules/runes_api;
+node api.js;
+```
 
 # Update
 

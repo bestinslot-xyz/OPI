@@ -1,3 +1,0 @@
-fn main() {
-  ord::main();
-}

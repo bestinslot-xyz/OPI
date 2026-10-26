@@ -4,11 +4,11 @@ Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** 
 OPI links upstream **ord 0.29.1** as a library and is built with **modularity** in mind.
 All modules in OPI have been built with **reorg protection**.
 
-OPI has modules for **BRC-20**, **Bitmap** and **SNS**, which run together in the `opi-indexer` binary, and an experimental **Runes** module that runs from `modules/runes_index` with its own ord (see [README.runes.md](README.runes.md)). Pull Requests are welcomed for other meta-protocols.
+OPI has modules for **BRC-20**, **Bitmap**, **SNS** and **Runes**, which run together in the `opi-indexer` binary. Pull Requests are welcomed for other meta-protocols.
 
 ## Main Meta-Protocol Indexer / opi-indexer
 
-**opi-indexer** sits in the core of OPI. It runs ord as a journal source that records **all json/text inscriptions** and their **first 2 transfers**, and feeds the journal to the BRC-20, Bitmap and SNS modules in one process. Each module keeps its own Postgres database. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time. See the [opi-indexer README](opi-indexer/README.md) for configuration, build and run steps.
+**opi-indexer** sits in the core of OPI. It runs ord as a journal source that records **all json/text inscriptions** and their **first 2 transfers**, and feeds the journal to the BRC-20, Bitmap and SNS modules, and ord's rune events to the Runes module, in one process. Each module keeps its own Postgres database. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time. See the [opi-indexer README](opi-indexer/README.md) for configuration, build and run steps.
 
 ## BRC-20 Indexer / API
 
@@ -165,11 +165,11 @@ pip3 install -r requirements.txt;
 
 **Setup .env files and DBs**
 
-Copy `opi-indexer/.env_sample` to `opi-indexer/.env` and fill it in, as described in the [opi-indexer README](opi-indexer/README.md#configuration). The BRC-20, Bitmap and SNS databases are created from the schema on first start, and `OPI_MODULES` selects the modules to run.
+Copy `opi-indexer/.env_sample` to `opi-indexer/.env` and fill it in, as described in the [opi-indexer README](opi-indexer/README.md#configuration). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start, and `OPI_MODULES` selects the modules to run.
 
 Run `reset_init.py` in `modules/brc20_index` and in each API folder to initialise .env file and databases for BRC-20 and the APIs.
 
-`opi-indexer` reads one `.env`, from its working directory. BRC-20's variables (`DB_*`, `BRC20_PROG_*`, `NETWORK_TYPE`, ...), the `.env` that `reset_init.py` writes in `modules/brc20_index`, go into `opi-indexer/.env`. Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
+`opi-indexer` reads one `.env`, from its working directory. BRC-20's variables (`DB_*`, `BRC20_PROG_*`, `NETWORK_TYPE`, ...), the `.env` that `reset_init.py` writes in `modules/brc20_index`, go into `opi-indexer/.env`. Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
 
 # Run
 

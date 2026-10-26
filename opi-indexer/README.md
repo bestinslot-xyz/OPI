@@ -308,3 +308,46 @@ the spec leaves a choice open, the rule below states the one opi-sns makes
 `tools/parity/sns_spec_vectors.py` implements these rules independently in
 Python, and `crates/opi-sns/tests/spec_vectors.json` holds its results. The
 module's tests require the Rust rules to match every vector.
+
+## Runes
+
+The runes module (`crates/opi-runes`) turns ord's rune events into the runes
+Postgres schema in `crates/opi-runes/src/db_init.sql`, so `modules/runes_api`
+reads it unchanged. It saves every event (input to a tx, transfer, mint,
+initial allocation and burn), the rune entries and the outpoint to balance
+entries, and calculates a block hash and a cumulative hash of all events. State
+starts at ord's first rune height; event hashes start at height 840000 on
+mainnet, 2520000 on testnet, 173831 on signet and 0 elsewhere.
+
+`modules/runes_api` serves activity on a block (`/v1/runes/activity_on_block`),
+the balance of a wallet at the start of a height
+(`/v1/runes/balance_on_block`), the current balance of a wallet
+(`/v1/runes/get_current_balance_of_wallet`), the unspent rune outpoints of a
+wallet (`/v1/runes/get_unspent_rune_outpoints_of_wallet`), the holders of a rune
+(`/v1/runes/holders`), and the block hash and cumulative hash at a height
+(`/v1/runes/get_hash_of_all_activity`). Run it with `node api.js` in
+`modules/runes_api` after `reset_init.py` writes its `.env`.
+
+**Event order.** A transaction's events are, in this order:
+
+1. `input`: for each input in input order that spends a rune outpoint, one
+   event per stored `(rune_id, amount)` in rune id order;
+2. `new_rune_allocation`: when the transaction etches a rune through a
+   runestone, with the premine as amount;
+3. `mint`: each mint, in emission order;
+4. `output`: each transfer, by output index and rune id;
+5. `burn`: each burn, by rune id, zero amounts included.
+
+Reports carry `event_hash_version` 2 for this order.
+
+**Event hash.** Each event is the string
+`<type>;<outpoint>;<pkscript>;<rune_id>;<amount>`, with `type` one of `input`,
+`new_rune_allocation`, `mint`, `output`, `burn`. `outpoint` and `pkscript` are
+set for `input` and `output` events and empty for `new_rune_allocation`,
+`mint` and `burn`. The block string is the events joined with `|`,
+`block_event_hash = sha256_hex(block_string)` (an empty block hashes `""`), and
+`cumulative_hash = sha256_hex(previous_cumulative_hash + block_event_hash)`.
+The first hashed block uses its block hash as the cumulative hash.
+
+**Versions.** Reports send `opi-runes-full-node v1.0.0` with `db_version` 6. A
+database with another `db_version` is refused and must be indexed from scratch.

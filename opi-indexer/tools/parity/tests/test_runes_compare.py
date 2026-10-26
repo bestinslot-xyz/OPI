@@ -18,9 +18,7 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 TOOL = HERE.parent / "runes_compare.py"
-SCHEMA = HERE.parents[3] / "modules" / "runes_index" / "db_init.sql"
-if not SCHEMA.exists():
-  SCHEMA = next(p for p in HERE.parents if (p / "modules" / "runes_index" / "db_init.sql").exists()) / "modules" / "runes_index" / "db_init.sql"
+SCHEMA = HERE.parents[2] / "crates" / "opi-runes" / "src" / "db_init.sql"
 
 PG_HOST = os.environ.get("OPI_TEST_PG_HOST", "127.0.0.1")
 PG_USER = os.environ.get("OPI_TEST_PG_USER", "alper")

@@ -1,4 +1,0 @@
-sat	satpoint
-%% for (sat, satpoint) in &self.0 {
-{{sat}}	{{satpoint}}
-%% }
