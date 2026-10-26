@@ -734,8 +734,7 @@ impl Brc20Indexer {
             .get_block_events_hash(next_block)
             .await?
         else {
-            tracing::warn!("Block events hash not found for block {}", next_block);
-            return Ok(());
+            return Err(format!("Block events hash not found for block {}", next_block).into());
         };
 
         let Some(cumulative_events_hash) = get_brc20_database()
@@ -744,8 +743,9 @@ impl Brc20Indexer {
             .get_cumulative_events_hash(next_block)
             .await?
         else {
-            tracing::warn!("Cumulative events hash not found for block {}", next_block);
-            return Ok(());
+            return Err(
+                format!("Cumulative events hash not found for block {}", next_block).into(),
+            );
         };
 
         let cumulative_traces_hash = get_brc20_database()
@@ -945,11 +945,7 @@ impl Brc20Indexer {
             return Err("Reporting is not supported in light client mode".into());
         }
 
-        let (block_hash, block_time) = self
-            .journal()?
-            .block_info(block_height as u32)?
-            .map(|info| (info.hash, info.time as i64))
-            .ok_or("Block hash and time not found")?;
+        let (block_hash, block_time) = self.journal_block_hash_and_time(block_height)?;
 
         let Some(block_events_hash) = get_brc20_database()
             .lock()
@@ -2282,6 +2278,44 @@ impl Brc20Indexer {
             .ok_or("full mode reads blocks from the journal inside opi-indexer".into())
     }
 
+    /// The journal's hash and time of `block_height`.
+    fn journal_block_hash_and_time(
+        &self,
+        block_height: i32,
+    ) -> Result<(String, i64), Box<dyn Error>> {
+        self.journal()?
+            .block_info(block_height as u32)?
+            .map(|info| (info.hash, info.time as i64))
+            .ok_or("Block hash and time not found".into())
+    }
+
+    /// Fails when brc20 and brc20-prog stand at different heights, under the
+    /// conditions `reorg_to_last_synced_block_height` reconciles them. A full
+    /// module runs it before every block; the restarted instance's `init`
+    /// reconciles the two.
+    pub(crate) async fn check_brc20_prog_height(&self) -> Result<(), Box<dyn Error>> {
+        let last_brc20_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+        let last_brc20_prog_block_height =
+            if last_brc20_block_height < self.config.first_brc20_prog_phase_one_height {
+                self.config.first_brc20_prog_phase_one_height - 1
+            } else {
+                parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
+            };
+        match brc20_prog_height_mismatch(
+            last_brc20_block_height,
+            last_brc20_prog_block_height,
+            self.config.first_brc20_height,
+            self.config.first_brc20_prog_phase_one_height,
+        ) {
+            Some(mismatch) => Err(mismatch.into()),
+            None => Ok(()),
+        }
+    }
+
     pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
         tracing::debug!("Reorganizing BRC20 indexer to last synced block height...");
         let mut last_brc20_block_height = get_brc20_database()
@@ -2453,4 +2487,116 @@ fn is_alphanumerical_or_dash(ticker: &str) -> bool {
 
 fn parse_hex_number(eth_number: &str) -> Result<i32, Box<dyn Error>> {
     i32::from_str_radix(eth_number.trim_start_matches("0x"), 16).map_err(|e| e.into())
+}
+
+/// Why brc20 at `last_brc20` and brc20-prog at `last_prog` disagree, by the
+/// conditions under which `reorg_to_last_synced_block_height` reorgs one of
+/// them. `last_prog` is `phase_one - 1` while brc20 is below `phase_one`.
+fn brc20_prog_height_mismatch(
+    last_brc20: i32,
+    last_prog: i32,
+    first_brc20_height: i32,
+    phase_one: i32,
+) -> Option<String> {
+    if last_brc20 < first_brc20_height {
+        return (last_prog > phase_one).then(|| {
+            format!("brc20-prog is at {last_prog} while brc20 has not indexed a BRC-20 block")
+        });
+    }
+    (last_prog >= phase_one && last_prog != last_brc20)
+        .then(|| format!("brc20 is at {last_brc20} but brc20-prog is at {last_prog}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opi_core::{BlockInfo, BlockView, InscriptionInfo, InscriptionRecord};
+
+    const FIRST: i32 = 112_402;
+    const PHASE_ONE: i32 = 230_000;
+
+    #[test]
+    fn prog_height_check_matches_the_reconciliation_conditions() {
+        let mismatch = |brc20, prog| brc20_prog_height_mismatch(brc20, prog, FIRST, PHASE_ONE);
+        // Before the first BRC-20 block only a prog past phase one disagrees.
+        assert!(mismatch(FIRST - 1, PHASE_ONE - 1).is_none());
+        assert!(mismatch(FIRST - 1, PHASE_ONE).is_none());
+        assert!(mismatch(FIRST - 1, PHASE_ONE + 1).is_some());
+        // Below phase one brc20-prog is taken to sit at phase one - 1.
+        assert!(mismatch(200_000, PHASE_ONE - 1).is_none());
+        assert!(mismatch(PHASE_ONE - 1, PHASE_ONE - 1).is_none());
+        // From phase one on the heights must be equal.
+        assert!(mismatch(PHASE_ONE, PHASE_ONE).is_none());
+        assert!(mismatch(300_000, 300_000).is_none());
+        assert!(mismatch(300_000, 300_001).is_some());
+        assert!(mismatch(300_001, 300_000).is_some());
+    }
+
+    struct StubJournal {
+        tip: Option<u32>,
+        block: Option<BlockInfo>,
+    }
+
+    impl BlockSource for StubJournal {
+        fn tip(&self) -> anyhow::Result<Option<u32>> {
+            Ok(self.tip)
+        }
+
+        fn block_info(&self, height: u32) -> anyhow::Result<Option<BlockInfo>> {
+            Ok(self.block.clone().filter(|block| block.height == height))
+        }
+
+        fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
+            Ok(None)
+        }
+
+        fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
+            Ok(None)
+        }
+    }
+
+    fn full_indexer(journal: Option<StubJournal>) -> Brc20Indexer {
+        let mut config = Brc20IndexerConfig::default();
+        config.light_client_mode = false;
+        Brc20Indexer::new(
+            config,
+            journal.map(|journal| Arc::new(journal) as Arc<dyn BlockSource>),
+        )
+    }
+
+    #[tokio::test]
+    async fn tip_hash_and_time_come_from_the_journal() {
+        let indexer = full_indexer(Some(StubJournal {
+            tip: Some(840_001),
+            block: Some(BlockInfo {
+                height: 840_000,
+                hash: "ab".repeat(32),
+                time: 1_713_571_767,
+            }),
+        }));
+        assert_eq!(indexer.get_opi_block_height().await.unwrap(), 840_001);
+        assert_eq!(
+            indexer.journal_block_hash_and_time(840_000).unwrap(),
+            ("ab".repeat(32), 1_713_571_767)
+        );
+        assert!(indexer.journal_block_hash_and_time(1).is_err());
+
+        let empty = full_indexer(Some(StubJournal {
+            tip: None,
+            block: None,
+        }));
+        assert!(empty.get_opi_block_height().await.is_err());
+
+        let without_journal = full_indexer(None);
+        assert!(without_journal.get_opi_block_height().await.is_err());
+        assert!(
+            without_journal
+                .journal_block_hash_and_time(840_000)
+                .is_err()
+        );
+    }
 }

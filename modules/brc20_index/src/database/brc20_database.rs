@@ -115,7 +115,7 @@ pub struct BitcoinRpcResultRecord {
     pub block_height: i32,
 }
 
-pub static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
+static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
 
 pub fn get_brc20_database() -> Arc<Mutex<Brc20Database>> {
     BRC20_DATABASE
@@ -128,6 +128,16 @@ pub fn set_brc20_database(database: Arc<Mutex<Brc20Database>>) {
     BRC20_DATABASE
         .set(database)
         .expect("Brc20Database already initialized");
+}
+
+/// Puts `database` into the global slot, setting the slot on first use and
+/// replacing its contents afterwards.
+pub async fn replace_brc20_database(database: Brc20Database) {
+    let mut database = Some(database);
+    let slot = BRC20_DATABASE.get_or_init(|| Arc::new(Mutex::new(database.take().unwrap())));
+    if let Some(database) = database {
+        *slot.lock().await = database;
+    }
 }
 
 #[derive(Debug)]

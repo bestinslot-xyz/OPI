@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::{
     config::Brc20IndexerConfig,
-    database::{BRC20_DATABASE, Brc20Database, get_brc20_database, set_brc20_database},
+    database::{Brc20Database, get_brc20_database, replace_brc20_database},
     indexer::Brc20Indexer,
     types::Brc20Tx,
 };
@@ -24,7 +24,13 @@ use crate::{
 /// The indexer and brc20's database live on one dedicated thread for the
 /// life of the process (see `spawn_on_brc20_thread`). Each instance runs a
 /// task there that serves this handle's requests in order and ends when the
-/// handle is dropped.
+/// handle is dropped. Only one such task runs at a time: a new instance waits
+/// for the previous one to end before it installs its fresh database.
+///
+/// A cancelled `apply` drops only the wait for the reply; the in-flight block
+/// runs to completion on the brc20 thread. That is safe because the next
+/// instance's `init` clears any residue of a partly written block and
+/// reconciles brc20 with brc20-prog before it indexes again.
 pub struct Brc20Module {
     requests: mpsc::UnboundedSender<Request>,
     network: Network,
@@ -147,6 +153,11 @@ async fn serve(
     mut requests: mpsc::UnboundedReceiver<Request>,
     ready: oneshot::Sender<anyhow::Result<()>>,
 ) {
+    // Held for this instance's whole life, so instances never share the
+    // global database.
+    static INSTANCE: Mutex<()> = Mutex::const_new(());
+    let _instance = INSTANCE.lock().await;
+
     install_fresh_database(&config).await;
     let mut indexer = Brc20Indexer::new(config, Some(journal));
     let started = indexer.init().await.map_err(into_anyhow);
@@ -175,23 +186,34 @@ async fn serve(
                 transfers,
                 reply,
             } => {
-                // The tip read before indexing decides whether the block is the
-                // journal's last one.
-                let last_opi_block = indexer.last_opi_block;
-                if height > last_opi_block {
-                    indexer.last_opi_block = indexer
-                        .get_opi_block_height()
-                        .await
-                        .unwrap_or(last_opi_block);
-                }
-                let indexed = indexer
-                    .index_block(height, &hash, time, transfers)
-                    .await
-                    .map_err(into_anyhow);
-                let _ = reply.send(indexed);
+                let _ = reply.send(index_block(&mut indexer, height, &hash, time, transfers).await);
             }
         }
     }
+}
+
+/// Checks that brc20 and brc20-prog stand at the same height, refreshes the
+/// journal tip when the block is past the last one read, and indexes the block.
+async fn index_block(
+    indexer: &mut Brc20Indexer,
+    height: i32,
+    hash: &str,
+    time: i64,
+    transfers: Vec<Brc20Tx>,
+) -> anyhow::Result<()> {
+    indexer
+        .check_brc20_prog_height()
+        .await
+        .map_err(into_anyhow)?;
+    // The tip read before indexing decides whether the block is the journal's
+    // last one.
+    if height > indexer.last_opi_block {
+        indexer.last_opi_block = indexer.get_opi_block_height().await.map_err(into_anyhow)?;
+    }
+    indexer
+        .index_block(height, hash, time, transfers)
+        .await
+        .map_err(into_anyhow)
 }
 
 /// brc20's highest stored block and its hash, `None` before the first block.
@@ -267,11 +289,7 @@ fn spawn_on_brc20_thread(job: Job) {
 /// instance starts from what Postgres holds, with empty caches and no pending
 /// writes.
 pub async fn install_fresh_database(config: &Brc20IndexerConfig) {
-    let database = Brc20Database::new(config);
-    match BRC20_DATABASE.get() {
-        Some(slot) => *slot.lock().await = database,
-        None => set_brc20_database(Arc::new(Mutex::new(database))),
-    }
+    replace_brc20_database(Brc20Database::new(config)).await;
 }
 
 /// The BRC-20 transfers of a block's inscription feed, in record order.
