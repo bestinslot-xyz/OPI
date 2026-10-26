@@ -1,5 +1,4 @@
 mod config;
-mod filters;
 mod validate;
 
 use {
@@ -49,8 +48,10 @@ struct Cli {
 enum Command {
     /// Index until SIGINT or SIGTERM (default).
     Run,
-    /// Compare the journal with a running db_reader, block by block. Needs
-    /// the journal, so opi-indexer must be stopped.
+    /// Check brc20's cumulative event and trace hashes against the OPI
+    /// network's. Runs while `run` is running. Exits 0 when the hashes match,
+    /// 1 at the first mismatch, 2 on an error such as a height missing on
+    /// either side.
     Validate(validate::Args),
 }
 
@@ -71,7 +72,14 @@ fn main() -> ExitCode {
     let result = match cli.command.unwrap_or(Command::Run) {
         Command::Run => run().map(|()| true),
         Command::Validate(args) => {
-            Config::from_env().and_then(|config| validate::run(args, &config))
+            return match validate::run(args) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::FAILURE,
+                Err(err) => {
+                    tracing::error!("{err:#}");
+                    ExitCode::from(2)
+                }
+            };
         }
     };
     match result {
