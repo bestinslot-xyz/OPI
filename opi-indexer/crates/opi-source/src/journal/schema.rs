@@ -5,7 +5,7 @@
 //! `Entry::store` forms, so a journal record is byte-identical to the fork's
 //! record for the same event. Ids and txids
 //! appear in display (hex) form in the record types and in internal byte order
-//! on disk.
+//! on disk. Rune values use this journal's own length-prefixed binary layouts.
 
 use {
     anyhow::{Context, Result, bail, ensure},

@@ -23,6 +23,7 @@ use {
         proxy::UpstreamAuth,
     },
     ord::{Chain, InscriptionId},
+    ordinals::{Rune, Runestone},
     redb::{ReadableDatabase, ReadableTable},
     serde_json::{Value, json},
     std::{
@@ -143,6 +144,111 @@ impl Harness {
         let txid = tx.compute_txid();
         state.mempool.push(tx);
         txid
+    }
+
+    /// Mines a block and returns its coinbase output as funding.
+    pub fn fund(&self) -> OutPoint {
+        let block = self.core.mine_blocks(1).remove(0);
+        OutPoint {
+            txid: block.txdata[0].compute_txid(),
+            vout: 0,
+        }
+    }
+
+    /// Adds to the mempool a transaction spending `inputs`, confirmed or in
+    /// the mempool, in the order given, to `outputs` outputs followed by an
+    /// OP_RETURN carrying `runestone`. Each output pays a p2wpkh script
+    /// unique to the transaction and vout; the value splits evenly with no
+    /// fee.
+    pub fn runestone(&self, inputs: &[OutPoint], outputs: usize, runestone: Runestone) -> Txid {
+        let inputs = inputs
+            .iter()
+            .map(|outpoint| (*outpoint, Witness::new()))
+            .collect::<Vec<_>>();
+        self.runestone_with_witness(&inputs, outputs, runestone)
+    }
+
+    /// Like [`Harness::runestone`], with each input carrying its witness.
+    pub fn runestone_with_witness(
+        &self,
+        inputs: &[(OutPoint, Witness)],
+        outputs: usize,
+        runestone: Runestone,
+    ) -> Txid {
+        let mut state = self.core.state();
+        let total = inputs
+            .iter()
+            .map(|(outpoint, _)| {
+                state
+                    .mempool
+                    .iter()
+                    .chain(state.transactions.values())
+                    .find(|tx| tx.compute_txid() == outpoint.txid)
+                    .map(|tx| tx.output[outpoint.vout as usize].value.to_sat())
+                    .unwrap()
+            })
+            .sum::<u64>();
+        let seed = inputs[0].0.txid.to_byte_array();
+        let mut output = (0..outputs)
+            .map(|vout| {
+                let mut hash = [0; 20];
+                hash[..19].copy_from_slice(&seed[..19]);
+                hash[19] = u8::try_from(vout).unwrap();
+                let share = total / outputs as u64;
+                bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(if vout == 0 {
+                        total - share * (outputs as u64 - 1)
+                    } else {
+                        share
+                    }),
+                    script_pubkey: ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array(
+                        hash,
+                    )),
+                }
+            })
+            .collect::<Vec<_>>();
+        output.push(bitcoin::TxOut {
+            value: bitcoin::Amount::ZERO,
+            script_pubkey: runestone.encipher(),
+        });
+        let tx = Transaction {
+            version: bitcoin::transaction::Version(2),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: inputs
+                .iter()
+                .map(|(outpoint, witness)| bitcoin::TxIn {
+                    previous_output: *outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: bitcoin::Sequence::MAX,
+                    witness: witness.clone(),
+                })
+                .collect(),
+            output,
+        };
+        let txid = tx.compute_txid();
+        state.mempool.push(tx);
+        txid
+    }
+
+    /// Confirms a taproot output committing to `rune` and mines the blocks an
+    /// etching of `rune` needs on top, so a transaction mined in the next
+    /// block may etch it. Returns the output and the witness revealing the
+    /// commitment.
+    pub fn commit(&self, rune: Rune) -> (OutPoint, Witness) {
+        self.core.mine_blocks(1);
+        let txid = self.core.broadcast_tx(TransactionTemplate {
+            inputs: &[(self.core.height() as usize, 0, 0, Witness::new())],
+            p2tr: true,
+            ..Default::default()
+        });
+        self.mine(usize::from(Runestone::COMMIT_CONFIRMATIONS));
+        let mut commitment = PushBytesBuf::new();
+        commitment.extend_from_slice(&rune.commitment()).unwrap();
+        let script = script::Builder::new().push_slice(commitment).into_script();
+        (
+            OutPoint { txid, vout: 0 },
+            Witness::from_slice(&[script.into_bytes(), Vec::new()]),
+        )
     }
 
     /// Marks `outpoint` unspent again. mockcore's `invalidate_tip` leaves the

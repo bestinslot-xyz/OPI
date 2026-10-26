@@ -2,6 +2,7 @@ mod finalize;
 pub mod order;
 mod reader;
 mod reorg;
+mod runes;
 mod schema;
 
 pub use {
@@ -221,6 +222,16 @@ impl Journal {
 
     fn meta_u32(&self, key: &[u8], name: &str) -> Result<Option<u32>> {
         meta_u32_in(&self.db.begin_read()?, key, name)
+    }
+
+    /// The chain this journal belongs to.
+    pub fn chain(&self) -> Result<Chain> {
+        let tx = self.db.begin_read()?;
+        let meta = tx.open_table(table(cf::META))?;
+        let raw = meta.get(META_CHAIN)?.context("journal meta has no chain")?;
+        let name = std::str::from_utf8(raw.value()).context("journal chain is not UTF-8")?;
+        name.parse()
+            .map_err(|err| anyhow!("journal chain {name} is unknown: {err}"))
     }
 
     /// Whether this open created the journal's meta, so the journal held no

@@ -5,14 +5,16 @@ use {
     super::{
         Journal, cf, compress_info, encode_info, encode_transfer, info_key,
         order::{Located, assign_idx},
-        raw_event_key, set_final_tip, table, transfer_key,
+        raw_event_key,
+        runes::{RuneTables, finalize_runes},
+        set_final_tip, table, transfer_key,
     },
     crate::raw_event::RawEvent,
     anyhow::{Context, Result, ensure},
     bitcoin::{Block, BlockHash, OutPoint, Txid, consensus, hashes::Hash},
     opi_core::{InscriptionInfo, InscriptionRecord},
     ord::{Index, Inscription, InscriptionId, ParsedEnvelope},
-    ordinals::{Charm, SatPoint},
+    ordinals::{Charm, Rune, SatPoint},
     redb::ReadableTable,
     serde_json::Value,
     std::{
@@ -97,16 +99,17 @@ impl Positions {
     }
 }
 
-type RawTable<'txn> = redb::Table<'txn, &'static [u8], &'static [u8]>;
+pub(super) type RawTable<'txn> = redb::Table<'txn, &'static [u8], &'static [u8]>;
 
 /// Finalizes `heights`, which start at the next unfinalized height, as ord
 /// committed them: for each height its transfer records, the info rows of
-/// its tracked creations and its header, then `final_tip = heights.end()`,
-/// all in one durable transaction.
+/// its tracked creations, its rune records from ord's first rune height on
+/// and its header, then `final_tip = heights.end()`, all in one durable
+/// transaction.
 ///
 /// Only raw events logged under ord's hash for a height count, so stale rows
-/// of a replaced block are ignored. A height without inscription events
-/// reads only its header.
+/// of a replaced block are ignored. A height below the first rune height
+/// without inscription events reads only its header.
 pub fn finalize_range(
     journal: &Journal,
     index: &Index,
@@ -125,12 +128,19 @@ pub fn finalize_range(
         "finalizing from height {first}, but the next unfinalized height is {expected}"
     );
 
+    let first_rune_height = Rune::first_rune_height(journal.chain()?.into());
+
     let tx = journal.begin_write()?;
     {
         let mut transfers = tx.open_table(table(cf::TRANSFERS))?;
         let mut infos = tx.open_table(table(cf::INFO))?;
         let mut headers = tx.open_table(table(cf::HEADERS))?;
         let mut first_transfers = tx.open_table(table(cf::FIRST_TRANSFER))?;
+        let mut rune_events = tx.open_table(table(cf::RUNE_EVENTS))?;
+        let mut rune_etchings = tx.open_table(table(cf::RUNE_ETCHINGS))?;
+        let mut rune_balances = tx.open_table(table(cf::RUNE_BALANCES))?;
+        let mut rune_counters = tx.open_table(table(cf::RUNE_COUNTERS))?;
+        let mut rune_counter_log = tx.open_table(table(cf::RUNE_COUNTER_LOG))?;
         let raw_events = tx.open_table(table(cf::RAW_EVENTS))?;
         let raw_heights = tx.open_table(table(cf::RAW_HEIGHTS))?;
 
@@ -139,13 +149,35 @@ pub fn finalize_range(
                 .block_hash(Some(height))?
                 .with_context(|| format!("ord has no hash for committed height {height}"))?;
             let events = logged_events(&raw_heights, &raw_events, height, hash)?;
-            let block = chain.block(hash, !events.is_empty())?;
+            let inscriptions = events.iter().any(|event| {
+                matches!(
+                    event,
+                    RawEvent::InscriptionCreated { .. } | RawEvent::InscriptionTransferred { .. }
+                )
+            });
+            let runes = height >= first_rune_height;
+            let block = chain.block(hash, inscriptions || runes)?;
             ensure!(
                 block.block_hash() == hash,
                 "block {} given for {hash} at height {height}",
                 block.block_hash()
             );
-            if !events.is_empty() {
+            if runes {
+                finalize_runes(
+                    index,
+                    RuneTables {
+                        events: &mut rune_events,
+                        etchings: &mut rune_etchings,
+                        balances: &mut rune_balances,
+                        counters: &mut rune_counters,
+                        counter_log: &mut rune_counter_log,
+                    },
+                    &block,
+                    height,
+                    &events,
+                )?;
+            }
+            if inscriptions {
                 finalize_events(
                     index,
                     chain,
@@ -237,7 +269,7 @@ fn finalize_events(
     Ok(())
 }
 
-/// Inscription events of `height` logged under `hash`, in emission order.
+/// Events of `height` logged under `hash`, in emission order.
 fn logged_events(
     raw_heights: &RawTable,
     raw_events: &RawTable,
@@ -252,17 +284,10 @@ fn logged_events(
     }
     let first = raw_event_key(height, 0);
     let last = raw_event_key(height, u32::MAX);
-    let mut events = Vec::new();
-    for row in raw_events.range::<&[u8]>(first.as_slice()..=last.as_slice())? {
-        let event = RawEvent::decode(row?.1.value())?;
-        if matches!(
-            event,
-            RawEvent::InscriptionCreated { .. } | RawEvent::InscriptionTransferred { .. }
-        ) {
-            events.push(event);
-        }
-    }
-    Ok(events)
+    raw_events
+        .range::<&[u8]>(first.as_slice()..=last.as_slice())?
+        .map(|row| RawEvent::decode(row?.1.value()))
+        .collect()
 }
 
 /// Places every inscription event in the block and decides what it tracks.
