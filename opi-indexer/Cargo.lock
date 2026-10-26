@@ -4751,6 +4751,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "opi-sns"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "opi-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "opi-source"
 version = "0.1.0"
 dependencies = [
