@@ -183,6 +183,9 @@ impl Brc20Indexer {
         }
 
         self.clear_caches().await?;
+        // Clearing brc20-prog's caches drops its uncommitted blocks, which can
+        // leave it below brc20.
+        self.reorg_to_last_synced_block_height().await?;
 
         let brc20_prog_version = self.brc20_prog_client.brc20_version().await?;
         let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).expect(
@@ -2289,10 +2292,10 @@ impl Brc20Indexer {
             .ok_or("Block hash and time not found".into())
     }
 
-    /// Fails when brc20 and brc20-prog stand at different heights, under the
-    /// conditions `reorg_to_last_synced_block_height` reconciles them. A full
-    /// module runs it before every block; the restarted instance's `init`
-    /// reconciles the two.
+    /// Fails when brc20 and brc20-prog disagree on their last block, by the
+    /// height and hash comparisons `reorg_to_last_synced_block_height` makes
+    /// before it reconciles them. A full module runs it before every block;
+    /// the restarted instance's `init` reconciles the two.
     pub(crate) async fn check_brc20_prog_height(&self) -> Result<(), Box<dyn Error>> {
         let last_brc20_block_height = get_brc20_database()
             .lock()
@@ -2305,15 +2308,44 @@ impl Brc20Indexer {
             } else {
                 parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
             };
-        match brc20_prog_height_mismatch(
+        if let Some(mismatch) = brc20_prog_height_mismatch(
             last_brc20_block_height,
             last_brc20_prog_block_height,
             self.config.first_brc20_height,
             self.config.first_brc20_prog_phase_one_height,
         ) {
-            Some(mismatch) => Err(mismatch.into()),
-            None => Ok(()),
+            return Err(mismatch.into());
         }
+
+        if !compares_brc20_prog_hash(
+            last_brc20_block_height,
+            self.config.first_brc20_height,
+            self.config.first_brc20_prog_phase_one_height,
+        ) {
+            return Ok(());
+        }
+        let brc20_block_hash = get_brc20_database()
+            .lock()
+            .await
+            .get_block_hash(last_brc20_block_height)
+            .await?;
+        let brc20_prog_block_hash = self
+            .brc20_prog_client
+            .eth_get_block_by_number(last_brc20_block_height.to_string(), Some(false))
+            .await?
+            .hash
+            .bytes
+            .to_string()
+            .trim_start_matches("0x")
+            .to_string();
+        if brc20_block_hash != brc20_prog_block_hash {
+            return Err(format!(
+                "brc20's block hash at {} is {} but brc20-prog's is {}",
+                last_brc20_block_height, brc20_block_hash, brc20_prog_block_hash
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
@@ -2507,6 +2539,13 @@ fn brc20_prog_height_mismatch(
         .then(|| format!("brc20 is at {last_brc20} but brc20-prog is at {last_prog}"))
 }
 
+/// Whether brc20's stored hash at `last_brc20` is compared with brc20-prog's:
+/// `reorg_to_last_synced_block_height` reads brc20-prog's hash only once brc20
+/// has indexed a BRC-20 block at or above phase one.
+fn compares_brc20_prog_hash(last_brc20: i32, first_brc20_height: i32, phase_one: i32) -> bool {
+    last_brc20 >= first_brc20_height && last_brc20 >= phase_one
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2530,6 +2569,14 @@ mod tests {
         assert!(mismatch(300_000, 300_000).is_none());
         assert!(mismatch(300_000, 300_001).is_some());
         assert!(mismatch(300_001, 300_000).is_some());
+
+        // brc20-prog's block hash is compared from phase one on.
+        let compares = |brc20| compares_brc20_prog_hash(brc20, FIRST, PHASE_ONE);
+        assert!(!compares(FIRST - 1));
+        assert!(!compares(FIRST));
+        assert!(!compares(PHASE_ONE - 1));
+        assert!(compares(PHASE_ONE));
+        assert!(compares(300_000));
     }
 
     struct StubJournal {
