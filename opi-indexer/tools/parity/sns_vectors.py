@@ -27,12 +27,21 @@ The vectors run get_sns_name and get_ns_register from the stub
 `index_block`, called at module level, so json5's parser runs as many frames
 deep as it does in sns_index.py and hits RecursionError at the same nesting.
 
+`hash_chain` holds the block and cumulative event hashes of three
+consecutive blocks (the middle one empty), built with EVENT_SEPARATOR,
+get_register_event_str, get_ns_register_event_str and get_sha256_hash copied
+verbatim from sns_index.py (lines 16, 229, 236 and 242).
+
+`dict_order` is json5.loads of an object with repeated keys as its item list:
+`dict(pairs)` keeps each key's first position and its last value.
+
 The file also records `isspace` (every code point with str.isspace) and
 `lower` (str.lower of strings that exercise final sigma and multi-character
 mappings, then every code point whose lowercase differs).
 """
 
 import codecs
+import hashlib
 import sys
 import unicodedata
 
@@ -123,6 +132,68 @@ def outcome(name, domain, namespace):
     return 'stall'
   return {'namespace': namespace}
 
+
+EVENT_SEPARATOR = "|"
+
+def get_register_event_str(name, domain, inscription_id):
+  res = "register;"
+  res += inscription_id + ";"
+  res += name + ";"
+  res += domain
+  return res
+
+def get_ns_register_event_str(namespace, inscription_id):
+  res = "ns_register;"
+  res += inscription_id + ";"
+  res += namespace
+  return res
+
+def get_sha256_hash(s):
+  return hashlib.sha256(s.encode('utf-8')).hexdigest()
+
+
+def hash_chain(blocks):
+  """index_block's event accumulation (lines 264, 312 and 326) and
+  update_event_hashes (lines 245-255), with a dict standing in for
+  sns_names_cumulative_event_hashes."""
+  table = {}
+  out = []
+  for block_height, events in blocks:
+    block_events_str = ""
+    for event in events:
+      if event[0] == 'register':
+        _, name, domain, inscr_id = event
+        block_events_str += get_register_event_str(str(name), str(domain), str(inscr_id)) + EVENT_SEPARATOR
+      else:
+        _, namespace, inscr_id = event
+        block_events_str += get_ns_register_event_str(str(namespace), str(inscr_id)) + EVENT_SEPARATOR
+    if len(block_events_str) > 0 and block_events_str[-1] == EVENT_SEPARATOR: block_events_str = block_events_str[:-1] ## remove last separator
+    block_event_hash = get_sha256_hash(block_events_str)
+    cumulative_event_hash = None
+    if (block_height - 1) not in table:
+      cumulative_event_hash = block_event_hash
+    else:
+      cumulative_event_hash = get_sha256_hash(table[block_height - 1] + block_event_hash)
+    table[block_height] = cumulative_event_hash
+    out.append({
+      'block_height': block_height,
+      'events': [list(event) for event in events],
+      'block_event_hash': block_event_hash,
+      'cumulative_event_hash': cumulative_event_hash,
+    })
+  return out
+
+
+HASH_CHAIN_BLOCKS = [
+  (840000, [('register', 'alice.sats', 'sats', 'aa' * 32 + 'i0'),
+            ('ns_register', 'sats', 'bb' * 32 + 'i1'),
+            ('register', 'σας.ünï', 'ünï', 'cc' * 32 + 'i0')]),
+  (840001, []),
+  (840002, [('ns_register', '名字', 'dd' * 32 + 'i0')]),
+]
+
+
+DICT_ORDER = "{b:'1',a:'2',b:'3',c:'4',a:'5',\\u0062:'6',d:'7'}"
 
 PARSE_CODE = json5_parser.Parser.parse.__code__
 
@@ -372,4 +443,7 @@ print(dumps({
   'isspace': [cp for cp in range(0x110000) if chr(cp).isspace()],
   'lower': lower,
   'sns': vectors,
+  'hash_chain': hash_chain(HASH_CHAIN_BLOCKS),
+  'dict_order': {'content': DICT_ORDER,
+                 'items': [list(item) for item in json5.loads(DICT_ORDER).items()]},
 }))

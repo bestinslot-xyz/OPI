@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use opi_core::{BlockView, InscriptionFeed, InscriptionInfo, InscriptionRecord};
-use opi_sns::json5::{FRAME_LIMIT, frame_stats};
+use opi_sns::json5::{FRAME_LIMIT, PyValue, frame_stats, frame_stats_unmemoized, loads};
 use opi_sns::pystr::{is_py_space, py_lower, py_split_first, py_strip};
 use opi_sns::{
     SnsOp, block_event_hash, candidates, content_type_accepted, cumulative_hash, get_ns_register,
@@ -65,6 +65,130 @@ struct Vectors {
     isspace: Vec<u32>,
     lower: Vec<LowerCase>,
     sns: Vec<Vector>,
+    hash_chain: Vec<ChainBlock>,
+    dict_order: DictOrder,
+}
+
+#[derive(Deserialize)]
+struct ChainBlock {
+    block_height: u32,
+    events: Vec<Vec<String>>,
+    block_event_hash: String,
+    cumulative_event_hash: String,
+}
+
+#[derive(Deserialize)]
+struct DictOrder {
+    content: String,
+    items: Vec<(String, String)>,
+}
+
+/// sns_index.py's block and cumulative event hashes over consecutive blocks,
+/// one of them empty.
+#[test]
+fn hash_chain_matches_python() {
+    let chain = vectors().hash_chain;
+    assert_eq!(chain.len(), 3);
+    assert!(chain.iter().any(|block| block.events.is_empty()));
+    let mut previous: Option<String> = None;
+    for (i, block) in chain.iter().enumerate() {
+        if i > 0 {
+            assert_eq!(block.block_height, chain[i - 1].block_height + 1);
+        }
+        let events: Vec<String> = block
+            .events
+            .iter()
+            .map(|event| match event.as_slice() {
+                [kind, name, domain, id] if kind == "register" => {
+                    register_event_str(name, domain, id)
+                }
+                [kind, namespace, id] if kind == "ns_register" => {
+                    ns_register_event_str(namespace, id)
+                }
+                other => panic!("unknown event {other:?}"),
+            })
+            .collect();
+        let block_hash = block_event_hash(&events);
+        assert_eq!(
+            block_hash, block.block_event_hash,
+            "block {}",
+            block.block_height
+        );
+        let cumulative = cumulative_hash(previous.as_deref(), &block_hash);
+        assert_eq!(
+            cumulative, block.cumulative_event_hash,
+            "block {}",
+            block.block_height
+        );
+        previous = Some(cumulative);
+    }
+}
+
+fn text_pairs(value: &PyValue) -> Vec<(String, String)> {
+    let PyValue::Dict(pairs) = value else {
+        panic!("{value:?} is not a dict");
+    };
+    pairs
+        .iter()
+        .map(|(k, v)| {
+            let PyValue::Str(v) = v else { panic!("{v:?}") };
+            let text = |cps: &[u32]| cps.iter().map(|&c| char::from_u32(c).unwrap()).collect();
+            (text(k), text(v))
+        })
+        .collect()
+}
+
+/// A repeated key keeps its first position and its last value, as
+/// `dict(pairs)` does.
+#[test]
+fn duplicate_keys_follow_python_dict_order() {
+    let case = vectors().dict_order;
+    let value = loads(&case.content).expect("dict");
+    assert_eq!(text_pairs(&value), case.items);
+}
+
+/// Replaying recorded single-character rules adds exactly the frames a full
+/// run enters.
+#[test]
+fn replayed_rules_count_the_same_frames() {
+    let mut extra = vec![
+        "{a:1, b :'x\\ny', /*c*/ c\u{3000}:[1,\r\n2], \\u0064: \"\\x41\"}".to_string(),
+        format!(
+            "{{{}}}",
+            (0..300)
+                .map(|i| format!("k{i}:'v{i}'"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ];
+    extra.push("[".repeat(70) + &"]".repeat(70));
+    let contents = vectors()
+        .sns
+        .into_iter()
+        .filter_map(|v| String::from_utf8(hex::decode(v.content_hex).unwrap()).ok())
+        .chain(extra);
+    for content in contents {
+        assert_eq!(
+            frame_stats(&content),
+            frame_stats_unmemoized(&content),
+            "{}",
+            show(content.as_bytes())
+        );
+    }
+}
+
+/// Distinct keys build in linear time. Debug builds are too slow to bound
+/// this; run with `cargo test --release -- --ignored`.
+#[test]
+#[ignore]
+fn many_distinct_keys_parse_quickly() {
+    let body: Vec<String> = (0..200_000).map(|i| format!("k{i}:'v'")).collect();
+    let content = format!("{{{}}}", body.join(","));
+    let started = std::time::Instant::now();
+    let value = loads(&content).expect("dict");
+    let elapsed = started.elapsed();
+    assert_eq!(text_pairs(&value).len(), 200_000);
+    assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
 }
 
 fn vectors() -> Vectors {

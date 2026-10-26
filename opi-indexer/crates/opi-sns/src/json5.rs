@@ -10,6 +10,8 @@
 //! escape yields a lone surrogate, which Python keeps and Rust strings cannot
 //! hold.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
 use crate::pytables::{LL, LM, LO, LT, LU, MC, MN, ND, NL, PC, ZS};
@@ -67,8 +69,19 @@ pub fn loads(content: &str) -> Option<PyValue> {
 /// frames it enters, without a recursion limit; the parity fixtures pin both
 /// against Python.
 pub fn frame_stats(content: &str) -> (u32, u64) {
+    stats(content, true)
+}
+
+/// [`frame_stats`] with every rule run in full, for checking the replay of
+/// single-character rules.
+pub fn frame_stats_unmemoized(content: &str) -> (u32, u64) {
+    stats(content, false)
+}
+
+fn stats(content: &str, memoize: bool) -> (u32, u64) {
     let msg: Vec<u32> = content.chars().map(u32::from).collect();
     let mut parser = P::new(msg, u32::MAX);
+    parser.memoize = memoize;
     let _ = parser.run();
     (parser.max_depth, parser.calls)
 }
@@ -93,14 +106,21 @@ fn walk(el: &V) -> Result<PyValue, ValueError> {
         "number" => number(v.str()).map(|()| PyValue::Number),
         "string" => Ok(PyValue::Str(v.str().to_vec())),
         "object" => {
+            // `_dictify` with the defaults (`allow_duplicate_keys=True`, no
+            // hooks) returns `dict(pairs)`: a repeated key keeps its first
+            // position and takes its last value.
             let mut pairs: Vec<(Vec<u32>, PyValue)> = Vec::new();
+            let mut index: HashMap<Vec<u32>, usize> = HashMap::new();
             for member in v.list() {
                 let member = member.list();
                 let key = member[0].str().to_vec();
                 let value = walk(&member[1])?;
-                match pairs.iter_mut().find(|(k, _)| *k == key) {
-                    Some(pair) => pair.1 = value,
-                    None => pairs.push((key, value)),
+                match index.entry(key) {
+                    Entry::Occupied(at) => pairs[*at.get()].1 = value,
+                    Entry::Vacant(slot) => {
+                        pairs.push((slot.key().clone(), value));
+                        slot.insert(pairs.len() - 1);
+                    }
                 }
             }
             Ok(PyValue::Dict(pairs))
@@ -173,12 +193,14 @@ enum V {
     Nil,
     Bool(bool),
     Str(Rc<[u32]>),
+    /// A one-character string, kept unboxed.
+    Char(u32),
     List(Rc<Vec<V>>),
 }
 
 impl V {
     fn ch(c: u32) -> V {
-        V::Str(Rc::from([c].as_slice()))
+        V::Char(c)
     }
 
     fn text(s: &str) -> V {
@@ -195,6 +217,7 @@ impl V {
     fn str(&self) -> &[u32] {
         match self {
             V::Str(s) => s,
+            V::Char(c) => std::slice::from_ref(c),
             other => unreachable!("expected a string, found {other:?}"),
         }
     }
@@ -204,6 +227,7 @@ impl V {
             V::Nil => false,
             V::Bool(b) => *b,
             V::Str(s) => !s.is_empty(),
+            V::Char(_) => true,
             V::List(items) => !items.is_empty(),
         }
     }
@@ -211,11 +235,10 @@ impl V {
     /// Python `a + b` on two strings or two lists.
     fn add(&self, other: &V) -> V {
         match (self, other) {
-            (V::Str(a), V::Str(b)) => V::Str(a.iter().chain(b.iter()).copied().collect()),
             (V::List(a), V::List(b)) => {
                 V::List(Rc::new(a.iter().chain(b.iter()).cloned().collect()))
             }
-            (a, b) => unreachable!("cannot add {a:?} and {b:?}"),
+            (a, b) => V::Str(a.str().iter().chain(b.str()).copied().collect()),
         }
     }
 
@@ -236,13 +259,91 @@ struct P {
     val: V,
     failed: bool,
     scopes: Vec<Vec<(&'static str, V)>>,
+    /// Emptied scopes kept for reuse.
+    spare_scopes: Vec<Vec<(&'static str, V)>>,
     depth: u32,
     max_depth: u32,
     calls: u64,
     limit: u32,
+    memoize: bool,
+    memo: HashMap<(OneChar, u32), Replay>,
 }
 
+/// Rules whose run depends only on the character at the cursor, apart from
+/// the characters [`OneChar::looks_ahead`] lists.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum OneChar {
+    Ws,
+    SqChar,
+    DqChar,
+    IdStart,
+    IdContinue,
+}
+
+impl OneChar {
+    /// Characters after which the rule reads further input: a comment, CRLF,
+    /// or a backslash escape.
+    fn looks_ahead(self, c: u32) -> bool {
+        match self {
+            OneChar::Ws => c == u32::from('/') || c == u32::from('\r'),
+            OneChar::SqChar | OneChar::DqChar => c == u32::from('\\') || c == u32::from('\r'),
+            OneChar::IdStart | OneChar::IdContinue => c == u32::from('\\'),
+        }
+    }
+}
+
+/// The effect of one run of a [`OneChar`] rule: frames entered, deepest frame
+/// below the caller, and the resulting state.
+#[derive(Clone)]
+struct Replay {
+    calls: u64,
+    depth: u32,
+    failed: bool,
+    advance: usize,
+    val: V,
+}
+
+/// Memo key for the end of input.
+const END: u32 = u32::MAX;
+
 impl P {
+    /// Runs `body` for `rule`, replaying a recorded run at the same
+    /// character instead. A replay adds the same frame count and depth as
+    /// the run it records; one that would pass the recursion limit runs in
+    /// full so the error rises at the same frame.
+    fn one_char(&mut self, rule: OneChar, body: fn(&mut P) -> R) -> R {
+        let c = self.msg.get(self.pos).copied().unwrap_or(END);
+        if !self.memoize || rule.looks_ahead(c) {
+            return body(self);
+        }
+        if let Some(replay) = self.memo.get(&(rule, c)) {
+            if self.depth + replay.depth > self.limit {
+                return body(self);
+            }
+            self.calls += replay.calls;
+            self.max_depth = self.max_depth.max(self.depth + replay.depth);
+            self.failed = replay.failed;
+            self.pos += replay.advance;
+            self.val = replay.val.clone();
+            return Ok(());
+        }
+        let (calls, max_depth, pos) = (self.calls, self.max_depth, self.pos);
+        self.max_depth = self.depth;
+        let result = body(self);
+        let depth = self.max_depth - self.depth;
+        self.max_depth = self.max_depth.max(max_depth);
+        result?;
+        let replay = Replay {
+            calls: self.calls - calls,
+            depth,
+            failed: self.failed,
+            advance: self.pos - pos,
+            val: self.val.clone(),
+        };
+        self.memo.insert((rule, c), replay);
+        Ok(())
+    }
+
     fn new(msg: Vec<u32>, limit: u32) -> P {
         P {
             msg,
@@ -250,10 +351,13 @@ impl P {
             val: V::Nil,
             failed: false,
             scopes: Vec::new(),
+            spare_scopes: Vec::new(),
             depth: 0,
             max_depth: 0,
             calls: 0,
             limit,
+            memoize: true,
+            memo: HashMap::new(),
         }
     }
 
@@ -273,6 +377,7 @@ impl P {
     }
 
     /// One Python frame around `body`.
+    #[inline(always)]
     fn frame<T>(&mut self, body: impl FnOnce(&mut P) -> R<T>) -> R<T> {
         self.depth += 1;
         self.calls += 1;
@@ -287,6 +392,7 @@ impl P {
 
     // --- glop runtime -----------------------------------------------------
 
+    #[inline]
     fn succeed(&mut self, v: V, newpos: Option<usize>) -> R {
         self.frame(|p| {
             p.val = v;
@@ -298,6 +404,7 @@ impl P {
         })
     }
 
+    #[inline]
     fn fail(&mut self) -> R {
         self.frame(|p| {
             p.val = V::Nil;
@@ -404,6 +511,7 @@ impl P {
         })
     }
 
+    #[inline]
     fn ch(&mut self, c: char) -> R {
         self.frame(|p| {
             let c = u32::from(c);
@@ -429,6 +537,7 @@ impl P {
         })
     }
 
+    #[inline]
     fn range(&mut self, lo: char, hi: char) -> R {
         self.frame(|p| {
             if p.pos != p.msg.len() && (u32::from(lo)..=u32::from(hi)).contains(&p.msg[p.pos]) {
@@ -442,19 +551,24 @@ impl P {
 
     fn push(&mut self) -> R {
         self.frame(|p| {
-            p.scopes.push(Vec::new());
+            let scope = p.spare_scopes.pop().unwrap_or_default();
+            p.scopes.push(scope);
             Ok(())
         })
     }
 
     fn pop(&mut self) -> R {
         self.frame(|p| {
-            p.scopes.pop();
+            if let Some(mut scope) = p.scopes.pop() {
+                scope.clear();
+                p.spare_scopes.push(scope);
+            }
             Ok(())
         })
     }
 
     /// The innermost scope's `var`, else the global variable.
+    #[inline]
     fn get(&mut self, var: &'static str) -> R<V> {
         self.frame(|p| {
             if let Some((_, v)) = p
@@ -471,6 +585,7 @@ impl P {
         })
     }
 
+    #[inline]
     fn set(&mut self, var: &'static str, v: V) -> R {
         self.frame(|p| {
             let scope = p
@@ -508,6 +623,7 @@ impl P {
         })
     }
 
+    #[inline]
     fn anything(&mut self) -> R {
         self.frame(|p| {
             if p.pos < p.msg.len() {
@@ -635,6 +751,10 @@ impl P {
     }
 
     fn ws(&mut self) -> R {
+        self.one_char(OneChar::Ws, P::ws_full)
+    }
+
+    fn ws_full(&mut self) -> R {
         self.frame(|p| {
             p.choose(&[
                 &|p| p.frame(|p| p.ch(' ')),
@@ -818,11 +938,11 @@ impl P {
     }
 
     fn sqchar(&mut self) -> R {
-        self.qchar(&|p| p.squote())
+        self.one_char(OneChar::SqChar, |p| p.qchar(&|p| p.squote()))
     }
 
     fn dqchar(&mut self) -> R {
-        self.qchar(&|p| p.dquote())
+        self.one_char(OneChar::DqChar, |p| p.qchar(&|p| p.dquote()))
     }
 
     /// `_sqchar_` and `_dqchar_`.
@@ -1060,6 +1180,10 @@ impl P {
     }
 
     fn id_start(&mut self) -> R {
+        self.one_char(OneChar::IdStart, P::id_start_full)
+    }
+
+    fn id_start_full(&mut self) -> R {
         self.frame(|p| {
             p.choose(&[&|p| p.ascii_id_start(), &|p| p.other_id_start(), &|p| {
                 p.frame(|p| p.seq(&[&|p| p.bslash(), &|p| p.unicode_esc()]))
@@ -1101,6 +1225,10 @@ impl P {
     }
 
     fn id_continue(&mut self) -> R {
+        self.one_char(OneChar::IdContinue, P::id_continue_full)
+    }
+
+    fn id_continue_full(&mut self) -> R {
         self.frame(|p| {
             p.choose(&[
                 &|p| p.ascii_id_start(),
