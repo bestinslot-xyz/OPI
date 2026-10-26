@@ -23,10 +23,15 @@ Per height in range:
   runes_id_to_entry_changes     rows at the height, keyed by rune_id.
   runes_block_hashes            rows present on both sides.
 
-runes_cumulative_event_hashes of the two sides are not compared (the candidate
-hashes a canonical event order). As information the tool prints the heights where
-the reference's block_event_hash equals the v1-style hash of the reference's own
-event order.
+  runes_cumulative_event_hashes block_event_hash must be equal at heights where
+                                both sides have a row and their event sequences
+                                are identical in exact order. Heights where input
+                                or burn events are reordered skip the check, as
+                                do cumulative hashes (the candidate hashes a
+                                canonical event order).
+
+As information the tool prints the heights where the reference's block_event_hash
+equals the v1-style hash of the reference's own event order.
 
 Exit codes: 0 equal, 1 differences found, 2 usage or connection error.
 """
@@ -125,7 +130,13 @@ def fmt(row):
 
 def tx_groups(rows):
   """rows: (txid, event_type, outpoint, pkscript, wallet_addr, rune_id, amount) in id order."""
-  return [(txid, list(g)) for txid, g in itertools.groupby(rows, key=lambda r: r[0])]
+  groups = [(txid, list(g)) for txid, g in itertools.groupby(rows, key=lambda r: r[0])]
+  seen = set()
+  for txid, _ in groups:
+    if txid in seen:
+      raise ValueError(txid)
+    seen.add(txid)
+  return groups
 
 
 def base_key(e):
@@ -148,8 +159,14 @@ def compare_wallet(report, height, ref_e, cand_e):
 
 
 def compare_event_block(report, height, ref_rows, cand_rows):
-  ref_tx = tx_groups(ref_rows)
-  cand_tx = tx_groups(cand_rows)
+  try:
+    ref_tx = tx_groups(ref_rows)
+  except ValueError as e:
+    raise Difference(height, f"reference events of tx {e} are not contiguous in id order")
+  try:
+    cand_tx = tx_groups(cand_rows)
+  except ValueError as e:
+    raise Difference(height, f"candidate events of tx {e} are not contiguous in id order")
   for i in range(max(len(ref_tx), len(cand_tx))):
     if i >= len(ref_tx):
       raise Difference(height, f"candidate has an extra tx {cand_tx[i][0]} at tx position {i}")
@@ -205,6 +222,10 @@ def compare_keyed(table, height, ref_rows, cand_rows, key_index, columns, report
   """Rows are tuples laid out as `columns` (plus an optional wallet column at wallet_index)."""
   rmap = {r[key_index]: r for r in ref_rows}
   cmap = {r[key_index]: r for r in cand_rows}
+  if len(rmap) != len(ref_rows):
+    raise Difference(height, "the reference has duplicate keys at this height")
+  if len(cmap) != len(cand_rows):
+    raise Difference(height, "the candidate has duplicate keys at this height")
   for key in sorted(rmap):
     if key not in cmap:
       raise Difference(height, f"row {key!r} is missing from the candidate: {fmt(rmap[key])}")
@@ -273,6 +294,41 @@ def check_block_hashes(ref, cand, lo, hi, report):
       raise Difference(height, f"block_time differs: reference {rrows[0][1]}, candidate {crows[0][1]}")
 
 
+class HeightEvents:
+  """Event rows per height from one ordered stream; `at` must be called with ascending heights."""
+
+  def __init__(self, conn, name, lo, hi):
+    sql = (
+      "SELECT block_height, event_type, txid, outpoint, pkscript, rune_id, amount FROM runes_events "
+      "WHERE block_height BETWEEN %s AND %s ORDER BY block_height, id"
+    )
+    self.groups = height_groups(stream(conn, name, sql, (lo, hi)))
+    self.pending = next(self.groups, None)
+
+  def at(self, height):
+    while self.pending is not None and self.pending[0] < height:
+      self.pending = next(self.groups, None)
+    return self.pending[1] if self.pending is not None and self.pending[0] == height else []
+
+
+def check_event_hashes(ref, cand, lo, hi, report):
+  """Heights with identical event sequences on both sides must carry equal block_event_hash.
+
+  Heights where the candidate reordered input or burn events skip the check."""
+  hash_sql = "SELECT block_height, block_event_hash FROM runes_cumulative_event_hashes WHERE block_height BETWEEN %s AND %s ORDER BY block_height"
+  rg = height_groups(stream(ref, "ch_ref", hash_sql, (lo, hi)))
+  cg = height_groups(stream(cand, "ch_cand", hash_sql, (lo, hi)))
+  rev = HeightEvents(ref, "che_ref", lo, hi)
+  cev = HeightEvents(cand, "che_cand", lo, hi)
+  for height, rrows, crows in merge(rg, cg):
+    if not rrows or not crows:
+      continue
+    if rev.at(height) != cev.at(height):
+      continue
+    if rrows[0][0] != crows[0][0]:
+      raise Difference(height, f"block_event_hash differs on an identical event sequence: reference {rrows[0][0]}, candidate {crows[0][0]}")
+
+
 # information: v1 hash of the reference order ---------------------------------
 
 def event_hash_string(rows):
@@ -316,7 +372,12 @@ CHECKS = (
   ("runes_id_to_entry", check_entries),
   ("runes_id_to_entry_changes", check_changes),
   ("runes_block_hashes", check_block_hashes),
+  ("runes_cumulative_event_hashes", check_event_hashes),
 )
+
+
+class UsageError(Exception):
+  pass
 
 
 def default_to_height(ref, cand):
@@ -324,7 +385,7 @@ def default_to_height(ref, cand):
   for conn in (ref, cand):
     top = conn.execute("SELECT max(block_height) FROM runes_block_hashes").fetchone()[0]
     if top is None:
-      raise SystemExit("error: runes_block_hashes is empty on one side; pass --to-height")
+      raise UsageError("runes_block_hashes is empty on one side; pass --to-height")
     tops.append(top)
   return min(tops)
 
@@ -338,12 +399,17 @@ def main(argv=None):
   args = p.parse_args(argv)
 
   try:
-    ref = psycopg.connect(args.reference)
-    cand = psycopg.connect(args.candidate)
-  except psycopg.Error as e:
-    print(f"error: cannot connect: {e}", file=sys.stderr)
+    return run(args)
+  except UsageError as e:
+    print(f"error: {e}", file=sys.stderr)
     return 2
-  with ref, cand:
+  except psycopg.Error as e:
+    print(f"error: database: {e}", file=sys.stderr)
+    return 2
+
+
+def run(args):
+  with psycopg.connect(args.reference) as ref, psycopg.connect(args.candidate) as cand:
     ref.read_only = True
     cand.read_only = True
     lo = args.from_height

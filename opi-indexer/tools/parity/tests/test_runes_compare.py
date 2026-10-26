@@ -298,3 +298,156 @@ def test_default_range_uses_common_block_hash_maximum(dbs):
   r = subprocess.run([sys.executable, "-I", str(TOOL), "--reference", url(names[0]), "--candidate", url(names[1])], capture_output=True, text=True)
   assert r.returncode == 1
   assert "840001" in r.stdout
+
+
+def replace_tx2_events(conn, spec):
+  """Replaces block 840001's events with (type, txid, outpoint, pkscript, rune_id, amount) tuples in order."""
+  conn.execute("DELETE FROM runes_events WHERE block_height = 840001")
+  for typ, txid, outpoint, pkscript, rune_id, amount in spec:
+    event(conn, 840001, typ, txid, outpoint, pkscript, rune_id, amount)
+
+
+IN_A = (0, TX2, OP_A, P2WPKH, "840000:1", 60)
+IN_B = (0, TX2, OP_B, P2TR, "840000:1", 40)
+BURN_X = (4, TX2, None, None, "840000:1", 30)
+MINT = (2, TX2, None, None, "840000:1", 1)
+
+
+def assert_events_fail(r):
+  assert r.returncode == 1, r.stdout + r.stderr
+  assert "runes_events" in r.stdout
+
+
+def test_output_event_moved_to_another_tx_fails(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  cand.execute("UPDATE runes_events SET txid = %s WHERE block_height = 840000 AND outpoint = %s", (TX2, OP_B))
+  assert_events_fail(run(names))
+
+
+def test_mint_event_moved_to_another_tx_fails(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  event(ref, 840001, 2, TX1, None, None, "840000:1", 1)
+  event(cand, 840001, 2, TX2, None, None, "840000:1", 1)
+  assert_events_fail(run(names))
+
+
+def test_tx_events_interleaved_with_another_tx_fail(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  other = (2, TX1, None, None, "840000:1", 1)
+  replace_tx2_events(ref, [IN_A, IN_B, BURN_X, other])
+  replace_tx2_events(cand, [IN_A, other, IN_B, BURN_X])
+  assert_events_fail(run(names))
+
+
+def test_interleaving_on_both_sides_fails(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  other = (2, TX1, None, None, "840000:1", 1)
+  for c in (ref, cand):
+    replace_tx2_events(c, [IN_A, other, IN_B, BURN_X])
+  assert_events_fail(run(names))
+
+
+def test_non_input_event_reordered_relative_to_input_fails(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  replace_tx2_events(ref, [IN_A, MINT, IN_B, BURN_X])
+  replace_tx2_events(cand, [IN_A, IN_B, MINT, BURN_X])
+  assert_events_fail(run(names))
+
+
+def test_duplicate_input_multiset_difference_fails(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  replace_tx2_events(ref, [IN_A, IN_A, IN_B, BURN_X])
+  replace_tx2_events(cand, [IN_A, IN_B, IN_B, BURN_X])
+  assert_events_fail(run(names))
+
+
+def test_duplicate_input_multiset_equal_passes(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  replace_tx2_events(ref, [IN_A, IN_A, IN_B, BURN_X])
+  replace_tx2_events(cand, [IN_B, IN_A, IN_A, BURN_X])
+  assert run(names).returncode == 0
+
+
+def add_hashes(ref, cand, height_hashes):
+  for conn, hashes in ((ref, height_hashes[0]), (cand, height_hashes[1])):
+    for height, h in hashes.items():
+      conn.execute("INSERT INTO runes_cumulative_event_hashes (block_height, block_event_hash, cumulative_event_hash) VALUES (%s,%s,%s)", (height, h, h))
+
+
+def test_candidate_hash_equal_on_identical_sequences_passes(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  add_hashes(ref, cand, ({840000: "11" * 32, 840001: "22" * 32}, {840000: "11" * 32, 840001: "22" * 32}))
+  r = run(names)
+  assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_candidate_hash_differs_on_identical_sequence_fails(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  add_hashes(ref, cand, ({840000: "11" * 32, 840001: "22" * 32}, {840000: "11" * 32, 840001: "33" * 32}))
+  r = run(names)
+  assert r.returncode == 1, r.stdout + r.stderr
+  assert "runes_cumulative_event_hashes" in r.stdout and "840001" in r.stdout
+
+
+def test_candidate_hash_may_differ_when_inputs_reordered(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand, input_order=("b", "a"))
+  add_hashes(ref, cand, ({840001: "22" * 32}, {840001: "33" * 32}))
+  r = run(names)
+  assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_candidate_hash_checked_only_where_both_have_rows(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  add_hashes(ref, cand, ({840001: "22" * 32}, {840000: "33" * 32}))
+  assert run(names).returncode == 0
+
+
+def test_duplicate_balance_rows_fail(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  cand.execute("DROP INDEX runes_outpoint_to_balances_outpoint_idx")
+  balance(cand, OP_A, P2WPKH, 840000, ["840000:1"], [60], spent=True, spent_height=840001)
+  r = run(names)
+  assert r.returncode == 1
+  assert "runes_outpoint_to_balances" in r.stdout and "duplicate" in r.stdout
+
+
+def test_missing_default_range_hashes_exits_two(dbs):
+  ref, cand, names = dbs
+  r = subprocess.run([sys.executable, "-I", str(TOOL), "--reference", url(names[0]), "--candidate", url(names[1])], capture_output=True, text=True)
+  assert r.returncode == 2
+  assert "Traceback" not in r.stderr
+
+
+def test_unreachable_database_exits_two(dbs):
+  ref, cand, names = dbs
+  r = subprocess.run(
+    [sys.executable, "-I", str(TOOL), "--reference", url(names[0]), "--candidate", url("runes_cmp_does_not_exist"), "--to-height", "1"],
+    capture_output=True,
+    text=True,
+  )
+  assert r.returncode == 2
+  assert "Traceback" not in r.stderr
