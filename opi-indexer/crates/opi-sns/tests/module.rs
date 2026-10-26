@@ -71,6 +71,7 @@ fn view(height: u32, entries: &[(&str, i32, &str)]) -> BlockView {
         hash: format!("hash{height}"),
         time: 0,
         inscriptions: InscriptionFeed { records, infos },
+        runes: opi_core::RuneFeed::default(),
     }
 }
 

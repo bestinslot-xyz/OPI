@@ -54,6 +54,95 @@ pub struct InscriptionFeed {
     pub infos: BTreeMap<String, InscriptionInfo>,
 }
 
+/// Kind of a rune balance event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuneEventKind {
+    Input,
+    NewAllocation,
+    Mint,
+    Output,
+    Burn,
+}
+
+impl RuneEventKind {
+    /// Name of the kind in event hash strings.
+    pub fn name(self) -> &'static str {
+        match self {
+            RuneEventKind::Input => "input",
+            RuneEventKind::NewAllocation => "new_rune_allocation",
+            RuneEventKind::Mint => "mint",
+            RuneEventKind::Output => "output",
+            RuneEventKind::Burn => "burn",
+        }
+    }
+
+    /// Id of the kind in the `runes_event_types` table, 0 to 4.
+    pub fn id(self) -> i16 {
+        match self {
+            RuneEventKind::Input => 0,
+            RuneEventKind::NewAllocation => 1,
+            RuneEventKind::Mint => 2,
+            RuneEventKind::Output => 3,
+            RuneEventKind::Burn => 4,
+        }
+    }
+}
+
+/// One rune balance event of a transaction. `outpoint` is `txid:vout` and
+/// `rune_id` is `block:tx`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuneEvent {
+    pub kind: RuneEventKind,
+    pub txid: String,
+    pub outpoint: Option<String>,
+    pub pkscript: Option<Vec<u8>>,
+    pub rune_id: String,
+    pub amount: u128,
+}
+
+/// Mint terms of an etched rune.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuneTerms {
+    pub amount: Option<u128>,
+    pub cap: Option<u128>,
+    pub height: (Option<u64>, Option<u64>),
+    pub offset: (Option<u64>, Option<u64>),
+}
+
+/// A rune etched in a block. `rune` is the name's letters without spacers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuneEtching {
+    pub rune_id: String,
+    pub block: u64,
+    pub divisibility: u8,
+    pub etching: String,
+    pub terms: Option<RuneTerms>,
+    pub number: u64,
+    pub premine: u128,
+    pub rune: String,
+    pub spacers: u32,
+    pub symbol: Option<char>,
+    pub timestamp: u64,
+    pub turbo: bool,
+}
+
+/// Running burned and mint totals of a rune after a block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuneCounter {
+    pub rune_id: String,
+    pub burned: u128,
+    pub mints: u128,
+}
+
+/// The rune events, etchings and counter rows of one block, in the order
+/// the journal stores them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuneFeed {
+    pub events: Vec<RuneEvent>,
+    pub etchings: Vec<RuneEtching>,
+    pub counters: Vec<RuneCounter>,
+}
+
 /// Everything a module needs to index one finalized block, read from a single
 /// consistent snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +151,7 @@ pub struct BlockView {
     pub hash: String,
     pub time: u32,
     pub inscriptions: InscriptionFeed,
+    pub runes: RuneFeed,
 }
 
 /// An indexer driven block by block by the scheduler.

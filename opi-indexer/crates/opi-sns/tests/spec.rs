@@ -553,6 +553,7 @@ fn block(entries: Vec<(InscriptionInfo, Option<&str>)>) -> BlockView {
         hash: "00".repeat(32),
         time: 0,
         inscriptions: InscriptionFeed { records, infos },
+        runes: opi_core::RuneFeed::default(),
     }
 }
 

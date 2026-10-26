@@ -31,9 +31,22 @@ pub mod cf {
     /// Inscription id (store form) -> height (`u32` BE) of its recorded
     /// transfer. The fork records only an inscription's first transfer.
     pub const FIRST_TRANSFER: &str = "first_transfer";
+    /// Rune events: height (`u32` BE) ++ sequence (`u32` BE) -> encoded event.
+    pub const RUNE_EVENTS: &str = "rune_events";
+    /// Rune etchings: height (`u32` BE) ++ sequence (`u32` BE) -> encoded
+    /// etching.
+    pub const RUNE_ETCHINGS: &str = "rune_etchings";
+    /// Rune id (block `u64` BE ++ tx `u32` BE) -> running burned and mint
+    /// totals (`u128` BE each).
+    pub const RUNE_COUNTERS: &str = "rune_counters";
+    /// Height (`u32` BE) ++ rune id -> totals before the block (optional)
+    /// and after it. The block's counter rows and the reorg undo data.
+    pub const RUNE_COUNTER_LOG: &str = "rune_counter_log";
+    /// Outpoint (store form) -> pkscript and the runes it holds.
+    pub const RUNE_BALANCES: &str = "rune_outpoint_balances";
 }
 
-const ALL_TABLES: [&str; 7] = [
+const ALL_TABLES: [&str; 12] = [
     cf::TRANSFERS,
     cf::INFO,
     cf::HEADERS,
@@ -41,6 +54,11 @@ const ALL_TABLES: [&str; 7] = [
     cf::RAW_HEIGHTS,
     cf::META,
     cf::FIRST_TRANSFER,
+    cf::RUNE_EVENTS,
+    cf::RUNE_ETCHINGS,
+    cf::RUNE_COUNTERS,
+    cf::RUNE_COUNTER_LOG,
+    cf::RUNE_BALANCES,
 ];
 
 const META_FINAL_TIP: &[u8] = b"final_tip";

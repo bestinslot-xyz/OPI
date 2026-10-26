@@ -1,12 +1,14 @@
 use {
     super::{
-        Journal, cf, decode_info, decode_transfer, decompress_info, final_tip_in, info_key, table,
-        transfer_key,
+        Journal, RUNE_ID_LEN, cf, decode_info, decode_rune_counter_log, decode_rune_etching,
+        decode_rune_event, decode_transfer, decompress_info, final_tip_in, info_key,
+        rune_etching_key, rune_event_key, rune_id_string, table, transfer_key,
     },
     anyhow::{Result, anyhow},
     bitcoin::{block::Header, consensus},
     opi_core::{
         BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, InscriptionRecord,
+        RuneCounter, RuneFeed,
     },
     redb::{ReadTransaction, ReadableDatabase},
     std::collections::BTreeMap,
@@ -53,6 +55,48 @@ fn inscription_records_in(tx: &ReadTransaction, height: u32) -> Result<Vec<Inscr
             decode_transfer(key.value(), value.value())
         })
         .collect()
+}
+
+/// Rune events, etchings and counter rows (after-totals) of `height`, each
+/// in key order.
+fn rune_feed_in(tx: &ReadTransaction, height: u32) -> Result<RuneFeed> {
+    let events = tx
+        .open_table(table(cf::RUNE_EVENTS))?
+        .range::<&[u8]>(
+            rune_event_key(height, 0).as_slice()..=rune_event_key(height, u32::MAX).as_slice(),
+        )?
+        .map(|row| decode_rune_event(row?.1.value()))
+        .collect::<Result<_>>()?;
+    let etchings = tx
+        .open_table(table(cf::RUNE_ETCHINGS))?
+        .range::<&[u8]>(
+            rune_etching_key(height, 0).as_slice()..=rune_etching_key(height, u32::MAX).as_slice(),
+        )?
+        .map(|row| decode_rune_etching(row?.1.value()))
+        .collect::<Result<_>>()?;
+
+    let mut first = [0; 4 + RUNE_ID_LEN];
+    first[..4].copy_from_slice(&height.to_be_bytes());
+    let mut last = [0xff; 4 + RUNE_ID_LEN];
+    last[..4].copy_from_slice(&height.to_be_bytes());
+    let counters = tx
+        .open_table(table(cf::RUNE_COUNTER_LOG))?
+        .range::<&[u8]>(first.as_slice()..=last.as_slice())?
+        .map(|row| {
+            let (key, value) = row?;
+            let (_, (burned, mints)) = decode_rune_counter_log(value.value())?;
+            Ok(RuneCounter {
+                rune_id: rune_id_string(&key.value()[4..]),
+                burned,
+                mints,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(RuneFeed {
+        events,
+        etchings,
+        counters,
+    })
 }
 
 fn inscription_info_in(
@@ -113,6 +157,7 @@ impl BlockSource for JournalReader {
             hash: block.hash,
             time: block.time,
             inscriptions: InscriptionFeed { records, infos },
+            runes: rune_feed_in(&tx, height)?,
         }))
     }
 }

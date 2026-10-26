@@ -65,6 +65,7 @@ fn block(height: u32, entries: Vec<(InscriptionInfo, Option<&str>)>) -> BlockVie
         hash: "00".repeat(32),
         time: 0,
         inscriptions: InscriptionFeed { records, infos },
+        runes: opi_core::RuneFeed::default(),
     }
 }
 
