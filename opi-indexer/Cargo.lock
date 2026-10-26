@@ -4731,6 +4731,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opi-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "opi-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "opi-source"
 version = "0.1.0"
 dependencies = [
