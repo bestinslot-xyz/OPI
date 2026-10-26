@@ -5,14 +5,17 @@ use {
     opi_core::{BlockSource, BlockView, RuneCounter, RuneEtching, RuneEvent, RuneEventKind},
     opi_source::{
         driver::{SourceHandle, spawn_source},
-        journal::{JournalReader, RuneBalanceRow, cf, decode_rune_balance_row, table},
+        journal::{
+            JournalReader, RuneBalanceRow, RuneTotals, cf, decode_rune_balance_row,
+            decode_rune_counter, rune_id_string, table,
+        },
         ord_settings,
     },
     ord::{Chain, Index},
     ordinals::{Edict, Etching, Rune, RuneId, Runestone, Terms},
     redb::{ReadableDatabase, ReadableTable},
     std::{collections::BTreeMap, path::Path},
-    support::{Harness, envelope, source_config, start, wait_for_tip},
+    support::{Harness, RUNE_TABLES, dump_tables, envelope, source_config, start, wait_for_tip},
 };
 
 const JSON: &[u8] = br#"{"p":"brc-20","op":"deploy","tick":"ordi","max":"21000000"}"#;
@@ -168,6 +171,34 @@ fn journal_balances(reader: &JournalReader) -> BTreeMap<OutPoint, RuneBalanceRow
             (outpoint, decode_rune_balance_row(value.value()).unwrap())
         })
         .collect()
+}
+
+/// Every `rune_counters` row of the journal, by rune id.
+fn journal_counters(reader: &JournalReader) -> BTreeMap<String, RuneTotals> {
+    let tx = reader.journal().db().begin_read().unwrap();
+    tx.open_table(table(cf::RUNE_COUNTERS))
+        .unwrap()
+        .iter()
+        .unwrap()
+        .map(|row| {
+            let (key, value) = row.unwrap();
+            (
+                rune_id_string(key.value()),
+                decode_rune_counter(value.value()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Asserts the rune tables of `reader` equal those of a fresh source synced
+/// to the harness's chain under its own directory.
+fn assert_runes_match_fresh_run(harness: &Harness, reader: &JournalReader) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (source, fresh) = synced(harness, tmp.path());
+    stop(source);
+    let expected = dump_tables(fresh.journal().db(), &RUNE_TABLES);
+    assert!(!expected.is_empty());
+    assert_eq!(dump_tables(reader.journal().db(), &RUNE_TABLES), expected);
 }
 
 #[test]
@@ -671,4 +702,196 @@ fn balances_match_ord_at_tip() {
             .unwrap();
         assert_eq!(by_rune.len(), stored.len());
     }
+}
+
+#[test]
+fn reorg_restores_spent_rune_outpoints() {
+    let harness = Harness::new();
+    let fundings = [harness.fund(), harness.fund(), harness.fund()];
+    let a = harness.runestone(&[fundings[0]], 1, etch(Some(1000), None));
+    let b = harness.runestone(&[fundings[1]], 1, etch(Some(70), None));
+    harness.mine(1);
+    let (a_id, b_id) = (rune_id(&harness, a), rune_id(&harness, b));
+    // One outpoint holding both runes.
+    let merged = harness.runestone(&[out(a, 0), out(b, 0)], 1, Runestone::default());
+    harness.mine(1);
+
+    // The tip spends the merge, spends that spend's output in the same block
+    // and etches a third rune.
+    let split = harness.runestone(
+        &[out(merged, 0)],
+        2,
+        Runestone {
+            edicts: vec![Edict {
+                id: b_id,
+                amount: 20,
+                output: 1,
+            }],
+            ..Default::default()
+        },
+    );
+    let respent = harness.runestone(&[out(split, 0)], 1, Runestone::default());
+    let c = harness.runestone(&[fundings[2]], 1, etch(Some(5), None));
+    harness.mine(1);
+    let tip = harness.height();
+    let tmp = tempfile::tempdir().unwrap();
+    let (source, reader) = synced(&harness, tmp.path());
+    let mut created = vec![out(split, 1), out(respent, 0), out(c, 0)];
+    created.sort();
+    assert_eq!(
+        journal_balances(&reader).into_keys().collect::<Vec<_>>(),
+        created
+    );
+
+    harness.invalidate_tip();
+    harness.mine(2);
+    wait_for_tip(&reader, tip + 1);
+    stop(source);
+
+    assert_eq!(
+        journal_balances(&reader),
+        BTreeMap::from([(
+            out(merged, 0),
+            (
+                pkscript(&harness, out(merged, 0)),
+                vec![(a_id.to_string(), 1000), (b_id.to_string(), 70)]
+            )
+        )])
+    );
+    assert!(view(&reader, tip).runes.events.is_empty());
+    assert!(view(&reader, tip).runes.etchings.is_empty());
+    assert_runes_match_fresh_run(&harness, &reader);
+}
+
+#[test]
+fn reorg_restores_counters() {
+    let harness = Harness::new();
+    let fundings = [harness.fund(), harness.fund()];
+    let x = harness.runestone(&[fundings[0]], 1, etch(None, mintable(10)));
+    let y = harness.runestone(&[fundings[1]], 1, etch(None, mintable(10)));
+    harness.mine(1);
+    let (x_id, y_id) = (rune_id(&harness, x), rune_id(&harness, y));
+
+    let minter = harness.fund();
+    harness.runestone(
+        &[minter],
+        1,
+        Runestone {
+            mint: Some(x_id),
+            ..Default::default()
+        },
+    );
+    harness.mine(1);
+    let before = journal_counters_after(&harness);
+
+    // The tip mints both runes; the mint of the never-minted rune burns 2.
+    let minters = [harness.fund(), harness.fund()];
+    harness.runestone(
+        &[minters[0]],
+        1,
+        Runestone {
+            mint: Some(x_id),
+            ..Default::default()
+        },
+    );
+    harness.runestone(
+        &[minters[1]],
+        1,
+        Runestone {
+            mint: Some(y_id),
+            edicts: vec![Edict {
+                id: y_id,
+                amount: 2,
+                output: 1,
+            }],
+            ..Default::default()
+        },
+    );
+    harness.mine(1);
+    let tip = harness.height();
+    let tmp = tempfile::tempdir().unwrap();
+    let (source, reader) = synced(&harness, tmp.path());
+    assert_eq!(
+        journal_counters(&reader),
+        BTreeMap::from([(x_id.to_string(), (0, 2)), (y_id.to_string(), (2, 1))])
+    );
+
+    harness.invalidate_tip();
+    harness.mine(2);
+    wait_for_tip(&reader, tip + 1);
+    stop(source);
+
+    assert_eq!(
+        before,
+        BTreeMap::from([(x_id.to_string(), (0, 1))]),
+        "the counters before the tip"
+    );
+    assert_eq!(journal_counters(&reader), before);
+    assert!(view(&reader, tip).runes.counters.is_empty());
+    assert_runes_match_fresh_run(&harness, &reader);
+}
+
+/// The `rune_counters` of a fresh source synced to the harness's chain.
+fn journal_counters_after(harness: &Harness) -> BTreeMap<String, RuneTotals> {
+    let tmp = tempfile::tempdir().unwrap();
+    let (source, reader) = synced(harness, tmp.path());
+    stop(source);
+    journal_counters(&reader)
+}
+
+#[test]
+fn reorg_of_two_blocks_drops_outpoints_created_and_spent_above_it() {
+    let harness = Harness::new();
+    // Below ord's savepoint interval (10) ord saves every block and keeps
+    // two savepoints, too few to roll back two blocks.
+    harness.mine(20);
+    let funding = harness.fund();
+    let etched = harness.runestone(&[funding], 1, etch(Some(300), None));
+    harness.mine(1);
+    let id = rune_id(&harness, etched);
+    let fork = harness.height();
+
+    let moved = harness.runestone(&[out(etched, 0)], 1, Runestone::default());
+    harness.mine(1);
+    let burned = harness.runestone(
+        &[out(moved, 0)],
+        1,
+        Runestone {
+            edicts: vec![Edict {
+                id,
+                amount: 100,
+                output: 1,
+            }],
+            ..Default::default()
+        },
+    );
+    harness.mine(1);
+    let tip = harness.height();
+    let tmp = tempfile::tempdir().unwrap();
+    let (source, reader) = synced(&harness, tmp.path());
+    assert_eq!(
+        journal_balances(&reader).into_keys().collect::<Vec<_>>(),
+        [out(burned, 0)]
+    );
+    assert_eq!(journal_counters(&reader).len(), 1);
+
+    harness.invalidate_tip();
+    harness.invalidate_tip();
+    assert_eq!(harness.height(), fork);
+    harness.mine(3);
+    wait_for_tip(&reader, tip + 1);
+    stop(source);
+
+    assert_eq!(
+        journal_balances(&reader),
+        BTreeMap::from([(
+            out(etched, 0),
+            (
+                pkscript(&harness, out(etched, 0)),
+                vec![(id.to_string(), 300)]
+            )
+        )])
+    );
+    assert!(journal_counters(&reader).is_empty());
+    assert_runes_match_fresh_run(&harness, &reader);
 }

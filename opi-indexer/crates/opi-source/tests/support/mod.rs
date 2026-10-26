@@ -347,12 +347,43 @@ pub fn wait_for_tip(reader: &JournalReader, height: u32) {
     }
 }
 
-/// Every `TRANSFERS`, `INFO` and `HEADERS` row of the journal at `path`.
+/// The rune tables of the journal.
+pub const RUNE_TABLES: [&str; 5] = [
+    cf::RUNE_EVENTS,
+    cf::RUNE_ETCHINGS,
+    cf::RUNE_COUNTERS,
+    cf::RUNE_COUNTER_LOG,
+    cf::RUNE_BALANCES,
+];
+
+/// The tables holding finalized state: everything but the raw event log and
+/// the meta rows.
+pub const FINALIZED_TABLES: [&str; 9] = [
+    cf::TRANSFERS,
+    cf::INFO,
+    cf::HEADERS,
+    cf::FIRST_TRANSFER,
+    cf::RUNE_EVENTS,
+    cf::RUNE_ETCHINGS,
+    cf::RUNE_COUNTERS,
+    cf::RUNE_COUNTER_LOG,
+    cf::RUNE_BALANCES,
+];
+
+/// Every finalized row of the journal at `path`.
 pub fn dump(path: &Path) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
     let journal = Journal::open(path, Chain::Regtest).unwrap();
-    let tx = journal.db().begin_read().unwrap();
+    dump_tables(journal.db(), &FINALIZED_TABLES)
+}
+
+/// Every row of the `tables` of the journal database `db`, table by table.
+pub fn dump_tables(
+    db: &redb::Database,
+    tables: &[&'static str],
+) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
+    let tx = db.begin_read().unwrap();
     let mut rows = Vec::new();
-    for name in [cf::TRANSFERS, cf::INFO, cf::HEADERS] {
+    for &name in tables {
         for row in tx.open_table(table(name)).unwrap().iter().unwrap() {
             let (key, value) = row.unwrap();
             rows.push((name, key.value().to_vec(), value.value().to_vec()));
