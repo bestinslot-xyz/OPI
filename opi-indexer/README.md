@@ -154,7 +154,9 @@ An ord index has a schema version: ord 0.29.1 (schema 34) refuses an index
 written by an older ord, and redb 3 refuses a file written in redb 2's format.
 An ord data dir or journal written by ord 0.23.2 (schema 30) or by redb 2 does
 not open; delete both and index again. A new ord release with a new schema
-likewise needs a fresh ord data dir and journal.
+likewise needs a fresh ord data dir and journal. A journal that has finalized
+blocks but no rune tables predates rune indexing and does not open; delete it
+and the ord data dir and index again.
 
 ## Dependency notes
 
@@ -347,7 +349,9 @@ set for `input` and `output` events and empty for `new_rune_allocation`,
 `mint` and `burn`. The block string is the events joined with `|`,
 `block_event_hash = sha256_hex(block_string)` (an empty block hashes `""`), and
 `cumulative_hash = sha256_hex(previous_cumulative_hash + block_event_hash)`.
-The first hashed block uses its block hash as the cumulative hash.
+The first hashed block uses its `block_event_hash` as the cumulative hash.
 
 **Versions.** Reports send `opi-runes-full-node v1.0.0` with `db_version` 6. A
 database with another `db_version` is refused and must be indexed from scratch.
+`RUNES_DB_DATABASE` names a new database: one that holds blocks written by
+another indexer, such as `index_runes.js`, is refused.

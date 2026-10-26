@@ -325,6 +325,22 @@ mod tests {
     }
 
     #[test]
+    fn runes_config_is_none_when_not_enabled() {
+        let configs = load_modules(
+            "brc20",
+            &[
+                ("DB_DATABASE", "b"),
+                ("NETWORK_TYPE", "signet"),
+                ("RUNES_DB_DATABASE", "opi_runes"),
+            ],
+            brc20_signet(),
+        )
+        .unwrap();
+        assert!(configs.runes.is_none());
+        assert!(configs.brc20.is_some());
+    }
+
+    #[test]
     fn runes_network_must_match_the_chain() {
         let err = load_modules(
             "runes",

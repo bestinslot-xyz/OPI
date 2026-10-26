@@ -63,7 +63,7 @@ def dbs():
         a.execute(f'DROP DATABASE IF EXISTS "{n}" WITH (FORCE)')
 
 
-def event(conn, height, typ, txid, outpoint, pkscript, rune_id, amount, wallet=None, eid=None):
+def event(conn, height, typ, txid, outpoint, pkscript, rune_id, amount, wallet=None):
   conn.execute(
     "INSERT INTO runes_events (event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount, block_height) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
     (typ, txid, outpoint, pkscript, wallet, rune_id, amount, height),
@@ -400,6 +400,17 @@ def test_candidate_hash_differs_on_identical_sequence_fails(dbs):
   populate(ref)
   populate(cand)
   add_hashes(ref, cand, ({840000: "11" * 32, 840001: "22" * 32}, {840000: "11" * 32, 840001: "33" * 32}))
+  r = run(names)
+  assert r.returncode == 1, r.stdout + r.stderr
+  assert "runes_cumulative_event_hashes" in r.stdout and "840001" in r.stdout
+
+
+def test_candidate_hash_checked_when_null_and_empty_outpoints_differ(dbs):
+  ref, cand, names = dbs
+  populate(ref)
+  populate(cand)
+  cand.execute("UPDATE runes_events SET outpoint = '', pkscript = '' WHERE outpoint IS NULL")
+  add_hashes(ref, cand, ({840001: "22" * 32}, {840001: "33" * 32}))
   r = run(names)
   assert r.returncode == 1, r.stdout + r.stderr
   assert "runes_cumulative_event_hashes" in r.stdout and "840001" in r.stdout

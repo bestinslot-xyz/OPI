@@ -1,5 +1,3 @@
-# pip install python-dotenv
-
 import os
 
 init_env = True

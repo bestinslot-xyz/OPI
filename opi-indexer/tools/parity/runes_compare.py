@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Compares a reference runes database with a candidate runes database.
 
-The reference is written by modules/runes_index/index_runes.js (commit b3379c5
-is the last one that has it), the candidate by the opi-runes module. Both use
+The reference is written by modules/runes_index/index_runes.js (see commit
+b3379c5), the candidate by the opi-runes module. Both use
 the schema in opi-indexer/crates/opi-runes/src/db_init.sql.
 Every table is streamed per height through server-side cursors, so memory use
 is bounded by one block of rows per side.
@@ -15,7 +15,8 @@ Per height in range:
                                 Fields: event_type, txid, outpoint, pkscript,
                                 rune_id, amount, wallet_addr. Event ids are not
                                 compared. A wallet_addr difference on a p2tr
-                                pkscript is a warning, on any other it fails.
+                                pkscript (input and output events alike) is a
+                                warning, on any other it fails.
   runes_outpoint_to_balances    rows created at the height, keyed by outpoint.
   runes_id_to_entry             rows with genesis_height = height, keyed by
                                 rune_id. burned, mints and
@@ -307,9 +308,12 @@ class HeightEvents:
     self.pending = next(self.groups, None)
 
   def at(self, height):
+    """Rows (event_type, txid, outpoint, pkscript, rune_id, amount) with NULL outpoint and pkscript as ''."""
     while self.pending is not None and self.pending[0] < height:
       self.pending = next(self.groups, None)
-    return self.pending[1] if self.pending is not None and self.pending[0] == height else []
+    if self.pending is None or self.pending[0] != height:
+      return []
+    return [(t, txid, norm(o), norm(p), rid, amt) for t, txid, o, p, rid, amt in self.pending[1]]
 
 
 def check_event_hashes(ref, cand, lo, hi, report):
