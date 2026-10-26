@@ -59,21 +59,31 @@ pub struct Candidate {
 
 /// Valid bitmap creations of `block` in ascending inscription number, without
 /// numbers above the block height and keeping only the first inscription of a
-/// number within the block.
-pub fn candidates(block: &BlockView) -> Vec<Candidate> {
+/// number within the block. A creation without an inscription info is an error
+/// naming the inscription.
+pub fn candidates(block: &BlockView) -> anyhow::Result<Vec<Candidate>> {
     let feed = &block.inscriptions;
-    let mut found: Vec<(&InscriptionInfo, u64)> = feed
-        .records
-        .iter()
-        .filter(|record| record.old_satpoint.is_none())
-        .filter_map(|record| feed.infos.get(&record.inscription_id))
-        .filter(|info| is_valid_bitmap(info))
-        .filter_map(|info| bitmap_number(&info.content).map(|n| (info, n)))
-        .filter(|(_, number)| *number <= u64::from(block.height))
-        .collect();
+    let mut found: Vec<(&InscriptionInfo, u64)> = Vec::new();
+    for record in feed.records.iter().filter(|r| r.old_satpoint.is_none()) {
+        let info = feed.infos.get(&record.inscription_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "block {} has no inscription info for {}",
+                block.height,
+                record.inscription_id
+            )
+        })?;
+        if !is_valid_bitmap(info) {
+            continue;
+        }
+        if let Some(number) = bitmap_number(&info.content)
+            && number <= u64::from(block.height)
+        {
+            found.push((info, number));
+        }
+    }
     found.sort_by_key(|(info, _)| info.inscription_number);
     let mut seen = HashSet::new();
-    found
+    Ok(found
         .into_iter()
         .filter(|(_, number)| seen.insert(*number))
         .map(|(info, number)| Candidate {
@@ -81,5 +91,5 @@ pub fn candidates(block: &BlockView) -> Vec<Candidate> {
             inscription_number: info.inscription_number,
             bitmap_number: number,
         })
-        .collect()
+        .collect())
 }

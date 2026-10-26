@@ -306,6 +306,14 @@ fn surrogate_pairs_combine() {
         parse(format!(r#"{{"p":"sns","op":"ns","ns":"{}"}}"#, "\\uD83D\\uDE00").as_bytes()),
         Some(SnsOp::Namespace(emoji.into()))
     );
+    // A line continuation between the halves leaves them adjacent.
+    assert_eq!(
+        parse(name("\\ud83d\\\n\\ude00.sats").as_bytes()),
+        Some(SnsOp::Name {
+            name: format!("{emoji}.sats"),
+            domain: "sats".into()
+        })
+    );
     // Unpaired, reversed or interrupted surrogates stay lone.
     for body in [
         "\\ud83d.x",

@@ -95,7 +95,7 @@ fn duplicate_bitmap_in_block_emits_one_event() {
             (info("ai0", 10, "5.bitmap"), None),
         ],
     );
-    let found = candidates(&view);
+    let found = candidates(&view).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].inscription_id, "ai0");
     assert_eq!(found[0].inscription_number, 10);
@@ -110,9 +110,17 @@ fn number_above_block_height_is_skipped() {
             (info("bi0", 2, "100.bitmap"), None),
         ],
     );
-    let found = candidates(&view);
+    let found = candidates(&view).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].bitmap_number, 100);
+}
+
+#[test]
+fn creation_without_inscription_info_is_an_error() {
+    let mut view = block(900, vec![(info("ai0", 1, "1.bitmap"), None)]);
+    view.inscriptions.infos.clear();
+    let err = candidates(&view).unwrap_err();
+    assert!(err.to_string().contains("ai0"), "{err}");
 }
 
 #[test]
@@ -127,6 +135,7 @@ fn candidates_are_creations_in_ascending_number_order() {
         ],
     );
     let found: Vec<_> = candidates(&view)
+        .unwrap()
         .into_iter()
         .map(|c| c.bitmap_number)
         .collect();

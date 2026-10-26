@@ -2,10 +2,10 @@ mod config;
 mod validate;
 
 use {
-    anyhow::{Context, Result, bail},
+    anyhow::{Result, bail},
     brc20_index::{config::Brc20IndexerConfig, module::Brc20Module},
     clap::{Parser, Subcommand},
-    config::{Config, ModuleKind},
+    config::{Config, ModuleConfigs},
     futures::future::BoxFuture,
     opi_bitmap::{BitmapConfig, BitmapModule},
     opi_core::{BlockSource, Module},
@@ -74,50 +74,6 @@ fn main() -> ExitCode {
             tracing::error!("{err:#}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// Every enabled module's configuration, read and checked before the source
-/// starts.
-struct ModuleConfigs {
-    brc20: Option<Brc20IndexerConfig>,
-    bitmap: Option<BitmapConfig>,
-    sns: Option<SnsConfig>,
-}
-
-impl ModuleConfigs {
-    fn load(config: &Config) -> Result<ModuleConfigs> {
-        let mut configs = ModuleConfigs {
-            brc20: None,
-            bitmap: None,
-            sns: None,
-        };
-        for module in &config.modules {
-            match module {
-                ModuleKind::Brc20 => {
-                    let brc20 = Brc20IndexerConfig::default();
-                    if brc20.network_type != config.network() {
-                        bail!(
-                            "NETWORK_TYPE {:?} does not match OPI_CHAIN network {:?}",
-                            brc20.network_type,
-                            config.network()
-                        );
-                    }
-                    configs.brc20 = Some(brc20);
-                }
-                ModuleKind::Bitmap => {
-                    let bitmap = BitmapConfig::from_env().context("bitmap config")?;
-                    config.check_network(&bitmap.network_type)?;
-                    configs.bitmap = Some(bitmap);
-                }
-                ModuleKind::Sns => {
-                    let sns = SnsConfig::from_env().context("sns config")?;
-                    config.check_network(&sns.network_type)?;
-                    configs.sns = Some(sns);
-                }
-            }
-        }
-        Ok(configs)
     }
 }
 

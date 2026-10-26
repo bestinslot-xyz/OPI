@@ -44,13 +44,17 @@ variables.
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
 | `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`), default `brc20` |
-| `BITMAP_DB_*`, `SNS_DB_*` | the bitmap and sns databases (see Modules) |
+| `BITMAP_DB_*`, `SNS_DB_*` | the bitmap and sns databases (see Modules); `BITMAP_DB_DATABASE` and `SNS_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
-| `REPORT_*` | block reporting, shared by all modules |
+| `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
 
-brc20's own variables (`DB_*`, `BRC20_PROG_*`, ...) are listed in
-`modules/brc20_index/.env_sample`. All enabled modules' settings are read and
-checked before the source starts, so a missing or invalid one fails the start.
+`opi-indexer` reads one `.env`, from its working directory. brc20's own
+variables (`DB_*`, `BRC20_PROG_*`, ...) go into that same file; they are listed
+in `modules/brc20_index/.env_sample`, and `reset_init.py` writes them to
+`modules/brc20_index/.env`. `DB_DATABASE` has no default for brc20 either and
+is required when `brc20` is enabled, and brc20 runs in full mode
+(`OPERATION_MODE=full`). All enabled modules' settings are read and checked
+before the source starts, so a missing or invalid one fails the start.
 
 ## Build
 
@@ -275,7 +279,8 @@ the spec leaves a choice open, the rule below states the one opi-sns makes
    `crates/opi-sns/src/json5.rs` lists the full grammar.
 8. **Surrogates.** JSON5 strings are ES5 strings, so a `\u` high surrogate
    directly followed by a `\u` low surrogate is one character (`\uD83D`
-   followed by `\uDE00` is 😀). A name or namespace that holds any other
+   followed by `\uDE00` is 😀); a `\` line continuation between the two
+   halves does not break the pair. A name or namespace that holds any other
    surrogate (unpaired, reversed, or followed by a non-surrogate) is skipped
    (*decision*).
 9. **Storage limits.** A name or namespace that holds `\0`, or is longer than

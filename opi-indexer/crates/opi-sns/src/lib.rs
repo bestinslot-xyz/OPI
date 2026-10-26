@@ -11,6 +11,7 @@ pub mod unicode;
 mod unicode_tables;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use opi_core::{BlockRef, BlockSource, BlockView, Module};
@@ -25,6 +26,7 @@ use db::{BlockHashes, Db};
 
 const REPORT_URL_DEFAULT: &str = "https://api.opi.network/report_block";
 const REPORT_NAME_DEFAULT: &str = "opi_sns_indexer";
+const REPORT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct SnsConfig {
@@ -44,9 +46,12 @@ pub struct SnsConfig {
 impl SnsConfig {
     /// Reads `SNS_DB_*`, `NETWORK_TYPE` and the shared `REPORT_*` variables.
     pub fn from_env() -> anyhow::Result<SnsConfig> {
-        fn var(key: &str) -> Option<String> {
-            std::env::var(key).ok().filter(|value| !value.is_empty())
-        }
+        SnsConfig::from_lookup(&|key| std::env::var(key).ok())
+    }
+
+    /// Reads the variables of `from_env` through `get`.
+    pub fn from_lookup(get: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<SnsConfig> {
+        let var = |key: &str| get(key).filter(|value| !value.is_empty());
         let network_type = var("NETWORK_TYPE").unwrap_or_else(|| "mainnet".into());
         first_inscription_height(&network_type)?;
         Ok(SnsConfig {
@@ -104,7 +109,7 @@ impl SnsModule {
             config,
             db,
             journal,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder().timeout(REPORT_TIMEOUT).build()?,
             start_height,
             last_report_height: 0,
         };

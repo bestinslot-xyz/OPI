@@ -28,6 +28,26 @@ impl BlockSource for Journal {
     }
 }
 
+struct FailingTip;
+
+impl BlockSource for FailingTip {
+    fn tip(&self) -> anyhow::Result<Option<u32>> {
+        Err(anyhow::anyhow!("journal unavailable"))
+    }
+    fn block_info(&self, _: u32) -> anyhow::Result<Option<BlockInfo>> {
+        Ok(None)
+    }
+    fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
+        Ok(Vec::new())
+    }
+    fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
+        Ok(None)
+    }
+    fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
+        Ok(None)
+    }
+}
+
 fn view(height: u32, entries: &[(&str, i32, &str)]) -> BlockView {
     let mut records = Vec::new();
     let mut infos = BTreeMap::new();
@@ -206,6 +226,27 @@ async fn round_trip(name: String) {
         .await
         .unwrap();
     assert_eq!(ids, vec![1, 2]);
+
+    let stored: String = sqlx::query_scalar("SELECT indexer_version FROM bitmap_indexer_version")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(stored, opi_bitmap::INDEXER_VERSION);
+
+    // A tip error at report time skips the report; the block stays committed.
+    let reporting = BitmapConfig {
+        network_type: "signet".into(),
+        report_to_indexer: true,
+        ..config.clone()
+    };
+    let mut reporting = BitmapModule::new(reporting, Arc::new(FailingTip))
+        .await
+        .unwrap();
+    reporting
+        .apply(&view(12, &[("fi0", 6, "12.bitmap")]))
+        .await
+        .unwrap();
+    assert_eq!(reporting.cursor().await.unwrap().unwrap().height, 12);
 
     // A second instance on the same database sees the existing version row.
     BitmapModule::new(config, Arc::new(Journal)).await.unwrap();

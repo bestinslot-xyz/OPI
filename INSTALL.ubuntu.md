@@ -161,6 +161,8 @@ Copy `opi-indexer/.env_sample` to `opi-indexer/.env` and fill it in (`OPI_MODULE
 
 Run `reset_init.py` in `modules/brc20_index` and in each API folder to initialise .env file and databases for BRC-20 and the APIs.
 
+`opi-indexer` reads one `.env`, from its working directory. BRC-20's variables (`DB_*`, `BRC20_PROG_*`, `NETWORK_TYPE`, ...), the `.env` that `reset_init.py` writes in `modules/brc20_index`, go into `opi-indexer/.env`. Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
+
 # Run
 
 Postgres will auto run on system start. \

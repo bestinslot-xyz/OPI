@@ -4,7 +4,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Row};
 
 use crate::BitmapConfig;
-use crate::report::DB_VERSION;
+use crate::report::{DB_VERSION, INDEXER_VERSION};
 use crate::rules::{Candidate, block_event_hash, cumulative_hash, event_str};
 
 const DB_INIT: &str = include_str!("db_init.sql");
@@ -22,7 +22,8 @@ pub struct Db {
 
 impl Db {
     /// Connects, creates the schema on an empty database and requires
-    /// `bitmap_indexer_version.db_version` to match otherwise.
+    /// `bitmap_indexer_version.db_version` to match otherwise. The stored
+    /// `indexer_version` is set to the reported `INDEXER_VERSION`.
     pub async fn connect(config: &BitmapConfig) -> anyhow::Result<Db> {
         let mut options = PgConnectOptions::new()
             .host(&config.db_host)
@@ -60,7 +61,13 @@ impl Db {
                 .fetch_optional(&self.pool)
                 .await?;
         match version {
-            Some(DB_VERSION) => Ok(()),
+            Some(DB_VERSION) => {
+                sqlx::query("UPDATE bitmap_indexer_version SET indexer_version = $1")
+                    .bind(INDEXER_VERSION)
+                    .execute(&self.pool)
+                    .await?;
+                Ok(())
+            }
             Some(other) => Err(anyhow!(
                 "bitmap db_version {other} is not {DB_VERSION}; the database must be recreated"
             )),
