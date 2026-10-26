@@ -4741,6 +4741,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "opi-runes"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "hex",
+ "opi-core",
+ "reqwest",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "opi-runtime"
 version = "0.1.0"
 dependencies = [
