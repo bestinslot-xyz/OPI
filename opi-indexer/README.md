@@ -52,9 +52,15 @@ variables.
 variables (`DB_*`, `BRC20_PROG_*`, ...) go into that same file; they are listed
 in `modules/brc20_index/.env_sample`, and `reset_init.py` writes them to
 `modules/brc20_index/.env`. `DB_DATABASE` has no default for brc20 either and
-is required when `brc20` is enabled, and brc20 runs in full mode
-(`OPERATION_MODE=full`). All enabled modules' settings are read and checked
-before the source starts, so a missing or invalid one fails the start.
+is required when `brc20` is enabled; set it to brc20's own database, not
+`postgres`. brc20 runs in full mode (`OPERATION_MODE=full`). All enabled
+modules' settings are read and checked before the source starts, so a missing
+or invalid one fails the start.
+
+`BITCOIN_RPC_URL` is one variable shared by the source and brc20's Bitcoin RPC
+proxy. Set it once in this `.env` and leave out the `BITCOIN_RPC_URL` line from
+`modules/brc20_index/.env_sample`: when a key appears twice, the first
+occurrence wins.
 
 ## Build
 
