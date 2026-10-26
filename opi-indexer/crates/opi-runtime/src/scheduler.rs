@@ -1,7 +1,7 @@
 use {
     anyhow::{Context, Result, bail},
-    opi_core::{BlockSource, Module},
-    std::{convert::Infallible, time::Duration},
+    opi_core::{BlockSource, BlockView, Module},
+    std::{convert::Infallible, sync::Arc, time::Duration},
 };
 
 /// Most blocks the scheduler rolls a module back in one step. A deeper
@@ -14,20 +14,20 @@ pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 /// journal's final tip reaches it, and then checks that the journal still
 /// holds the cursor's hash. Checking after the fetch means a journal reorg
 /// between the two reads shows up as a mismatch, so a fetched block always
-/// extends the cursor. While the journal's final tip is below the cursor
-/// (catching up, or rebuilt), the module waits: the comparison runs once the
-/// journal finalizes the cursor's height. On a mismatch the module rolls back
+/// extends the cursor. When the journal has no final block at the cursor's
+/// height (catching up, or rebuilt), the module waits: the comparison runs
+/// once the journal finalizes that height. On a mismatch the module rolls back
 /// to the highest height where its stored hash equals the journal's, and the
 /// iteration starts over. With no block to apply, it sleeps `poll` and starts
 /// over.
 ///
-/// `source` is called inline on the task: its reads are short local redb
-/// transactions, and the runtime is multi-threaded, so other modules keep
-/// running meanwhile.
+/// `block_view` reads a whole block's records and inscription contents, so it
+/// runs on tokio's blocking pool. `tip` and `block_info` are single-key redb
+/// reads and run inline on the task.
 pub(crate) async fn follow(
     name: &'static str,
     module: &mut dyn Module,
-    source: &dyn BlockSource,
+    source: &Arc<dyn BlockSource>,
     poll: Duration,
 ) -> Result<Infallible> {
     loop {
@@ -36,38 +36,48 @@ pub(crate) async fn follow(
             .as_ref()
             .map_or_else(|| module.start_height(), |cursor| cursor.height + 1);
         let block = if source.tip()?.is_some_and(|tip| tip >= next) {
-            source.block_view(next)?
+            block_view(source, next).await?
         } else {
             None
         };
 
-        if let Some(cursor) = &cursor
-            && !source.tip()?.is_some_and(|tip| tip >= cursor.height)
-        {
-            tracing::debug!(
-                module = name,
-                cursor = cursor.height,
-                "waiting for the journal to reach the cursor"
-            );
-            tokio::time::sleep(poll).await;
-            continue;
-        }
-
-        if let Some(cursor) = cursor
-            && journal_hash(source, cursor.height)?.as_deref() != Some(cursor.hash.as_str())
-        {
-            let target = agreement_height(module, source, cursor.height).await?;
-            tracing::warn!(
-                module = name,
-                cursor = cursor.height,
-                target,
-                "the journal's hash at the cursor differs from the module's, rolling back"
-            );
-            module
-                .rollback_to(target)
-                .await
-                .with_context(|| format!("rolling back to {target}"))?;
-            continue;
+        if let Some(cursor) = cursor {
+            match journal_hash(source.as_ref(), cursor.height)? {
+                None => {
+                    tracing::debug!(
+                        module = name,
+                        cursor = cursor.height,
+                        "waiting for the journal to reach the cursor"
+                    );
+                    tokio::time::sleep(poll).await;
+                    continue;
+                }
+                Some(hash) if hash != cursor.hash => {
+                    let Some(target) =
+                        agreement_height(module, source.as_ref(), cursor.height).await?
+                    else {
+                        tracing::debug!(
+                            module = name,
+                            cursor = cursor.height,
+                            "the journal dropped below the rollback walk, retrying"
+                        );
+                        tokio::time::sleep(poll).await;
+                        continue;
+                    };
+                    tracing::warn!(
+                        module = name,
+                        cursor = cursor.height,
+                        target,
+                        "the journal's hash at the cursor differs from the module's, rolling back"
+                    );
+                    module
+                        .rollback_to(target)
+                        .await
+                        .with_context(|| format!("rolling back to {target}"))?;
+                    continue;
+                }
+                Some(_) => {}
+            }
         }
 
         match block {
@@ -83,6 +93,13 @@ pub(crate) async fn follow(
     }
 }
 
+async fn block_view(source: &Arc<dyn BlockSource>, height: u32) -> Result<Option<BlockView>> {
+    let source = source.clone();
+    tokio::task::spawn_blocking(move || source.block_view(height))
+        .await
+        .with_context(|| format!("reading block {height} from the journal"))?
+}
+
 /// The journal's hash at `height`, or `None` above its final tip.
 fn journal_hash(source: &dyn BlockSource, height: u32) -> Result<Option<String>> {
     if !source.tip()?.is_some_and(|tip| height <= tip) {
@@ -93,12 +110,15 @@ fn journal_hash(source: &dyn BlockSource, height: u32) -> Result<Option<String>>
 
 /// Walks down from `cursor` to the highest height where the module's stored
 /// hash equals the journal's. When no height from `start_height()` up agrees,
-/// the answer is `start_height() - 1`, which undoes every block.
+/// the answer is `start_height() - 1`, which undoes every block; with a start
+/// height of 0 that is an error. `None` means the journal has no final block
+/// at a height the walk reached, and the caller retries later. A walk deeper
+/// than `MAX_ROLLBACK_DEPTH` is an error.
 async fn agreement_height(
     module: &mut dyn Module,
     source: &dyn BlockSource,
     cursor: u32,
-) -> Result<u32> {
+) -> Result<Option<u32>> {
     let start = module.start_height();
     let mut height = cursor;
     loop {
@@ -112,16 +132,17 @@ async fn agreement_height(
             );
         }
         if below < start {
-            return Ok(below);
+            return Ok(Some(below));
         }
-        if let Some(hash) = journal_hash(source, below)?
-            && module
-                .block_hash(below)
-                .await
-                .with_context(|| format!("reading the module's hash at {below}"))?
-                == Some(hash)
-        {
-            return Ok(below);
+        let Some(hash) = journal_hash(source, below)? else {
+            return Ok(None);
+        };
+        let stored = module
+            .block_hash(below)
+            .await
+            .with_context(|| format!("reading the module's hash at {below}"))?;
+        if stored == Some(hash) {
+            return Ok(Some(below));
         }
         height = below;
     }

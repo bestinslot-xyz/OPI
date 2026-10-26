@@ -22,6 +22,9 @@ use {
 /// A journal whose finalized blocks are `hashes[height]`.
 struct MemSource {
     hashes: Mutex<Vec<String>>,
+    /// `(height, tip)`: right after `block_info(height)` answers, the journal
+    /// drops every block above `tip`. Fires once.
+    truncate_after_info: Mutex<Option<(u32, u32)>>,
 }
 
 impl MemSource {
@@ -29,6 +32,7 @@ impl MemSource {
     fn new(tip: u32) -> Arc<Self> {
         let source = Arc::new(Self {
             hashes: Mutex::new(Vec::new()),
+            truncate_after_info: Mutex::new(None),
         });
         source.set_chain(0, "a", tip);
         source
@@ -48,6 +52,16 @@ impl MemSource {
         hashes.extend((from..=tip).map(|height| format!("a-{height}")));
     }
 
+    fn info(&self, height: u32) -> Option<BlockInfo> {
+        lock(&self.hashes)
+            .get(height as usize)
+            .map(|hash| BlockInfo {
+                height,
+                hash: hash.clone(),
+                time: 1_700_000_000 + height,
+            })
+    }
+
     fn chain(&self, from: u32) -> BTreeMap<u32, String> {
         lock(&self.hashes)
             .iter()
@@ -64,13 +78,15 @@ impl BlockSource for MemSource {
     }
 
     fn block_info(&self, height: u32) -> Result<Option<BlockInfo>> {
-        Ok(lock(&self.hashes)
-            .get(height as usize)
-            .map(|hash| BlockInfo {
-                height,
-                hash: hash.clone(),
-                time: 1_700_000_000 + height,
-            }))
+        let info = self.info(height);
+        let mut truncate = lock(&self.truncate_after_info);
+        if let Some((at, tip)) = *truncate
+            && at == height
+        {
+            *truncate = None;
+            lock(&self.hashes).truncate(tip as usize + 1);
+        }
+        Ok(info)
     }
 
     fn inscription_records(&self, _: u32) -> Result<Vec<opi_core::InscriptionRecord>> {
@@ -82,7 +98,7 @@ impl BlockSource for MemSource {
     }
 
     fn block_view(&self, height: u32) -> Result<Option<BlockView>> {
-        Ok(self.block_info(height)?.map(|info| BlockView {
+        Ok(self.info(height).map(|info| BlockView {
             height,
             hash: info.hash,
             time: info.time,
@@ -438,9 +454,35 @@ async fn rolls_back_below_start_height_when_nothing_agrees() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn rollback_of_exactly_the_cap_succeeds() {
+    let source = MemSource::new(1100);
+    let module = store_with(diverging_from(101, 1100));
+    let running = start(
+        &source,
+        fast_options(),
+        vec![("fake", factory("fake", 0, &module))],
+    );
+
+    wait_until("journal chain", matches_chain(&module, &source, 0)).await;
+    running.stop().await;
+
+    let store = lock(&module);
+    assert_eq!(store.rollbacks, [100]);
+    assert_eq!(store.builds.len(), 1);
+}
+
+/// `a-<height>` hashes below `diverge`, `x-<height>` from it up to `cursor`.
+fn diverging_from(diverge: u32, cursor: u32) -> impl Iterator<Item = (u32, String)> {
+    (0..=cursor).map(move |height| {
+        let fork = if height < diverge { "a" } else { "x" };
+        (height, format!("{fork}-{height}"))
+    })
+}
+
+#[tokio::test(start_paused = true)]
 async fn rollback_deeper_than_limit_restarts_instead() {
     let source = MemSource::new(1100);
-    let module = store_with((0..=1100).map(|height| (height, format!("x-{height}"))));
+    let module = store_with(diverging_from(100, 1100));
     let running = start(
         &source,
         fast_options(),
@@ -462,29 +504,82 @@ async fn modules_at_different_heights_roll_back_independently() {
     let source = MemSource::new(10);
     let ahead = store();
     let behind = store();
-    lock(&behind).hold_above = Some(6);
+    lock(&behind).hold_above = Some(9);
+    // Followed another chain from height 5 and sits above the journal's tip,
+    // so it waits until the journal reaches its cursor.
+    let stale = store_with((0..=12).map(|height| {
+        let fork = if height < 5 { "a" } else { "s" };
+        (height, format!("{fork}-{height}"))
+    }));
     let running = start(
         &source,
         fast_options(),
         vec![
             ("ahead", factory("ahead", 0, &ahead)),
             ("behind", factory("behind", 0, &behind)),
+            ("stale", factory("stale", 0, &stale)),
         ],
     );
     wait_until("ahead at 10", cursor_is(&ahead, 10)).await;
-    wait_until("behind at 6", cursor_is(&behind, 6)).await;
+    wait_until("behind at 9", cursor_is(&behind, 9)).await;
+    assert!(lock(&stale).rollbacks.is_empty());
 
-    source.set_chain(8, "b", 10);
+    source.set_chain(8, "b", 12);
     wait_until("ahead reorged", matches_chain(&ahead, &source, 0)).await;
-    assert_eq!(lock(&ahead).rollbacks, [7]);
-    assert_eq!(lock(&behind).blocks.len(), 7);
-
+    wait_until("stale reorged", matches_chain(&stale, &source, 0)).await;
     lock(&behind).hold_above = None;
-    wait_until("behind caught up", matches_chain(&behind, &source, 0)).await;
+    wait_until("behind reorged", matches_chain(&behind, &source, 0)).await;
     running.stop().await;
 
-    assert!(lock(&behind).rollbacks.is_empty());
-    assert_eq!(applied_heights(&behind), (0..=10).collect::<Vec<_>>());
+    assert_eq!(lock(&ahead).rollbacks, [7]);
+    assert_eq!(lock(&behind).rollbacks, [7]);
+    assert_eq!(lock(&stale).rollbacks, [4]);
+    assert_eq!(applied_heights(&stale), (5..=12).collect::<Vec<_>>());
+}
+
+#[tokio::test(start_paused = true)]
+async fn rollback_walk_waits_when_journal_drops_below_it() {
+    let source = MemSource::new(10);
+    let module = store_with(diverging_from(8, 10));
+    *lock(&source.truncate_after_info) = Some((9, 5));
+    let running = start(
+        &source,
+        fast_options(),
+        vec![("fake", factory("fake", 0, &module))],
+    );
+
+    sleep(Duration::from_secs(60)).await;
+    assert_eq!(source.chain(0).len(), 6);
+    assert!(lock(&module).rollbacks.is_empty());
+    assert_eq!(lock(&module).blocks.len(), 11);
+
+    source.set_chain(0, "a", 12);
+    wait_until("journal chain", matches_chain(&module, &source, 0)).await;
+    running.stop().await;
+
+    assert_eq!(lock(&module).rollbacks, [7]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_during_backoff_stops_promptly() {
+    let source = MemSource::new(10);
+    let module = store();
+    lock(&module).fail_build = true;
+    let options = RuntimeOptions {
+        min_backoff: Duration::from_secs(3600),
+        ..fast_options()
+    };
+    let running = start(
+        &source,
+        options,
+        vec![("fake", factory("fake", 0, &module))],
+    );
+
+    let watched = module.clone();
+    wait_until("first build", move || lock(&watched).builds.len() == 1).await;
+    running.stop().await;
+
+    assert_eq!(lock(&module).builds.len(), 1);
 }
 
 #[tokio::test(start_paused = true)]

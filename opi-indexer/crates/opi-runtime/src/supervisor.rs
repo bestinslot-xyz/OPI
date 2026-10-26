@@ -4,8 +4,8 @@ use {
     futures::{FutureExt, future::BoxFuture},
     opi_core::{BlockSource, Module},
     std::{
-        any::Any, convert::Infallible, future::Future, panic::AssertUnwindSafe, sync::Arc,
-        time::Duration,
+        any::Any, collections::HashMap, convert::Infallible, future::Future,
+        panic::AssertUnwindSafe, sync::Arc, time::Duration,
     },
     tokio::{task::JoinSet, time::Instant},
 };
@@ -72,22 +72,27 @@ impl Runtime {
     /// resumes from its cursor on the next start.
     pub async fn run(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         let mut tasks = JoinSet::new();
+        let mut names = HashMap::new();
         for (name, factory) in self.modules {
-            tasks.spawn(supervise(
+            let handle = tasks.spawn(supervise(
                 name,
                 factory,
                 self.source.clone(),
                 self.options.clone(),
             ));
+            names.insert(handle.id(), name);
         }
         shutdown.await;
-        tracing::info!("stopping {} module(s)", tasks.len());
+        tracing::info!(modules = ?names.values().collect::<Vec<_>>(), "stopping modules");
         tasks.abort_all();
-        while let Some(joined) = tasks.join_next().await {
-            if let Err(err) = joined
-                && err.is_panic()
-            {
-                tracing::error!("module supervisor panicked: {err}");
+        while let Some(joined) = tasks.join_next_with_id().await {
+            match joined {
+                Ok((id, ())) => tracing::info!(module = names[&id], "module stopped"),
+                Err(err) if err.is_panic() => tracing::error!(
+                    module = names[&err.id()],
+                    "module supervisor panicked: {err}"
+                ),
+                Err(err) => tracing::info!(module = names[&err.id()], "module stopped"),
             }
         }
         Ok(())
@@ -107,7 +112,7 @@ async fn supervise(
     let mut backoff = options.min_backoff;
     loop {
         let started = Instant::now();
-        let outcome = AssertUnwindSafe(attempt(name, &factory, source.as_ref(), options.poll))
+        let outcome = AssertUnwindSafe(attempt(name, &factory, &source, options.poll))
             .catch_unwind()
             .await;
         let err = match outcome {
@@ -130,7 +135,7 @@ async fn supervise(
 async fn attempt(
     name: &'static str,
     factory: &ModuleFactory,
-    source: &dyn BlockSource,
+    source: &Arc<dyn BlockSource>,
     poll: Duration,
 ) -> Result<Infallible> {
     let mut module = factory().await.context("building the module")?;
