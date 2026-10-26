@@ -1,0 +1,94 @@
+[
+  {
+    "content_hex": "302e6269746d6170",
+    "expected": "0"
+  },
+  {
+    "content_hex": "30302e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "3031322e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "3834303030302e6269746d6170",
+    "expected": "840000"
+  },
+  {
+    "content_hex": "312e6269746d6170",
+    "expected": "1"
+  },
+  {
+    "content_hex": "3132333435363738392e6269746d6170",
+    "expected": "123456789"
+  },
+  {
+    "content_hex": "2e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "312e6269746d617020",
+    "expected": null
+  },
+  {
+    "content_hex": "20312e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "efbc912e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "31d9a32e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "fffe2e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "31ff2e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "",
+    "expected": null
+  },
+  {
+    "content_hex": "312e4249544d4150",
+    "expected": null
+  },
+  {
+    "content_hex": "6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "2d312e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "315f302e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "312e6269746d61702e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "310a2e6269746d6170",
+    "expected": null
+  },
+  {
+    "content_hex": "3132333435363738393031323334353637383930313233343536373839302e6269746d6170",
+    "expected": "123456789012345678901234567890"
+  },
+  {
+    "content_hex": "31383434363734343037333730393535313631352e6269746d6170",
+    "expected": "18446744073709551615"
+  },
+  {
+    "content_hex": "31383434363734343037333730393535313631362e6269746d6170",
+    "expected": "18446744073709551616"
+  }
+]
