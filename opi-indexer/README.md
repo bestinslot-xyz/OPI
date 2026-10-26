@@ -215,10 +215,10 @@ the spec leaves a choice open, the rule below states the one opi-sns makes
      `op == "reg"` and a string `name`, which is the candidate. Any other value
      registers nothing, so `1.5`, `"x.sats"` and `true` register nothing
      (*decision*: no raw-text fallback for parsed values).
-   - The candidate is lowercased, cut at its first whitespace and trimmed of
-     whitespace. Text that starts with whitespace therefore registers nothing
-     (*decision*: the spec's "delete everything after the first space" read
-     literally).
+   - The candidate is lowercased and reduced to its first whitespace-separated
+     token: leading whitespace is trimmed, then the text is cut at the next
+     whitespace, so `" alice.sats"` registers `alice.sats` (*decision*: the
+     spec's trim step only does anything if the cut skips leading whitespace).
    - It must contain exactly one `.`, with text on both sides (*decision*:
      both parts non-empty). The part after the `.` is the namespace, stored as
      `domain`.

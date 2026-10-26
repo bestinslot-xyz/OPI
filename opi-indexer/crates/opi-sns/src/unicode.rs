@@ -75,13 +75,18 @@ fn final_sigma(cps: &[u32], i: usize) -> bool {
     }
 }
 
-/// `cps` cut at its first whitespace and trimmed of whitespace: everything
-/// before the first whitespace code point, which is empty when `cps` starts
-/// with whitespace and leaves nothing for the trim to remove.
-pub(crate) fn cut_and_trim(cps: &[u32]) -> &[u32] {
-    let end = cps
+/// The first whitespace-separated token of `cps`: leading whitespace is
+/// skipped, then the text is cut at the next whitespace. Empty when `cps` is
+/// only whitespace.
+pub(crate) fn first_token(cps: &[u32]) -> &[u32] {
+    let start = cps
+        .iter()
+        .position(|&cp| !is_white_space(cp))
+        .unwrap_or(cps.len());
+    let rest = &cps[start..];
+    let end = rest
         .iter()
         .position(|&cp| is_white_space(cp))
-        .unwrap_or(cps.len());
-    &cps[..end]
+        .unwrap_or(rest.len());
+    &rest[..end]
 }

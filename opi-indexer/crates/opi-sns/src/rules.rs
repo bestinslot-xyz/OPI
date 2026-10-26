@@ -12,8 +12,9 @@
 //!    object with `p == "sns"`, `op == "reg"` and a string `name`, which is
 //!    the candidate; any other parsed value registers nothing. If it does not
 //!    parse, the whole text is the candidate. The candidate is lowercased
-//!    (full mapping with final sigma), cut at its first whitespace and
-//!    trimmed of whitespace, so leading whitespace leaves nothing. It must
+//!    (full mapping with final sigma) and reduced to its first
+//!    whitespace-separated token (leading whitespace trimmed, then cut at the
+//!    next whitespace). It must
 //!    hold exactly one `.` with text on both sides; the namespace (stored as
 //!    `domain`) is the part after it.
 //! 4. Namespaces: only a JSON5 object with `p == "sns"`, `op == "ns"` and a
@@ -35,7 +36,7 @@ use opi_core::{BlockView, InscriptionInfo};
 use sha2::{Digest, Sha256};
 
 use crate::json5::{self, Value};
-use crate::unicode::{cut_and_trim, is_white_space, lowercase_cps};
+use crate::unicode::{first_token, is_white_space, lowercase_cps};
 
 pub const EVENT_SEPARATOR: &str = "|";
 const TEXT_PLAIN: &[u8] = b"text/plain";
@@ -67,7 +68,7 @@ fn name(text: &str, value: Option<&Value>) -> Option<SnsOp> {
         },
         None => lowercase_cps(&text.chars().map(u32::from).collect::<Vec<_>>()),
     };
-    let name = cut_and_trim(&candidate);
+    let name = first_token(&candidate);
     if name.iter().filter(|&&cp| cp == DOT).count() != 1 {
         return None;
     }

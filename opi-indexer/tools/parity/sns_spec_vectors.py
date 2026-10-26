@@ -111,16 +111,16 @@ def name_of(text, parsed, value):
   else:
     candidate = text
   candidate = candidate.lower()
+  # The first whitespace-separated token: trim leading whitespace, then cut
+  # at the first whitespace.
+  start = 0
+  while start < len(candidate) and is_space(candidate[start]):
+    start += 1
+  candidate = candidate[start:]
   for i, ch in enumerate(candidate):
     if is_space(ch):
       candidate = candidate[:i]
       break
-  start, end = 0, len(candidate)
-  while start < end and is_space(candidate[start]):
-    start += 1
-  while end > start and is_space(candidate[end - 1]):
-    end -= 1
-  candidate = candidate[start:end]
   if candidate.count('.') != 1:
     return None
   label, namespace = candidate.split('.')
@@ -260,7 +260,11 @@ SPEC_JSON = ('{\n  "p": "sns",\n  "op": "reg",\n  "name": "satoshi.sats",\n'
 for s in ['satoshi.sats', SPEC_JSON, 'Satoshi.SATS', 'a b.sats', 'a.b.c', '1.5', '"x.sats"',
           '{"p":"sns","op":"ns","ns":"my ns"}', '{"p":"sns","op":"ns","ns":"sats"}',
           '{p:"sns",op:"reg",name:"satoshi.sats",}', '{"p":"sns","op":"reg","name":"a\nb.sats"}',
-          'satoshi.sats\nsecond line', 'satoshi.gm', 'satoshi.ord']:
+          'satoshi.sats\nsecond line', 'satoshi.gm', 'satoshi.ord',
+          # Leading whitespace is trimmed before the cut; only whitespace
+          # registers nothing.
+          ' alice.sats', '\nalice.sats', '　alice.sats', '\r\n\talice.sats more',
+          '{"p":"sns","op":"reg","name":"\\nalice.sats"}', ' ', '\n', '　', ' \n　\t']:
   add(text(s))
 # Plain names.
 for s in ['alice.sats', 'Alice.SATS', 'alice.sats extra', 'a.b.c', 'alice', '.sats',

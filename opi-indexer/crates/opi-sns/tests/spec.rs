@@ -280,16 +280,23 @@ fn name_wins_over_namespace() {
 }
 
 #[test]
-fn leading_whitespace_cuts_the_name_away() {
-    assert_eq!(parse(b" alice.sats"), None);
-    assert_eq!(parse(b"\nalice.sats"), None);
-    assert_eq!(
-        parse(b"alice.sats \nmore"),
-        Some(SnsOp::Name {
-            name: "alice.sats".into(),
-            domain: "sats".into()
-        })
-    );
+fn name_is_the_first_whitespace_separated_token() {
+    let alice = Some(SnsOp::Name {
+        name: "alice.sats".into(),
+        domain: "sats".into(),
+    });
+    for content in [
+        " alice.sats",
+        "\nalice.sats",
+        "\u{3000}alice.sats",
+        "alice.sats \nmore",
+        "\r\n\tAlice.SATS more",
+    ] {
+        assert_eq!(parse(content.as_bytes()), alice, "{content:?}");
+    }
+    for content in ["", " ", "\n", "\u{3000}", " \n\u{3000}\t"] {
+        assert_eq!(parse(content.as_bytes()), None, "{content:?}");
+    }
 }
 
 #[test]
