@@ -14,10 +14,12 @@ pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 /// journal's final tip reaches it, and then checks that the journal still
 /// holds the cursor's hash. Checking after the fetch means a journal reorg
 /// between the two reads shows up as a mismatch, so a fetched block always
-/// extends the cursor. On a mismatch the module rolls back to the highest
-/// height where its stored hash equals the journal's, and the iteration starts
-/// over. With no block to apply, it sleeps `poll` and starts over, so a reorg
-/// that lowers the journal below the cursor is noticed while waiting.
+/// extends the cursor. While the journal's final tip is below the cursor
+/// (catching up, or rebuilt), the module waits: the comparison runs once the
+/// journal finalizes the cursor's height. On a mismatch the module rolls back
+/// to the highest height where its stored hash equals the journal's, and the
+/// iteration starts over. With no block to apply, it sleeps `poll` and starts
+/// over.
 ///
 /// `source` is called inline on the task: its reads are short local redb
 /// transactions, and the runtime is multi-threaded, so other modules keep
@@ -38,6 +40,18 @@ pub(crate) async fn follow(
         } else {
             None
         };
+
+        if let Some(cursor) = &cursor
+            && !source.tip()?.is_some_and(|tip| tip >= cursor.height)
+        {
+            tracing::debug!(
+                module = name,
+                cursor = cursor.height,
+                "waiting for the journal to reach the cursor"
+            );
+            tokio::time::sleep(poll).await;
+            continue;
+        }
 
         if let Some(cursor) = cursor
             && journal_hash(source, cursor.height)?.as_deref() != Some(cursor.hash.as_str())

@@ -372,7 +372,7 @@ async fn rolls_back_to_agreement_point_on_hash_change() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn rolls_back_when_journal_is_below_cursor() {
+async fn waits_while_journal_is_below_cursor() {
     let source = MemSource::new(10);
     let module = store();
     let running = start(
@@ -381,8 +381,39 @@ async fn rolls_back_when_journal_is_below_cursor() {
         vec![("fake", factory("fake", 0, &module))],
     );
     wait_until("cursor 10", cursor_is(&module, 10)).await;
+    let before = lock(&module).blocks.clone();
+
+    source.set_chain(0, "a", 5);
+    sleep(Duration::from_secs(60)).await;
+    assert!(lock(&module).rollbacks.is_empty());
+    assert_eq!(lock(&module).blocks, before);
+
+    source.grow(12);
+    wait_until("cursor 12", cursor_is(&module, 12)).await;
+    running.stop().await;
+
+    assert!(lock(&module).rollbacks.is_empty());
+    assert_eq!(applied_heights(&module), (0..=12).collect::<Vec<_>>());
+}
+
+#[tokio::test(start_paused = true)]
+async fn rolls_back_once_journal_reaches_cursor_with_new_hash() {
+    let source = MemSource::new(10);
+    let module = store();
+    let running = start(
+        &source,
+        fast_options(),
+        vec![("fake", factory("fake", 0, &module))],
+    );
+    wait_until("cursor 10", cursor_is(&module, 10)).await;
+    let before = lock(&module).blocks.clone();
 
     source.set_chain(8, "b", 9);
+    sleep(Duration::from_secs(60)).await;
+    assert!(lock(&module).rollbacks.is_empty());
+    assert_eq!(lock(&module).blocks, before);
+
+    source.set_chain(8, "b", 11);
     wait_until("reorged chain", matches_chain(&module, &source, 0)).await;
     running.stop().await;
 
