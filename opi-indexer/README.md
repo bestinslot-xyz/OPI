@@ -135,11 +135,13 @@ advances and no errors are logged.
 
 ## ord dependency
 
-`ord`, `ordinals` and the `mockcore` dev-dependency are git dependencies on one
-source (`https://github.com/ordinals/ord`, tag `0.29.1`). With the crates.io
-`ord` alongside the git `mockcore`, Cargo builds two copies of `ord` and
-`ordinals`, so their types do not unify. A single git source gives one copy of
-each.
+`ord` (`=0.29.1`) and `ordinals` (`=0.0.17`) come from crates.io. The tests'
+mock bitcoind, `mockcore`, is not published, so it is a git dev-dependency on
+the matching ord tag (`https://github.com/ordinals/ord`, tag `0.29.1`). mockcore
+depends on ord by path inside that repository; the workspace's
+`[patch."https://github.com/ordinals/ord"]` resolves that ord to the crates.io
+release, so the tree holds one `ord`. An ord bump moves the crates.io versions,
+the mockcore tag and the patch together.
 
 `redb` is pinned to `=3.1.3`, the version ord 0.29.1's own lockfile holds, so
 the journal and ord's index use the redb release ord is tested with. `bitcoin`
@@ -171,7 +173,7 @@ neither binary links native-tls.
 ## Upstream assumptions
 
 The crash-safety design rests on four properties of ord. Each ord bump re-checks
-them against the new tag's source; ord 0.29.1 holds all four.
+them against the new release's source; ord 0.29.1 holds all four.
 
 **A1: every commit follows a `getblockchaininfo` barrier.** In
 `Updater::update_index` (`src/index/updater.rs`), each block is followed by:

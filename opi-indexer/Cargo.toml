@@ -5,3 +5,8 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+
+# mockcore (test-only) is not published and depends on ord by path inside the
+# ord repository; this resolves that ord to the crates.io release we link.
+[patch."https://github.com/ordinals/ord"]
+ord = { version = "=0.29.1" }
