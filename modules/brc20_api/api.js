@@ -495,4 +495,128 @@ app.get('/v1/brc20/event', async (request, response) => {
   }
 });
 
+// Explorer routes for the BRC2.0 blockscout frontend. They answer in blockscout's
+// response shapes, which the frontend consumes directly. The EVM -> BTC address
+// mapping comes from the evm_addresses table (evm_address = last 20 bytes of
+// keccak256(pkscript), stored lowercase), which an evm_addresses updater maintains.
+const EXPLORER_PAGE_SIZE = 50
+
+async function get_btc_address_of_evm_address(evm_address) {
+  let res = await query_db('select btc_address from evm_addresses where evm_address = lower($1);', [evm_address])
+  return res.rows.length > 0 ? res.rows[0].btc_address : null
+}
+
+app.get('/v1/brc20/explorer/btc_address/:evm_address', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let btc_address = await get_btc_address_of_evm_address(request.params.evm_address)
+    response.send({ btc_address: btc_address })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
+app.get('/v1/brc20/explorer/balances/:evm_address', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let btc_address = await get_btc_address_of_evm_address(request.params.evm_address)
+    if (btc_address == null) {
+      response.send({ items: [] })
+      return
+    }
+    let query = ` select bcb.tick, bcb.overall_balance, bt.decimals
+                  from brc20_current_balances bcb
+                  left join brc20_tickers bt on bcb.tick = bt.tick
+                  where bcb.wallet = $1 and bcb.overall_balance > 0
+                  order by bcb.overall_balance desc;`
+    let res = await query_db(query, [btc_address])
+    response.send({
+      items: res.rows.map((row) => ({
+        external_token_name: row.tick,
+        external_value: row.overall_balance,
+        external_decimals: row.decimals + '',
+      }))
+    })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
+app.get('/v1/brc20/explorer/address_tabs_counters/:evm_address', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let token_balances_count = 0
+    let btc_address = await get_btc_address_of_evm_address(request.params.evm_address)
+    if (btc_address != null) {
+      let res = await query_db(`select count(*) as brc20_count
+                                from brc20_current_balances
+                                where wallet = $1 and overall_balance > 0;`, [btc_address])
+      token_balances_count = parseInt(res.rows[0].brc20_count)
+    }
+    response.send({
+      internal_transactions_count: 0,
+      logs_count: 0,
+      token_balances_count: token_balances_count,
+      token_transfers_count: 0,
+      transactions_count: 0,
+      validations_count: 0,
+      withdrawals_count: 0,
+    })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
+// Base BRC-20 tokens with at least one holder, most held first. Pages by offset:
+// next_page_params.items_count is the offset of the next page.
+app.get('/v1/brc20/explorer/tokens', async (request, response) => {
+  try {
+    console.log(`${request.protocol}://${request.get('host')}${request.originalUrl}`)
+    let q = typeof request.query.q === 'string' ? request.query.q : ''
+    let offset = parseInt(request.query.items_count || '0') || 0
+    // sort/order are interpolated into SQL, so only whitelisted values get through
+    let direction = String(request.query.order).toLowerCase() === 'asc' ? 'asc' : 'desc'
+    let query = ` select bt.tick, bt.decimals, bt.max_supply - bt.remaining_supply as total_supply, count(*) as holder_count
+                  from brc20_tickers bt
+                  join brc20_current_balances bcb on bt.tick = bcb.tick
+                  where bt.tick ilike $1 and bcb.overall_balance > 0
+                  group by 1, 2, 3
+                  order by holder_count ${direction}, bt.tick asc
+                  limit $2 offset $3;`
+    let res = await query_db(query, ['%' + q + '%', EXPLORER_PAGE_SIZE + 1, offset])
+    let rows = res.rows.slice(0, EXPLORER_PAGE_SIZE)
+    let next_page_params = null
+    if (res.rows.length > EXPLORER_PAGE_SIZE) {
+      let last = rows[rows.length - 1]
+      next_page_params = {
+        holder_count: last.holder_count,
+        items_count: offset + EXPLORER_PAGE_SIZE,
+        name: last.tick,
+        market_cap: null,
+      }
+    }
+    response.send({
+      items: rows.map((row) => ({
+        address: '',
+        type: 'ERC-20',
+        symbol: row.tick,
+        name: row.tick,
+        decimals: row.decimals + '',
+        holders: row.holder_count + '',
+        exchange_rate: null,
+        total_supply: row.total_supply + '',
+        icon_url: null,
+        circulating_market_cap: null,
+      })),
+      next_page_params: next_page_params,
+    })
+  } catch (err) {
+    console.log(err)
+    response.status(500).send({ error: 'internal error', result: null })
+  }
+});
+
 app.listen(api_port, api_host);
