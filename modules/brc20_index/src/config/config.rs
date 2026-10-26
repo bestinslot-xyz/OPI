@@ -139,9 +139,6 @@ pub const REPORT_NAME_DEFAULT: &str = "opi_brc20_indexer";
 pub const NETWORK_TYPE_KEY: &str = "NETWORK_TYPE";
 pub const NETWORK_TYPE_DEFAULT: &str = "mainnet";
 
-pub const BRC20_PROG_ENABLED_KEY: &str = "BRC20_PROG_ENABLED";
-pub const BRC20_PROG_ENABLED_DEFAULT: &str = "false";
-
 pub const BRC20_PROG_RPC_URL_KEY: &str = "BRC20_PROG_RPC_URL";
 pub const BRC20_PROG_RPC_URL_DEFAULT: &str = "http://localhost:18545";
 
@@ -304,7 +301,6 @@ pub struct Brc20IndexerConfig {
     /// BRC20 swap module pkScript
     pub brc20_swap_module_pkscript: String,
 
-    pub brc20_prog_enabled: bool,
     pub brc20_prog_rpc_url: String,
     pub brc20_prog_rpc_user: Option<String>,
     pub brc20_prog_rpc_password: Option<String>,
@@ -389,9 +385,6 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or(&"")
                 .to_string(),
 
-            brc20_prog_enabled: std::env::var(BRC20_PROG_ENABLED_KEY)
-                .unwrap_or_else(|_| BRC20_PROG_ENABLED_DEFAULT.to_string())
-                == "true",
             brc20_prog_rpc_url: std::env::var(BRC20_PROG_RPC_URL_KEY)
                 .unwrap_or_else(|_| BRC20_PROG_RPC_URL_DEFAULT.to_string()),
             brc20_prog_rpc_user: std::env::var(BRC20_PROG_RPC_USER_KEY)

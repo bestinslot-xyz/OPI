@@ -494,7 +494,6 @@ impl EventProcessor {
             if (block_height < config.first_brc20_prog_all_tickers_height
                 && event.original_ticker.as_bytes().len() < 6)
                 || block_height < config.first_brc20_prog_phase_one_height
-                || !config.brc20_prog_enabled
             {
                 // Burn tokens if BRC20 Prog is not enabled for this ticker yet
                 source_balance.overall_balance -= event.amount;

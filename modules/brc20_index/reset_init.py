@@ -26,7 +26,6 @@ if init_env:
   REPORT_URL="https://api.opi.network/report_block"
   REPORT_RETRIES="10"
   REPORT_NAME="opi_brc20_index"
-  BRC20_PROG_ENABLED="false"
   BRC20_PROG_RPC_URL="http://localhost:18545"
   BRC20_PROG_RPC_USER="user"
   BRC20_PROG_RPC_PASSWORD="password"
@@ -88,20 +87,16 @@ if init_env:
         break
       else:
         print('Report name cannot be empty')
-  res = input("Enable BRC20 programmable module (Default: false): ")
+  print('If brc20_prog sets BRC20_PROG_ADMIN_RPC_SERVER_URL, use the admin listener URL here (e.g. http://localhost:18546).')
+  res = input("BRC20 programmable module RPC URL (Default: http://localhost:18545): ")
   if res != '':
-    BRC20_PROG_ENABLED = res
-  if BRC20_PROG_ENABLED == 'true':
-    print('If brc20_prog sets BRC20_PROG_ADMIN_RPC_SERVER_URL, use the admin listener URL here (e.g. http://localhost:18546).')
-    res = input("BRC20 programmable module RPC URL (Default: http://localhost:18545): ")
-    if res != '':
-      BRC20_PROG_RPC_URL = res
-    res = input("BRC20 programmable module RPC username (Default: user): ")
-    if res != '':
-      BRC20_PROG_RPC_USER = res
-    res = stdiomask.getpass("BRC20 programmable module RPC password (Default: password): ")
-    if res != '':
-      BRC20_PROG_RPC_PASSWORD = res
+    BRC20_PROG_RPC_URL = res
+  res = input("BRC20 programmable module RPC username (Default: user): ")
+  if res != '':
+    BRC20_PROG_RPC_USER = res
+  res = stdiomask.getpass("BRC20 programmable module RPC password (Default: password): ")
+  if res != '':
+    BRC20_PROG_RPC_PASSWORD = res
 
   f = open('.env', 'w')
   f.write('DB_USER="' + DB_USER + '"\n')
@@ -116,7 +111,6 @@ if init_env:
   f.write('REPORT_URL="' + REPORT_URL + '"\n')
   f.write('REPORT_RETRIES="' + REPORT_RETRIES + '"\n')
   f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
-  f.write('BRC20_PROG_ENABLED="' + BRC20_PROG_ENABLED + '"\n')
   f.write('BRC20_PROG_RPC_URL="' + BRC20_PROG_RPC_URL + '"\n')
   f.write('BRC20_PROG_RPC_USER="' + BRC20_PROG_RPC_USER + '"\n')
   f.write('BRC20_PROG_RPC_PASSWORD="' + BRC20_PROG_RPC_PASSWORD + '"\n')

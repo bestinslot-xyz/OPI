@@ -174,48 +174,46 @@ impl Brc20Indexer {
 
         self.clear_caches().await?;
 
-        if self.config.brc20_prog_enabled {
-            let brc20_prog_version = self.brc20_prog_client.brc20_version().await?;
-            let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).expect(
-                format!(
-                    "Invalid BRC20_PROG_VERSION requirement: {}",
-                    BRC20_PROG_VERSION_REQUIREMENT
-                )
-                .as_str(),
-            );
-            let version = Versioning::new(&brc20_prog_version)
-                .expect(format!("Invalid brc20_prog version: {}", brc20_prog_version).as_str());
-            if !requirement.matches(&version) {
-                return Err(format!(
-                    "brc20_prog version mismatch, expected {}, got {}",
-                    BRC20_PROG_VERSION_REQUIREMENT, brc20_prog_version
-                )
-                .into());
-            }
+        let brc20_prog_version = self.brc20_prog_client.brc20_version().await?;
+        let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).expect(
+            format!(
+                "Invalid BRC20_PROG_VERSION requirement: {}",
+                BRC20_PROG_VERSION_REQUIREMENT
+            )
+            .as_str(),
+        );
+        let version = Versioning::new(&brc20_prog_version)
+            .expect(format!("Invalid brc20_prog version: {}", brc20_prog_version).as_str());
+        if !requirement.matches(&version) {
+            return Err(format!(
+                "brc20_prog version mismatch, expected {}, got {}",
+                BRC20_PROG_VERSION_REQUIREMENT, brc20_prog_version
+            )
+            .into());
+        }
 
-            let brc20_prog_block_height =
-                parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
+        let brc20_prog_block_height =
+            parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
 
-            self.brc20_prog_client
-                .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
-                .await?;
+        self.brc20_prog_client
+            .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
+            .await?;
 
-            if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height - 1 {
-                let mut current_prog_height = brc20_prog_block_height;
-                while current_prog_height < self.config.first_brc20_prog_phase_one_height - 1 {
-                    let next_prog_height = (current_prog_height + BRC20_PROG_MINE_BATCH_SIZE)
-                        .min(self.config.first_brc20_prog_phase_one_height - 1);
-                    tracing::info!(
-                        "BRC20 Prog initialising from block height {} to {}",
-                        current_prog_height,
-                        next_prog_height
-                    );
-                    self.brc20_prog_client
-                        .brc20_mine((next_prog_height - current_prog_height) as u64, 0)
-                        .await?;
-                    self.brc20_prog_client.brc20_commit_to_database().await?;
-                    current_prog_height = next_prog_height;
-                }
+        if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height - 1 {
+            let mut current_prog_height = brc20_prog_block_height;
+            while current_prog_height < self.config.first_brc20_prog_phase_one_height - 1 {
+                let next_prog_height = (current_prog_height + BRC20_PROG_MINE_BATCH_SIZE)
+                    .min(self.config.first_brc20_prog_phase_one_height - 1);
+                tracing::info!(
+                    "BRC20 Prog initialising from block height {} to {}",
+                    current_prog_height,
+                    next_prog_height
+                );
+                self.brc20_prog_client
+                    .brc20_mine((next_prog_height - current_prog_height) as u64, 0)
+                    .await?;
+                self.brc20_prog_client.brc20_commit_to_database().await?;
+                current_prog_height = next_prog_height;
             }
         }
 
@@ -318,9 +316,7 @@ impl Brc20Indexer {
 
         let function_timer = start_timer(SPAN, "clear_caches", current_block_height);
 
-        if self.config.brc20_prog_enabled {
-            self.brc20_prog_client.brc20_clear_caches().await?;
-        }
+        self.brc20_prog_client.brc20_clear_caches().await?;
 
         if get_brc20_database()
             .lock()
@@ -341,9 +337,7 @@ impl Brc20Indexer {
 
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         tracing::info!("Reorganizing BRC20 indexer database...");
-        if self.config.brc20_prog_enabled
-            && block_height >= self.config.first_brc20_prog_phase_one_height
-        {
+        if block_height >= self.config.first_brc20_prog_phase_one_height {
             self.brc20_prog_client
                 .brc20_reorg(block_height as u64)
                 .await?;
@@ -446,10 +440,7 @@ impl Brc20Indexer {
                 };
             stop_timer(&get_block_info_timer).await;
 
-            if block_time == 0
-                && self.config.brc20_prog_enabled
-                && next_block >= self.config.first_brc20_prog_phase_one_height
-            {
+            if block_time == 0 && next_block >= self.config.first_brc20_prog_phase_one_height {
                 tracing::error!(
                     "Block time is 0 for block {}, this may cause issues with BRC2.0 events. Stopping indexing.",
                     next_block
@@ -545,9 +536,7 @@ impl Brc20Indexer {
             stop_timer(&index_extras_timer).await;
 
             let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
-            let block_traces_hash = if self.config.brc20_prog_enabled
-                && next_block >= self.config.first_brc20_prog_phase_one_height
-            {
+            let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
                 retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
             } else {
                 String::new()
@@ -592,9 +581,8 @@ impl Brc20Indexer {
             if self.config.light_client_mode {
                 // Validate cumulative hash with OPI client
                 if cumulative_events_hash != opi_cumulative_event_hash
-                    || (self.config.brc20_prog_enabled
-                        && cumulative_traces_hash
-                            != opi_cumulative_trace_hash.clone().unwrap_or_default())
+                    || cumulative_traces_hash
+                        != opi_cumulative_trace_hash.clone().unwrap_or_default()
                 {
                     // Reorg the last block if cumulative events hash mismatch
                     get_brc20_database()
@@ -602,21 +590,17 @@ impl Brc20Indexer {
                         .await
                         .reorg(next_block - 1)
                         .await?;
-                    if self.config.brc20_prog_enabled {
-                        self.brc20_prog_client
-                            .brc20_reorg((next_block - 1) as u64)
-                            .await?;
-                    }
+                    self.brc20_prog_client
+                        .brc20_reorg((next_block - 1) as u64)
+                        .await?;
                     tracing::error!("Cumulative event hash mismatch!!");
                     tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
                     tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
-                    if self.config.brc20_prog_enabled {
-                        tracing::error!(
-                            "OPI cumulative traces hash: {:?}",
-                            opi_cumulative_trace_hash.unwrap_or_default()
-                        );
-                        tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
-                    }
+                    tracing::error!(
+                        "OPI cumulative traces hash: {:?}",
+                        opi_cumulative_trace_hash.unwrap_or_default()
+                    );
+                    tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
                     return Err("Cumulative hash mismatch, please check your OPI client".into());
                 }
             }
@@ -842,9 +826,7 @@ impl Brc20Indexer {
             .await?
             .unwrap_or_default();
 
-        let block_traces_hash = if self.config.brc20_prog_enabled
-            && block_height >= self.config.first_brc20_prog_phase_one_height
-        {
+        let block_traces_hash = if block_height >= self.config.first_brc20_prog_phase_one_height {
             retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, block_height).await?
         } else {
             String::new()
@@ -870,34 +852,32 @@ impl Brc20Indexer {
     }
 
     pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
-        if self.config.brc20_prog_enabled {
-            let function_timer = start_timer(SPAN, "pre_fill_rpc_results_cache", next_block);
-            let bitcoin_rpc_results = match self
-                .event_provider_client
-                .get_bitcoin_rpc_results_with_retries(next_block as i64)
-                .await
-            {
-                Ok(results) => results,
-                Err(error) => {
-                    return Err(error);
-                }
-            };
-            tracing::debug!(
-                "Found {} Bitcoin RPC results for block {}",
-                bitcoin_rpc_results.len(),
-                next_block
-            );
-            for response in bitcoin_rpc_results {
-                let request_bytes = serde_json::to_string(&response.request)?;
-                let response_bytes = serde_json::to_string(&response.response)?.into();
-                get_brc20_database()
-                    .lock()
-                    .await
-                    .cache_bitcoin_rpc_request(request_bytes.as_bytes(), &response_bytes)
-                    .await?;
+        let function_timer = start_timer(SPAN, "pre_fill_rpc_results_cache", next_block);
+        let bitcoin_rpc_results = match self
+            .event_provider_client
+            .get_bitcoin_rpc_results_with_retries(next_block as i64)
+            .await
+        {
+            Ok(results) => results,
+            Err(error) => {
+                return Err(error);
             }
-            stop_timer(&function_timer).await;
+        };
+        tracing::debug!(
+            "Found {} Bitcoin RPC results for block {}",
+            bitcoin_rpc_results.len(),
+            next_block
+        );
+        for response in bitcoin_rpc_results {
+            let request_bytes = serde_json::to_string(&response.request)?;
+            let response_bytes = serde_json::to_string(&response.response)?.into();
+            get_brc20_database()
+                .lock()
+                .await
+                .cache_bitcoin_rpc_request(request_bytes.as_bytes(), &response_bytes)
+                .await?;
         }
+        stop_timer(&function_timer).await;
         Ok(())
     }
 
@@ -909,9 +889,7 @@ impl Brc20Indexer {
         is_synced: bool,
         brc20_prog_tx_idx: u64,
     ) -> Result<(), Box<dyn Error>> {
-        if self.config.brc20_prog_enabled
-            && block_height >= self.config.first_brc20_prog_phase_one_height
-        {
+        if block_height >= self.config.first_brc20_prog_phase_one_height {
             let function_timer = start_timer(SPAN, "finalise_block_for_brc20_prog", block_height);
             self.brc20_prog_client
                 .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
@@ -1358,14 +1336,6 @@ impl Brc20Indexer {
             };
 
             if protocol == PROTOCOL_BRC20_PROG {
-                if !self.config.brc20_prog_enabled {
-                    tracing::debug!(
-                        "Skipping transfer {} as BRC20 Prog is not enabled",
-                        transfer.inscription_id
-                    );
-                    continue;
-                }
-
                 if block_height < self.config.first_brc20_prog_phase_one_height {
                     tracing::debug!(
                         "Skipping transfer {} as block height {} is less than first BRC20 Prog height {}",
@@ -1680,10 +1650,7 @@ impl Brc20Indexer {
                     continue;
                 };
 
-                if module != BRC20_MODULE_BRC20PROG
-                    || !self.config.brc20_prog_enabled
-                    || operation != OPERATION_WITHDRAW
-                {
+                if module != BRC20_MODULE_BRC20PROG || operation != OPERATION_WITHDRAW {
                     tracing::debug!(
                         "Skipping transfer {} as module is not BRC20 Prog or operation is not withdraw",
                         transfer.inscription_id
@@ -2162,19 +2129,16 @@ impl Brc20Indexer {
             .get_current_block_height()
             .await?;
         let last_opi_block_height = self.last_opi_block;
-        let mut last_brc20_prog_block_height = if !self.config.brc20_prog_enabled
-            || last_brc20_block_height < self.config.first_brc20_prog_phase_one_height
-        {
-            self.config.first_brc20_prog_phase_one_height - 1
-        } else {
-            parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
-        };
+        let mut last_brc20_prog_block_height =
+            if last_brc20_block_height < self.config.first_brc20_prog_phase_one_height {
+                self.config.first_brc20_prog_phase_one_height - 1
+            } else {
+                parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
+            };
 
         // BRC20 indexer has not indexed any blocks yet, no need to reorg BRC20
         if last_brc20_block_height < self.config.first_brc20_height {
-            if self.config.brc20_prog_enabled
-                && last_brc20_prog_block_height > self.config.first_brc20_prog_phase_one_height
-            {
+            if last_brc20_prog_block_height > self.config.first_brc20_prog_phase_one_height {
                 self.brc20_prog_client
                     .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
                     .await?;
@@ -2189,9 +2153,7 @@ impl Brc20Indexer {
             last_brc20_prog_block_height
         );
 
-        if self.config.brc20_prog_enabled
-            && last_brc20_prog_block_height >= self.config.first_brc20_prog_phase_one_height
-        {
+        if last_brc20_prog_block_height >= self.config.first_brc20_prog_phase_one_height {
             if last_brc20_block_height == last_brc20_prog_block_height {
                 // BRC20 and BRC20 Prog are already synced, no need to reorg
                 tracing::debug!(
@@ -2248,20 +2210,19 @@ impl Brc20Indexer {
             } else {
                 self.main_db.get_block_hash(current_brc20_height).await?
             };
-            let brc20_prog_block_hash = if !self.config.brc20_prog_enabled
-                || current_brc20_height < self.config.first_brc20_prog_phase_one_height
-            {
-                opi_block_hash.clone()
-            } else {
-                self.brc20_prog_client
-                    .eth_get_block_by_number(current_brc20_height.to_string(), Some(false))
-                    .await?
-                    .hash
-                    .bytes
-                    .to_string()
-                    .trim_start_matches("0x")
-                    .to_string()
-            };
+            let brc20_prog_block_hash =
+                if current_brc20_height < self.config.first_brc20_prog_phase_one_height {
+                    opi_block_hash.clone()
+                } else {
+                    self.brc20_prog_client
+                        .eth_get_block_by_number(current_brc20_height.to_string(), Some(false))
+                        .await?
+                        .hash
+                        .bytes
+                        .to_string()
+                        .trim_start_matches("0x")
+                        .to_string()
+                };
 
             tracing::debug!(
                 "Checking block height {}, BRC20 hash: {}, OPI hash: {}, BRC20 Prog hash: {}",
@@ -2288,9 +2249,7 @@ impl Brc20Indexer {
                     .await
                     .reorg(current_brc20_height)
                     .await?;
-                if self.config.brc20_prog_enabled
-                    && current_brc20_height >= self.config.first_brc20_prog_phase_one_height
-                {
+                if current_brc20_height >= self.config.first_brc20_prog_phase_one_height {
                     self.brc20_prog_client
                         .brc20_reorg(current_brc20_prog_height as u64)
                         .await?;
@@ -2309,11 +2268,9 @@ impl Brc20Indexer {
                     .await
                     .reorg(self.config.first_brc20_height)
                     .await?;
-                if self.config.brc20_prog_enabled {
-                    self.brc20_prog_client
-                        .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
-                        .await?;
-                }
+                self.brc20_prog_client
+                    .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
+                    .await?;
                 break;
             }
             current_brc20_height -= 1;

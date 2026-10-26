@@ -8,8 +8,8 @@ binary runs ord as a journal source and the BRC-20 module in one process.
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
   which needs undo data.
 - Postgres for the brc20 module.
-- brc20-prog, reachable at `BRC20_PROG_RPC_URL` (its admin listener). brc20
-  queries it at startup whatever `BRC20_PROG_ENABLED` says.
+- brc20-prog, reachable at `BRC20_PROG_RPC_URL` (its admin listener). The brc20
+  module always runs BRC2.0.
 
 ## Configuration
 
