@@ -17,6 +17,19 @@ use {
     std::collections::{BTreeMap, HashMap},
 };
 
+/// A block's rune events break the model of ord's rune emission finalize
+/// relies on. Retrying can't fix it.
+#[derive(Debug)]
+pub struct RuneModelError(pub(crate) String);
+
+impl std::fmt::Display for RuneModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "rune events fit no ord emission: {}", self.0)
+    }
+}
+
+impl std::error::Error for RuneModelError {}
+
 /// The tables rune finalize writes.
 pub(super) struct RuneTables<'a, 'txn> {
     pub events: &'a mut RawTable<'txn>,
@@ -63,7 +76,10 @@ pub(super) fn finalize_runes(
         match *event {
             RawEvent::RuneEtched { rune_id, txid, .. } => {
                 let tx = by_txid.entry(txid).or_default();
-                ensure!(tx.etched.is_none(), "transaction {txid} etches twice");
+                ensure!(
+                    tx.etched.is_none(),
+                    RuneModelError(format!("transaction {txid} etches twice"))
+                );
                 tx.etched = Some(rune_id);
             }
             RawEvent::RuneMinted {
@@ -112,7 +128,9 @@ pub(super) fn finalize_runes(
         }
     }
     if let Some(txid) = by_txid.keys().next() {
-        bail!("rune events of transaction {txid} not in block {height}");
+        bail!(RuneModelError(format!(
+            "rune events of transaction {txid} not in block {height}"
+        )));
     }
 
     let RuneTables {
@@ -266,13 +284,15 @@ fn transaction_events(
     for (outpoint, id, amount) in &runes.transfers {
         ensure!(
             outpoint.txid == txid && last < Some((outpoint.vout, *id)),
-            "rune transfers of {txid} are not in vout and rune id order"
+            RuneModelError(format!(
+                "rune transfers of {txid} are not in vout and rune id order"
+            ))
         );
         last = Some((outpoint.vout, *id));
         let pkscript = tx
             .output
             .get(usize::try_from(outpoint.vout)?)
-            .with_context(|| format!("{txid} has no output {}", outpoint.vout))?
+            .ok_or_else(|| RuneModelError(format!("{txid} has no output {}", outpoint.vout)))?
             .script_pubkey
             .to_bytes();
         let rune_id = id.to_string();
@@ -301,7 +321,9 @@ fn transaction_events(
     }
 
     if let Some((rune_id, (into, out))) = flow.iter().find(|(_, (into, out))| into != out) {
-        bail!("rune {rune_id} of {txid}: {into} in, {out} out");
+        bail!(RuneModelError(format!(
+            "rune {rune_id} of {txid}: {into} in, {out} out"
+        )));
     }
 
     for (outpoint, pkscript, held) in rows {
@@ -325,8 +347,11 @@ fn etching(index: &Index, id: RuneId, txid: Txid, time: u64) -> Result<RuneEtchi
         .with_context(|| format!("ord has no entry for rune {rune}"))?;
     ensure!(
         entry_id == id && entry.etching == txid,
-        "ord's entry for rune {rune} is {entry_id} etched by {}, expected {id} etched by {txid}",
-        entry.etching
+        RuneModelError(format!(
+            "ord's entry for rune {rune} is {entry_id} etched by {}, expected {id} etched by \
+             {txid}",
+            entry.etching
+        ))
     );
     Ok(RuneEtching {
         rune_id: id.to_string(),
@@ -347,4 +372,94 @@ fn etching(index: &Index, id: RuneId, txid: Txid, time: u64) -> Result<RuneEtchi
         timestamp: time,
         turbo: entry.turbo,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        crate::journal::{cf, table},
+        bitcoin::{Amount, ScriptBuf, TxOut, absolute::LockTime, transaction::Version},
+        redb::{Database, backends::InMemoryBackend},
+    };
+
+    const RUNE: RuneId = RuneId { block: 1, tx: 0 };
+
+    fn transaction(outputs: usize) -> Transaction {
+        Transaction {
+            version: Version(2),
+            lock_time: LockTime::ZERO,
+            input: Vec::new(),
+            output: (0..outputs)
+                .map(|_| TxOut {
+                    value: Amount::from_sat(1000),
+                    script_pubkey: ScriptBuf::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Runs [`transaction_events`] for `runes` of a `outputs`-output
+    /// transaction against an empty balances table.
+    fn events_of(outputs: usize, runes: TxRunes) -> Result<Vec<RuneEvent>> {
+        let db = Database::builder()
+            .create_with_backend(InMemoryBackend::new())
+            .unwrap();
+        let wtx = db.begin_write().unwrap();
+        let mut balances = wtx.open_table(table(cf::RUNE_BALANCES)).unwrap();
+        let tx = transaction(outputs);
+        transaction_events(&mut balances, &tx, tx.compute_txid(), &runes, None)
+    }
+
+    fn is_model_error(result: Result<Vec<RuneEvent>>) -> bool {
+        result
+            .unwrap_err()
+            .chain()
+            .any(|cause| cause.is::<RuneModelError>())
+    }
+
+    #[test]
+    fn unbalanced_transaction_is_a_model_error() {
+        let runes = TxRunes {
+            mints: vec![(RUNE, 5)],
+            ..TxRunes::default()
+        };
+        assert!(is_model_error(events_of(1, runes)));
+    }
+
+    #[test]
+    fn transfers_out_of_vout_order_are_a_model_error() {
+        let txid = transaction(2).compute_txid();
+        let runes = TxRunes {
+            mints: vec![(RUNE, 2)],
+            transfers: vec![
+                (OutPoint { txid, vout: 1 }, RUNE, 1),
+                (OutPoint { txid, vout: 0 }, RUNE, 1),
+            ],
+            ..TxRunes::default()
+        };
+        assert!(is_model_error(events_of(2, runes)));
+    }
+
+    #[test]
+    fn transfer_to_a_missing_output_is_a_model_error() {
+        let txid = transaction(1).compute_txid();
+        let runes = TxRunes {
+            mints: vec![(RUNE, 1)],
+            transfers: vec![(OutPoint { txid, vout: 3 }, RUNE, 1)],
+            ..TxRunes::default()
+        };
+        assert!(is_model_error(events_of(1, runes)));
+    }
+
+    #[test]
+    fn balanced_transaction_passes() {
+        let txid = transaction(1).compute_txid();
+        let runes = TxRunes {
+            mints: vec![(RUNE, 3)],
+            transfers: vec![(OutPoint { txid, vout: 0 }, RUNE, 3)],
+            ..TxRunes::default()
+        };
+        assert_eq!(events_of(1, runes).unwrap().len(), 2);
+    }
 }

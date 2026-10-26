@@ -9,6 +9,7 @@ pub use {
     finalize::{ChainData, EmissionOrderError, FINALIZE_BATCH, finalize_range, is_json_body},
     reader::JournalReader,
     reorg::reorg_check,
+    runes::RuneModelError,
     schema::*,
 };
 

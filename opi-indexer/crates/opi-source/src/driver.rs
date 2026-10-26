@@ -5,8 +5,8 @@ use {
     crate::{
         check_ord_settings,
         journal::{
-            ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalReader, finalize_range,
-            init_path, remove_if_exists, reorg_check, sync_parent,
+            ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalReader, RuneModelError,
+            finalize_range, init_path, remove_if_exists, reorg_check, sync_parent,
         },
         ord_settings,
         proxy::{GateProxy, ProxyConfig, UpstreamAuth},
@@ -370,7 +370,7 @@ impl Driver {
             if let Err(err) =
                 reorg_check(&self.journal, &self.index).and_then(|_| self.finalize_committed())
             {
-                if err.chain().any(|cause| cause.is::<EmissionOrderError>()) {
+                if is_fatal(&err) {
                     return Err(err);
                 }
                 log::warn!("finalize failed, retrying in {backoff:?}: {err:#}");
@@ -410,6 +410,13 @@ impl Driver {
     }
 }
 
+/// Whether a finalize error means ord's events break the model finalize
+/// relies on, which no retry can fix.
+fn is_fatal(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.is::<EmissionOrderError>() || cause.is::<RuneModelError>())
+}
+
 /// Blocks come from the proxy cache, else from bitcoind directly, as a header
 /// alone when finalize needs no transactions.
 impl ChainData for &Driver {
@@ -429,5 +436,23 @@ impl ChainData for &Driver {
 
     fn input_values(&mut self, hash: BlockHash) -> Result<Vec<Vec<u64>>> {
         self.runtime.block_on(self.rpc.input_values(hash))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rune_model_errors_are_fatal_through_context() {
+        let err =
+            anyhow::Error::new(RuneModelError("unbalanced".into())).context("finalizing height 7");
+        assert!(is_fatal(&err));
+    }
+
+    #[test]
+    fn io_errors_are_retried() {
+        let err = anyhow!("getblock failed").context("finalizing height 7");
+        assert!(!is_fatal(&err));
     }
 }
