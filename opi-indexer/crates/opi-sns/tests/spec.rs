@@ -53,7 +53,37 @@ struct SpecVectors {
     lower: Vec<LowerCase>,
     vectors: Vec<Vector>,
     hash_chain: Vec<ChainBlock>,
+    inscriptions: Vec<InscriptionCase>,
     dict_order: DictOrder,
+}
+
+#[derive(Deserialize)]
+struct InscriptionCase {
+    content_type_hex: String,
+    number: i32,
+    accepted: bool,
+}
+
+/// Rule 1 against the oracle: the module selects exactly the accepted
+/// (content type, number) pairs.
+#[test]
+fn inscription_selection_matches_spec_vectors() {
+    let cases = spec().inscriptions;
+    assert!(cases.len() >= 30);
+    assert!(cases.iter().any(|case| case.accepted));
+    for case in cases {
+        let content_type = String::from_utf8(hex::decode(&case.content_type_hex).unwrap()).unwrap();
+        let view = block(vec![(
+            info("ai0", case.number, "a.sats", &content_type),
+            None,
+        )]);
+        let selected = !candidates(&view).unwrap().is_empty();
+        assert_eq!(
+            selected, case.accepted,
+            "{content_type:?} number {}",
+            case.number
+        );
+    }
 }
 
 fn spec() -> SpecVectors {
@@ -236,9 +266,78 @@ fn nesting_beyond_128_is_a_parse_failure() {
     assert!(opi_sns::json5::parse(&"[".repeat(1_000_000)).is_none());
 }
 
+/// A repeated key's replaced value still counts toward the nesting limit.
+#[test]
+fn replaced_duplicate_key_counts_toward_nesting() {
+    let deep = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+    let reg = |n: usize| {
+        format!(
+            r#"{{"p":"sns","op":"reg","name":"a.b","x":{},"x":1}}"#,
+            deep(n)
+        )
+    };
+    let ns = |n: usize| format!(r#"{{"p":"sns","op":"ns","ns":"zz","x":{},"x":1}}"#, deep(n));
+    let a_b = Some(SnsOp::Name {
+        name: "a.b".into(),
+        domain: "b".into(),
+    });
+    assert_eq!(parse(reg(127).as_bytes()), a_b);
+    assert!(opi_sns::json5::parse(&reg(128)).is_none());
+    assert_ne!(parse(reg(128).as_bytes()), a_b);
+    assert_eq!(
+        parse(ns(127).as_bytes()),
+        Some(SnsOp::Namespace("zz".into()))
+    );
+    assert_eq!(parse(ns(128).as_bytes()), None);
+}
+
+#[test]
+fn surrogate_pairs_combine() {
+    let emoji = "\u{1F600}";
+    let name = |body: &str| format!(r#"{{"p":"sns","op":"reg","name":"{body}"}}"#);
+    assert_eq!(
+        parse(name("\\ud83d\\ude00.sats").as_bytes()),
+        Some(SnsOp::Name {
+            name: format!("{emoji}.sats"),
+            domain: "sats".into()
+        })
+    );
+    assert_eq!(
+        parse(format!(r#"{{"p":"sns","op":"ns","ns":"{}"}}"#, "\\uD83D\\uDE00").as_bytes()),
+        Some(SnsOp::Namespace(emoji.into()))
+    );
+    // Unpaired, reversed or interrupted surrogates stay lone.
+    for body in [
+        "\\ud83d.x",
+        "\\ude00.x",
+        "\\ude00\\ud83d.x",
+        "\\ud83d\\u0041.x",
+    ] {
+        assert_eq!(parse(name(body).as_bytes()), None, "{body}");
+    }
+    // Keys combine too.
+    let key = opi_sns::json5::parse("{\"\\ud83d\\ude00\":1}").unwrap();
+    assert!(key.get(emoji).is_some());
+}
+
+#[test]
+fn escaped_whitespace_in_a_json_name_is_whitespace() {
+    let name = |body: &str| format!(r#"{{"p":"sns","op":"reg","name":"{body}"}}"#);
+    let alice = Some(SnsOp::Name {
+        name: "alice.sats".into(),
+        domain: "sats".into(),
+    });
+    assert_eq!(parse(name("\\nalice.sats").as_bytes()), alice);
+    assert_eq!(parse(name("alice.sats\\nmore").as_bytes()), alice);
+    assert_eq!(parse(name("alice\\n.sats").as_bytes()), None);
+    // A raw line break fails JSON5, and the raw text has no single-dot token.
+    assert_eq!(parse(name("\nalice.sats").as_bytes()), None);
+    assert_eq!(parse(br#"{"p":"sns","op":"ns","ns":"sa\nts"}"#), None);
+}
+
 #[test]
 fn lone_surrogate_is_skipped() {
-    for body in [r"\ud800.x", r"x.\udfff", "\\ud83d\\ude00.x", r"a.b\ud800c"] {
+    for body in [r"\ud800.x", r"x.\udfff", "\\ude00\\ud83d.x", r"a.b\ud800c"] {
         let content = format!(r#"{{"p":"sns","op":"reg","name":"{body}"}}"#);
         assert_eq!(parse(content.as_bytes()), None, "{body}");
     }

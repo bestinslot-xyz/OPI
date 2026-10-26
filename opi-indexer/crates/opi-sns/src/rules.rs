@@ -1,22 +1,24 @@
 //! The SNS indexing rules: the written spec
-//! (<https://docs.satsnames.org/sats-names/sns-spec/index-names>,
+//! (<https://docs.satsnames.org/sats-names/sns-spec/index-names.md>,
 //! <https://docs.satsnames.org/sats-names/sns-spec/mint-names>) with the
 //! decisions it leaves open. `opi-indexer/README.md` ("SNS indexing rules")
 //! lists the same rules.
 //!
 //! 1. Inscriptions: creations of blessed inscriptions (number >= 0) whose
 //!    content type is `text/plain` or `application/json`, alone or followed
-//!    by `;` parameters, in ascending inscription number.
+//!    by `;` parameters and compared byte for byte, in ascending inscription
+//!    number.
 //! 2. Content that is not valid UTF-8 registers nothing.
 //! 3. Names: if the text parses as JSON5 ([`crate::json5`]), it must be an
 //!    object with `p == "sns"`, `op == "reg"` and a string `name`, which is
 //!    the candidate; any other parsed value registers nothing. If it does not
 //!    parse, the whole text is the candidate. The candidate is lowercased
 //!    (full mapping with final sigma) and reduced to its first
-//!    whitespace-separated token (leading whitespace trimmed, then cut at the
-//!    next whitespace). It must
-//!    hold exactly one `.` with text on both sides; the namespace (stored as
-//!    `domain`) is the part after it.
+//!    whitespace-separated token: leading whitespace is trimmed, then the
+//!    text is cut at the next whitespace. Escaped whitespace such as `\n` in
+//!    a JSON string counts like any other. The token must hold exactly one
+//!    `.` with text on both sides; the namespace (stored as `domain`) is the
+//!    part after it.
 //! 4. Namespaces: only a JSON5 object with `p == "sns"`, `op == "ns"` and a
 //!    string `ns`. It is lowercased and must be non-empty, without `.` and
 //!    without whitespace. When an inscription yields both a name and a
@@ -24,9 +26,10 @@
 //! 5. Whitespace is the Unicode White_Space property.
 //! 6. Case mapping and White_Space come from committed Unicode 17.0.0
 //!    tables.
-//! 7. JSON5 nested deeper than 128 arrays or objects does not parse.
-//! 8. A name or namespace holding a lone surrogate (from a `\u` escape) is
-//!    skipped.
+//! 7. JSON5 with any value, including one a repeated key replaces, nested
+//!    deeper than 128 arrays or objects does not parse.
+//! 8. A `\u` high surrogate directly followed by a `\u` low surrogate is one
+//!    character. A name or namespace holding any other surrogate is skipped.
 //! 9. A name or namespace holding `\0`, or longer than 2048 UTF-8 bytes, is
 //!    skipped.
 //! 10. The first inscription of a name or namespace wins; later ones emit no

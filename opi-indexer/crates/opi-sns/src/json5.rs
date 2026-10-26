@@ -1,15 +1,19 @@
 //! JSON5 as SNS reads it: the JSON5 1.0 grammar as Python's json5 0.12.0
 //! implements it (`json5/parser.py` and the value conversion in
-//! `json5/lib.py`), with nesting capped at [`NESTING_LIMIT`].
+//! `json5/lib.py`), with nesting capped at [`NESTING_LIMIT`] and surrogate
+//! pairs read as ES5 strings read them.
 //!
 //! The grammar details that decide whether a document parses:
+//! - nesting counts every array and object in the text, including a value a
+//!   repeated key later replaces;
 //! - whitespace is space, tab, U+000B, U+000C, U+00A0, U+FEFF, any Zs code
 //!   point, line terminators (CR LF, CR, LF, U+2028, U+2029) and `//` / `/* */`
 //!   comments;
 //! - strings take single or double quotes and any character but the quote, a
 //!   backslash or a line terminator; escapes are `\b \f \n \r \t \v \' \" \\`,
-//!   `\0` not followed by a digit, `\xHH`, `\uHHHH` (each escape one code
-//!   point, so surrogate pairs stay two lone surrogates), a backslash before a
+//!   `\0` not followed by a digit, `\xHH`, `\uHHHH` (a high surrogate directly
+//!   followed by a low surrogate makes one character; any other surrogate
+//!   stays lone, in strings and identifiers alike), a backslash before a
 //!   line terminator (removed), and a backslash before any other character
 //!   except `x`, `u` and digits (that character);
 //! - object keys are strings or identifiers: an ASCII letter, `$`, `_`, a
@@ -29,8 +33,8 @@ use std::collections::hash_map::Entry;
 use crate::unicode::in_ranges;
 use crate::unicode_tables::{LL, LM, LO, LT, LU, MC, MN, ND, NL, PC, ZS};
 
-/// The deepest nesting of arrays and objects that parses; deeper documents
-/// fail.
+/// The deepest nesting of arrays and objects in the text that parses;
+/// deeper documents fail.
 pub const NESTING_LIMIT: usize = 128;
 
 /// Digits beyond which a decimal integer fails to convert.
@@ -270,7 +274,7 @@ impl Parser {
             let c = self.peek().ok_or(Fail)?;
             if c == quote {
                 self.pos += 1;
-                return Ok(out);
+                return Ok(combine_surrogate_pairs(out));
             }
             if c == u32::from('\\') {
                 self.pos += 1;
@@ -373,7 +377,7 @@ impl Parser {
         while let Some(c) = self.id_continue() {
             out.push(c);
         }
-        Ok(out)
+        Ok(combine_surrogate_pairs(out))
     }
 
     /// Whether an identifier start character follows, without consuming it.
@@ -468,6 +472,30 @@ impl Parser {
         );
         self.pos += n;
     }
+}
+
+/// `cps` with each high surrogate directly followed by a low surrogate
+/// combined into one code point, as an ES5 string reads them. Surrogates
+/// appear only through `\uHHHH` escapes; any left unpaired stay lone.
+fn combine_surrogate_pairs(cps: Vec<u32>) -> Vec<u32> {
+    if !cps.iter().any(|cp| (0xD800..=0xDBFF).contains(cp)) {
+        return cps;
+    }
+    let mut out = Vec::with_capacity(cps.len());
+    let mut i = 0;
+    while i < cps.len() {
+        match (cps[i], cps.get(i + 1)) {
+            (hi @ 0xD800..=0xDBFF, Some(&lo @ 0xDC00..=0xDFFF)) => {
+                out.push(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00));
+                i += 2;
+            }
+            (cp, _) => {
+                out.push(cp);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Whether a decimal literal converts: a fraction or exponent needs digits
