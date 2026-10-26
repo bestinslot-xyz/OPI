@@ -45,9 +45,11 @@ target/release/opi-indexer run
 
 `run` is the default subcommand. SIGINT and SIGTERM close the source gate, stop
 brc20, join the source and exit 0. A source error is logged and exits non-zero.
-brc20 starts once the journal has its first finalized block. A brc20 error
-restarts brc20, with a freshly built indexer and database state, after a
-backoff of 5 seconds, doubling to 5 minutes; the source keeps running. Log verbosity follows `RUST_LOG`.
+brc20 runs as a module (`OPERATION_MODE=full`): it indexes each block once the
+journal finalizes it, and rolls back when its stored hashes differ from the
+journal's. A brc20 error or panic restarts it, with a freshly built indexer and
+database state, after a backoff of 5 seconds, doubling to 5 minutes; the source
+keeps running. Log verbosity follows `RUST_LOG`.
 
 ## Validation runbook
 

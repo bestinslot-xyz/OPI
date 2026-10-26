@@ -1,6 +1,5 @@
 use std::{error::Error, str::FromStr};
 
-use db_reader::BRC20Tx;
 use jsonrpsee::http_client::HttpClient;
 use serde_json::json;
 
@@ -8,6 +7,7 @@ use crate::{
     config::{Brc20IndexerConfig, NO_WALLET},
     database::get_brc20_database,
     indexer::{EventGenerator, EventProcessor},
+    types::Brc20Tx,
 };
 
 const EMPTY_TXID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -54,7 +54,7 @@ impl Brc20SwapRefund {
                     &ticker,
                     &ticker.original_ticker,
                     balance.overall_balance,
-                    &BRC20Tx {
+                    &Brc20Tx {
                         tx_id: using_tx_id.clone(),
                         inscription_id: inscription_id.clone(),
                         inscription_number: i32::MAX,
@@ -89,7 +89,7 @@ impl Brc20SwapRefund {
                     &ticker,
                     &ticker.original_ticker.as_str(),
                     balance.overall_balance,
-                    &BRC20Tx {
+                    &Brc20Tx {
                         tx_id: using_tx_id.clone(),
                         inscription_id: inscription_id.clone(),
                         inscription_number: i32::MAX,

@@ -1,7 +1,5 @@
 use std::error::Error;
 
-use db_reader::BRC20Tx;
-
 use crate::{
     config::BRC20_PROG_OP_RETURN_PKSCRIPT,
     database::{
@@ -9,7 +7,7 @@ use crate::{
         timer::{start_timer, stop_timer},
     },
     types::{
-        Ticker,
+        Brc20Tx, Ticker,
         events::{
             Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
             Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
@@ -29,7 +27,7 @@ impl EventGenerator {
         block_height: i32,
         data: Option<&str>,
         base64_data: Option<&str>,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<Brc20ProgDeployInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe", block_height);
         let event = Brc20ProgDeployInscribeEvent {
@@ -57,7 +55,7 @@ impl EventGenerator {
         include_txid: bool,
         data: Option<&str>,
         base64_data: Option<&str>,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<Brc20ProgDeployTransferEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_deploy_transfer", block_height);
         let TransferValidity::Valid = get_brc20_database()
@@ -135,7 +133,7 @@ impl EventGenerator {
         contract_inscription_id: Option<&str>,
         data: Option<&str>,
         base64_data: Option<&str>,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<Brc20ProgCallTransferEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_call_transfer", block_height);
         let TransferValidity::Valid = get_brc20_database()
@@ -210,7 +208,7 @@ impl EventGenerator {
         contract_inscription_id: Option<&str>,
         data: Option<&str>,
         base64_data: Option<&str>,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<Brc20ProgCallInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe", block_height);
         let event = Brc20ProgCallInscribeEvent {
@@ -242,7 +240,7 @@ impl EventGenerator {
         block_height: i32,
         data: Option<&str>,
         base64_data: Option<&str>,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<Brc20ProgTransactInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe", block_height);
         let event = Brc20ProgTransactInscribeEvent {
@@ -271,7 +269,7 @@ impl EventGenerator {
         include_txid: bool,
         data: Option<&str>,
         base64_data: Option<&str>,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<Brc20ProgTransactTransferEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_transact_transfer", block_height);
         let TransferValidity::Valid = get_brc20_database()
@@ -343,7 +341,7 @@ impl EventGenerator {
         deployed_ticker: &Ticker,
         original_ticker: &str,
         amount: u128,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<(i64, Brc20ProgWithdrawTransferEvent), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer", block_height);
         let TransferValidity::Valid = get_brc20_database()
@@ -404,7 +402,7 @@ impl EventGenerator {
         deployed_ticker: &Ticker,
         original_ticker: &str,
         amount: u128,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<Brc20ProgWithdrawInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe", block_height);
         let event = Brc20ProgWithdrawInscribeEvent {
@@ -431,7 +429,7 @@ impl EventGenerator {
     pub async fn brc20_predeploy_inscribe(
         block_height: i32,
         hash: &str,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<PreDeployInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_predeploy_inscribe", block_height);
         let predeploy_event = PreDeployInscribeEvent {
@@ -464,7 +462,7 @@ impl EventGenerator {
         limit_per_mint: u128,
         decimals: u8,
         is_self_mint: bool,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<DeployInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_deploy_inscribe", block_height);
         let event = DeployInscribeEvent {
@@ -497,7 +495,7 @@ impl EventGenerator {
         deployed_ticker: &mut Ticker,
         original_ticker: &str,
         mut amount: u128,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<(i64, MintInscribeEvent), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_mint_inscribe", block_height);
         if deployed_ticker.is_self_mint {
@@ -577,7 +575,7 @@ impl EventGenerator {
         deployed_ticker: &Ticker,
         original_ticker: &str,
         amount: u128,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<(i64, TransferInscribeEvent), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_transfer_inscribe", block_height);
         let balance = get_brc20_database()
@@ -625,7 +623,7 @@ impl EventGenerator {
         ticker: &Ticker,
         original_ticker: &str,
         amount: u128,
-        transfer: &BRC20Tx,
+        transfer: &Brc20Tx,
     ) -> Result<(i64, TransferTransferEvent), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_transfer_transfer", block_height);
         tracing::debug!(

@@ -5,7 +5,6 @@ use std::{
 };
 
 use brc20_index::{
-    client::OpiClient,
     config::Brc20IndexerConfig,
     database::{Brc20Database, get_brc20_database, set_brc20_database},
     indexer::Brc20Indexer,
@@ -183,8 +182,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("BRC20 Indexer v{}", env!("CARGO_PKG_VERSION"));
     let config = Brc20IndexerConfig::default();
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
-    let main_db = Box::new(OpiClient::new(config.opi_db_url.clone()));
-    let mut brc20_indexer = Brc20Indexer::new(config, main_db);
+    let light_client_mode = config.light_client_mode;
+    let mut brc20_indexer = Brc20Indexer::new(config, None);
     if args.is_validate {
         println!("Validating BRC20 indexer data against OPI...");
         if brc20_indexer.validate().await.is_ok() {
@@ -271,6 +270,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tracing::error!("Reset cancelled.");
             return Ok(());
         }
+    }
+    if !light_client_mode {
+        eprintln!(
+            "Full mode indexes inside opi-indexer: run `opi-indexer run` with OPI_MODULES including brc20. This binary runs light clients (OPERATION_MODE=light) and the maintenance flags."
+        );
+        std::process::exit(1);
     }
     brc20_indexer.run().await?;
 

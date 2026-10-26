@@ -11,6 +11,7 @@ clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 futures = "0.3"
 opi-core = { path = "../opi-core" }
+opi-runtime = { path = "../opi-runtime" }
 opi-source = { path = "../opi-source" }
 ord = "=0.29.1"
 serde_json = "1"

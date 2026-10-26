@@ -1,12 +1,13 @@
-use std::{cmp::min, error::Error};
+use std::{cmp::min, error::Error, sync::Arc};
 
 use brc20_prog::Brc20ProgApiClient;
 use jsonrpsee::http_client::HttpClient;
+use opi_core::BlockSource;
 use tokio::task::JoinHandle;
 use versions::{Requirement, Versioning};
 
 use crate::{
-    client::{Brc20Source, EventProviderClient},
+    client::EventProviderClient,
     config::{
         AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_MINE_BATCH_SIZE,
         BRC20_PROG_VERSION_REQUIREMENT, Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY,
@@ -32,22 +33,27 @@ use crate::{
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
     no_default,
-    types::events::{
-        Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
-        Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
-        Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
-        Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
-        PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent, event_name_to_id,
-        load_event,
+    types::{
+        Brc20Tx,
+        events::{
+            Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
+            Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
+            Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
+            Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
+            PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent, event_name_to_id,
+            load_event,
+        },
     },
 };
 
 static SPAN: &str = "Brc20Indexer";
 
 pub struct Brc20Indexer {
-    main_db: Box<dyn Brc20Source>,
+    /// The journal a full-mode indexer reads block tips, hashes and times
+    /// from. Light clients read them from the event providers.
+    journal: Option<Arc<dyn BlockSource>>,
     event_provider_client: EventProviderClient,
-    last_opi_block: i32,
+    pub(crate) last_opi_block: i32,
     last_reported_block: Option<i32>,
     config: Brc20IndexerConfig,
     brc20_prog_client: HttpClient,
@@ -64,14 +70,14 @@ impl Drop for Brc20Indexer {
 }
 
 impl Brc20Indexer {
-    pub fn new(config: Brc20IndexerConfig, main_db: Box<dyn Brc20Source>) -> Self {
+    pub fn new(config: Brc20IndexerConfig, journal: Option<Arc<dyn BlockSource>>) -> Self {
         let brc20_prog_client = build_brc20_prog_http_client(&config);
         let brc20_reporter = Brc20Reporter::new(&config);
         let event_provider_client =
             EventProviderClient::new(&config).expect("Failed to create EventProviderClient");
 
         Brc20Indexer {
-            main_db,
+            journal,
             config,
             last_opi_block: 0,
             last_reported_block: None,
@@ -82,7 +88,7 @@ impl Brc20Indexer {
         }
     }
 
-    async fn init(&mut self) -> Result<(), Box<dyn Error>> {
+    pub(crate) async fn init(&mut self) -> Result<(), Box<dyn Error>> {
         get_brc20_database().lock().await.init().await?;
 
         tracing::info!(
@@ -153,7 +159,11 @@ impl Brc20Indexer {
         if self.config.light_client_mode || self.config.report_to_indexer {
             self.event_provider_client.load_providers().await?;
         }
-        self.last_opi_block = self.get_opi_block_height().await?;
+        // A full-mode indexer reads the journal's tip before each block it
+        // indexes, and the journal may not have a block yet.
+        if self.config.light_client_mode {
+            self.last_opi_block = self.get_opi_block_height().await?;
+        }
 
         if self.config.report_to_indexer {
             self.last_reported_block = self
@@ -359,7 +369,12 @@ impl Brc20Indexer {
         Ok(())
     }
 
+    /// Runs a light client until the height limit. A full-mode indexer runs as
+    /// a module inside `opi-indexer` and indexes through `index_block`.
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        if !self.config.light_client_mode {
+            return Err("full mode runs inside opi-indexer".into());
+        }
         self.init().await?;
         loop {
             let next_block = get_brc20_database()
@@ -421,23 +436,16 @@ impl Brc20Indexer {
             }
 
             let get_block_info_timer = start_timer(SPAN, "get_block_info", next_block);
-            let (block_hash, block_time, opi_cumulative_event_hash, opi_cumulative_trace_hash) =
-                if self.config.light_client_mode {
-                    let block_info = self
-                        .event_provider_client
-                        .get_block_info_with_retries(next_block)
-                        .await?;
-                    (
-                        block_info.best_block_hash,
-                        block_info.best_block_time.unwrap_or(0) as i64, // Default to 0 if not available
-                        block_info.best_cumulative_hash,
-                        block_info.best_cumulative_trace_hash,
-                    )
-                } else {
-                    let (block_hash, block_time) =
-                        self.main_db.get_block_hash_and_time(next_block).await?;
-                    (block_hash, block_time, "".to_string(), None)
-                };
+            let block_info = self
+                .event_provider_client
+                .get_block_info_with_retries(next_block)
+                .await?;
+            let (block_hash, block_time, opi_cumulative_event_hash, opi_cumulative_trace_hash) = (
+                block_info.best_block_hash,
+                block_info.best_block_time.unwrap_or(0) as i64, // Default to 0 if not available
+                block_info.best_cumulative_hash,
+                block_info.best_cumulative_trace_hash,
+            );
             stop_timer(&get_block_info_timer).await;
 
             if block_time == 0 && next_block >= self.config.first_brc20_prog_phase_one_height {
@@ -464,32 +472,12 @@ impl Brc20Indexer {
                     stop_timer(&timer).await;
                 }
             } else {
-                if self.config.light_client_mode {
-                    if next_block > self.config.first_brc20_prog_phase_one_height {
-                        match self.pre_fill_rpc_results_cache(next_block).await {
-                            Ok(_) => {}
-                            Err(err) => {
-                                tracing::error!(
-                                    "Failed to get Bitcoin RPC results for block {}: {}",
-                                    next_block,
-                                    err
-                                );
-                                tracing::error!("Retrying in 5 seconds...");
-                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                continue;
-                            }
-                        };
-                    }
-                    let get_events_timer = start_timer(SPAN, "get_events", next_block);
-                    let events = match self
-                        .event_provider_client
-                        .get_events(next_block as i64)
-                        .await
-                    {
-                        Ok(events) => events,
+                if next_block > self.config.first_brc20_prog_phase_one_height {
+                    match self.pre_fill_rpc_results_cache(next_block).await {
+                        Ok(_) => {}
                         Err(err) => {
                             tracing::error!(
-                                "Failed to get events for block {}: {}",
+                                "Failed to get Bitcoin RPC results for block {}: {}",
                                 next_block,
                                 err
                             );
@@ -498,24 +486,30 @@ impl Brc20Indexer {
                             continue;
                         }
                     };
-                    stop_timer(&get_events_timer).await;
-                    self.process_events(
-                        next_block,
-                        &block_hash,
-                        block_time as u64,
-                        is_synced,
-                        events,
-                    )
-                    .await?;
-                } else {
-                    self.generate_and_process_events(
-                        next_block,
-                        &block_hash,
-                        block_time as u64,
-                        is_synced,
-                    )
-                    .await?;
                 }
+                let get_events_timer = start_timer(SPAN, "get_events", next_block);
+                let events = match self
+                    .event_provider_client
+                    .get_events(next_block as i64)
+                    .await
+                {
+                    Ok(events) => events,
+                    Err(err) => {
+                        tracing::error!("Failed to get events for block {}: {}", next_block, err);
+                        tracing::error!("Retrying in 5 seconds...");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+                stop_timer(&get_events_timer).await;
+                self.process_events(
+                    next_block,
+                    &block_hash,
+                    block_time as u64,
+                    is_synced,
+                    events,
+                )
+                .await?;
             }
 
             let index_extras_timer = start_timer(SPAN, "index_extra_tables", next_block);
@@ -578,31 +572,28 @@ impl Brc20Indexer {
                 .await?
                 .unwrap_or_default();
 
-            if self.config.light_client_mode {
-                // Validate cumulative hash with OPI client
-                if cumulative_events_hash != opi_cumulative_event_hash
-                    || cumulative_traces_hash
-                        != opi_cumulative_trace_hash.clone().unwrap_or_default()
-                {
-                    // Reorg the last block if cumulative events hash mismatch
-                    get_brc20_database()
-                        .lock()
-                        .await
-                        .reorg(next_block - 1)
-                        .await?;
-                    self.brc20_prog_client
-                        .brc20_reorg((next_block - 1) as u64)
-                        .await?;
-                    tracing::error!("Cumulative event hash mismatch!!");
-                    tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
-                    tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
-                    tracing::error!(
-                        "OPI cumulative traces hash: {:?}",
-                        opi_cumulative_trace_hash.unwrap_or_default()
-                    );
-                    tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
-                    return Err("Cumulative hash mismatch, please check your OPI client".into());
-                }
+            // Validate cumulative hash with OPI client
+            if cumulative_events_hash != opi_cumulative_event_hash
+                || cumulative_traces_hash != opi_cumulative_trace_hash.clone().unwrap_or_default()
+            {
+                // Reorg the last block if cumulative events hash mismatch
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .reorg(next_block - 1)
+                    .await?;
+                self.brc20_prog_client
+                    .brc20_reorg((next_block - 1) as u64)
+                    .await?;
+                tracing::error!("Cumulative event hash mismatch!!");
+                tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
+                tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
+                tracing::error!(
+                    "OPI cumulative traces hash: {:?}",
+                    opi_cumulative_trace_hash.unwrap_or_default()
+                );
+                tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
+                return Err("Cumulative hash mismatch, please check your OPI client".into());
             }
 
             // Start reporting after 10 blocks left to full sync
@@ -643,6 +634,165 @@ impl Brc20Indexer {
             }
             stop_timer(&loop_timer).await;
         }
+    }
+
+    /// Indexes block `next_block` in full mode: its BRC-20 and BRC2.0 events,
+    /// brc20-prog's block, the extra tables, the block's hashes and the report.
+    /// `last_opi_block` holds the journal tip the caller read last.
+    pub async fn index_block(
+        &mut self,
+        next_block: i32,
+        block_hash: &str,
+        block_time: i64,
+        transfers: Vec<Brc20Tx>,
+    ) -> Result<(), Box<dyn Error>> {
+        let loop_timer = start_timer(SPAN, "run_single_block", next_block);
+        let last_opi_block = self.last_opi_block;
+
+        let is_synced = next_block == last_opi_block;
+
+        if next_block % 1000 == 0 && next_block >= self.config.first_brc20_height {
+            tracing::info!("Clearing brc20 db caches at block height {}", next_block);
+            let clear_caches_timer = start_timer(SPAN, "clear_brc20_caches", next_block);
+            get_brc20_database().lock().await.clear_caches();
+            stop_timer(&clear_caches_timer).await;
+        }
+        if is_synced || next_block % 1000 == 0 {
+            tracing::info!("Processing block: {}", next_block);
+        }
+
+        if block_time == 0 && next_block >= self.config.first_brc20_prog_phase_one_height {
+            tracing::error!(
+                "Block time is 0 for block {}, this may cause issues with BRC2.0 events. Stopping indexing.",
+                next_block
+            );
+            return Err("Block time is 0".into());
+        }
+
+        if next_block < self.config.first_brc20_height {
+            if next_block % 1000 == 0 {
+                tracing::info!(
+                    "Block height {} is less than first_brc20_height {}, skipping",
+                    next_block,
+                    self.config.first_brc20_height
+                );
+                let timer = start_timer(SPAN, "flush_queries_to_db", next_block);
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .flush_queries_to_db()
+                    .await?;
+                stop_timer(&timer).await;
+            }
+        } else {
+            self.generate_and_process_events(
+                next_block,
+                block_hash,
+                block_time as u64,
+                is_synced,
+                transfers,
+            )
+            .await?;
+        }
+
+        let index_extras_timer = start_timer(SPAN, "index_extra_tables", next_block);
+        if next_block >= self.config.first_brc20_height
+            && get_brc20_database()
+                .lock()
+                .await
+                .should_index_extras(next_block, last_opi_block)
+                .await?
+        {
+            // Index extras if synced or close to sync
+            get_brc20_database()
+                .lock()
+                .await
+                .index_extra_tables(next_block)
+                .await?;
+        }
+        stop_timer(&index_extras_timer).await;
+
+        let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
+        let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
+            retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
+        } else {
+            String::new()
+        };
+        stop_timer(&trace_hash_timer).await;
+
+        let set_block_hashes_timer = start_timer(SPAN, "set_block_hashes", next_block);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_block_hashes(next_block, block_hash, block_traces_hash.as_str())
+            .await?;
+        stop_timer(&set_block_hashes_timer).await;
+
+        let Some(block_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_block_events_hash(next_block)
+            .await?
+        else {
+            tracing::warn!("Block events hash not found for block {}", next_block);
+            return Ok(());
+        };
+
+        let Some(cumulative_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_events_hash(next_block)
+            .await?
+        else {
+            tracing::warn!("Cumulative events hash not found for block {}", next_block);
+            return Ok(());
+        };
+
+        let cumulative_traces_hash = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_traces_hash(next_block)
+            .await?
+            .unwrap_or_default();
+
+        // Start reporting after 10 blocks left to full sync
+        if self.config.report_to_indexer {
+            let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
+            if let Some(last_reported_block) = self.last_reported_block {
+                if next_block >= last_reported_block - 10 || self.config.report_all_blocks {
+                    self.brc20_reporter
+                        .report(
+                            next_block,
+                            block_hash.to_string(),
+                            if block_time == 0 {
+                                None
+                            } else {
+                                Some(block_time)
+                            },
+                            block_events_hash.clone(),
+                            cumulative_events_hash.clone(),
+                            block_traces_hash.clone(),
+                            cumulative_traces_hash.clone(),
+                        )
+                        .await
+                        .ok();
+                    self.last_reported_block = self
+                        .event_provider_client
+                        .get_best_verified_block()
+                        .await
+                        .ok(); // Try once to avoid holding up the loop
+                }
+            } else {
+                self.last_reported_block = self
+                    .event_provider_client
+                    .get_best_verified_block()
+                    .await
+                    .ok(); // Try once to avoid holding up the loop
+            }
+            stop_timer(&report_timer).await;
+        }
+        stop_timer(&loop_timer).await;
+        Ok(())
     }
 
     pub async fn validate(&mut self) -> Result<(), Box<dyn Error>> {
@@ -795,7 +945,11 @@ impl Brc20Indexer {
             return Err("Reporting is not supported in light client mode".into());
         }
 
-        let (block_hash, block_time) = self.main_db.get_block_hash_and_time(block_height).await?;
+        let (block_hash, block_time) = self
+            .journal()?
+            .block_info(block_height as u32)?
+            .map(|info| (info.hash, info.time as i64))
+            .ok_or("Block hash and time not found")?;
 
         let Some(block_events_hash) = get_brc20_database()
             .lock()
@@ -1251,6 +1405,7 @@ impl Brc20Indexer {
         block_hash: &str,
         block_time: u64,
         is_synced: bool,
+        transfers: Vec<Brc20Tx>,
     ) -> Result<(), Box<dyn Error>> {
         static METHOD_SPAN: &str = "generate_and_process_events";
         let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
@@ -1267,9 +1422,6 @@ impl Brc20Indexer {
             .await?;
         }
 
-        let get_transfers_timer = start_timer(SPAN, "get_transfers", block_height);
-        let transfers = self.main_db.get_transfers(block_height).await?;
-        stop_timer(&get_transfers_timer).await;
         if transfers.is_empty() {
             self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
                 .await?;
@@ -2116,9 +2268,18 @@ impl Brc20Indexer {
                 .get_best_verified_block_with_retries()
                 .await
         } else {
-            self.main_db.get_current_block_height().await
+            self.journal()?
+                .tip()?
+                .map(|height| height as i32)
+                .ok_or("Failed to get current block height".into())
         };
         result
+    }
+
+    fn journal(&self) -> Result<&Arc<dyn BlockSource>, Box<dyn Error>> {
+        self.journal
+            .as_ref()
+            .ok_or("full mode reads blocks from the journal inside opi-indexer".into())
     }
 
     pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
@@ -2208,7 +2369,10 @@ impl Brc20Indexer {
                     .await?
                     .best_block_hash
             } else {
-                self.main_db.get_block_hash(current_brc20_height).await?
+                // opi-indexer's scheduler compares brc20's hashes with the
+                // journal's before every block, so this walk only reconciles
+                // brc20 with brc20-prog.
+                brc20_block_hash.clone()
             };
             let brc20_prog_block_hash =
                 if current_brc20_height < self.config.first_brc20_prog_phase_one_height {

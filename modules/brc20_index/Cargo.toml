@@ -4,13 +4,13 @@ version = "2.0.14"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
 async-trait = "0.1.92"
 axum = "0.8.9"
 axum-server = "0.8.0"
 base64 = "0.23.1"
 bitcoin = "0.32.102"
 brc20-prog = { version = "0.16.3", default-features = false }
-db_reader = { path = "../../ord/db_reader", default-features = false }
 dotenvy = "0.15.7"
 hex = "0.4.3"
 jsonrpsee = { version = "0.26.1", features = ["client", "http-client", "tokio"] }
@@ -26,10 +26,7 @@ serde_json = { version = "1.0.154", features = ["arbitrary_precision"] }
 serde_with = "3.24.0"
 sha256 = "1.6.0"
 sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "bigdecimal", "time", "tls-rustls"] }
-tokio = { version = "1.54.1", features = ["rt", "macros"] }
+tokio = { version = "1.54.1", features = ["rt", "macros", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 versions = "8.0.1"
-
-[dev-dependencies]
-anyhow = "1"

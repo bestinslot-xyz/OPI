@@ -1644,13 +1644,13 @@ dependencies = [
 name = "brc20-index"
 version = "2.0.14"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "axum-server",
  "base64 0.23.1",
  "bitcoin",
  "brc20-prog",
- "db_reader",
  "dotenvy",
  "hex",
  "jsonrpsee",
@@ -2325,16 +2325,6 @@ name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
-
-[[package]]
-name = "db_reader"
-version = "0.1.0"
-dependencies = [
- "bitcoin",
- "jsonrpsee",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "defmt"
@@ -4722,6 +4712,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "opi-core",
+ "opi-runtime",
  "opi-source",
  "ord",
  "serde_json",
