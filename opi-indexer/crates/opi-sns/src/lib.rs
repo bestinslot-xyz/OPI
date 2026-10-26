@@ -1,14 +1,14 @@
-//! The SNS metaprotocol as an opi module. It writes the schema in
-//! `db_init.sql` and the cumulative event hashes that `sns_api` and the OPI
-//! network read.
+//! The SNS metaprotocol as an opi module, indexed by the written SNS spec
+//! (see `rules.rs`). It writes the schema in `db_init.sql` and the cumulative
+//! event hashes that `sns_api` and the OPI network read.
 
 mod db;
 pub mod json5;
-pub mod pystr;
-#[rustfmt::skip]
-mod pytables;
 mod report;
 mod rules;
+pub mod unicode;
+#[rustfmt::skip]
+mod unicode_tables;
 
 use std::sync::Arc;
 
@@ -17,9 +17,8 @@ use opi_core::{BlockRef, BlockSource, BlockView, Module};
 
 pub use report::{DB_VERSION, INDEXER_VERSION};
 pub use rules::{
-    Candidate, SnsOp, Unencodable, block_event_hash, candidates, content_type_accepted,
-    cumulative_hash, get_ns_register, get_sns_name, is_valid_sns, ns_register_event_str, parse,
-    register_event_str, sha256_hex,
+    Candidate, SnsOp, block_event_hash, candidates, content_type_accepted, cumulative_hash,
+    is_valid_sns, ns_register_event_str, parse, register_event_str, sha256_hex,
 };
 
 use db::{BlockHashes, Db};

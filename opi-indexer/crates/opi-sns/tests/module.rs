@@ -82,8 +82,13 @@ fn admin() -> PgConnectOptions {
         .database("postgres")
 }
 
-#[tokio::test]
-async fn module_round_trip() {
+/// Runs `body` against a throwaway database, dropped even when `body`
+/// panics. Skips unless `OPI_TEST_PG=1`.
+async fn with_database<F, Fut>(tag: &str, body: F)
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
         eprintln!("OPI_TEST_PG is not 1; skipping");
         return;
@@ -92,7 +97,7 @@ async fn module_round_trip() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let name = format!("opi_sns_test_{}_{nanos}", std::process::id());
+    let name = format!("opi_sns_test_{tag}_{}_{nanos}", std::process::id());
     let mut root = PgConnection::connect_with(&admin()).await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
         .execute(&mut root)
@@ -100,7 +105,7 @@ async fn module_round_trip() {
         .unwrap();
 
     // The body runs in its own task so the database is dropped on failure too.
-    let result = tokio::spawn(round_trip(name.clone())).await;
+    let result = tokio::spawn(body(name.clone())).await;
 
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "DROP DATABASE {name} WITH (FORCE)"
@@ -110,6 +115,59 @@ async fn module_round_trip() {
     .unwrap();
     if let Err(error) = result {
         std::panic::resume_unwind(error.into_panic());
+    }
+}
+
+#[tokio::test]
+async fn module_round_trip() {
+    with_database("round_trip", round_trip).await;
+}
+
+/// A database indexed under the old rules (db_version 4) is refused, which
+/// forces a re-index.
+#[tokio::test]
+async fn version_gate_requires_5() {
+    with_database("version_gate", |name| async move {
+        let config = config(&name);
+        SnsModule::new(config.clone(), Arc::new(Journal { tip_fails: false }))
+            .await
+            .unwrap();
+        let mut conn = PgConnection::connect_with(&admin().database(&name))
+            .await
+            .unwrap();
+        let seeded: (String, i32) =
+            sqlx::query_as("SELECT indexer_version, db_version FROM sns_names_indexer_version")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(seeded, ("opi-sns-names-full-node v3.0.0".into(), 5));
+        sqlx::query("UPDATE sns_names_indexer_version SET db_version = 4")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let error = SnsModule::new(config, Arc::new(Journal { tip_fails: false }))
+            .await
+            .err()
+            .expect("db_version 4 is refused")
+            .to_string();
+        assert!(error.contains("db_version 4 is not 5"), "{error}");
+    })
+    .await;
+}
+
+fn config(name: &str) -> SnsConfig {
+    SnsConfig {
+        db_user: "alper".into(),
+        db_host: "127.0.0.1".into(),
+        db_port: 5432,
+        db_database: name.into(),
+        db_password: None,
+        db_ssl: false,
+        network_type: "regtest".into(),
+        report_to_indexer: false,
+        report_url: String::new(),
+        report_retries: 1,
+        report_name: "test".into(),
     }
 }
 

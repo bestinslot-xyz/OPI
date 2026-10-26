@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-pub const INDEXER_VERSION: &str = "opi-sns-names-full-node v2.0.0";
-pub const DB_VERSION: i32 = 4;
+pub const INDEXER_VERSION: &str = "opi-sns-names-full-node v3.0.0";
+pub const DB_VERSION: i32 = 5;
 
 /// Blocks behind the journal tip within which every block is reported.
 const REPORT_NEAR_TIP: u32 = 10;
@@ -74,8 +74,8 @@ mod tests {
         let body = payload("n", "mainnet", 5, "h", "b", "c");
         assert_eq!(body["type"], "sns");
         assert_eq!(body["node_type"], "full_node");
-        assert_eq!(body["version"], "opi-sns-names-full-node v2.0.0");
-        assert_eq!(body["db_version"], 4);
+        assert_eq!(body["version"], "opi-sns-names-full-node v3.0.0");
+        assert_eq!(body["db_version"], 5);
         assert_eq!(body["block_height"], 5);
     }
 }

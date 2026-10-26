@@ -195,3 +195,70 @@ rules, which are built on ord 0.23.2. Between 0.23.2 and 0.29.1 ord changes no
 curse, charm, numbering, pointer or fee rule. Envelope parsing recognizes tag
 19 (`property_encoding`, odd, so it never curses), and inscription creation
 adds gallery and collection bookkeeping that emits no events.
+
+## SNS indexing rules
+
+The sns module (`crates/opi-sns`) indexes Sats Names by the written spec,
+[index-names](https://docs.satsnames.org/sats-names/sns-spec/index-names) and
+[mint-names](https://docs.satsnames.org/sats-names/sns-spec/mint-names). Where
+the spec leaves a choice open, the rule below states the one opi-sns makes
+(marked *decision*).
+
+1. **Inscriptions.** Creations only, in ascending inscription number. An
+   inscription counts when it is blessed (number >= 0, *decision*) and its
+   content type is `text/plain` or `application/json`, alone or followed by `;`
+   parameters (*decision*).
+2. **UTF-8.** Content that is not valid UTF-8 registers nothing.
+3. **Names.** The content is parsed as JSON5.
+   - If it does not parse, the whole text is the candidate name.
+   - If it parses, the value must be an object with `p == "sns"`,
+     `op == "reg"` and a string `name`, which is the candidate. Any other value
+     registers nothing, so `1.5`, `"x.sats"` and `true` register nothing
+     (*decision*: no raw-text fallback for parsed values).
+   - The candidate is lowercased, cut at its first whitespace and trimmed of
+     whitespace. Text that starts with whitespace therefore registers nothing
+     (*decision*: the spec's "delete everything after the first space" read
+     literally).
+   - It must contain exactly one `.`, with text on both sides (*decision*:
+     both parts non-empty). The part after the `.` is the namespace, stored as
+     `domain`.
+4. **Namespaces.** Only a JSON5 object with `p == "sns"`, `op == "ns"` and a
+   string `ns`. It is lowercased and must be non-empty, without `.` and without
+   whitespace (*decision*). When one inscription yields both a name and a
+   namespace, the name wins.
+5. **Whitespace** is the Unicode `White_Space` property (*decision*: the spec
+   says "space or newline").
+6. **Unicode version.** Lowercasing (the full mapping, with final sigma) and
+   `White_Space` come from committed Unicode 17.0.0 tables
+   (`crates/opi-sns/src/unicode_tables.rs`), so results do not depend on the
+   Rust toolchain (*decision*). `tools/parity/unicode_tables.py` regenerates
+   them with Python 3.15.
+7. **JSON5 grammar.** JSON5 1.0 as Python's json5 0.12.0 implements it
+   (*decision*), with these details:
+   - nesting deeper than 128 arrays or objects is a parse failure;
+   - raw line breaks inside strings are a parse failure;
+   - trailing commas are allowed;
+   - a repeated key keeps its first position and its last value;
+   - a number that does not convert is a parse failure: a sign before hex, a
+     fraction or exponent without digits, or an integer of more than 4300
+     digits.
+
+   `crates/opi-sns/src/json5.rs` lists the full grammar.
+8. **Lone surrogates.** A name or namespace that holds a lone surrogate (from
+   a `\u` escape; surrogate pairs are not combined) is skipped (*decision*).
+9. **Storage limits.** A name or namespace that holds `\0`, or is longer than
+   2048 UTF-8 bytes after lowercasing, is skipped (*decision*: Postgres `text`
+   cannot store `\0`).
+10. **First is first.** The first inscription of a name or namespace
+    registers it. Later ones insert nothing and emit no event. Events are
+    `register;<inscription_id>;<name>;<namespace>` and
+    `ns_register;<inscription_id>;<namespace>`, joined with `|`. Each block
+    hashes them with sha256 and chains the hash onto the previous block's
+    cumulative hash.
+11. **Versions.** Reports send `opi-sns-names-full-node v3.0.0` with
+    `db_version` 5. The module refuses a database with any other `db_version`,
+    so a database indexed by the earlier Python indexer must be indexed again.
+
+`tools/parity/sns_spec_vectors.py` implements these rules independently in
+Python, and `crates/opi-sns/tests/spec_vectors.json` holds its results. The
+module's tests require the Rust rules to match every vector.
