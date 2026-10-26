@@ -9,6 +9,7 @@ use {
     futures::future::BoxFuture,
     opi_bitmap::{BitmapConfig, BitmapModule},
     opi_core::{BlockSource, Module},
+    opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime},
     opi_sns::{SnsConfig, SnsModule},
     opi_source::driver::{SourceHandle, spawn_source},
@@ -120,7 +121,10 @@ async fn supervise(handle: &SourceHandle, configs: ModuleConfigs) -> Result<Exit
         runtime.add("bitmap", bitmap_factory(config, journal.clone()));
     }
     if let Some(config) = configs.sns {
-        runtime.add("sns", sns_factory(config, journal));
+        runtime.add("sns", sns_factory(config, journal.clone()));
+    }
+    if let Some(config) = configs.runes {
+        runtime.add("runes", runes_factory(config, journal));
     }
 
     let (stop, stopped) = oneshot::channel::<()>();
@@ -183,6 +187,18 @@ fn sns_factory(config: SnsConfig, journal: Arc<dyn BlockSource>) -> ModuleFactor
         let (config, journal) = (config.clone(), journal.clone());
         Box::pin(async move {
             let module = SnsModule::new(config, journal).await?;
+            Ok(Box::new(module) as Box<dyn Module>)
+        })
+    })
+}
+
+/// Builds a runes module on a fresh database connection for every start and
+/// restart.
+fn runes_factory(config: RunesConfig, journal: Arc<dyn BlockSource>) -> ModuleFactory {
+    Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
+        let (config, journal) = (config.clone(), journal.clone());
+        Box::pin(async move {
+            let module = RunesModule::new(config, journal).await?;
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })

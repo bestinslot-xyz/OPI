@@ -4,6 +4,7 @@ use {
     anyhow::{Context, Result, anyhow, bail},
     brc20_index::config::Brc20IndexerConfig,
     opi_bitmap::BitmapConfig,
+    opi_runes::RunesConfig,
     opi_sns::SnsConfig,
     opi_source::{
         driver::{DEFAULT_CHUNK, SourceConfig},
@@ -101,6 +102,7 @@ pub struct ModuleConfigs {
     pub brc20: Option<Brc20IndexerConfig>,
     pub bitmap: Option<BitmapConfig>,
     pub sns: Option<SnsConfig>,
+    pub runes: Option<RunesConfig>,
 }
 
 impl ModuleConfigs {
@@ -110,7 +112,7 @@ impl ModuleConfigs {
         })
     }
 
-    /// Reads the bitmap and SNS variables through `get` and builds brc20's
+    /// Reads the bitmap, SNS and runes variables through `get` and builds brc20's
     /// configuration with `brc20`. Each enabled module must name its
     /// database; an unset name would fall back to the `postgres` database.
     fn load_with(
@@ -129,6 +131,7 @@ impl ModuleConfigs {
             brc20: None,
             bitmap: None,
             sns: None,
+            runes: None,
         };
         for module in &config.modules {
             match module {
@@ -153,6 +156,12 @@ impl ModuleConfigs {
                     config.check_network(&sns.network_type)?;
                     configs.sns = Some(sns);
                 }
+                ModuleKind::Runes => {
+                    require("RUNES_DB_DATABASE")?;
+                    let runes = RunesConfig::from_lookup(get).context("runes config")?;
+                    config.check_network(&runes.network_type)?;
+                    configs.runes = Some(runes);
+                }
             }
         }
         Ok(configs)
@@ -165,6 +174,7 @@ pub enum ModuleKind {
     Brc20,
     Bitmap,
     Sns,
+    Runes,
 }
 
 /// Parses a comma-separated module list, trimming names and dropping repeats.
@@ -179,8 +189,11 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
             "brc20" => ModuleKind::Brc20,
             "bitmap" => ModuleKind::Bitmap,
             "sns" => ModuleKind::Sns,
+            "runes" => ModuleKind::Runes,
             other => {
-                bail!("unknown module `{other}` in OPI_MODULES (supported: brc20, bitmap, sns)")
+                bail!(
+                    "unknown module `{other}` in OPI_MODULES (supported: brc20, bitmap, sns, runes)"
+                )
             }
         };
         if !modules.contains(&module) {
@@ -188,7 +201,7 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
         }
     }
     if modules.is_empty() {
-        bail!("OPI_MODULES names no module (supported: brc20, bitmap, sns)");
+        bail!("OPI_MODULES names no module (supported: brc20, bitmap, sns, runes)");
     }
     Ok(modules)
 }
@@ -249,6 +262,12 @@ mod tests {
             vec![ModuleKind::Brc20, ModuleKind::Bitmap, ModuleKind::Sns]
         );
 
+        vars.insert("OPI_MODULES", "runes,sns");
+        assert_eq!(
+            load(&vars).unwrap().modules,
+            vec![ModuleKind::Runes, ModuleKind::Sns]
+        );
+
         vars.insert("OPI_MODULES", "sns");
         assert_eq!(load(&vars).unwrap().modules, vec![ModuleKind::Sns]);
 
@@ -261,9 +280,60 @@ mod tests {
     #[test]
     fn unknown_module_is_rejected() {
         let mut vars = base();
-        vars.insert("OPI_MODULES", "brc20,runes");
+        vars.insert("OPI_MODULES", "brc20,ordinals");
         let err = load(&vars).unwrap_err();
-        assert!(err.to_string().contains("runes"), "{err}");
+        assert!(err.to_string().contains("ordinals"), "{err}");
+    }
+
+    #[test]
+    fn runes_is_a_module() {
+        let mut vars = base();
+        vars.insert("OPI_MODULES", "brc20,runes");
+        assert_eq!(
+            load(&vars).unwrap().modules,
+            vec![ModuleKind::Brc20, ModuleKind::Runes]
+        );
+    }
+
+    #[test]
+    fn runes_requires_its_database_name() {
+        let signet = ("NETWORK_TYPE", "signet");
+        let err = load_modules("runes", &[signet], brc20_signet())
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("RUNES_DB_DATABASE"), "{err}");
+        let err = load_modules(
+            "runes",
+            &[signet, ("RUNES_DB_DATABASE", "")],
+            brc20_signet(),
+        )
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("RUNES_DB_DATABASE"), "{err}");
+
+        let configs = load_modules(
+            "runes",
+            &[signet, ("RUNES_DB_DATABASE", "opi_runes")],
+            brc20_signet(),
+        )
+        .unwrap();
+        assert_eq!(configs.runes.unwrap().db_database, "opi_runes");
+        assert!(configs.brc20.is_none());
+
+        // Disabled: the missing name is not an error.
+        assert!(load_modules("brc20", &[("DB_DATABASE", "b")], brc20_signet()).is_ok());
+    }
+
+    #[test]
+    fn runes_network_must_match_the_chain() {
+        let err = load_modules(
+            "runes",
+            &[("NETWORK_TYPE", "mainnet"), ("RUNES_DB_DATABASE", "r")],
+            brc20_signet(),
+        )
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("mainnet"), "{err}");
     }
 
     #[test]
@@ -311,6 +381,7 @@ mod tests {
         for (module, key) in [
             ("bitmap", "BITMAP_DB_DATABASE"),
             ("sns", "SNS_DB_DATABASE"),
+            ("runes", "RUNES_DB_DATABASE"),
             ("brc20", "DB_DATABASE"),
         ] {
             let err = load_modules(module, &[signet], brc20_signet())

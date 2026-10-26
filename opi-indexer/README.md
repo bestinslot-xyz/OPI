@@ -1,12 +1,12 @@
 # opi-indexer
 
 Rust workspace that links upstream `ord` 0.29.1 as a library. The `opi-indexer`
-binary runs ord as a journal source and any subset of the BRC-20, Bitmap and
-SNS modules in one process.
+binary runs ord as a journal source and any subset of the BRC-20, Bitmap, SNS
+and Runes modules in one process.
 
 ## Modules
 
-`OPI_MODULES` lists the modules to run: any subset of `brc20,bitmap,sns`.
+`OPI_MODULES` lists the modules to run: any subset of `brc20,bitmap,sns,runes`.
 Each module reads the journal and keeps its own Postgres database.
 
 | Module | Indexes | Database variables |
@@ -14,10 +14,13 @@ Each module reads the journal and keeps its own Postgres database.
 | `brc20` | BRC-20 and BRC2.0 | `DB_*` |
 | `bitmap` | Bitmap, as the Python bitmap indexer did | `BITMAP_DB_*` |
 | `sns` | Sats Names, by the written spec (see [SNS indexing rules](#sns-indexing-rules)) | `SNS_DB_*` |
+| `runes` | Runes, from ord's rune events | `RUNES_DB_*` |
 
 The `*_DB_*` variables are `USER`, `HOST`, `PORT`, `DATABASE`, `PASSWD` and
-`SSL`, for example `BITMAP_DB_DATABASE`. Bitmap and SNS keep their own
-schemas, so `bitmap_api` and `sns_api` read their databases unchanged.
+`SSL`, for example `BITMAP_DB_DATABASE`. Bitmap, SNS and Runes keep their own
+schemas, so `bitmap_api`, `sns_api` and `runes_api` read their databases
+unchanged. The runes module reports `event_hash_version` 2 because it orders a
+transaction's input and burn events canonically.
 `NETWORK_TYPE` and `REPORT_TO_INDEXER`, `REPORT_URL`, `REPORT_NAME`,
 `REPORT_RETRIES` are shared by all modules.
 
@@ -43,8 +46,8 @@ variables.
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
-| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`), default `brc20` |
-| `BITMAP_DB_*`, `SNS_DB_*` | the bitmap and sns databases (see Modules); `BITMAP_DB_DATABASE` and `SNS_DB_DATABASE` have no default and are required when the module is enabled |
+| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`), default `brc20` |
+| `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*` | the bitmap, sns and runes databases (see Modules); `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE` and `RUNES_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
 

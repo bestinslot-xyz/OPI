@@ -4730,6 +4730,7 @@ dependencies = [
  "futures",
  "opi-bitmap",
  "opi-core",
+ "opi-runes",
  "opi-runtime",
  "opi-sns",
  "opi-source",
