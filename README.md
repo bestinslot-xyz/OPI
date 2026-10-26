@@ -1,15 +1,14 @@
 # OPI - Open Protocol Indexer
 
 Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** for **meta-protocols** on Bitcoin.
-OPI uses a fork of **ord 0.23.2** with minimal changes to maintain compatibility with base layer rules. Also, OPI is built with **modularity** in mind.
+OPI links upstream **ord 0.29.1** as a library and is built with **modularity** in mind.
 All modules in OPI have been built with **reorg protection**.
 
-Currently OPI has modules for **BRC-20**, **Bitmap** and **SNS**, we'll add new modules over time. Pull Requests are welcomed for other meta-protocols.
+OPI has modules for **BRC-20**, **Bitmap** and **SNS**, which run together in the `opi-indexer` binary, and an experimental **Runes** module that runs from `modules/runes_index` with its own ord (see [README.runes.md](README.runes.md)). Pull Requests are welcomed for other meta-protocols.
 
-## Main Meta-Protocol Indexer / OPI-ord
+## Main Meta-Protocol Indexer / opi-indexer
 
-**OPI-ord** sits in the core of OPI. It indexes **all json/text inscriptions** and their **first 2 transfers**.
-Transfer limit can be changed via `INDEX_TX_LIMIT` variable in ord fork. This limit has been added since there are some UTXO's with a lot of inscription content and their movement floods transfers tables. Also, base indexing of most protocols only needs the first two transfers. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time.
+**opi-indexer** sits in the core of OPI. It runs ord as a journal source that records **all json/text inscriptions** and their **first 2 transfers**, and feeds the journal to the BRC-20, Bitmap and SNS modules in one process. Each module keeps its own Postgres database. BRC-20 becomes invalid after 2 hops, bitmap and SNS validity is calculated at inscription time. See the [opi-indexer README](opi-indexer/README.md) for configuration, build and run steps.
 
 ## BRC-20 Indexer / API
 
@@ -86,7 +85,7 @@ To calculate the trace hashes in a stable way, the JSON string representation of
   cumulative_traces_hash = sha256_hex(last_cumulative_traces_hash + traces_hash)
 ```
 
-There is an optional block event hash reporting system pointed at https://api.opi.network/report_block. If you want to exclude your node from this, just change `REPORT_TO_INDEXER` variable in `brc20_index/.env`.
+There is an optional block event hash reporting system pointed at https://api.opi.network/report_block. If you want to exclude your node from this, just change `REPORT_TO_INDEXER` variable in `opi-indexer/.env`.
 Also change `REPORT_NAME` to differentiate your node from others.
 
 **BRC-20 API** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances.
@@ -144,15 +143,16 @@ For detailed installation guides:
 
 Modules use PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB (all modules can write into different databases as well as use a single database).
 
-**Build ord:**
+**Build opi-indexer:**
 ```bash
-cd ord; cargo build --release;
+cd opi-indexer; cargo build --release --locked -p opi-indexer;
 ```
 
 **Install node modules**
 ```bash
 cd modules/brc20_api; npm install;
 cd ../bitmap_api; npm install;
+cd ../sns_api; npm install;
 ```
 
 **Create a virtual environment and install python libraries**
@@ -165,29 +165,19 @@ pip3 install -r requirements.txt;
 
 **Setup .env files and DBs**
 
-Run `reset_init.py` in each module folder to initialise .env file, databases and set other necessary files.
+Copy `opi-indexer/.env_sample` to `opi-indexer/.env` and fill it in, as described in the [opi-indexer README](opi-indexer/README.md#configuration). The BRC-20, Bitmap and SNS databases are created from the schema on first start, and `OPI_MODULES` selects the modules to run.
+
+Run `reset_init.py` in `modules/brc20_index` and in each API folder to initialise .env file and databases for BRC-20 and the APIs.
 
 # Run
 
-First, run ordinals indexer to fill the inscription database:
+**Main Meta-Protocol Indexer / BRC-20, Bitmap and SNS Indexers**
 
-**Main Meta-Protocol Indexer / Ord and DB Server**
-```bash
-cd ord/target/release;
-./ord --data-dir . index run
-```
-
-> [!NOTE]
-> For ord to reach the bitcoin rpc server correctly, pass `--bitcoin-rpc-url`, `--bitcoin-rpc-username` and `--bitcoin-rpc-password` parameters before `index run`. To run on signet, add `--signet` as well.
-
-**BRC-20 Indexer**
-
-If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running BRC-20 indexer.
+Set up and run the brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running opi-indexer with the `brc20` module.
 
 ```bash
-cd modules/brc20_index;
-cargo build --release;
-./target/release/brc20-index;
+cd opi-indexer;
+./target/release/opi-indexer run;
 ```
 
 **BRC-20 API**
@@ -196,22 +186,10 @@ cd modules/brc20_api;
 node api.js;
 ```
 
-**Bitmap Indexer**
-```bash
-cd modules/bitmap_index;
-python3 bitmap_index.py;
-```
-
 **Bitmap API**
 ```bash
 cd modules/bitmap_api;
 node api.js;
-```
-
-**SNS Indexer**
-```bash
-cd modules/sns_index;
-python3 sns_index.py;
 ```
 
 **SNS API**
@@ -224,5 +202,5 @@ node api.js;
 
 - Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
 - Update the repo (`git pull`)
-- Recompile ord (`cd ord; cargo build --release;`)
+- Recompile opi-indexer (`cd opi-indexer; cargo build --release --locked -p opi-indexer;`)
 - Re-run all indexers and apis

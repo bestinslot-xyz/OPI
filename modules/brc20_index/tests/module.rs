@@ -163,7 +163,7 @@ fn a_record_without_its_info_is_an_error() {
 }
 
 #[test]
-fn get_wallet_matches_db_reader() {
+fn get_wallet_encodes_known_addresses() {
     assert_eq!(
         get_wallet(P2TR, Network::Bitcoin),
         "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297"

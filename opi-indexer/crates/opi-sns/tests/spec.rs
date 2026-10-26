@@ -429,7 +429,7 @@ fn white_space_is_unicode_17() {
 }
 
 #[test]
-fn hash_chain_matches_sns_index_hashing() {
+fn hash_chain_matches_reference_hashing() {
     let chain = spec().hash_chain;
     assert_eq!(chain.len(), 3);
     assert!(chain.iter().any(|block| block.events.is_empty()));

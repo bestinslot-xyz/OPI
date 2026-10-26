@@ -134,7 +134,7 @@ fn candidates_are_creations_in_ascending_number_order() {
 }
 
 #[test]
-fn validity_follows_db_reader() {
+fn validity_follows_the_bitmap_rules() {
     let mut json = info("a", 1, "1.bitmap");
     json.is_json = true;
     let mut html = info("a", 1, "1.bitmap");

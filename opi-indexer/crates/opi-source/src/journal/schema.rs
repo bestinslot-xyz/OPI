@@ -1,8 +1,9 @@
 //! Byte layouts of the journal records.
 //!
-//! The layouts are those the OPI ord fork writes and its `db_reader` decodes:
-//! ids and satpoints use ord's `Entry::store` forms, so a journal record is
-//! byte-identical to the fork's record for the same event. Ids and txids
+//! The layouts are those the OPI ord fork writes and its `db_reader` decodes
+//! (`ord/` and `ord/db_reader` at commit 9a1883c): ids and satpoints use ord's
+//! `Entry::store` forms, so a journal record is byte-identical to the fork's
+//! record for the same event. Ids and txids
 //! appear in display (hex) form in the record types and in internal byte order
 //! on disk.
 

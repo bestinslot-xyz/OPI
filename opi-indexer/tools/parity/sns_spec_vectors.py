@@ -36,7 +36,7 @@ exercise final sigma and multi-character mappings, then every code point whose
 lowercase differs), `hash_chain` (event and cumulative hashes of three blocks,
 one empty, built with sns_index.py's EVENT_SEPARATOR, get_register_event_str,
 get_ns_register_event_str and get_sha256_hash, copied verbatim from
-modules/sns_index/sns_index.py lines 16, 229, 236 and 242) and `dict_order`
+modules/sns_index/sns_index.py at commit 9a1883c, lines 16, 229, 236 and 242) and `dict_order`
 (json5's object order for repeated keys).
 """
 
@@ -248,8 +248,8 @@ def get_sha256_hash(s):
 
 
 def hash_chain(blocks):
-  """index_block's event accumulation (sns_index.py lines 264, 312 and 326)
-  and update_event_hashes (lines 245-255), with a dict standing in for
+  """index_block's event accumulation (modules/sns_index/sns_index.py at commit
+  9a1883c, lines 264, 312 and 326) and update_event_hashes (lines 245-255), with a dict standing in for
   sns_names_cumulative_event_hashes."""
   table = {}
   out = []

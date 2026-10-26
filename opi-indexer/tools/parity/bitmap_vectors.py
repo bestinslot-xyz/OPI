@@ -1,7 +1,7 @@
 """Prints the bitmap number parity vectors as JSON.
 
 `get_bitmap_number` is copied verbatim from modules/bitmap_index/bitmap_index.py
-(def get_bitmap_number, line 133). `expected` is the decimal string of the
+at commit 9a1883c (def get_bitmap_number, line 133). `expected` is the decimal string of the
 number or null.
 """
 
