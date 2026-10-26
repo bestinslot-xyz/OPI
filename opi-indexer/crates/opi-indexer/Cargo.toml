@@ -10,7 +10,9 @@ brc20-index = { path = "../../../modules/brc20_index" }
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 futures = "0.3"
+opi-bitmap = { path = "../opi-bitmap" }
 opi-core = { path = "../opi-core" }
+opi-sns = { path = "../opi-sns" }
 opi-runtime = { path = "../opi-runtime" }
 opi-source = { path = "../opi-source" }
 ord = "=0.29.1"

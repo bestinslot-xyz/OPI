@@ -1,15 +1,33 @@
 # opi-indexer
 
 Rust workspace that links upstream `ord` 0.29.1 as a library. The `opi-indexer`
-binary runs ord as a journal source and the BRC-20 module in one process.
+binary runs ord as a journal source and any subset of the BRC-20, Bitmap and
+SNS modules in one process.
+
+## Modules
+
+`OPI_MODULES` lists the modules to run: any subset of `brc20,bitmap,sns`.
+Each module reads the journal and keeps its own Postgres database.
+
+| Module | Indexes | Database variables |
+| --- | --- | --- |
+| `brc20` | BRC-20 and BRC2.0 | `DB_*` |
+| `bitmap` | Bitmap, as the Python bitmap indexer did | `BITMAP_DB_*` |
+| `sns` | Sats Names, by the written spec (see [SNS indexing rules](#sns-indexing-rules)) | `SNS_DB_*` |
+
+The `*_DB_*` variables are `USER`, `HOST`, `PORT`, `DATABASE`, `PASSWD` and
+`SSL`, for example `BITMAP_DB_DATABASE`. Bitmap and SNS keep their own
+schemas, so `bitmap_api` and `sns_api` read their databases unchanged.
+`NETWORK_TYPE` and `REPORT_TO_INDEXER`, `REPORT_URL`, `REPORT_NAME`,
+`REPORT_RETRIES` are shared by all modules.
 
 ## Prerequisites
 
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
   which needs undo data.
-- Postgres for the brc20 module.
-- brc20-prog, reachable at `BRC20_PROG_RPC_URL` (its admin listener). The brc20
-  module always runs BRC2.0.
+- One Postgres database per enabled module.
+- brc20-prog, reachable at `BRC20_PROG_RPC_URL` (its admin listener), when
+  `brc20` is enabled. The brc20 module always runs BRC2.0.
 
 ## Configuration
 
@@ -25,11 +43,14 @@ variables.
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
-| `OPI_MODULES` | comma-separated modules, default `brc20` |
+| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`), default `brc20` |
+| `BITMAP_DB_*`, `SNS_DB_*` | the bitmap and sns databases (see Modules) |
+| `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
+| `REPORT_*` | block reporting, shared by all modules |
 
-brc20's own variables (`DB_*`, `NETWORK_TYPE`, `BRC20_PROG_*`, `REPORT_*`) are
-listed in `modules/brc20_index/.env_sample`. `NETWORK_TYPE` must match
-`OPI_CHAIN`.
+brc20's own variables (`DB_*`, `BRC20_PROG_*`, ...) are listed in
+`modules/brc20_index/.env_sample`. All enabled modules' settings are read and
+checked before the source starts, so a missing or invalid one fails the start.
 
 ## Build
 
@@ -44,12 +65,13 @@ target/release/opi-indexer run
 ```
 
 `run` is the default subcommand. SIGINT and SIGTERM close the source gate, stop
-brc20, join the source and exit 0. A source error is logged and exits non-zero.
-brc20 runs as a module (`OPERATION_MODE=full`): it indexes each block once the
-journal finalizes it, and rolls back when its stored hashes differ from the
-journal's. A brc20 error or panic restarts it, with a freshly built indexer and
-database state, after a backoff of 5 seconds, doubling to 5 minutes; the source
-keeps running. Log verbosity follows `RUST_LOG`.
+the modules, join the source and exit 0. A source error is logged and exits
+non-zero. Each module indexes a block once the journal finalizes it, and rolls
+back when its stored hashes differ from the journal's. A module error or panic
+restarts that module, with a freshly built instance and database state, after a
+backoff of 5 seconds, doubling to 5 minutes; the other modules and the source
+keep running. brc20 runs with `OPERATION_MODE=full`. Log verbosity follows
+`RUST_LOG`.
 
 ## Validation runbook
 

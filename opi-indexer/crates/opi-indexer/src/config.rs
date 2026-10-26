@@ -13,7 +13,7 @@ use {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub source: SourceConfig,
-    pub brc20_enabled: bool,
+    pub modules: Vec<ModuleKind>,
 }
 
 impl Config {
@@ -53,18 +53,7 @@ impl Config {
             None => DEFAULT_CHUNK,
         };
 
-        let mut brc20_enabled = false;
-        let modules = get("OPI_MODULES").unwrap_or_else(|| "brc20".into());
-        for module in modules
-            .split(',')
-            .map(str::trim)
-            .filter(|module| !module.is_empty())
-        {
-            match module {
-                "brc20" => brc20_enabled = true,
-                other => bail!("unknown module `{other}` in OPI_MODULES (supported: brc20)"),
-            }
-        }
+        let modules = parse_modules(&get("OPI_MODULES").unwrap_or_else(|| "brc20".into()))?;
 
         Ok(Config {
             source: SourceConfig {
@@ -75,7 +64,7 @@ impl Config {
                 bitcoin_auth,
                 chunk,
             },
-            brc20_enabled,
+            modules,
         })
     }
 
@@ -83,6 +72,63 @@ impl Config {
     pub fn network(&self) -> bitcoin::Network {
         network_of(self.source.chain)
     }
+
+    /// The `NETWORK_TYPE` value naming the configured chain.
+    pub fn network_name(&self) -> &'static str {
+        match self.source.chain {
+            Chain::Mainnet => "mainnet",
+            Chain::Signet => "signet",
+            Chain::Testnet => "testnet",
+            Chain::Testnet4 => "testnet4",
+            Chain::Regtest => "regtest",
+        }
+    }
+
+    /// Fails when a module's `NETWORK_TYPE` names another network than
+    /// `OPI_CHAIN`.
+    pub fn check_network(&self, module_network: &str) -> Result<()> {
+        if module_network != self.network_name() {
+            bail!(
+                "NETWORK_TYPE {module_network:?} does not match OPI_CHAIN network {:?}",
+                self.network_name()
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A module `OPI_MODULES` can enable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleKind {
+    Brc20,
+    Bitmap,
+    Sns,
+}
+
+/// Parses a comma-separated module list, trimming names and dropping repeats.
+fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
+    let mut modules = Vec::new();
+    for name in value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let module = match name {
+            "brc20" => ModuleKind::Brc20,
+            "bitmap" => ModuleKind::Bitmap,
+            "sns" => ModuleKind::Sns,
+            other => {
+                bail!("unknown module `{other}` in OPI_MODULES (supported: brc20, bitmap, sns)")
+            }
+        };
+        if !modules.contains(&module) {
+            modules.push(module);
+        }
+    }
+    if modules.is_empty() {
+        bail!("OPI_MODULES names no module (supported: brc20, bitmap, sns)");
+    }
+    Ok(modules)
 }
 
 fn parse_chain(value: &str) -> Result<Chain> {
@@ -125,12 +171,13 @@ mod tests {
     }
 
     #[test]
-    fn config_from_env_parses_modules_and_defaults() {
+    fn config_from_env_parses_defaults() {
         let config = load(&base()).unwrap();
         assert_eq!(config.source.chunk, 1000);
-        assert!(config.brc20_enabled);
+        assert_eq!(config.modules, vec![ModuleKind::Brc20]);
         assert_eq!(config.source.chain, Chain::Signet);
         assert_eq!(config.network(), bitcoin::Network::Signet);
+        assert_eq!(config.network_name(), "signet");
         assert_eq!(config.source.ord_data_dir, PathBuf::from("/data/ord"));
         assert!(matches!(
             config.source.bitcoin_auth,
@@ -138,15 +185,55 @@ mod tests {
         ));
 
         let mut vars = base();
-        vars.insert("OPI_MODULES", "brc20, brc20");
         vars.insert("OPI_CHUNK", "250");
-        let config = load(&vars).unwrap();
-        assert!(config.brc20_enabled);
-        assert_eq!(config.source.chunk, 250);
+        assert_eq!(load(&vars).unwrap().source.chunk, 250);
+    }
 
+    #[test]
+    fn config_parses_all_modules() {
+        let mut vars = base();
+        vars.insert("OPI_MODULES", "brc20, bitmap ,sns,bitmap");
+        assert_eq!(
+            load(&vars).unwrap().modules,
+            vec![ModuleKind::Brc20, ModuleKind::Bitmap, ModuleKind::Sns]
+        );
+
+        vars.insert("OPI_MODULES", "sns");
+        assert_eq!(load(&vars).unwrap().modules, vec![ModuleKind::Sns]);
+
+        vars.insert("OPI_MODULES", " , ");
+        assert!(load(&vars).is_err());
+        vars.insert("OPI_MODULES", "");
+        assert!(load(&vars).is_err());
+    }
+
+    #[test]
+    fn unknown_module_is_rejected() {
+        let mut vars = base();
         vars.insert("OPI_MODULES", "brc20,runes");
         let err = load(&vars).unwrap_err();
         assert!(err.to_string().contains("runes"), "{err}");
+    }
+
+    #[test]
+    fn module_env_prefixes_are_independent() {
+        // No other test in this binary reads these variables.
+        unsafe {
+            std::env::set_var("BITMAP_DB_DATABASE", "bitmap_db");
+            std::env::set_var("SNS_DB_DATABASE", "sns_db");
+        }
+        let bitmap = opi_bitmap::BitmapConfig::from_env().unwrap();
+        let sns = opi_sns::SnsConfig::from_env().unwrap();
+        assert_eq!(bitmap.db_database, "bitmap_db");
+        assert_eq!(sns.db_database, "sns_db");
+    }
+
+    #[test]
+    fn module_network_must_match_the_chain() {
+        let config = load(&base()).unwrap();
+        assert!(config.check_network("signet").is_ok());
+        let err = config.check_network("mainnet").unwrap_err();
+        assert!(err.to_string().contains("mainnet"), "{err}");
     }
 
     #[test]

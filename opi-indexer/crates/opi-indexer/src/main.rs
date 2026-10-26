@@ -2,13 +2,15 @@ mod config;
 mod validate;
 
 use {
-    anyhow::{Result, bail},
+    anyhow::{Context, Result, bail},
     brc20_index::{config::Brc20IndexerConfig, module::Brc20Module},
     clap::{Parser, Subcommand},
-    config::Config,
+    config::{Config, ModuleKind},
     futures::future::BoxFuture,
+    opi_bitmap::{BitmapConfig, BitmapModule},
     opi_core::{BlockSource, Module},
     opi_runtime::{ModuleFactory, Runtime},
+    opi_sns::{SnsConfig, SnsModule},
     opi_source::driver::{SourceHandle, spawn_source},
     std::{process::ExitCode, sync::Arc, time::Duration},
     tokio::{signal::unix::SignalKind, sync::oneshot},
@@ -31,7 +33,7 @@ struct Cli {
 enum Command {
     /// Index until SIGINT or SIGTERM (default).
     Run,
-    /// Check brc20's cumulative event and trace hashes against the OPI
+    /// Check brc20's (BRC-20 only) cumulative event and trace hashes against the OPI
     /// network's. Runs while `run` is running. Exits 0 when the hashes match,
     /// 1 at the first mismatch, 2 on an error such as a height missing on
     /// either side.
@@ -75,18 +77,53 @@ fn main() -> ExitCode {
     }
 }
 
+/// Every enabled module's configuration, read and checked before the source
+/// starts.
+struct ModuleConfigs {
+    brc20: Option<Brc20IndexerConfig>,
+    bitmap: Option<BitmapConfig>,
+    sns: Option<SnsConfig>,
+}
+
+impl ModuleConfigs {
+    fn load(config: &Config) -> Result<ModuleConfigs> {
+        let mut configs = ModuleConfigs {
+            brc20: None,
+            bitmap: None,
+            sns: None,
+        };
+        for module in &config.modules {
+            match module {
+                ModuleKind::Brc20 => {
+                    let brc20 = Brc20IndexerConfig::default();
+                    if brc20.network_type != config.network() {
+                        bail!(
+                            "NETWORK_TYPE {:?} does not match OPI_CHAIN network {:?}",
+                            brc20.network_type,
+                            config.network()
+                        );
+                    }
+                    configs.brc20 = Some(brc20);
+                }
+                ModuleKind::Bitmap => {
+                    let bitmap = BitmapConfig::from_env().context("bitmap config")?;
+                    config.check_network(&bitmap.network_type)?;
+                    configs.bitmap = Some(bitmap);
+                }
+                ModuleKind::Sns => {
+                    let sns = SnsConfig::from_env().context("sns config")?;
+                    config.check_network(&sns.network_type)?;
+                    configs.sns = Some(sns);
+                }
+            }
+        }
+        Ok(configs)
+    }
+}
+
 fn run() -> Result<()> {
     let config = Config::from_env()?;
-    let network = config.network();
-    if config.brc20_enabled {
-        let brc20 = Brc20IndexerConfig::default();
-        if brc20.network_type != network {
-            bail!(
-                "NETWORK_TYPE {:?} does not match OPI_CHAIN network {network:?}",
-                brc20.network_type
-            );
-        }
-    }
+    let module_configs = ModuleConfigs::load(&config)?;
 
     // The source blocks on its own runtime, so it starts and stops outside
     // the runtime below.
@@ -96,7 +133,7 @@ fn run() -> Result<()> {
         .enable_all()
         .build()
         .map_err(anyhow::Error::from)
-        .and_then(|runtime| runtime.block_on(supervise(&handle, config.brc20_enabled)));
+        .and_then(|runtime| runtime.block_on(supervise(&handle, module_configs)));
 
     handle.shutdown();
     let joined = handle.join();
@@ -117,11 +154,17 @@ fn run() -> Result<()> {
 
 /// Runs the enabled modules over the journal until a signal arrives or the
 /// source driver exits, then stops them.
-async fn supervise(handle: &SourceHandle, brc20_enabled: bool) -> Result<Exit> {
+async fn supervise(handle: &SourceHandle, configs: ModuleConfigs) -> Result<Exit> {
     let journal: Arc<dyn BlockSource> = Arc::new(handle.reader());
     let mut runtime = Runtime::new(journal.clone());
-    if brc20_enabled {
-        runtime.add("brc20", brc20_factory(journal));
+    if configs.brc20.is_some() {
+        runtime.add("brc20", brc20_factory(journal.clone()));
+    }
+    if let Some(config) = configs.bitmap {
+        runtime.add("bitmap", bitmap_factory(config, journal.clone()));
+    }
+    if let Some(config) = configs.sns {
+        runtime.add("sns", sns_factory(config, journal));
     }
 
     let (stop, stopped) = oneshot::channel::<()>();
@@ -160,6 +203,30 @@ fn brc20_factory(journal: Arc<dyn BlockSource>) -> ModuleFactory {
         let journal = journal.clone();
         Box::pin(async move {
             let module = Brc20Module::new(Brc20IndexerConfig::default(), journal).await?;
+            Ok(Box::new(module) as Box<dyn Module>)
+        })
+    })
+}
+
+/// Builds a bitmap module on a fresh database connection for every start and
+/// restart.
+fn bitmap_factory(config: BitmapConfig, journal: Arc<dyn BlockSource>) -> ModuleFactory {
+    Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
+        let (config, journal) = (config.clone(), journal.clone());
+        Box::pin(async move {
+            let module = BitmapModule::new(config, journal).await?;
+            Ok(Box::new(module) as Box<dyn Module>)
+        })
+    })
+}
+
+/// Builds an sns module on a fresh database connection for every start and
+/// restart.
+fn sns_factory(config: SnsConfig, journal: Arc<dyn BlockSource>) -> ModuleFactory {
+    Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
+        let (config, journal) = (config.clone(), journal.clone());
+        Box::pin(async move {
+            let module = SnsModule::new(config, journal).await?;
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })
