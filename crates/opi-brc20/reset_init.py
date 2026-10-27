@@ -18,91 +18,85 @@ if os.path.isfile(ENV_PATH):
     init_env = False
 
 if init_env:
-  DB_USER="postgres"
-  DB_HOST="localhost"
-  DB_PORT="5432"
-  DB_DATABASE=""
-  DB_PASSWD=""
-  DB_SSL="false"
-  OPERATION_MODE="full"
-  NETWORK_TYPE="mainnet"
-  REPORT_TO_INDEXER="true"
-  REPORT_URL="https://api.opi.network/report_block"
-  REPORT_RETRIES="10"
-  REPORT_NAME="opi_brc20_index"
-  BRC20_PROG_RPC_URL="http://localhost:18545"
-  BRC20_PROG_RPC_USER="user"
-  BRC20_PROG_RPC_PASSWORD="password"
+  # current values of the shared root .env are the prompt defaults
+  existing = dotenv_values(dotenv_path=ENV_PATH) if os.path.isfile(ENV_PATH) else {}
+  DB_USER = existing.get("DB_USER") or "postgres"
+  DB_HOST = existing.get("DB_HOST") or "localhost"
+  DB_PORT = existing.get("DB_PORT") or "5432"
+  DB_DATABASE = existing.get("DB_DATABASE") or ""
+  DB_PASSWD = existing.get("DB_PASSWD") or ""
+  DB_SSL = existing.get("DB_SSL") or "false"
+  OPERATION_MODE = existing.get("OPERATION_MODE") or "full"
+  NETWORK_TYPE = existing.get("NETWORK_TYPE") or "mainnet"
+  REPORT_TO_INDEXER = existing.get("REPORT_TO_INDEXER") or "true"
+  REPORT_URL = existing.get("REPORT_URL") or "https://api.opi.network/report_block"
+  REPORT_RETRIES = existing.get("REPORT_RETRIES") or "10"
+  REPORT_NAME = existing.get("REPORT_NAME") or "opi_brc20_index"
+  BRC20_PROG_RPC_URL = existing.get("BRC20_PROG_RPC_URL") or "http://localhost:18545"
+  BRC20_PROG_RPC_USER = existing.get("BRC20_PROG_RPC_USER") or "user"
+  BRC20_PROG_RPC_PASSWORD = existing.get("BRC20_PROG_RPC_PASSWORD") or "password"
 
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
-  other_env_exists = bool(dotenv_values(dotenv_path=ENV_PATH).get("DB_DATABASE")) if os.path.isfile(ENV_PATH) else False
-  if other_env_exists:
+  if existing.get("DB_DATABASE"):
     res = input("The repository root .env already has brc20 DB settings, do you want to use them? (y/n) ")
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    env = dotenv_values(dotenv_path=ENV_PATH)
-    DB_USER = env.get("DB_USER") or "postgres"
-    DB_HOST = env.get("DB_HOST") or "localhost"
-    DB_PORT = env.get("DB_PORT") or "5432"
-    DB_DATABASE = env.get("DB_DATABASE")
-    DB_PASSWD = env.get("DB_PASSWD") or ""
-    DB_SSL = env.get("DB_SSL") or "false"
+    pass
   else:
-    res = input("BRC20 Postgres DB username (Default: postgres): ")
+    res = input("BRC20 Postgres DB username (Default: " + DB_USER + "): ")
     if res != '':
       DB_USER = res
-    res = input("BRC20 Postgres DB host (Default: localhost) leave default if postgres is installed on the same machine: ")
+    res = input("BRC20 Postgres DB host (Default: " + DB_HOST + ") leave default if postgres is installed on the same machine: ")
     if res != '':
       DB_HOST = res
-    res = input("BRC20 Postgres DB port (Default: 5432): ")
+    res = input("BRC20 Postgres DB port (Default: " + DB_PORT + "): ")
     if res != '':
       DB_PORT = res
     while True:
-      res = input("BRC20 Postgres DB name (required, brc20's own database): ")
+      res = input("BRC20 Postgres DB name (required, brc20's own database" + (", Default: " + DB_DATABASE if DB_DATABASE else "") + "): ")
       if res != '':
         DB_DATABASE = res
         break
+      elif DB_DATABASE != '':
+        break
       else:
         print('DB name cannot be empty')
-    res = stdiomask.getpass("BRC20 Postgres DB password: ")
-    DB_PASSWD = res
-    res = input("BRC20 Postgres DB SSL (Default: false) options: true, false: ")
+    res = stdiomask.getpass("BRC20 Postgres DB password (blank keeps the current one): ")
+    if res != '':
+      DB_PASSWD = res
+    res = input("BRC20 Postgres DB SSL (Default: " + DB_SSL + ") options: true, false: ")
     if res != '':
       DB_SSL = res
-  res = input("Operation mode (Default: full) options: full, light: ")
+  res = input("Operation mode (Default: " + OPERATION_MODE + ") options: full, light: ")
   if res != '':
     OPERATION_MODE = res
-  res = input("Network type (Default: mainnet) options: mainnet, testnet, testnet4, signet, regtest: ")
+  res = input("Network type (Default: " + NETWORK_TYPE + ") options: mainnet, testnet, testnet4, signet, regtest: ")
   if res != '':
     NETWORK_TYPE = res
-  res = input("Report to main indexer (Default: true): ")
+  res = input("Report to main indexer (Default: " + REPORT_TO_INDEXER + "): ")
   if res != '':
     REPORT_TO_INDEXER = res
   if REPORT_TO_INDEXER == 'true':
-    res = input("Report URL (Default: https://api.opi.network/report_block): ")
+    res = input("Report URL (Default: " + REPORT_URL + "): ")
     if res != '':
       REPORT_URL = res
-    res = input("Report retries (Default: 10): ")
+    res = input("Report retries (Default: " + REPORT_RETRIES + "): ")
     if res != '':
       REPORT_RETRIES = res
-    while True:
-      res = input("Report name: ")
-      if res != '':
-        REPORT_NAME = res
-        break
-      else:
-        print('Report name cannot be empty')
+    res = input("Report name (Default: " + REPORT_NAME + "): ")
+    if res != '':
+      REPORT_NAME = res
   print('If brc20_prog sets BRC20_PROG_ADMIN_RPC_SERVER_URL, use the admin listener URL here (e.g. http://localhost:18546).')
-  res = input("BRC20 programmable module RPC URL (Default: http://localhost:18545): ")
+  res = input("BRC20 programmable module RPC URL (Default: " + BRC20_PROG_RPC_URL + "): ")
   if res != '':
     BRC20_PROG_RPC_URL = res
-  res = input("BRC20 programmable module RPC username (Default: user): ")
+  res = input("BRC20 programmable module RPC username (Default: " + BRC20_PROG_RPC_USER + "): ")
   if res != '':
     BRC20_PROG_RPC_USER = res
-  res = stdiomask.getpass("BRC20 programmable module RPC password (Default: password): ")
+  res = stdiomask.getpass("BRC20 programmable module RPC password (blank keeps the current one): ")
   if res != '':
     BRC20_PROG_RPC_PASSWORD = res
 

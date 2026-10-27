@@ -71,16 +71,19 @@ function createApp(config, pools) {
 
   routes.get('/v1/status', async (request, response) => {
     const modules = {}
-    for (const module_name of config.modules) {
-      try {
-        const res = await pools[module_name].query(
-          `SELECT max(block_height) as max_block_height FROM ${BLOCK_HASHES_TABLE[module_name]};`
-        )
-        modules[module_name] = { block_height: res.rows[0].max_block_height }
-      } catch (err) {
-        modules[module_name] = { error: err.message }
-      }
-    }
+    await Promise.all(
+      config.modules.map(async (module_name) => {
+        try {
+          const res = await pools[module_name].query(
+            `SELECT max(block_height) as max_block_height FROM ${BLOCK_HASHES_TABLE[module_name]};`
+          )
+          modules[module_name] = { block_height: res.rows[0].max_block_height }
+        } catch (err) {
+          console.error(`status query failed for ${module_name}: ${err.message}`)
+          modules[module_name] = { error: 'unavailable' }
+        }
+      })
+    )
     response.send({ error: null, result: { modules: modules } })
   })
 

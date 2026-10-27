@@ -28,7 +28,7 @@ print("Initialising API settings in " + os.path.normpath(ENV_PATH))
 print("leave blank to use default values")
 
 while True:
-  modules_value = ask("Modules to serve, comma-separated, any of brc20, bitmap, sns, runes", existing.get("OPI_MODULES") or "brc20")
+  modules_value = ask("Modules to serve (also the modules opi-indexer indexes), comma-separated, any of brc20, bitmap, sns, runes", existing.get("OPI_MODULES") or "brc20")
   modules = []
   for name in modules_value.split(','):
     name = name.strip()

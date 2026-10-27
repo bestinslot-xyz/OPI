@@ -168,7 +168,7 @@ Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 > [!WARNING]
 > Set up and run the brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running opi-indexer with the `brc20` module.
 > 
-> BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`.
+> BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`. These are brc20-prog's own environment variables; the root `.env` names the password `BITCOIN_RPC_PASSWD`.
 
 ```bash
 ./target/release/opi-indexer run;

@@ -103,7 +103,8 @@ non-zero. Each module indexes a block once the journal finalizes it, and rolls
 back when its stored hashes differ from the journal's. A module error or panic
 restarts that module, with a freshly built instance and database state, after a
 backoff of 5 seconds, doubling to 5 minutes; the other modules and the source
-keep running. Log verbosity follows `RUST_LOG`.
+keep running. Log verbosity follows `RUST_LOG`. Logs go to stderr for every
+command.
 
 Run brc20-prog first, using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage), when `brc20` is enabled.
 
@@ -114,8 +115,10 @@ opi-indexer [run | validate | brc20 <COMMAND>]
 ```
 
 `opi-indexer brc20` holds the BRC-20 light client and maintenance commands. It
-reads only brc20's environment, so it runs alongside `run` and on light-client
-hosts.
+reads only brc20's environment, so it runs on light-client hosts.
+`event-str`, `trace-str` and `report` run alongside `run`; stop `run` before
+`reset`, `reorg`, `recalculate-hashes` and `reindex-extras`, which rewrite
+brc20 state.
 
 | Command | Does |
 | --- | --- |
@@ -124,11 +127,11 @@ hosts.
 | `brc20 reorg [--yes] <HEIGHT>` | rolls the BRC-20 state back to a block height |
 | `brc20 report <HEIGHT>` | reports the BRC-20 data of a block height to the OPI network |
 | `brc20 recalculate-hashes <FROM>` | recomputes the cumulative event hashes from a height to the latest indexed block |
-| `brc20 reindex-extras` | rebuilds the extra tables from the indexed data; may take a long time |
+| `brc20 reindex-extras [--yes]` | rebuilds the extra tables from the indexed data; may take a long time |
 | `brc20 event-str <HEIGHT>` | prints the block event string at a height |
 | `brc20 trace-str <HEIGHT>` | prints the block trace string at a height |
 
-The destructive commands (`reset`, `reorg`) ask for a y/N confirmation; `--yes`
+The destructive commands (`reset`, `reorg`, `reindex-extras`) ask for a y/N confirmation; `--yes`
 skips it. `opi-indexer <command> --help` prints each command's usage.
 
 ### Validation runbook
@@ -346,17 +349,21 @@ another indexer is refused.
 
 Each module's routes live under `/v1/<module>/`. A module outside `OPI_MODULES`
 answers `404 {"error":"<module> is not enabled on this node"}`. `/v1/status`
-lists the enabled modules and their block heights. A failing handler answers
+lists the enabled modules; a module entry is `{"block_height":N}`, or
+`{"error":"unavailable"}` when its database query fails (the cause is logged).
+A failing handler answers
 `500 {"error":"internal error","result":null}`.
 
 ### API configuration
 
 The API reads the repository root `.env` (the file `opi-indexer` reads), or the
-file `OPI_ENV_FILE` names; variables already in the environment win.
+file `OPI_ENV_FILE` names (set it as a process environment variable, since it
+is read before the file is loaded); variables already in the environment win.
 
 | Variable | Meaning |
 | --- | --- |
 | `OPI_MODULES` | the modules to serve, as for `opi-indexer`, default `brc20` |
+| `OPI_ENV_FILE` | alternative `.env` path; only works as a process environment variable |
 | `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*` | the module databases; the database name is required for each enabled module |
 | `DB_MAX_CONNECTIONS` | maximum connections per module database pool, default `10` |
 | `API_HOST` | listen address, default `127.0.0.1` |

@@ -52,10 +52,10 @@ test('loadConfig reads prefixed and unprefixed DB variables', () => {
     DB_MAX_CONNECTIONS: '3',
   })
   assert.deepStrictEqual(config.dbs.brc20, {
-    user: 'bu', host: 'bh', port: 5433, database: 'b', password: 'bp', ssl: true, max: 3,
+    user: 'bu', host: 'bh', port: 5433, database: 'b', password: 'bp', ssl: true, max: 3, connectionTimeoutMillis: 5000,
   })
   assert.deepStrictEqual(config.dbs.runes, {
-    user: 'ru', host: 'localhost', port: 5432, database: 'r', password: undefined, ssl: false, max: 3,
+    user: 'ru', host: 'localhost', port: 5432, database: 'r', password: undefined, ssl: false, max: 3, connectionTimeoutMillis: 5000,
   })
 })
 

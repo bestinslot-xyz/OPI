@@ -41,7 +41,9 @@ enum Command {
     /// either side.
     Validate(validate::Args),
     /// BRC-20 light client and maintenance commands. Reads only brc20's
-    /// environment, so it runs alongside `run` and on light-client hosts.
+    /// environment, so it runs on light-client hosts. `event-str`, `trace-str`
+    /// and `report` run alongside `run`; stop `run` before `reset`, `reorg`,
+    /// `recalculate-hashes` and `reindex-extras`.
     Brc20(brc20::Args),
 }
 
@@ -55,6 +57,7 @@ fn main() -> ExitCode {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_target(false)
+        .with_writer(std::io::stderr)
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 

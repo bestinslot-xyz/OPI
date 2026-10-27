@@ -48,6 +48,7 @@ function parse_db_config(env, module_name) {
     password: env[`${prefix}_PASSWD`],
     ssl: env[`${prefix}_SSL`] == 'true' ? true : false,
     max: parseInt(env.DB_MAX_CONNECTIONS || '10'), // maximum number of clients per pool
+    connectionTimeoutMillis: 5000, // fail a query when no connection is available in time
   }
 }
 

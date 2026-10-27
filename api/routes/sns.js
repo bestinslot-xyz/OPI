@@ -23,7 +23,7 @@ function register(app, db_pool) {
   })
 
   app.get('/v1/sns/get_hash_of_all_activity', async (request, response) => {
-    let block_height = request.params.block_height
+    let block_height = request.query.block_height
 
     let current_block_height = await get_block_height_of_db()
     if (block_height > current_block_height) {

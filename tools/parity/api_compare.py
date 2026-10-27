@@ -181,24 +181,38 @@ ALLOWED = [
     ),
     AllowRule(
         "/v1/sns/get_registered_namespaces",
-        "R5: the old handler had no error handling and crashed the process; "
+        "R5: the old handler has no error handling and crashes the process; "
         "the merged API answers",
         _old_unreachable_or_failed,
     ),
 ]
-# Routes whose old handler throws outside any error handling on some inputs
-# (an async rejection ends the old process); the merged API answers 500.
+# Routes whose old handler reads the block height from the route parameters,
+# where it is always undefined, so the old process crashes; the merged API
+# reads it from the query string and answers 200.
 for _route in (
     "/v1/bitmap/get_hash_of_all_activity",
-    "/v1/bitmap/get_hash_of_all_bitmaps",
-    "/v1/bitmap/get_inscription_id_of_bitmap",
     "/v1/sns/get_hash_of_all_activity",
 ):
     ALLOWED.append(
         AllowRule(
             _route,
-            "R5: the old handler had no error handling and an unhandled rejection "
-            "ended the process; the merged API answers 500",
+            "R6: the old handler reads the block height from the route parameters, "
+            "where it is always undefined, and crashes; the merged API reads the "
+            "query string and answers 200",
+            _old_unreachable_or_failed,
+        )
+    )
+# Routes whose old handler throws outside any error handling on some inputs
+# (an async rejection ends the old process); the merged API answers 500.
+for _route in (
+    "/v1/bitmap/get_hash_of_all_bitmaps",
+    "/v1/bitmap/get_inscription_id_of_bitmap",
+):
+    ALLOWED.append(
+        AllowRule(
+            _route,
+            "R5: the old handler has no error handling and an unhandled rejection "
+            "ends the process; the merged API answers 500",
             lambda old, new: old.status == 0 and new.status == 500,
         )
     )
@@ -365,6 +379,10 @@ def run(args) -> int:
     params = {name: getattr(args, name) for name in PARAMS}
     old_bases = {module: getattr(args, module) for module in MODULES}
     requests = [r for r in build_requests(params) if not args.only or r.module in args.only]
+
+    if not requests:
+        print("no requests to run (check --only)", file=sys.stderr)
+        return 2
 
     counts = {"PASS": 0, "ALLOWED": 0, "DIFF": 0}
     for request in requests:

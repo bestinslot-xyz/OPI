@@ -3,7 +3,9 @@
 //! These commands read only brc20's own environment
 //! (`Brc20IndexerConfig::default()`). They never load the shared `Config`
 //! or open the journal, so they run on a light-client host with no `OPI_*`
-//! settings and alongside a running `opi-indexer run`.
+//! settings. `event-str`, `trace-str` and `report` run alongside a running
+//! `opi-indexer run`; `run` must be stopped before `reset`, `reorg`,
+//! `recalculate-hashes` and `reindex-extras`, which rewrite brc20 state.
 
 use {
     anyhow::{Result, anyhow, bail},
@@ -38,9 +40,9 @@ pub struct Confirm {
 pub enum Command {
     /// Run the BRC-20 light client until stopped. Requires OPERATION_MODE=light.
     Light,
-    /// Delete all BRC-20 data and start fresh.
+    /// Delete all BRC-20 data and start fresh. Stop `run` first.
     Reset(Confirm),
-    /// Roll the BRC-20 state back to a block height.
+    /// Roll the BRC-20 state back to a block height. Stop `run` first.
     Reorg {
         /// Height to roll back to.
         height: i32,
@@ -53,11 +55,13 @@ pub enum Command {
         height: i32,
     },
     /// Recompute the cumulative event hashes from a height to the latest indexed block.
+    /// Stop `run` first.
     RecalculateHashes {
         /// First height to recompute.
         from: i32,
     },
     /// Rebuild the extra tables from the indexed data. May take a long time.
+    /// Stop `run` first.
     ReindexExtras(Confirm),
     /// Print the block event string at a height.
     EventStr {

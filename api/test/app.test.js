@@ -89,7 +89,7 @@ test('/v1/status lists each enabled module with its latest height', async () => 
         modules: {
           brc20: { block_height: 100 },
           bitmap: { block_height: null },
-          sns: { error: 'database "s" does not exist' },
+          sns: { error: 'unavailable' },
         },
       },
     })
@@ -128,6 +128,25 @@ test('bitmap block_height answers 500 when the query fails', async () => {
   } finally {
     console.log = log
   }
+})
+
+test('bitmap and sns get_hash_of_all_activity read block_height from the query', async () => {
+  const handler = (sql) => {
+    if (/block_hashes/.test(sql)) return [{ max_block_height: 900 }]
+    if (/indexer_version/.test(sql)) return [{ indexer_version: 'v' }]
+    return [{ cumulative_event_hash: 'c', block_event_hash: 'b' }]
+  }
+  const pools = { bitmap: fake_pool(handler), sns: fake_pool(handler) }
+  await with_app({ ...ENV, OPI_MODULES: 'bitmap,sns' }, pools, async (base) => {
+    for (const module_name of ['bitmap', 'sns']) {
+      const res = await fetch(`${base}/v1/${module_name}/get_hash_of_all_activity?block_height=800`)
+      assert.strictEqual(res.status, 200, module_name)
+      const body = await res.json()
+      assert.strictEqual(body.result.cumulative_event_hash, 'c')
+      assert.strictEqual(body.result.block_height, '800')
+      assert.deepStrictEqual(pools[module_name].calls.at(-2).params, ['800'])
+    }
+  })
 })
 
 test('the ip route of each enabled module stays', async () => {

@@ -121,10 +121,26 @@ def test_crash_prone_requests_run_after_the_others():
 
 
 def test_old_process_crash_on_a_handler_error_is_allowed():
-    req = request("/v1/bitmap/get_hash_of_all_activity")
+    req = request("/v1/bitmap/get_hash_of_all_bitmaps")
     assert ac.classify(req, ac.Response(0, "x", "x"), resp(500, "{}"))[0] == "ALLOWED"
     assert ac.classify(req, ac.Response(0, "x", "x"), resp(200, "{}"))[0] == "DIFF"
     assert ac.classify(req, resp(200, "{}"), resp(500, "{}"))[0] == "DIFF"
+
+
+def test_r6_hash_of_all_activity_old_crash_is_allowed_when_new_answers_200():
+    for path in ("/v1/bitmap/get_hash_of_all_activity", "/v1/sns/get_hash_of_all_activity"):
+        req = request(path)
+        verdict, detail = ac.classify(req, ac.Response(0, "x", "x"), resp(200, "{}"))
+        assert verdict == "ALLOWED" and "R6" in detail
+        assert ac.classify(req, resp(500, "x"), resp(200, "{}"))[0] == "ALLOWED"
+        assert ac.classify(req, ac.Response(0, "x", "x"), resp(500, "{}"))[0] == "DIFF"
+        assert ac.classify(req, resp(200, "{}"), resp(500, "{}"))[0] == "DIFF"
+
+
+def test_an_empty_request_list_exits_2(monkeypatch, capsys):
+    monkeypatch.setattr(ac, "build_requests", lambda params: [])
+    assert ac.main(["--only", "bitmap"]) == 2
+    assert "no requests" in capsys.readouterr().err
 
 
 def test_args_override_defaults_and_exit_code_follows_diffs(monkeypatch, capsys):
