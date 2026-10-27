@@ -162,7 +162,7 @@ Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 > [!NOTE]
 > With the `brc20` module, the BRC2.0 engine (brc20-prog) runs inside `opi-indexer`; there is no separate server to install. Set `BRC20_PROG_DB_PATH` in `.env` to a writable directory. `opi-indexer run` serves the engine's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL` (default `127.0.0.1:18545`).
 >
-> The engine gets its Bitcoin data in process, through the indexer: from the Bitcoin RPC cache when `BITCOIN_RPC_CACHE_ENABLED=true`, and in full mode from bitcoind at `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or `BITCOIN_RPC_COOKIE` (re-read on every request). Full mode requires one of the two credentials. Light mode needs no bitcoind and no Bitcoin credentials. The network follows `NETWORK_TYPE`. An `.env` that still sets `BITCOIN_RPC_PROXY_SERVER_ENABLED` or `BITCOIN_RPC_PROXY_SERVER_ADDR` has them ignored; remove them.
+> The engine gets its Bitcoin data in process, through the indexer: from the Bitcoin RPC cache when `BITCOIN_RPC_CACHE_ENABLED=true`, and in full mode from bitcoind at `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or `BITCOIN_RPC_COOKIE` (re-read on every request). Full mode requires one of the two credentials. Light mode needs no bitcoind and no Bitcoin credentials, and requires `BITCOIN_RPC_CACHE_ENABLED=true`. The network follows `NETWORK_TYPE`. For keys left over from older setups, see the BRC2.0 engine section of the README.
 >
 > The public JSON-RPC takes no credentials; keep it on loopback or firewall it. A panic in brc20 or the engine stops the process, so run `opi-indexer` under systemd (or another supervisor) that restarts it.
 >

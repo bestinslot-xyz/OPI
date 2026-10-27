@@ -166,8 +166,14 @@ pub struct Brc20Database {
 }
 
 /// A lazily connecting Postgres pool with brc20's database settings. A pool's
-/// connections belong to the runtime that first uses them.
-pub fn connect_pool(config: &Brc20IndexerConfig, max_connections: u32) -> Pool<Postgres> {
+/// connections belong to the runtime that first uses them. `acquire_timeout`
+/// bounds how long a caller waits for a connection; `None` keeps sqlx's
+/// default.
+pub fn connect_pool(
+    config: &Brc20IndexerConfig,
+    max_connections: u32,
+    acquire_timeout: Option<Duration>,
+) -> Pool<Postgres> {
     let ssl_mode = if config.db_ssl {
         "?sslmode=require"
     } else {
@@ -193,9 +199,13 @@ pub fn connect_pool(config: &Brc20IndexerConfig, max_connections: u32) -> Pool<P
             ssl_mode
         )
     );
-    PgPoolOptions::new()
+    let mut options = PgPoolOptions::new()
         .max_connections(max_connections)
-        .acquire_slow_threshold(Duration::from_secs(10))
+        .acquire_slow_threshold(Duration::from_secs(10));
+    if let Some(acquire_timeout) = acquire_timeout {
+        options = options.acquire_timeout(acquire_timeout);
+    }
+    options
         .connect_lazy(&format!(
             "postgres://{}:{}@{}:{}/{}{}",
             config
@@ -222,7 +232,7 @@ pub fn connect_pool(config: &Brc20IndexerConfig, max_connections: u32) -> Pool<P
 
 impl Brc20Database {
     pub fn new(config: &Brc20IndexerConfig) -> Self {
-        let client = connect_pool(config, 5);
+        let client = connect_pool(config, 5, None);
         let bitcoin_rpc_cache = BitcoinRpcCache::new(
             client.clone(),
             BitcoinRpcBuffer::default(),

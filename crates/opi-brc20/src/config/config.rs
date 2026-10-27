@@ -363,10 +363,21 @@ fn apply_engine_settings(
     Ok(base)
 }
 
-/// Checks that a full-mode indexer can reach bitcoind: it needs
-/// `BITCOIN_RPC_COOKIE`, or `BITCOIN_RPC_USER` with `BITCOIN_RPC_PASSWD`. A
-/// light client never calls bitcoind and needs neither.
-fn check_bitcoin_rpc_auth(light_client_mode: bool, auth: &BitcoinRpcAuth) -> anyhow::Result<()> {
+/// Checks the settings the engine's Bitcoin lookups depend on. A full-mode
+/// indexer reaches bitcoind and needs `BITCOIN_RPC_COOKIE`, or
+/// `BITCOIN_RPC_USER` with `BITCOIN_RPC_PASSWD`. A light client never calls
+/// bitcoind, needs neither, and answers lookups from the Bitcoin RPC cache, so
+/// it needs `BITCOIN_RPC_CACHE_ENABLED=true`.
+fn check_bitcoin_rpc_settings(
+    light_client_mode: bool,
+    cache_enabled: bool,
+    auth: &BitcoinRpcAuth,
+) -> anyhow::Result<()> {
+    if light_client_mode && !cache_enabled {
+        anyhow::bail!(
+            "light mode answers Bitcoin lookups from the Bitcoin RPC cache; set {BITCOIN_RPC_CACHE_ENABLED_KEY}=true"
+        );
+    }
     if !light_client_mode && *auth == BitcoinRpcAuth::None {
         anyhow::bail!(
             "full mode reaches bitcoind; set {BITCOIN_RPC_COOKIE_KEY} or {BITCOIN_RPC_USER_KEY} and {BITCOIN_RPC_PASSWD_KEY}"
@@ -429,9 +440,14 @@ impl Brc20IndexerConfig {
     /// Builds the embedded engine's config from brc20-prog's own environment
     /// variables plus the settings opi-indexer owns (see `apply_engine_settings`).
     /// Errors when `BRC20_PROG_DB_PATH` is not set, and in full mode without
-    /// Bitcoin RPC credentials (see `check_bitcoin_rpc_auth`).
+    /// Bitcoin RPC credentials, and in light mode without the Bitcoin RPC cache
+    /// (see `check_bitcoin_rpc_settings`).
     pub fn brc20_prog_config(&self) -> anyhow::Result<Brc20ProgConfig> {
-        check_bitcoin_rpc_auth(self.light_client_mode, &self.bitcoin_rpc_auth)?;
+        check_bitcoin_rpc_settings(
+            self.light_client_mode,
+            self.bitcoin_rpc_cache_enabled,
+            &self.bitcoin_rpc_auth,
+        )?;
         apply_engine_settings(
             Brc20ProgConfig::from_env(),
             |key| std::env::var(key).ok(),
@@ -627,7 +643,7 @@ mod tests {
 
     #[test]
     fn full_mode_needs_bitcoin_rpc_credentials() {
-        let err = check_bitcoin_rpc_auth(false, &BitcoinRpcAuth::None)
+        let err = check_bitcoin_rpc_settings(false, true, &BitcoinRpcAuth::None)
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -638,7 +654,10 @@ mod tests {
             BitcoinRpcAuth::UserPass("u".into(), "p".into()),
             BitcoinRpcAuth::Cookie(PathBuf::from("/btc/.cookie")),
         ] {
-            assert!(check_bitcoin_rpc_auth(false, &auth).is_ok(), "{auth:?}");
+            assert!(
+                check_bitcoin_rpc_settings(false, true, &auth).is_ok(),
+                "{auth:?}"
+            );
         }
     }
 
@@ -649,14 +668,33 @@ mod tests {
             BitcoinRpcAuth::UserPass("u".into(), "p".into()),
             BitcoinRpcAuth::Cookie(PathBuf::from("/btc/.cookie")),
         ] {
-            assert!(check_bitcoin_rpc_auth(true, &auth).is_ok(), "{auth:?}");
+            assert!(
+                check_bitcoin_rpc_settings(true, true, &auth).is_ok(),
+                "{auth:?}"
+            );
         }
+    }
+
+    #[test]
+    fn light_mode_needs_the_bitcoin_rpc_cache() {
+        let err = check_bitcoin_rpc_settings(true, false, &BitcoinRpcAuth::None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "light mode answers Bitcoin lookups from the Bitcoin RPC cache; set BITCOIN_RPC_CACHE_ENABLED=true"
+        );
+        assert!(check_bitcoin_rpc_settings(true, true, &BitcoinRpcAuth::None).is_ok());
+        assert!(
+            check_bitcoin_rpc_settings(false, false, &BitcoinRpcAuth::Cookie("/c".into())).is_ok()
+        );
     }
 
     #[test]
     fn the_engine_config_checks_the_credentials_first() {
         let config = Brc20IndexerConfig {
             light_client_mode: false,
+            bitcoin_rpc_cache_enabled: true,
             bitcoin_rpc_auth: BitcoinRpcAuth::None,
             ..Default::default()
         };

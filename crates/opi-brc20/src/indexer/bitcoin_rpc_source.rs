@@ -41,10 +41,13 @@ use crate::{
 };
 
 /// How long one request to bitcoind may take.
-const BITCOIND_TIMEOUT: Duration = Duration::from_secs(30);
+const BITCOIND_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long a lookup may take, cache reads and writes included.
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(60);
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a lookup waits for a connection from the source's Postgres pool.
+const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// bitcoind's error code for an unknown transaction or block
 /// (RPC_INVALID_ADDRESS_OR_KEY).
@@ -78,13 +81,14 @@ impl BitcoinRpcBufferSlot {
 /// is on. In full mode a miss goes to bitcoind, authenticating with
 /// `bitcoin_rpc_auth`. A success, or an unknown transaction, answered to a
 /// lookup from the brc20 indexing thread is buffered under the next block's
-/// height; every other answer is returned unbuffered. In light mode a miss is an error, since a light client has no
-/// bitcoind. `network()` asks bitcoind's `getblockchaininfo` past the cache in
-/// full mode and reports `NETWORK_TYPE` in light mode.
+/// height; every other answer is returned unbuffered. In light mode a miss is
+/// an error, since a light client has no bitcoind. `network()` asks bitcoind's
+/// `getblockchaininfo` past the cache in full mode and reports `NETWORK_TYPE`
+/// in light mode.
 ///
 /// Each lookup runs on a worker on the source's own runtime, with its own
 /// Postgres pool and HTTP client, while the calling thread waits on a std
-/// channel for at most 60 seconds. Lookups therefore complete from any thread
+/// channel for at most 20 seconds. Lookups therefore complete from any thread
 /// outside that runtime, including a current-thread runtime's, and never take
 /// the brc20 database lock.
 pub struct CachedBitcoinRpc {
@@ -113,7 +117,7 @@ impl CachedBitcoinRpc {
             // The pool and the client belong to the source's runtime.
             let _context = handle.enter();
             Arc::new(Worker {
-                pool: connect_pool(config, 2),
+                pool: connect_pool(config, 2, Some(POOL_ACQUIRE_TIMEOUT)),
                 slot: slot.clone(),
                 client: Client::builder().timeout(BITCOIND_TIMEOUT).build()?,
                 bitcoin_rpc_url: config.bitcoin_rpc_url.clone(),

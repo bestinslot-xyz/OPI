@@ -131,26 +131,27 @@ makes the engine fail to open. The engine reads its remaining settings from
 brc20-prog's own variables (`EVM_CALL_GAS_LIMIT`, request limits; see
 brc20-prog's configuration docs).
 
-The engine gets its Bitcoin data in process, through the indexer, with no
-Bitcoin RPC proxy and no extra port. A lookup reads the Bitcoin RPC cache first
+The engine gets its Bitcoin data in process, through the indexer. A lookup reads the Bitcoin RPC cache first
 when `BITCOIN_RPC_CACHE_ENABLED=true` (an in-memory buffer, then the Postgres
 table; the code default is `false`, `.env_sample` sets `true`). In full mode a
 miss goes to bitcoind at `BITCOIN_RPC_URL`, authenticated with
 `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or with `BITCOIN_RPC_COOKIE`, which
 is re-read on every request. Full mode requires one of the two credentials; the
 config check fails otherwise. Light mode needs no bitcoind and no Bitcoin
-credentials: it answers from the cache alone, and the network comes from
-`NETWORK_TYPE`.
+credentials: it answers from the cache alone, so it requires
+`BITCOIN_RPC_CACHE_ENABLED=true` (the config check fails otherwise), and the
+network comes from `NETWORK_TYPE`.
 
 The cache stores successful answers and `getrawtransaction` "not found" (-5)
 answers. Only the indexer's own lookups write it; public `eth_call`s read it. A
-lookup gives up after 60 seconds, and the engine retries a failed lookup 5 times
+lookup gives up after 20 seconds (a request to bitcoind after 15, a wait for a
+Postgres connection after 5), and the engine retries a failed lookup 5 times
 before it panics, which stops the process (see below).
 
-The network and chain id follow `NETWORK_TYPE`. brc20-prog's own Bitcoin
-variables (`BITCOIN_RPC_URL`, `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD` and
-`BITCOIN_RPC_NETWORK` as brc20-prog reads them) are not used for Bitcoin data.
-An `.env` that still sets `BITCOIN_RPC_PROXY_SERVER_ENABLED` or
+The network and chain id follow `NETWORK_TYPE`. brc20-prog's own
+`BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_NETWORK` have no effect;
+`BITCOIN_RPC_URL` and `BITCOIN_RPC_USER` are opi-indexer's settings, as
+described above. An `.env` that still sets `BITCOIN_RPC_PROXY_SERVER_ENABLED` or
 `BITCOIN_RPC_PROXY_SERVER_ADDR` has them ignored; remove them.
 
 A panic on the brc20 thread or in the engine's public JSON-RPC server stops the
