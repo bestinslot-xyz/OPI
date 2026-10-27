@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 
 use super::{
     bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer},
-    block_time, evm_addresses,
+    block_time, evm_addresses, prog_balances,
 };
 use crate::{
     config::{
@@ -45,6 +45,9 @@ lazy_static! {
         "brc20_unused_txes",
         "brc20_current_balances",
         "brc20_logs",
+        "brc20_prog_tickers",
+        "brc20_prog_current_balances",
+        "brc20_prog_historical_balances",
     ];
 }
 
@@ -306,6 +309,10 @@ impl Brc20Database {
         .await
         .map_err(|error| format!("evm_addresses: {error}"))?;
 
+        if prog_balances::create_if_missing(&self.client).await? {
+            tracing::info!("Created the BRC2.0 balance tables; they fill before indexing resumes");
+        }
+
         self.fetch_current_event_id().await?;
 
         let start_time = Instant::now();
@@ -562,14 +569,20 @@ impl Brc20Database {
         }
     }
 
+    /// Stores the block's hash, time and cumulative hashes, and in the same
+    /// transaction the BRC2.0 balance changes of `prog_balance_events`, the
+    /// block's engine logs (see `prog_balances`).
     pub async fn set_block_hashes(
         &mut self,
         block_height: i32,
         block_hash: &str,
         block_traces_hash: &str,
         block_time: Option<i64>,
+        prog_balance_events: &[prog_balances::BalanceEvent],
     ) -> Result<(), Box<dyn Error>> {
         let mut tx = self.client.begin().await?;
+
+        prog_balances::write_block(&mut tx, block_height, prog_balance_events).await?;
 
         tracing::debug!(
             "Setting block hash for height {}: {}",
@@ -1106,6 +1119,8 @@ impl Brc20Database {
             .bind(block_height)
             .execute(&mut *tx)
             .await?;
+
+        prog_balances::reorg(&mut tx, block_height).await?;
 
         tracing::info!("Starting reorg on extra tables");
 

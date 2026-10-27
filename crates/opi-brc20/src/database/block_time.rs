@@ -250,11 +250,11 @@ mod tests {
         with_database("write", |name| async move {
             let mut database = database(&name, false).await;
             database
-                .set_block_hashes(10, "h10", "", Some(1_700_000_010))
+                .set_block_hashes(10, "h10", "", Some(1_700_000_010), &[])
                 .await
                 .unwrap();
             database
-                .set_block_hashes(11, "h11", "", None)
+                .set_block_hashes(11, "h11", "", None, &[])
                 .await
                 .unwrap();
             assert_eq!(
@@ -311,7 +311,10 @@ mod tests {
     async fn light_mode_without_a_time_leaves_null() {
         with_database("light", |name| async move {
             let mut database = database(&name, true).await;
-            database.set_block_hashes(7, "h7", "", None).await.unwrap();
+            database
+                .set_block_hashes(7, "h7", "", None, &[])
+                .await
+                .unwrap();
             assert_eq!(times(&database).await, vec![(7, None)]);
         })
         .await;

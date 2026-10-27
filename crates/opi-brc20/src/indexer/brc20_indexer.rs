@@ -1,6 +1,6 @@
 use std::{cmp::min, error::Error, sync::Arc};
 
-use brc20_prog::{Brc20Prog, Brc20ProgApiServer};
+use brc20_prog::{Brc20Prog, Brc20ProgApiServer, Brc20ProgConfig};
 use opi_core::BlockSource;
 use versions::{Requirement, Versioning};
 
@@ -19,7 +19,7 @@ use crate::{
         TICKER_KEY,
     },
     database::{
-        get_brc20_database,
+        get_brc20_database, prog_balances,
         timer::{start_timer, stop_timer},
     },
     indexer::{
@@ -203,6 +203,8 @@ impl Brc20Indexer {
             .into());
         }
 
+        self.fill_prog_balances().await?;
+
         let brc20_prog_block_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
 
         self.brc20_prog
@@ -228,6 +230,48 @@ impl Brc20Indexer {
         }
 
         Ok(())
+    }
+
+    /// Fills the BRC2.0 balance tables from the engine's logs when they are
+    /// marked for filling, up to the block both brc20 and the engine hold.
+    async fn fill_prog_balances(&self) -> Result<(), Box<dyn Error>> {
+        let (pool, brc20_height) = {
+            let database = get_brc20_database();
+            let database = database.lock().await;
+            (
+                database.client.clone(),
+                database.get_current_block_height().await?,
+            )
+        };
+        let prog_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
+        prog_balances::fill(
+            &pool,
+            &self.brc20_prog,
+            self.config.first_brc20_prog_phase_one_height,
+            brc20_height.min(prog_height),
+            Brc20ProgConfig::from_env().get_logs_max_blocks,
+            prog_balances::FILL_BLOCKS,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The BRC2.0 balance events of block `block_height`, read from the engine
+    /// once it holds the block.
+    async fn prog_balance_events(
+        &self,
+        block_height: i32,
+    ) -> Result<Vec<prog_balances::BalanceEvent>, Box<dyn Error>> {
+        if block_height < self.config.first_brc20_prog_phase_one_height {
+            return Ok(Vec::new());
+        }
+        Ok(
+            prog_balances::balance_events(&self.brc20_prog, block_height, block_height)
+                .await?
+                .into_iter()
+                .flat_map(|(_, events)| events)
+                .collect(),
+        )
     }
 
     pub async fn regenerate_and_validate_trace_hashes(&mut self) -> Result<(), Box<dyn Error>> {
@@ -535,6 +579,8 @@ impl Brc20Indexer {
             };
             stop_timer(&trace_hash_timer).await;
 
+            let prog_balance_events = self.prog_balance_events(next_block).await?;
+
             let set_block_hashes_timer = start_timer(SPAN, "set_block_hashes", next_block);
             get_brc20_database()
                 .lock()
@@ -544,6 +590,7 @@ impl Brc20Indexer {
                     &block_hash,
                     block_traces_hash.as_str(),
                     (block_time != 0).then_some(block_time),
+                    &prog_balance_events,
                 )
                 .await?;
             stop_timer(&set_block_hashes_timer).await;
@@ -721,6 +768,8 @@ impl Brc20Indexer {
         };
         stop_timer(&trace_hash_timer).await;
 
+        let prog_balance_events = self.prog_balance_events(next_block).await?;
+
         let set_block_hashes_timer = start_timer(SPAN, "set_block_hashes", next_block);
         get_brc20_database()
             .lock()
@@ -730,6 +779,7 @@ impl Brc20Indexer {
                 block_hash,
                 block_traces_hash.as_str(),
                 (block_time != 0).then_some(block_time),
+                &prog_balance_events,
             )
             .await?;
         stop_timer(&set_block_hashes_timer).await;
