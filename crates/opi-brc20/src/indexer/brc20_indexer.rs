@@ -16,7 +16,7 @@ use crate::{
         OPERATION_KEY, OPERATION_MINT, OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
         PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20,
         PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY, SELF_MINT_KEY,
-        TICKER_KEY, get_startup_wait_secs,
+        TICKER_KEY,
     },
     database::{
         get_brc20_database,
@@ -24,7 +24,7 @@ use crate::{
     },
     indexer::{
         EventGenerator, EventProcessor,
-        brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
+        brc20_prog_btc_proxy_server::start_bitcoin_proxy_server,
         brc20_prog_client::retrieve_brc20_prog_traces_hash,
         brc20_reporter::Brc20Reporter,
         brc20_swap_refund::Brc20SwapRefund,
@@ -101,7 +101,7 @@ impl Brc20Indexer {
             parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
         );
 
-        // Wait for the servers to start
+        // The proxy listens once the start returns.
         if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
             let services = ServiceRuntime::new("brc20-services")?;
             let buffer = get_brc20_database()
@@ -110,18 +110,8 @@ impl Brc20Indexer {
                 .bitcoin_rpc_cache
                 .buffer()
                 .clone();
-            services
-                .handle()
-                .spawn(run_bitcoin_proxy_server(self.config.clone(), buffer));
+            start_bitcoin_proxy_server(&self.config, buffer, &services.handle())?;
             self.services = Some(services);
-
-            let wait_seconds = get_startup_wait_secs();
-            tracing::info!(
-                "Waiting for the server to start for {} seconds...",
-                wait_seconds
-            );
-            tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
-            tracing::debug!("Continuing initialization...");
         }
 
         self.reorg_to_last_synced_block_height().await?; // Ensure no residue before proceeding

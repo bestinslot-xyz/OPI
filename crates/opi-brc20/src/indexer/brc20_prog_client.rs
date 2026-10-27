@@ -189,20 +189,16 @@ mod tests {
             database::{
                 BitcoinRpcResultRecord, Brc20Database, get_brc20_database, replace_brc20_database,
             },
-            indexer::brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
+            indexer::brc20_prog_btc_proxy_server::start_bitcoin_proxy_server,
             service_runtime::ServiceRuntime,
         };
 
-        let proxy_addr = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().to_string()
-        };
         let config = Brc20IndexerConfig {
             bitcoin_rpc_url: spawn_bitcoin_rpc_stub(),
             network_type_string: "regtest".to_string(),
             light_client_mode: false,
             bitcoin_rpc_cache_enabled: true,
-            brc20_prog_bitcoin_rpc_proxy_server_addr: proxy_addr.clone(),
+            brc20_prog_bitcoin_rpc_proxy_server_addr: "127.0.0.1:0".to_string(),
             ..Default::default()
         };
 
@@ -228,12 +224,10 @@ mod tests {
             );
         }
 
+        // The proxy listens once the start returns.
         let services = ServiceRuntime::new("brc20-test-services").unwrap();
+        let proxy_addr = start_bitcoin_proxy_server(&config, buffer, &services.handle()).unwrap();
         let engine = TestEngine::open_with(|| format!("http://{proxy_addr}"));
-        services
-            .handle()
-            .spawn(run_bitcoin_proxy_server(config, buffer));
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         engine
             .prog

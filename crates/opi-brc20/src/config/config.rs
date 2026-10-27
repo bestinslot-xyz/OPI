@@ -1,6 +1,7 @@
+use anyhow::Context;
 use bitcoin::network::Network;
 use brc20_prog::Brc20ProgConfig;
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 lazy_static::lazy_static! {
     pub static ref FIRST_INSCRIPTION_HEIGHTS: HashMap<Network, i32> = {
@@ -162,9 +163,6 @@ pub const BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18547";
 pub const BITCOIN_RPC_URL_KEY: &str = "BITCOIN_RPC_URL";
 pub const BITCOIN_RPC_URL_DEFAULT: &str = "http://localhost:38332";
 
-pub const STARTUP_WAIT_SECONDS_KEY: &str = "STARTUP_WAIT_SECONDS";
-pub const STARTUP_WAIT_SECONDS_DEFAULT: u64 = 1;
-
 pub const SAVE_LOGS_KEY: &str = "SAVE_LOGS";
 pub const SAVE_LOGS_DEFAULT: &str = "true";
 
@@ -235,13 +233,6 @@ pub const OPI_API_URL: &str = match option_env!("OPI_API_URL") {
     None => "https://api.opi.network",
 };
 
-pub fn get_startup_wait_secs() -> u64 {
-    std::env::var(STARTUP_WAIT_SECONDS_KEY)
-        .unwrap_or_else(|_| STARTUP_WAIT_SECONDS_DEFAULT.to_string())
-        .parse::<u64>()
-        .unwrap_or(STARTUP_WAIT_SECONDS_DEFAULT)
-}
-
 fn get_bitcoin_network_type(network_type: &str) -> Network {
     match network_type {
         "mainnet" => Network::Bitcoin,
@@ -257,6 +248,74 @@ pub const BRC20_PROG_DB_PATH_KEY: &str = "BRC20_PROG_DB_PATH";
 pub const BRC20_PROG_RPC_SERVER_ENABLED_KEY: &str = "BRC20_PROG_RPC_SERVER_ENABLED";
 pub const BITCOIN_RPC_USER_KEY: &str = "BITCOIN_RPC_USER";
 pub const BITCOIN_RPC_PASSWD_KEY: &str = "BITCOIN_RPC_PASSWD";
+pub const BITCOIN_RPC_COOKIE_KEY: &str = "BITCOIN_RPC_COOKIE";
+
+/// How the Bitcoin RPC proxy authenticates to bitcoind.
+#[derive(Clone, PartialEq, Eq)]
+pub enum BitcoinRpcAuth {
+    UserPass(String, String),
+    /// bitcoind's cookie file, read on every request since bitcoind rewrites
+    /// it on restart.
+    Cookie(PathBuf),
+    /// No credentials, for a bitcoind (or light-client host) that needs none.
+    None,
+}
+
+impl std::fmt::Debug for BitcoinRpcAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BitcoinRpcAuth::UserPass(user, _) => write!(f, "UserPass({user:?}, \"***\")"),
+            BitcoinRpcAuth::Cookie(path) => write!(f, "Cookie({path:?})"),
+            BitcoinRpcAuth::None => write!(f, "None"),
+        }
+    }
+}
+
+impl BitcoinRpcAuth {
+    /// Parses `BITCOIN_RPC_COOKIE`, or `BITCOIN_RPC_USER` with
+    /// `BITCOIN_RPC_PASSWD`, by opi-indexer's rules; neither set is `None`.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        match (
+            get(BITCOIN_RPC_COOKIE_KEY).filter(|value| !value.is_empty()),
+            get(BITCOIN_RPC_USER_KEY).filter(|value| !value.is_empty()),
+            get(BITCOIN_RPC_PASSWD_KEY),
+        ) {
+            (Some(cookie), None, _) => Ok(BitcoinRpcAuth::Cookie(PathBuf::from(cookie))),
+            (None, Some(user), Some(passwd)) => Ok(BitcoinRpcAuth::UserPass(user, passwd)),
+            (None, Some(_), None) => {
+                anyhow::bail!("{BITCOIN_RPC_USER_KEY} is set without {BITCOIN_RPC_PASSWD_KEY}")
+            }
+            (Some(_), Some(_), _) => anyhow::bail!(
+                "set either {BITCOIN_RPC_COOKIE_KEY} or {BITCOIN_RPC_USER_KEY}, not both"
+            ),
+            (None, None, _) => Ok(BitcoinRpcAuth::None),
+        }
+    }
+
+    /// Parses the process environment (see `from_lookup`).
+    pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    /// The user and password to present now, reading the cookie file for
+    /// cookie auth; `None` presents no credentials.
+    pub async fn credentials(&self) -> anyhow::Result<Option<(String, String)>> {
+        match self {
+            BitcoinRpcAuth::UserPass(user, pass) => Ok(Some((user.clone(), pass.clone()))),
+            BitcoinRpcAuth::Cookie(path) => {
+                let cookie = tokio::fs::read_to_string(path)
+                    .await
+                    .with_context(|| format!("reading cookie file {}", path.display()))?;
+                let (user, pass) = cookie
+                    .trim_end()
+                    .split_once(':')
+                    .with_context(|| format!("malformed cookie file {}", path.display()))?;
+                Ok(Some((user.into(), pass.into())))
+            }
+            BitcoinRpcAuth::None => Ok(None),
+        }
+    }
+}
 
 /// Chain id brc20-prog uses on mainnet ("BRC20" in hex).
 const BRC20_PROG_CHAIN_ID_MAINNET: u64 = 0x4252433230;
@@ -276,9 +335,10 @@ fn parse_rpc_server_enabled(value: Option<&str>) -> bool {
 /// - `bitcoin_rpc_network` and `chain_id` follow `network_type` (the `NETWORK_TYPE`
 ///   value): `mainnet` maps to `bitcoin` and the mainnet chain id, every other
 ///   network keeps its name and takes the testnets chain id.
-/// - `bitcoin_rpc_url` is the Bitcoin RPC proxy when `proxy_addr` is set (no
-///   credentials), otherwise `bitcoin_rpc_url` with `BITCOIN_RPC_USER` and
-///   `BITCOIN_RPC_PASSWD`.
+/// - `bitcoin_rpc_url` is the Bitcoin RPC proxy when `proxy_addr` is set, with
+///   no credentials, since the proxy authenticates to bitcoind itself.
+///   Without the proxy it is `bitcoin_rpc_url`, and the engine needs
+///   `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`.
 fn apply_engine_settings(
     mut base: Brc20ProgConfig,
     get: impl Fn(&str) -> Option<String>,
@@ -367,6 +427,8 @@ pub struct Brc20IndexerConfig {
 
     pub bitcoin_rpc_cache_enabled: bool,
     pub bitcoin_rpc_url: String,
+    /// How the Bitcoin RPC proxy authenticates to bitcoind.
+    pub bitcoin_rpc_auth: BitcoinRpcAuth,
 
     pub height_limit: i32,
 }
@@ -484,6 +546,7 @@ impl Default for Brc20IndexerConfig {
             bitcoin_rpc_cache_enabled: std::env::var(BITCOIN_RPC_CACHE_ENABLED_KEY)
                 .unwrap_or_else(|_| BITCOIN_RPC_CACHE_ENABLED_DEFAULT.to_string())
                 == "true",
+            bitcoin_rpc_auth: BitcoinRpcAuth::from_env().unwrap_or_else(|e| panic!("{e}")),
 
             height_limit: std::env::var(HEIGHT_LIMIT_KEY)
                 .unwrap_or_else(|_| HEIGHT_LIMIT_DEFAULT.to_string())
@@ -627,6 +690,47 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn bitcoin_rpc_auth_follows_opi_indexer_rules() {
+        let auth = |pairs: &[(&str, &str)]| BitcoinRpcAuth::from_lookup(vars(pairs));
+        const COOKIE: (&str, &str) = (BITCOIN_RPC_COOKIE_KEY, "/btc/.cookie");
+        assert_eq!(
+            auth(&[COOKIE]).unwrap(),
+            BitcoinRpcAuth::Cookie(PathBuf::from("/btc/.cookie"))
+        );
+        assert_eq!(
+            auth(&[COOKIE, PASSWD]).unwrap(),
+            BitcoinRpcAuth::Cookie(PathBuf::from("/btc/.cookie"))
+        );
+        assert_eq!(
+            auth(&[USER, PASSWD]).unwrap(),
+            BitcoinRpcAuth::UserPass("u".into(), "p".into())
+        );
+        assert_eq!(
+            auth(&[USER, (BITCOIN_RPC_PASSWD_KEY, "")]).unwrap(),
+            BitcoinRpcAuth::UserPass("u".into(), String::new())
+        );
+        assert_eq!(auth(&[]).unwrap(), BitcoinRpcAuth::None);
+        assert_eq!(
+            auth(&[(BITCOIN_RPC_COOKIE_KEY, ""), (BITCOIN_RPC_USER_KEY, "")]).unwrap(),
+            BitcoinRpcAuth::None
+        );
+        assert_eq!(
+            auth(&[USER]).unwrap_err().to_string(),
+            "BITCOIN_RPC_USER is set without BITCOIN_RPC_PASSWD"
+        );
+        assert_eq!(
+            auth(&[COOKIE, USER, PASSWD]).unwrap_err().to_string(),
+            "set either BITCOIN_RPC_COOKIE or BITCOIN_RPC_USER, not both"
+        );
+    }
+
+    #[test]
+    fn bitcoin_rpc_auth_debug_hides_the_password() {
+        let auth = BitcoinRpcAuth::UserPass("u".into(), "secret".into());
+        assert!(!format!("{auth:?}").contains("secret"));
     }
 
     #[test]

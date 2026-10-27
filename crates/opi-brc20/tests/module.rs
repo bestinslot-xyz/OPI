@@ -234,6 +234,7 @@ fn config_has_no_prog_toggle() {
         brc20_prog_rpc_server_enabled: _,
         bitcoin_rpc_cache_enabled: _,
         bitcoin_rpc_url: _,
+        bitcoin_rpc_auth: _,
         height_limit: _,
     } = Brc20IndexerConfig::default();
 }

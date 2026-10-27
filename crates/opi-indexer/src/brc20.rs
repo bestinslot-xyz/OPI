@@ -11,7 +11,7 @@ use {
     anyhow::{Result, anyhow, bail},
     clap::{Args as ClapArgs, Subcommand},
     opi_brc20::{
-        config::Brc20IndexerConfig,
+        config::{BitcoinRpcAuth, Brc20IndexerConfig},
         database::{Brc20Database, get_brc20_database, set_brc20_database},
         indexer::Brc20Indexer,
     },
@@ -99,6 +99,9 @@ fn confirm(prompt: &str, yes: bool) -> bool {
 
 /// Runs a brc20 command to completion on its own runtime.
 pub fn run(args: Args) -> Result<()> {
+    // Checked first so that a bad combination is an error, not a panic in
+    // the config's default.
+    BitcoinRpcAuth::from_env()?;
     let config = Brc20IndexerConfig::default();
     if matches!(args.command, Command::Light) && !config.light_client_mode {
         bail!(
