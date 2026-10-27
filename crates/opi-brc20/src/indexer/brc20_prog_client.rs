@@ -30,6 +30,41 @@ pub(crate) mod test_engine {
 
     use brc20_prog::{Brc20Prog, Brc20ProgConfig};
 
+    /// The regtest result the stub gives for `method`.
+    pub(crate) fn bitcoin_rpc_stub_result(method: &str) -> serde_json::Value {
+        match method {
+            "getnetworkinfo" => serde_json::json!({
+                "version": 270000,
+                "subversion": "/Satoshi:27.0.0/",
+                "protocolversion": 70016,
+                "localservices": "0000000000000409",
+                "localrelay": true,
+                "timeoffset": 0,
+                "connections": 0,
+                "networkactive": true,
+                "networks": [],
+                "relayfee": 0.00001,
+                "incrementalfee": 0.00001,
+                "localaddresses": [],
+                "warnings": ""
+            }),
+            _ => serde_json::json!({
+                "chain": "regtest",
+                "blocks": 0,
+                "headers": 0,
+                "bestblockhash": "0".repeat(64),
+                "difficulty": 1.0,
+                "mediantime": 0,
+                "verificationprogress": 1.0,
+                "initialblockdownload": false,
+                "chainwork": "0".repeat(64),
+                "size_on_disk": 0,
+                "pruned": false,
+                "warnings": ""
+            }),
+        }
+    }
+
     /// Answers every Bitcoin RPC call with a regtest `getblockchaininfo`,
     /// which is all `brc20_initialise` asks of bitcoind. Returns the URL.
     pub(crate) fn spawn_bitcoin_rpc_stub() -> String {
@@ -57,37 +92,12 @@ pub(crate) mod test_engine {
                 .get("id")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            let result = match request.get("method").and_then(|method| method.as_str()) {
-                Some("getnetworkinfo") => serde_json::json!({
-                    "version": 270000,
-                    "subversion": "/Satoshi:27.0.0/",
-                    "protocolversion": 70016,
-                    "localservices": "0000000000000409",
-                    "localrelay": true,
-                    "timeoffset": 0,
-                    "connections": 0,
-                    "networkactive": true,
-                    "networks": [],
-                    "relayfee": 0.00001,
-                    "incrementalfee": 0.00001,
-                    "localaddresses": [],
-                    "warnings": ""
-                }),
-                _ => serde_json::json!({
-                    "chain": "regtest",
-                    "blocks": 0,
-                    "headers": 0,
-                    "bestblockhash": "0".repeat(64),
-                    "difficulty": 1.0,
-                    "mediantime": 0,
-                    "verificationprogress": 1.0,
-                    "initialblockdownload": false,
-                    "chainwork": "0".repeat(64),
-                    "size_on_disk": 0,
-                    "pruned": false,
-                    "warnings": ""
-                }),
-            };
+            let result = bitcoin_rpc_stub_result(
+                request
+                    .get("method")
+                    .and_then(|method| method.as_str())
+                    .unwrap_or_default(),
+            );
             let response =
                 serde_json::json!({ "result": result, "error": null, "id": id }).to_string();
             let mut stream = stream;
@@ -164,7 +174,7 @@ pub(crate) mod test_engine {
 #[cfg(test)]
 mod tests {
     use super::{
-        test_engine::{TestEngine, spawn_bitcoin_rpc_stub},
+        test_engine::{TestEngine, bitcoin_rpc_stub_result, spawn_bitcoin_rpc_stub},
         *,
     };
 
@@ -176,26 +186,53 @@ mod tests {
     async fn engine_initialises_through_a_proxy_on_the_service_runtime() {
         use crate::{
             config::Brc20IndexerConfig,
-            database::{Brc20Database, replace_brc20_database},
+            database::{
+                BitcoinRpcResultRecord, Brc20Database, get_brc20_database, replace_brc20_database,
+            },
             indexer::brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
             service_runtime::ServiceRuntime,
         };
 
-        replace_brc20_database(Brc20Database::new(&Brc20IndexerConfig::default())).await;
-        let services = ServiceRuntime::new("brc20-test-services").unwrap();
-        let stub_url = spawn_bitcoin_rpc_stub();
         let proxy_addr = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap().to_string()
         };
+        let config = Brc20IndexerConfig {
+            bitcoin_rpc_url: spawn_bitcoin_rpc_stub(),
+            network_type_string: "regtest".to_string(),
+            light_client_mode: false,
+            bitcoin_rpc_cache_enabled: true,
+            brc20_prog_bitcoin_rpc_proxy_server_addr: proxy_addr.clone(),
+            ..Default::default()
+        };
 
+        // The results sit in the buffer, as a light client's prefetch leaves
+        // them, so the proxy answers without reaching Postgres. The test holds
+        // brc20's database lock throughout, as the brc20 thread can while an
+        // engine call is in flight; the proxy must not need it.
+        replace_brc20_database(Brc20Database::new(&config)).await;
+        let database = get_brc20_database();
+        let held = database.lock().await;
+        let buffer = held.bitcoin_rpc_cache.buffer().clone();
+        for method in ["getblockchaininfo", "getnetworkinfo"] {
+            buffer.lock().unwrap().insert(
+                serde_json::json!({ "method": method, "params": [], "jsonrpc": "2.0" }),
+                BitcoinRpcResultRecord {
+                    method: method.to_string(),
+                    response: serde_json::json!({
+                        "result": bitcoin_rpc_stub_result(method),
+                        "error": null
+                    }),
+                    block_height: 1,
+                },
+            );
+        }
+
+        let services = ServiceRuntime::new("brc20-test-services").unwrap();
         let engine = TestEngine::open_with(|| format!("http://{proxy_addr}"));
-        services.handle().spawn(run_bitcoin_proxy_server(
-            stub_url,
-            false,
-            "regtest".to_string(),
-            proxy_addr,
-        ));
+        services
+            .handle()
+            .spawn(run_bitcoin_proxy_server(config, buffer));
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         engine

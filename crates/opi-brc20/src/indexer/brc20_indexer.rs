@@ -103,18 +103,16 @@ impl Brc20Indexer {
 
         // Wait for the servers to start
         if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
-            let bitcoin_rpc_proxy_addr_clone =
-                self.config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
-            let bitcoin_rpc_url_clone = self.config.bitcoin_rpc_url.clone();
-            let light_client_mode = self.config.light_client_mode;
-            let network_type_clone = self.config.network_type_string.clone();
             let services = ServiceRuntime::new("brc20-services")?;
-            services.handle().spawn(run_bitcoin_proxy_server(
-                bitcoin_rpc_url_clone,
-                light_client_mode,
-                network_type_clone,
-                bitcoin_rpc_proxy_addr_clone,
-            ));
+            let buffer = get_brc20_database()
+                .lock()
+                .await
+                .bitcoin_rpc_cache
+                .buffer()
+                .clone();
+            services
+                .handle()
+                .spawn(run_bitcoin_proxy_server(self.config.clone(), buffer));
             self.services = Some(services);
 
             let wait_seconds = get_startup_wait_secs();

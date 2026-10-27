@@ -18,6 +18,7 @@ use serde_json::json;
 use sqlx::{AssertSqlSafe, Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
+use super::bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache};
 use crate::{
     config::{
         Brc20IndexerConfig, EVENT_HASH_VERSION, EVENT_SEPARATOR, INDEXER_VERSION,
@@ -108,13 +109,6 @@ pub struct BalanceUpdateData {
     pub event_id: i64,
 }
 
-#[derive(Debug, Clone)]
-pub struct BitcoinRpcResultRecord {
-    pub method: String,
-    pub response: serde_json::Value,
-    pub block_height: i32,
-}
-
 static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
 
 pub fn get_brc20_database() -> Arc<Mutex<Brc20Database>> {
@@ -143,7 +137,7 @@ pub async fn replace_brc20_database(database: Brc20Database) {
 #[derive(Debug)]
 pub struct Brc20Database {
     pub client: Pool<Postgres>,
-    pub bitcoin_rpc_cache_enabled: bool,
+    pub bitcoin_rpc_cache: BitcoinRpcCache,
     pub network: Network,
     pub first_inscription_height: i32,
     pub transfer_validity_cache: HashMap<String, TransferValidity>,
@@ -156,7 +150,6 @@ pub struct Brc20Database {
     pub ticker_updates: HashMap<String, TickerUpdateData>,
     pub light_event_inserts: Vec<LightEventRecord>,
     pub event_inserts: Vec<EventRecord>,
-    pub bitcoin_rpc_inserts: HashMap<serde_json::Value, BitcoinRpcResultRecord>,
     pub log_timer_inserts: HashMap<i32, HashMap<String, Vec<u128>>>,
     pub block_event_strings: HashMap<i32, String>,
     pub balance_updates: Vec<BalanceUpdateData>,
@@ -165,65 +158,77 @@ pub struct Brc20Database {
     pub events_table: String,
 }
 
+/// A lazily connecting Postgres pool with brc20's database settings. A pool's
+/// connections belong to the runtime that first uses them.
+pub fn connect_pool(config: &Brc20IndexerConfig, max_connections: u32) -> Pool<Postgres> {
+    let ssl_mode = if config.db_ssl {
+        "?sslmode=require"
+    } else {
+        ""
+    };
+    tracing::info!(
+        "Connecting to database at {}",
+        &format!(
+            "postgres://{}:{}@{}:{}/{}{}",
+            config
+                .db_user
+                .replace("/", "%2F")
+                .replace(":", "%3A")
+                .replace("@", "%40"),
+            "**********",
+            config.db_host,
+            config.db_port,
+            config
+                .db_database
+                .replace("/", "%2F")
+                .replace(":", "%3A")
+                .replace("@", "%40"),
+            ssl_mode
+        )
+    );
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_slow_threshold(Duration::from_secs(10))
+        .connect_lazy(&format!(
+            "postgres://{}:{}@{}:{}/{}{}",
+            config
+                .db_user
+                .replace("/", "%2F")
+                .replace(":", "%3A")
+                .replace("@", "%40"),
+            config
+                .db_password
+                .replace("/", "%2F")
+                .replace(":", "%3A")
+                .replace("@", "%40"),
+            config.db_host,
+            config.db_port,
+            config
+                .db_database
+                .replace("/", "%2F")
+                .replace(":", "%3A")
+                .replace("@", "%40"),
+            ssl_mode
+        ))
+        .expect("Failed to connect to the database")
+}
+
 impl Brc20Database {
     pub fn new(config: &Brc20IndexerConfig) -> Self {
-        let ssl_mode = if config.db_ssl {
-            "?sslmode=require"
-        } else {
-            ""
-        };
-        tracing::info!(
-            "Connecting to database at {}",
-            &format!(
-                "postgres://{}:{}@{}:{}/{}{}",
-                config
-                    .db_user
-                    .replace("/", "%2F")
-                    .replace(":", "%3A")
-                    .replace("@", "%40"),
-                "**********",
-                config.db_host,
-                config.db_port,
-                config
-                    .db_database
-                    .replace("/", "%2F")
-                    .replace(":", "%3A")
-                    .replace("@", "%40"),
-                ssl_mode
-            )
+        let client = connect_pool(config, 5);
+        let bitcoin_rpc_cache = BitcoinRpcCache::new(
+            client.clone(),
+            BitcoinRpcBuffer::default(),
+            config.bitcoin_rpc_cache_enabled,
+            config.first_inscription_height,
         );
-        let client = PgPoolOptions::new()
-            .max_connections(5)
-            .acquire_slow_threshold(Duration::from_secs(10))
-            .connect_lazy(&format!(
-                "postgres://{}:{}@{}:{}/{}{}",
-                config
-                    .db_user
-                    .replace("/", "%2F")
-                    .replace(":", "%3A")
-                    .replace("@", "%40"),
-                config
-                    .db_password
-                    .replace("/", "%2F")
-                    .replace(":", "%3A")
-                    .replace("@", "%40"),
-                config.db_host,
-                config.db_port,
-                config
-                    .db_database
-                    .replace("/", "%2F")
-                    .replace(":", "%3A")
-                    .replace("@", "%40"),
-                ssl_mode
-            ))
-            .expect("Failed to connect to the database");
         Brc20Database {
             client,
             network: config.network_type,
             first_inscription_height: config.first_inscription_height,
             transfer_validity_cache: HashMap::new(),
             current_event_id: 0,
-            bitcoin_rpc_cache_enabled: config.bitcoin_rpc_cache_enabled,
+            bitcoin_rpc_cache,
             tickers: HashMap::new(),
             cached_events: HashMap::new(),
             balance_cache: HashMap::new(),
@@ -233,7 +238,6 @@ impl Brc20Database {
             event_inserts: Vec::new(),
             log_timer_inserts: HashMap::new(),
             light_event_inserts: Vec::new(),
-            bitcoin_rpc_inserts: HashMap::new(),
             balance_updates: Vec::new(),
             block_event_strings: HashMap::new(),
             light_client_mode: config.light_client_mode,
@@ -669,13 +673,7 @@ impl Brc20Database {
     }
 
     pub async fn get_current_block_height(&self) -> Result<i32, Box<dyn Error>> {
-        sqlx::query!(
-            "SELECT block_height FROM brc20_block_hashes ORDER BY block_height DESC LIMIT 1"
-        )
-        .fetch_one(&self.client)
-        .await
-        .map(|row| row.block_height)
-        .or_else(|_| Ok(self.first_inscription_height - 1)) // If no rows found, return first_brc20_height - 1
+        self.bitcoin_rpc_cache.get_current_block_height().await
     }
 
     pub async fn get_block_hash(&self, block_height: i32) -> Result<String, Box<dyn Error>> {
@@ -1371,66 +1369,7 @@ impl Brc20Database {
         &self,
         request: &Bytes,
     ) -> Result<Option<Bytes>, Box<dyn Error>> {
-        if !self.bitcoin_rpc_cache_enabled {
-            return Ok(None);
-        }
-
-        let Ok(request_json) = serde_json::from_slice::<serde_json::Value>(request) else {
-            return Err("Failed to parse Bitcoin RPC request as JSON".into());
-        };
-
-        let request_id = request_json.get("id");
-
-        tracing::debug!(
-            "Fetching Bitcoin RPC request from cache: {:?} with id {:?}",
-            request_json,
-            request_id
-        );
-
-        let Some(request_json_without_id) = request_json.as_object().map(|obj| {
-            let mut obj_clone = obj.clone();
-            obj_clone.remove("id");
-            serde_json::Value::Object(obj_clone)
-        }) else {
-            return Err("Bitcoin RPC request does not contain a valid JSON object".into());
-        };
-
-        let request_method = request_json_without_id
-            .get("method")
-            .and_then(|m| m.as_str())
-            .ok_or("Bitcoin RPC request does not contain a method")?;
-
-        let response_without_id = self
-            .bitcoin_rpc_inserts
-            .get(&request_json_without_id)
-            .map(|x| x.response.clone());
-
-        let response_without_id = if let Some(response_without_id) = response_without_id {
-            response_without_id
-        } else {
-            let Some(response_without_id) = sqlx::query!(
-            "SELECT response FROM brc20_bitcoin_rpc_result_cache WHERE method = $1 AND request = $2 LIMIT 1",
-            request_method,
-            request_json_without_id
-        )
-        .fetch_optional(&self.client)
-        .await? else {
-            return Ok(None);
-        };
-            response_without_id.response
-        };
-
-        let response_bytes = if let Some(id) = request_id {
-            let mut response_with_id = response_without_id.clone();
-            if let Some(obj) = response_with_id.as_object_mut() {
-                obj.insert("id".to_string(), id.clone());
-            }
-            serde_json::to_vec(&response_with_id)?
-        } else {
-            serde_json::to_vec(&response_without_id)?
-        };
-
-        Ok(Some(Bytes::from(response_bytes)))
+        self.bitcoin_rpc_cache.get(request).await
     }
 
     pub async fn cache_bitcoin_rpc_request(
@@ -1438,57 +1377,7 @@ impl Brc20Database {
         request: &[u8],
         response: &Bytes,
     ) -> Result<(), Box<dyn Error>> {
-        if !self.bitcoin_rpc_cache_enabled {
-            return Ok(());
-        }
-
-        let Ok(request_json) =
-            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(request))
-        else {
-            return Err("Failed to parse Bitcoin RPC request as JSON".into());
-        };
-
-        let request_json_without_id = request_json
-            .as_object()
-            .map(|obj| {
-                let mut obj_clone = obj.clone();
-                obj_clone.remove("id");
-                serde_json::Value::Object(obj_clone)
-            })
-            .unwrap_or(request_json);
-
-        let Some(request_method) = request_json_without_id
-            .get("method")
-            .and_then(|m| m.as_str())
-        else {
-            return Err("Bitcoin RPC request does not contain a method".into());
-        };
-
-        let Ok(response_json) =
-            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(response))
-        else {
-            return Err("Failed to parse Bitcoin RPC response as JSON".into());
-        };
-
-        let response_json_without_id = response_json
-            .as_object()
-            .map(|obj| {
-                let mut obj_clone = obj.clone();
-                obj_clone.remove("id");
-                serde_json::Value::Object(obj_clone)
-            })
-            .unwrap_or(response_json);
-
-        self.bitcoin_rpc_inserts.insert(
-            request_json_without_id.clone(),
-            BitcoinRpcResultRecord {
-                block_height: self.get_next_block_height().await?,
-                method: request_method.to_string(),
-                response: response_json_without_id,
-            },
-        );
-
-        Ok(())
+        self.bitcoin_rpc_cache.cache(request, response).await
     }
 
     pub async fn get_transfer_validity(
@@ -1823,17 +1712,23 @@ impl Brc20Database {
             self.light_event_inserts.clear();
         }
 
-        if !self.bitcoin_rpc_inserts.is_empty() {
-            let mut all_methods = Vec::new();
-            let mut all_requests = Vec::new();
-            let mut all_responses = Vec::new();
-            let mut all_block_heights = Vec::new();
-            for (request, result) in &self.bitcoin_rpc_inserts {
+        let bitcoin_rpc_buffer = self.bitcoin_rpc_cache.buffer().clone();
+        let mut all_methods = Vec::new();
+        let mut all_requests = Vec::new();
+        let mut all_responses = Vec::new();
+        let mut all_block_heights = Vec::new();
+        {
+            let inserts = bitcoin_rpc_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (request, result) in inserts.iter() {
                 all_requests.push(request.clone());
                 all_methods.push(result.method.clone());
                 all_responses.push(result.response.clone());
                 all_block_heights.push(result.block_height);
             }
+        }
+        if !all_requests.is_empty() {
             sqlx::query!(
                 "INSERT INTO brc20_bitcoin_rpc_result_cache (method, request, response, block_height) SELECT * FROM UNNEST
                 ($1::text[], $2::jsonb[], $3::jsonb[], $4::int4[])",
@@ -1845,7 +1740,12 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-            self.bitcoin_rpc_inserts.clear();
+            let mut inserts = bitcoin_rpc_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for request in &all_requests {
+                inserts.remove(request);
+            }
         }
 
         if !self.balance_updates.is_empty() {

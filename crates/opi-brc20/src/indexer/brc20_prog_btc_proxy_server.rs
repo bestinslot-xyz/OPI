@@ -9,14 +9,26 @@ use reqwest::Client;
 use std::net::SocketAddr;
 use std::sync::LazyLock;
 
-use crate::database::get_brc20_database;
+use crate::{
+    config::Brc20IndexerConfig,
+    database::{BitcoinRpcBuffer, BitcoinRpcCache, connect_pool},
+};
 
-pub async fn run_bitcoin_proxy_server(
-    bitcoin_rpc_url: String,
-    light_client_mode: bool,
-    network_type: String,
-    bitcoin_rpc_proxy_addr: String,
-) {
+/// Serves the Bitcoin RPC proxy. It must run on a runtime other than the one
+/// that awaits engine calls, which block on the proxy. The result cache is
+/// read and written through a Postgres pool this task opens, and through
+/// `buffer`, which holds the results of the current block.
+pub async fn run_bitcoin_proxy_server(config: Brc20IndexerConfig, buffer: BitcoinRpcBuffer) {
+    let bitcoin_rpc_url = config.bitcoin_rpc_url.clone();
+    let light_client_mode = config.light_client_mode;
+    let network_type = config.network_type_string.clone();
+    let bitcoin_rpc_proxy_addr = config.brc20_prog_bitcoin_rpc_proxy_server_addr.clone();
+    let cache = BitcoinRpcCache::new(
+        connect_pool(&config, 2),
+        buffer,
+        config.bitcoin_rpc_cache_enabled,
+        config.first_inscription_height,
+    );
     let app = Router::new().route(
         "/",
         any(move |method, uri, req| {
@@ -27,6 +39,7 @@ pub async fn run_bitcoin_proxy_server(
                 bitcoin_rpc_url.clone(),
                 light_client_mode,
                 network_type.clone(),
+                cache.clone(),
             )
         }),
     );
@@ -51,6 +64,7 @@ async fn proxy(
     bitcoin_rpc_url: String,
     light_client_mode: bool,
     network_type: String,
+    cache: BitcoinRpcCache,
 ) -> Response {
     static CLIENT: LazyLock<Client> = LazyLock::new(Client::new);
     if method != Method::POST {
@@ -65,12 +79,7 @@ async fn proxy(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    match get_brc20_database()
-        .lock()
-        .await
-        .get_bitcoin_rpc_request(&body)
-        .await
-    {
+    match cache.get(&body).await {
         Ok(Some(response)) => {
             let mut response = Response::new(response.into());
             *response.status_mut() = StatusCode::OK;
@@ -120,12 +129,7 @@ async fn proxy(
 
             #[allow(clippy::redundant_pattern_matching)]
             // keeps the database guard's drop order unchanged
-            if let Err(_) = get_brc20_database()
-                .lock()
-                .await
-                .cache_bitcoin_rpc_request(&body, &response_bytes)
-                .await
-            {
+            if let Err(_) = cache.cache(&body, &response_bytes).await {
                 tracing::error!("Failed to cache Bitcoin RPC request");
                 return StatusCode::BAD_GATEWAY.into_response();
             }

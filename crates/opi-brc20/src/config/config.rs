@@ -321,6 +321,7 @@ fn apply_engine_settings(
     Ok(base)
 }
 
+#[derive(Clone)]
 pub struct Brc20IndexerConfig {
     pub light_client_mode: bool,
     pub save_logs: bool,
