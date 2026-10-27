@@ -1,4 +1,4 @@
-//! The sns module's routes (api/routes/sns.js).
+//! The sns module's routes.
 //!
 //! Each handler follows its JavaScript counterpart line by line, as the
 //! brc20 routes do. The JS routes have no catch of their own, so any failed

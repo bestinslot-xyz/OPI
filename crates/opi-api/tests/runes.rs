@@ -1,5 +1,5 @@
-//! The runes routes over HTTP. Expected statuses and bodies are what
-//! api/routes/runes.js answers for the same requests.
+//! The runes routes over HTTP. Expected statuses and bodies are the
+//! answers of the Node API's runes routes (the API's wire contract).
 //!
 //! The first tests use a database double that answers only the latest block
 //! height, so every other query fails with the 500 answer. The live tests

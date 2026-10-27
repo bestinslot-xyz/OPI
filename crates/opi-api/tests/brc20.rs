@@ -1,5 +1,5 @@
-//! The brc20 routes over HTTP. Expected statuses and bodies are what
-//! api/routes/brc20.js answers for the same requests.
+//! The brc20 routes over HTTP. Expected statuses and bodies are the
+//! answers of the Node API's brc20 routes (the API's wire contract).
 //!
 //! The first tests use a database double that answers only the latest block
 //! height, so every other query fails with the 500 answer. The live tests

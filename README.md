@@ -4,25 +4,24 @@ Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** 
 OPI links upstream **ord 0.29.1** as a library and is built with **modularity** in mind.
 All modules in OPI have been built with **reorg protection**.
 
-OPI has modules for **BRC-20**, **Bitmap**, **SNS** and **Runes**, which run together in the `opi-indexer` binary and are served by one API in `api/`. Pull Requests are welcomed for other meta-protocols.
+OPI has modules for **BRC-20**, **Bitmap**, **SNS** and **Runes**, which run together in the `opi-indexer` binary and are served by one API, `opi-indexer api`. Pull Requests are welcomed for other meta-protocols.
 
 ## Repository layout
 
-One root Cargo workspace holds the Rust crates; the API is a Node app.
+One root Cargo workspace holds every crate, the indexer and the API included.
 
 | Path | Contents |
 | --- | --- |
-| `crates/opi-indexer` | the `opi-indexer` binary: `run`, `validate` and the `brc20` subcommands |
+| `crates/opi-indexer` | the `opi-indexer` binary: `run`, `api`, `validate` and the `brc20` subcommands |
 | `crates/opi-source` | ord as a journal source: gate proxy, stager and the journal of finalized blocks |
 | `crates/opi-runtime` | drives every module over the journal, one supervised task per module |
 | `crates/opi-core` | the types shared by the source, the runtime and the modules |
-| `crates/opi-brc20` | the BRC-20 and BRC2.0 module, its database schema and `reset_init.py` |
+| `crates/opi-brc20` | the BRC-20 and BRC2.0 module, its database schema |
 | `crates/opi-bitmap` | the Bitmap module |
 | `crates/opi-sns` | the SNS module |
 | `crates/opi-runes` | the Runes module |
-| `api/` | one Express API for every enabled module (`server.js`, `app.js`, `config.js`, `routes/`, `reset_init.py`) |
-| `tools/parity` | Python reference implementations and comparison tests for the modules |
-| `requirements.txt` | Python libraries for the `reset_init.py` scripts and `tools/parity` |
+| `crates/opi-api` | the HTTP API for every enabled module, served by `opi-indexer api` |
+| `tools/parity` | Python reference implementations and comparison tests for the modules, and the API comparison script |
 | `.env_sample` | every setting of `opi-indexer` and the API |
 
 ## Main Meta-Protocol Indexer / opi-indexer
@@ -169,8 +168,10 @@ point `BRC20_PROG_DB_PATH` at its database; the on-disk format is the same.
 ### Subcommands
 
 ```
-opi-indexer [run | validate | brc20 <COMMAND>]
+opi-indexer [run | api | validate | brc20 <COMMAND>]
 ```
+
+`api` serves the HTTP API (see [API](#api)); it needs neither the journal nor ord.
 
 `opi-indexer brc20` holds the BRC-20 light client and maintenance commands. It
 reads only brc20's environment, so it runs on light-client hosts.
@@ -400,7 +401,8 @@ another indexer is refused.
 
 ## API
 
-`api/` is one Express app that serves every module in `OPI_MODULES` on one port.
+`opi-indexer api` serves every module in `OPI_MODULES` on one port, from its own
+process. It reads the same `.env` as `run` and needs no Node.js.
 
 - **BRC-20** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances.
 - **Bitmap** exposes block hash and cumulative hash at a given block, hash of all bitmaps and inscription_id of a given bitmap.
@@ -414,11 +416,20 @@ lists the enabled modules; a module entry is `{"block_height":N}`, or
 A failing handler answers
 `500 {"error":"internal error","result":null}`.
 
+The server speaks HTTP/1 only and closes a connection that has not sent its
+request headers within 60 seconds. On SIGINT or SIGTERM it stops accepting
+connections, lets requests in flight finish for at most 10 seconds and exits.
+Responses carry no `X-Powered-By` and no `ETag`.
+
+The API only reads from the module databases, so give it a read-only database
+role (see `OPI_ENV_FILE` below for pointing it at its own env file).
+
 ### API configuration
 
-The API reads the repository root `.env` (the file `opi-indexer` reads), or the
-file `OPI_ENV_FILE` names (set it as a process environment variable, since it
-is read before the file is loaded); variables already in the environment win.
+`opi-indexer api` reads the `.env` of its working directory (or an ancestor), or
+the file `OPI_ENV_FILE` names (set it as a process environment variable, since
+it is read before the file is loaded); variables already in the environment
+win, and a missing file is ignored.
 
 | Variable | Meaning |
 | --- | --- |
@@ -433,11 +444,14 @@ is read before the file is loaded); variables already in the environment win.
 | `RATE_LIMIT_WINDOW_MS` | rate limit window in milliseconds, default `900000` |
 | `RATE_LIMIT_MAX` | requests per client per window, default `100` |
 
-`python3 api/reset_init.py` asks for these settings and writes them into the
-repository root `.env`, keeping the other settings in that file.
+The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*` and `RUNES_DB_*` variables are the same
+ones `opi-indexer run` reads (`USER` and `HOST` default to `postgres` and
+`localhost`, `PORT` to `5432`, `SSL` is on only when exactly `true`).
 
-Operators upgrading from the four per-module API processes (ports 8000-8003): set
-reverse proxies to `API_PORT`. Route paths are unchanged.
+Operators upgrading from the Node API or the four per-module API processes
+(ports 8000-8003): run `opi-indexer api` in their place and point reverse
+proxies at `API_PORT`. Route paths are unchanged, and Node.js is no longer
+needed.
 
 ## Setup
 
@@ -451,25 +465,9 @@ Modules use PostgreSQL as DB. Before running the indexer, setup a PostgreSQL DB 
 cargo build --release --locked -p opi-indexer
 ```
 
-**Install node modules**
-```bash
-cd api && npm install && cd ..
-```
-
-**Create a virtual environment and install python libraries**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip3 install -r requirements.txt
-```
-
 **Setup the .env file and DBs**
 
-Copy `.env_sample` to `.env` in the repository root and fill it in, as described in [Configuration](#configuration). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start, and `OPI_MODULES` selects the modules to run.
-
-`python3 api/reset_init.py` writes the API settings into the same `.env`.
-
-`crates/opi-brc20/reset_init.py` is an optional helper for brc20: run it from `crates/opi-brc20`. It asks for brc20's settings, writes them into the root `.env` (the file `opi-indexer` reads, keeping the other settings in it), and initialises the brc20 database from that file.
+Copy `.env_sample` to `.env` in the repository root and fill it in, as described in [Configuration](#configuration) and [API configuration](#api-configuration). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start, and `OPI_MODULES` selects the modules to run. `opi-indexer brc20 reset` deletes all BRC-20 data and starts fresh.
 
 # Run
 
@@ -483,18 +481,61 @@ target/release/opi-indexer run
 
 **API**
 ```bash
-cd api
-node server.js
+target/release/opi-indexer api
 ```
-
-`npm start` in `api/` runs the same command.
 
 # Tests
 
 ```bash
-cargo test --workspace
-cd api && npm test
+SQLX_OFFLINE=true cargo test --workspace
 ```
+
+The `opi-api` crate's database tests run when `OPI_API_TEST_DATABASE_URL`
+(brc20) and `OPI_API_TEST_BITMAP_URL`, `OPI_API_TEST_SNS_URL` and
+`OPI_API_TEST_RUNES_URL` name indexed databases, and are skipped otherwise.
+
+## Developer note: sqlx offline data
+
+`opi-api` and `opi-brc20` check their SQL at compile time with sqlx macros. The
+committed `.sqlx` directory of each crate lets `SQLX_OFFLINE=true cargo build`
+work without a database. After changing a query, regenerate that crate's data
+with `cargo sqlx prepare` (sqlx-cli 0.9) against a database that holds the
+schema, then verify it with `cargo sqlx prepare --check`. The `DATABASE_URL`
+needs an explicit user.
+
+For `opi-api`, build a throwaway database from the four schemas plus the three
+tables the API reads that no `db_init.sql` creates (`brc20_unused_tx_inscrs`,
+`brc20_extras_block_hashes` and `evm_addresses`), whose DDL goes in a local
+file `api_extra_tables.sql`:
+
+```sql
+CREATE TABLE public.brc20_unused_tx_inscrs (
+	id bigserial NOT NULL, inscription_id text NOT NULL, tick varchar(4) NOT NULL,
+	amount numeric(40) NOT NULL, current_holder_pkscript text NOT NULL,
+	current_holder_wallet text NULL, event_id int8 NOT NULL, block_height int4 NOT NULL,
+	CONSTRAINT brc20_unused_tx_inscrs_pk PRIMARY KEY (id));
+CREATE TABLE public.brc20_extras_block_hashes (
+	id bigserial NOT NULL, block_height int4 NOT NULL, block_hash text NOT NULL,
+	CONSTRAINT brc20_extras_block_hashes_pk PRIMARY KEY (id));
+CREATE TABLE public.evm_addresses (
+	evm_address text NOT NULL, btc_address text NOT NULL,
+	CONSTRAINT evm_addresses_pk PRIMARY KEY (evm_address));
+```
+
+```bash
+createdb -h /tmp opi_api_sqlx_prepare
+for f in crates/opi-brc20/src/database/sql/db_init.sql crates/opi-bitmap/src/db_init.sql \
+         crates/opi-sns/src/db_init.sql crates/opi-runes/src/db_init.sql api_extra_tables.sql; do
+  psql -h /tmp -d opi_api_sqlx_prepare -X -q -v ON_ERROR_STOP=1 -f "$f"
+done
+cd crates/opi-api
+export DATABASE_URL='postgres://<user>@localhost/opi_api_sqlx_prepare?host=/tmp'
+cargo sqlx prepare
+cargo sqlx prepare --check
+cd ../.. && dropdb -h /tmp opi_api_sqlx_prepare
+```
+
+For `opi-brc20`, create a database from `crates/opi-brc20/src/database/sql/db_init.sql` the same way and run `cargo sqlx prepare` and `cargo sqlx prepare --check` in `crates/opi-brc20`.
 
 The parity tests in `tools/parity/tests` compare the modules with the Python reference implementations. They need a local Postgres:
 
@@ -502,12 +543,14 @@ The parity tests in `tools/parity/tests` compare the modules with the Python ref
 OPI_TEST_PG=1 uv run --with 'psycopg[binary]' --with pytest --with json5 python -m pytest tools/parity/tests
 ```
 
-`tools/parity/api_compare.py` replays every API route (plus bad-parameter cases) against the four per-module APIs and the merged API and diffs status and body. Documented differences are reported as ALLOWED; any other difference gives exit code 1. Run it on databases nobody is writing to, and restart the per-module apps before each run (an old handler can end its process):
+`tools/parity/api_compare.py` replays every API route, bad-parameter cases and request quirks against two running APIs by base URL, for example a release of the API and a new build, and diffs status, headers and body (any difference gives exit code 1). It needs only the Python standard library. Run it on databases nobody is writing to:
 
 ```bash
-python3 tools/parity/api_compare.py --brc20 http://127.0.0.1:8000 --bitmap http://127.0.0.1:8001 \
-  --sns http://127.0.0.1:8002 --runes http://127.0.0.1:8003 --new http://127.0.0.1:8010
+python3 tools/parity/api_compare.py --pair js-rust \
+  --js http://127.0.0.1:18200 --rust http://127.0.0.1:18201
 ```
+
+`--js` names the reference and `--rust` the candidate. `--rate-limit` replays the rate-limit sequence on two freshly started servers; the script's docstring lists the remaining options.
 
 `tools/parity/brc20_hash_compare.py --a <postgres url> --b <postgres url>` compares the event hash, cumulative event hash, trace hash and cumulative trace hash of two brc20 databases at every common height (exit 0 equal, 1 difference, 2 usage or database error).
 

@@ -1,5 +1,5 @@
 //! The bitmap metaprotocol as an opi module. It writes the schema in
-//! `db_init.sql` and the cumulative event hashes that the bitmap API (`api/`) and the OPI
+//! `db_init.sql` and the cumulative event hashes that the bitmap API (`opi-api`) and the OPI
 //! network read.
 
 mod db;

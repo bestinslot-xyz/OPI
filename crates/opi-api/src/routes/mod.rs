@@ -1,4 +1,4 @@
-//! The app's routes, registered in api/app.js's order: `/v1/status`, then
+//! The app's routes, registered in the Node API's order: `/v1/status`, then
 //! each module's routes when it is enabled, or a 404 for its whole prefix
 //! when it is not, then finalhandler's 404 for anything else.
 

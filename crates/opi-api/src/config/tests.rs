@@ -1,5 +1,5 @@
-//! The api/test/config.test.js cases, plus the parseInt and `||` rules
-//! config.js applies to each variable.
+//! The Node API's config cases, plus the parseInt and `||` rules it applies
+//! to each variable.
 
 use {super::*, std::collections::HashMap};
 

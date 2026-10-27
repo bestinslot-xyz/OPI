@@ -1,5 +1,5 @@
 //! The shared surface over HTTP. Expected statuses, headers and bodies are
-//! what the Express app in api/ answered for the same requests.
+//! the Node API's wire contract.
 
 use {
     axum::{

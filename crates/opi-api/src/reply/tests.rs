@@ -1,5 +1,4 @@
-//! Content types and bodies the Express app sent (see the task report for
-//! the captured responses).
+//! Content types and bodies of the Node API's responses.
 
 use {
     super::*,

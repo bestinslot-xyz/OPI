@@ -1,4 +1,4 @@
-//! The brc20 module's routes (api/routes/brc20.js), including the
+//! The brc20 module's routes, including the
 //! `/v1/brc20/explorer/...` routes for the BRC2.0 blockscout frontend.
 //!
 //! Each handler follows its JavaScript counterpart line by line: query

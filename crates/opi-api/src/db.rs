@@ -74,8 +74,8 @@ impl Db {
             .host(&config.host)
             .username(&config.user)
             .database(&config.database)
-            // ssl: true is TLS without certificate checks, as server.js
-            // runs node with NODE_TLS_REJECT_UNAUTHORIZED=0
+            // ssl: true is TLS without certificate checks, as the Node API
+            // ran with NODE_TLS_REJECT_UNAUTHORIZED=0
             .ssl_mode(if config.ssl {
                 PgSslMode::Require
             } else {

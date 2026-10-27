@@ -1,6 +1,6 @@
 //! The SNS metaprotocol as an opi module, indexed by the written SNS spec
 //! (see `rules.rs`). It writes the schema in `db_init.sql` and the cumulative
-//! event hashes that the SNS API (`api/`) and the OPI network read.
+//! event hashes that the SNS API (`opi-api`) and the OPI network read.
 
 mod db;
 pub mod json5;

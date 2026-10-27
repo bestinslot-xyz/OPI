@@ -79,23 +79,6 @@ sudo systemctl restart postgresql
 ```
 
 
-## Installing NodeJS
-
-These steps are following the guide at [here](https://github.com/nodesource/distributions).
-
-```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-
-NODE_MAJOR=20
-echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list
-
-sudo apt-get update
-sudo apt-get install nodejs -y
-```
-
 ## Installing Cargo & Rust
 
 These steps are following the guide at [here](https://doc.rust-lang.org/cargo/getting-started/installation.html).
@@ -119,25 +102,9 @@ git clone https://github.com/bestinslot-xyz/OPI.git && cd OPI
 
 All next shell script groups assumes that you are in OPI folder cloned by above command.
 
-## Installing node modules
-```bash
-cd api; npm install;
-cd ..;
-```
-
-## Installing python libraries
-
-**Create a virtual environment and install python libraries**
-```bash
-sudo apt install python3.12-venv -y;
-python3 -m venv .venv;
-source .venv/bin/activate;
-pip3 install -r requirements.txt;
-```
-
 ## Build opi-indexer:
 
-opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process. See the [README](README.md#configuration) for its configuration.
+opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process, and `opi-indexer api` serves the HTTP API. Neither needs Node.js or Python. See the [README](README.md#configuration) for its configuration.
 
 ```bash
 sudo apt install build-essential libssl-dev pkg-config clang -y;
@@ -148,7 +115,7 @@ cargo build --release --locked -p opi-indexer;
 
 Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start.
 
-`opi-indexer` and the API read this one `.env`. `python3 api/reset_init.py` asks for the API settings and writes them into it. `crates/opi-brc20/reset_init.py` is an optional helper that writes brc20's settings into the root `.env` and initialises the brc20 database from it; run it from `crates/opi-brc20`.
+`opi-indexer run` and `opi-indexer api` read this one `.env` (the API settings are listed in the README's [API configuration](README.md#api-configuration)).
 
 Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
 
@@ -177,9 +144,10 @@ Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 This is an optional API and doesn't need to be run. One process serves every module in `OPI_MODULES` on `API_PORT` (default 8000).
 
 ```bash
-cd api;
-node server.js;
+./target/release/opi-indexer api;
 ```
+
+Give the API a read-only database role (see the README's [API](README.md#api) section).
 
 # Update
 

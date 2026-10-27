@@ -16,9 +16,11 @@ reported separately; any other difference makes the exit code 1.
         --sns http://127.0.0.1:8002 --runes http://127.0.0.1:8003 \\
         --new http://127.0.0.1:8010
 
-`--pair js-rust` compares the merged Express app (`--js`) with the Rust app
-(`opi-indexer api`, `--rust`) that serves the same routes. ALLOWED does not
-apply: every difference is a DIFF. The request list adds the quirk cases
+`--pair js-rust` compares any two servers of the merged API by base URL:
+`--js` is the reference (for example a running release of the Node API) and
+`--rust` the candidate (for example `opi-indexer api` of a new build). Neither
+needs a checkout of this repository. ALLOWED does not apply: every difference
+is a DIFF. The request list adds the quirk cases
 (missing, repeated, array and object parameters, loose comparisons, numbers
 in every spelling, NUL bytes, invalid percent escapes, very long values,
 routing and CORS variants). Bodies compare as exact text and every response
@@ -27,6 +29,8 @@ too.
 
     python3 tools/parity/api_compare.py --pair js-rust \\
         --js http://127.0.0.1:18200 --rust http://127.0.0.1:18201
+
+The script uses only the Python standard library.
 
 Two answers can differ only in the row order of a route whose SQL has no
 total order (see UNORDERED_ROUTES). Such a pair is reported as ORDER, not
@@ -964,8 +968,8 @@ def parse_args(argv=None):
     for module in MODULES:
         parser.add_argument(f"--{module}", default=DEFAULT_BASES[module], help=f"old {module} API base URL (old-new)")
     parser.add_argument("--new", default=DEFAULT_NEW, help="merged API base URL (old-new)")
-    parser.add_argument("--js", default=DEFAULT_JS, help="Express API base URL (js-rust)")
-    parser.add_argument("--rust", default=DEFAULT_RUST, help="Rust API base URL (js-rust)")
+    parser.add_argument("--js", default=DEFAULT_JS, help="reference API base URL (js-rust)")
+    parser.add_argument("--rust", default=DEFAULT_RUST, help="candidate API base URL (js-rust)")
     parser.add_argument("--only", action="append", choices=MODULES, help="restrict to a module (repeatable)")
     parser.add_argument("--rate-limit", action="store_true", help="replay the rate-limit sequence on fresh servers (js-rust)")
     parser.add_argument("--timeout", type=float, default=60.0)

@@ -1,4 +1,4 @@
-//! The bitmap module's routes (api/routes/bitmap.js).
+//! The bitmap module's routes.
 //!
 //! Each handler follows its JavaScript counterpart line by line, as the
 //! brc20 routes do. The JS routes have no catch of their own, so any failed

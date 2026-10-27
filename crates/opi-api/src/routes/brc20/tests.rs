@@ -1,5 +1,5 @@
 //! The brc20 routes' response shaping. Expected values are node's output
-//! for the same lines of api/routes/brc20.js.
+//! for the same lines of the Node API's brc20 routes.
 
 use {
     super::*,

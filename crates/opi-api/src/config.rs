@@ -1,5 +1,5 @@
-//! The API's settings, read from the environment with the rules of
-//! api/config.js: values go through `parseInt`, an empty variable takes the
+//! The API's settings, read from the environment with the Node
+//! API's rules: values go through `parseInt`, an empty variable takes the
 //! default as `||` does, and only enabled modules need their database.
 
 use {

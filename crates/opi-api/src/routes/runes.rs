@@ -1,4 +1,4 @@
-//! The runes module's routes (api/routes/runes.js).
+//! The runes module's routes.
 //!
 //! Each handler follows its JavaScript counterpart line by line, as the
 //! brc20 routes do. get_block_height_of_db answers -1 when its query fails.
