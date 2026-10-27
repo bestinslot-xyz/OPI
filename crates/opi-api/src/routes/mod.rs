@@ -49,7 +49,7 @@ pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>) -> Router {
             .find(|(m, _)| *m == module)
             .map(|(_, db)| db.clone())
             .unwrap_or_else(|| {
-                Db::fake(move |_, _| anyhow::bail!("no database for {}", module.name()))
+                Db::fake(move |_| anyhow::bail!("no database for {}", module.name()))
             })
     };
     let status_dbs: Vec<(Module, Db)> = enabled.iter().map(|&m| (m, db_of(m))).collect();
@@ -66,8 +66,12 @@ pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>) -> Router {
                 })
                 .status(404)
             };
+            // `app.use(prefix)` matches the prefix, `prefix/`, and anything
+            // under it; routing strips one trailing slash, so `prefix//`
+            // arrives as `prefix/`
             router = router
                 .route(&prefix, any(disabled))
+                .route(&format!("{prefix}/"), any(disabled))
                 .route(&format!("{prefix}/{{*rest}}"), any(disabled));
         }
     }
@@ -88,19 +92,7 @@ async fn express_404(method: Method, OriginalUri(uri): OriginalUri) -> Response 
 async fn status(State(dbs): State<Arc<Vec<(Module, Db)>>>) -> Reply {
     let mut pending: FuturesUnordered<_> = dbs
         .iter()
-        .map(|(module, db)| async move {
-            let sql = format!(
-                "SELECT max(block_height) as max_block_height FROM {};",
-                module.block_hashes_table()
-            );
-            let height = db.query(&sql, &[]).await.and_then(|rows| {
-                // res.rows[0].max_block_height
-                rows.first()
-                    .map(|row| row.get("max_block_height").clone())
-                    .ok_or_else(|| anyhow::anyhow!("Cannot read properties of undefined"))
-            });
-            (*module, height)
-        })
+        .map(|(module, db)| async move { (*module, db.latest_block_height(*module).await) })
         .collect();
     let mut modules = JsObject::new();
     while let Some((module, height)) = pending.next().await {

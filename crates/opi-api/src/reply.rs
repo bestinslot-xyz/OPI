@@ -91,6 +91,12 @@ impl<E: Into<anyhow::Error>> From<E> for ApiError {
     }
 }
 
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+
 /// The 500 answer the app's error middleware sends.
 pub fn internal_error() -> Response {
     Reply::error(500, "internal error").into_response()
@@ -123,30 +129,82 @@ pub fn not_found(method: &str, path: &str) -> Response {
     response
 }
 
-/// encodeurl 1.0.2: percent-encodes what is not a URL character, keeping
-/// `%` only where two hex digits follow.
+/// encodeURI on one character.
+fn encode_uri_char(out: &mut String, c: char) {
+    let unescaped = c.is_ascii_alphanumeric()
+        || matches!(
+            c,
+            ';' | ','
+                | '/'
+                | '?'
+                | ':'
+                | '@'
+                | '&'
+                | '='
+                | '+'
+                | '$'
+                | '-'
+                | '_'
+                | '.'
+                | '!'
+                | '~'
+                | '*'
+                | '\''
+                | '('
+                | ')'
+                | '#'
+        );
+    if unescaped {
+        out.push(c);
+    } else {
+        let mut buf = [0; 4];
+        for b in c.encode_utf8(&mut buf).bytes() {
+            write!(out, "%{b:02X}").expect("writing to a String");
+        }
+    }
+}
+
+/// encodeurl 1.0.2: its regex passes each run of characters that are not
+/// URL characters to encodeURI. A `%` starts such a run unless two hex
+/// digits follow, and the run takes the characters its pattern
+/// `%(?:[^hex]|hex[^hex]|$)` matched, so `%%41` becomes `%25%2541`. A `%`
+/// with one hex digit before the end matches nothing and stays.
 pub fn encode_url(url: &str) -> String {
-    let bytes = url.as_bytes();
+    let chars: Vec<char> = url.chars().collect();
+    let hex = |i: usize| chars.get(i).is_some_and(char::is_ascii_hexdigit);
     let mut out = String::with_capacity(url.len());
-    for (i, c) in url.char_indices() {
-        let keep = match c {
-            '%' => {
-                bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
-                    && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit)
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '%' {
+            let taken = match chars.get(i + 1) {
+                None => 1,
+                Some(_) if !hex(i + 1) => 2,
+                Some(_) if i + 2 < chars.len() && !hex(i + 2) => 3,
+                // a valid escape, or one hex digit at the end
+                Some(_) => 0,
+            };
+            if taken == 0 {
+                out.push('%');
+                i += 1;
+            } else {
+                for &c in &chars[i..i + taken] {
+                    encode_uri_char(&mut out, c);
+                }
+                i += taken;
             }
-            '!' | '&'..=';' | '=' | '?'..='[' | ']' | '_' | 'a'..='z' | '~' => true,
-            // encodeURI leaves these as they are
-            '#' | '$' => true,
-            _ => false,
-        };
-        if keep {
+            continue;
+        }
+        let url_char = matches!(
+            c,
+            '!' | '&'..=';' | '=' | '?'..='[' | ']' | '_' | 'a'..='z' | '~'
+        );
+        if url_char {
             out.push(c);
         } else {
-            let mut buf = [0; 4];
-            for b in c.encode_utf8(&mut buf).bytes() {
-                write!(out, "%{b:02X}").expect("writing to a String");
-            }
+            encode_uri_char(&mut out, c);
         }
+        i += 1;
     }
     out
 }

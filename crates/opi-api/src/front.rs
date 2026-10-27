@@ -59,11 +59,17 @@ fn preflight(request_headers: &HeaderMap) -> Response {
         HeaderValue::from_static("Access-Control-Request-Headers"),
     );
     // the requested headers are reflected when present and non-empty
-    if let Some(requested) = request_headers
-        .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
-        .filter(|v| !v.is_empty())
+    // (node joins a repeated request header with ", ")
+    let requested: Vec<&[u8]> = request_headers
+        .get_all(header::ACCESS_CONTROL_REQUEST_HEADERS)
+        .iter()
+        .map(HeaderValue::as_bytes)
+        .collect();
+    let requested = requested.join(&b", "[..]);
+    if !requested.is_empty()
+        && let Ok(value) = HeaderValue::from_bytes(&requested)
     {
-        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, requested.clone());
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value);
     }
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("0"));
     response
@@ -101,6 +107,9 @@ fn routing_uri(uri: &Uri) -> Option<Uri> {
 
 fn insert_headers(response: &mut Response, rate_headers: &[(&'static str, String)]) {
     let headers = response.headers_mut();
+    // axum names the allowed methods on its method-not-allowed fallback,
+    // which answers Express's 404 here; Express sends no Allow header
+    headers.remove(header::ALLOW);
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),

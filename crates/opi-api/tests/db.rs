@@ -1,76 +1,128 @@
-//! `Db::query` against a live Postgres, set by OPI_API_TEST_DATABASE_URL
-//! (skipped when unset). The queries select constants only.
+//! The typed result path against a live Postgres, set by
+//! OPI_API_TEST_DATABASE_URL (skipped when unset). The queries read only.
 
 use {
     opi_api::{
+        config::Module,
         db::Db,
         js::{JsValue, json_stringify},
+        params,
+        pg_json::{ToJs, oid, text},
     },
-    sqlx::postgres::PgPoolOptions,
+    sqlx::{PgPool, Row, postgres::PgPoolOptions},
 };
 
-fn db() -> Option<Db> {
-    let Ok(url) = std::env::var("OPI_API_TEST_DATABASE_URL") else {
-        eprintln!("OPI_API_TEST_DATABASE_URL is unset; skipping");
+fn pool(var: &str) -> Option<PgPool> {
+    let Ok(url) = std::env::var(var) else {
+        eprintln!("{var} is unset; skipping");
         return None;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect_lazy(&url)
-        .expect("a database URL");
-    Some(Db::from_pool(pool))
-}
-
-fn json(rows: &[opi_api::js::JsObject]) -> String {
-    let rows: Vec<JsValue> = rows.iter().cloned().map(JsValue::Object).collect();
-    json_stringify(&JsValue::Array(rows)).unwrap()
+    Some(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy(&url)
+            .expect("a database URL"),
+    )
 }
 
 #[tokio::test]
-async fn rows_decode_as_node_pg_parses_them() {
-    let Some(db) = db() else { return };
-    let rows = db
-        .query(
-            r#"select $1::int4 as a, 2::int8 as b, 1.50::numeric as c,
-                      '{"b": 1, "a": [1, 2.50]}'::jsonb as d,
-                      array['x', NULL, 'y z']::text[] as e, null::text as f,
-                      array[1000, 10]::numeric(40,0)[] as g,
-                      '2024-01-02 03:04:05.678+05:30'::timestamptz as t,
-                      $2::text as u, count(*) as n, 'v'::varchar(4) as v, 1 as a"#,
-            &["7".into(), JsValue::Undefined],
-        )
-        .await
-        .unwrap();
+async fn typed_values_match_the_text_node_pg_reads() {
+    let Some(pool) = pool("OPI_API_TEST_DATABASE_URL") else {
+        return;
+    };
+    // each value decoded from binary, and the same value's text as
+    // node-pg parses it
+    let row = sqlx::query(
+        "select 0.1::float4 as f4, 0.1::float4::text as f4_text,
+                1e-7::float8 as f8, 1e-7::float8::text as f8_text,
+                9007199254740993::int8 as i8, 7::int2 as i2,
+                array['x', null]::text[] as arr",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let f4: f32 = row.get("f4");
     assert_eq!(
-        json(&rows),
-        r#"[{"a":1,"b":"2","c":"1.50","d":{"a":[1,2.5],"b":1},"e":["x",null,"y z"],"f":null,"g":[1000,10],"t":"2024-01-01T21:34:05.678Z","u":null,"n":"1","v":"v"}]"#
+        f4.to_js(),
+        text(700, Some(row.get::<&str, _>("f4_text"))).unwrap()
+    );
+    let f8: f64 = row.get("f8");
+    assert_eq!(
+        f8.to_js(),
+        text(701, Some(row.get::<&str, _>("f8_text"))).unwrap()
+    );
+    assert_eq!(
+        row.get::<i64, _>("i8").to_js(),
+        JsValue::from("9007199254740993")
+    );
+    assert_eq!(row.get::<i16, _>("i2").to_js(), JsValue::from(7));
+    assert_eq!(
+        json_stringify(&row.get::<Vec<Option<String>>, _>("arr").to_js()).unwrap(),
+        r#"["x",null]"#
     );
 }
 
 #[tokio::test]
-async fn parameters_take_their_type_from_the_query() {
-    let Some(db) = db() else { return };
-    // an untyped '4' compares as an integer, and limit takes a bigint
-    let rows = db
-        .query(
-            "select 1 as one where 10 > $1 limit $2",
-            &["4".into(), 51.0.into()],
-        )
+async fn text_casts_keep_what_binary_loses() {
+    let Some(pool) = pool("OPI_API_TEST_DATABASE_URL") else {
+        return;
+    };
+    let row = sqlx::query(
+        r#"select 1.50::numeric::text as n, 'NaN'::numeric::text as nan,
+                  '{"b": 1, "aa": [1, 2.50]}'::jsonb::text as j,
+                  array[1000, 10]::numeric(40,0)[]::text as na,
+                  '2024-01-02 03:04:05.678+05:30'::timestamptz::text as t"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let js = |o: u32, column: &str| json_stringify(&text(o, row.get(column)).unwrap()).unwrap();
+    assert_eq!(js(oid::NUMERIC, "n"), r#""1.50""#);
+    assert_eq!(js(oid::NUMERIC, "nan"), r#""NaN""#);
+    // jsonb keeps Postgres's key order (shorter keys first)
+    assert_eq!(js(oid::JSONB, "j"), r#"{"b":1,"aa":[1,2.5]}"#);
+    assert_eq!(js(oid::NUMERIC_ARRAY, "na"), "[1000,10]");
+    // the session runs in UTC; the instant is the same
+    assert_eq!(js(oid::TIMESTAMPTZ, "t"), r#""2024-01-01T21:34:05.678Z""#);
+}
+
+#[tokio::test]
+async fn params_bind_as_the_type_postgres_infers() {
+    let Some(pool) = pool("OPI_API_TEST_DATABASE_URL") else {
+        return;
+    };
+    let height = params::int4(&" 4 ".into()).unwrap();
+    let rows = sqlx::query("select 1 as one where 10 > $1")
+        .bind(height)
+        .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(json(&rows), r#"[{"one":1}]"#);
-    // text round-trips with quotes and backslashes
-    let text = r#"it's \ "x" $1"#;
-    let rows = db.query("select $1 as s", &[text.into()]).await.unwrap();
-    assert_eq!(rows[0].get("s"), &JsValue::from(text));
-    // a repeated key's array is an array literal, which no integer reads
-    let array = JsValue::Array(vec!["5".into(), "6".into()]);
-    assert!(db.query("select 1 where 10 > $1", &[array]).await.is_err());
-    assert!(
-        db.query("select 1 where 10 > $1", &["abc".into()])
+    assert_eq!(rows.len(), 1);
+    // a missing param binds NULL, which compares to nothing
+    let rows = sqlx::query("select 1 as one where 10 > $1")
+        .bind(params::int4(&JsValue::Undefined).unwrap())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(rows.is_empty());
+}
+
+#[tokio::test]
+async fn latest_block_height_reads_each_module() {
+    for (module, var) in [
+        (Module::Brc20, "OPI_API_TEST_BRC20_URL"),
+        (Module::Bitmap, "OPI_API_TEST_BITMAP_URL"),
+        (Module::Sns, "OPI_API_TEST_SNS_URL"),
+        (Module::Runes, "OPI_API_TEST_RUNES_URL"),
+    ] {
+        let Some(pool) = pool(var) else { continue };
+        let height = Db::from_pool(pool)
+            .latest_block_height(module)
             .await
-            .is_err()
-    );
-    // the parameter count must match, as for a prepared statement
-    assert!(db.query("select 1", &["1".into()]).await.is_err());
+            .unwrap();
+        assert!(
+            matches!(height, JsValue::Number(n) if n > 0.0),
+            "{height:?}"
+        );
+    }
 }

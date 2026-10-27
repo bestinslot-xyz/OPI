@@ -47,15 +47,11 @@ fn all_modules() -> Config {
 }
 
 fn height(value: JsValue) -> Db {
-    Db::fake(move |sql, params| {
-        assert!(sql.contains("max(block_height)"), "{sql}");
-        assert!(params.is_empty());
-        Ok(vec![js_object! { "max_block_height" => value.clone() }])
-    })
+    Db::fake(move |_| Ok(value.clone()))
 }
 
 fn failing() -> Db {
-    Db::fake(|_, _| anyhow::bail!("database \"s\" does not exist"))
+    Db::fake(|_| anyhow::bail!("database \"s\" does not exist"))
 }
 
 struct Answer {
@@ -118,6 +114,8 @@ async fn a_disabled_module_answers_404_under_its_prefix() {
         (Method::GET, "/v1/runes", "runes"),
         (Method::GET, "/v1/runes/", "runes"),
         (Method::GET, "/v1/sns//deep/path?x=1", "sns"),
+        // app.use('/v1/sns') matches `/v1/sns/` followed by `/`
+        (Method::GET, "/v1/sns//", "sns"),
         (Method::POST, "/V1/SNS", "sns"),
         (Method::DELETE, "/v1/Bitmap/x", "bitmap"),
     ] {
@@ -155,6 +153,8 @@ async fn a_path_outside_every_route_is_expresss_404_page() {
             Some("default-src 'none'")
         );
         assert_eq!(answer.header("x-content-type-options"), Some("nosniff"));
+        // Express never names the allowed methods
+        assert_eq!(answer.header("allow"), None, "{method} {path}");
         assert_eq!(answer.body, express_404(method.as_str(), shown));
     }
 }
@@ -182,12 +182,9 @@ async fn status_lists_each_enabled_module_with_its_latest_height() {
         vec![
             (
                 Module::Brc20,
-                Db::fake(|sql, _| {
-                    assert_eq!(
-                        sql,
-                        "SELECT max(block_height) as max_block_height FROM brc20_block_hashes;"
-                    );
-                    Ok(vec![js_object! { "max_block_height" => 100 }])
+                Db::fake(|module| {
+                    assert_eq!(module, Module::Brc20);
+                    Ok(100.into())
                 }),
             ),
             (Module::Bitmap, height(JsValue::Null)),
@@ -296,6 +293,23 @@ async fn cors_allows_any_origin_and_answers_options_with_200() {
         );
         assert_eq!(answer.header("access-control-allow-headers"), allow_headers);
     }
+
+    // node joins a repeated Access-Control-Request-Headers with ", "
+    let repeated = send_from(
+        &app,
+        Method::OPTIONS,
+        "/v1/status",
+        "127.0.0.1:1",
+        &[
+            ("Access-Control-Request-Headers", "x-a"),
+            ("Access-Control-Request-Headers", "x-b"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        repeated.header("access-control-allow-headers"),
+        Some("x-a, x-b")
+    );
 }
 
 #[tokio::test]

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT max(block_height) as max_block_height FROM bitmap_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max_block_height",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "83e398a1a400503dc8c21c0ebed170bc5e2a6fa8f09421f68608777738e6f33e"
+}

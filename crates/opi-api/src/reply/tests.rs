@@ -98,6 +98,24 @@ async fn not_found_is_finalhandlers_page() {
 }
 
 #[test]
+fn encode_url_encodes_a_bad_escape_with_the_character_it_takes() {
+    // encodeurl's regex takes the character after a bad `%` into the run it
+    // passes to encodeURI, so a second `%` there is encoded too.
+    for (url, expected) in [
+        ("/%%41", "/%25%2541"),
+        ("/%4%41", "/%254%2541"),
+        ("/%4", "/%4"),
+        ("/%", "/%25"),
+        ("/%zz", "/%25zz"),
+        ("/%%", "/%25%25"),
+        ("/%4z/", "/%254z/"),
+        ("/a%41%", "/a%41%25"),
+    ] {
+        assert_eq!(encode_url(url), expected, "{url}");
+    }
+}
+
+#[test]
 fn encode_url_and_escape_html_match_express() {
     assert_eq!(
         escape_html(&encode_url("/v1/nope/<a>\"q'&$#é%")),

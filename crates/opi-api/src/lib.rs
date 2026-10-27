@@ -12,11 +12,13 @@ pub mod db;
 pub mod extract;
 mod front;
 pub mod js;
+pub mod params;
 pub mod pg_json;
 pub mod qs;
 pub mod rate_limit;
 pub mod reply;
 pub mod routes;
+pub mod server;
 
 pub use front::{FrontDoor, front_door};
 
@@ -26,7 +28,7 @@ use {
     config::{Config, Module},
     db::Db,
     rate_limit::RateLimiter,
-    std::{future::Future, net::SocketAddr, sync::Arc},
+    std::{future::Future, sync::Arc},
 };
 
 impl FrontDoor {
@@ -65,7 +67,9 @@ pub fn connect(config: &Config) -> Result<Vec<(Module, Db)>> {
         .collect()
 }
 
-/// Serves the API on API_HOST:API_PORT until `shutdown` completes.
+/// Serves the API on API_HOST:API_PORT until `shutdown` completes, with
+/// [`ServeOptions`](server::ServeOptions)' defaults: 60 s to send request
+/// headers, and at most 10 s for requests in flight after the signal.
 pub async fn serve(
     config: Config,
     shutdown: impl Future<Output = ()> + Send + 'static,
@@ -82,11 +86,7 @@ pub async fn serve(
         names.join(", "),
         listener.local_addr()?
     );
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
-    .context("serving the API")
+    server::serve_listener(listener, app, server::ServeOptions::default(), shutdown)
+        .await
+        .context("serving the API")
 }

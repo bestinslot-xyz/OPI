@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT max(block_height) as max_block_height FROM runes_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max_block_height",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3c905169d33ab86e7205fcd1a5523f39a6726d3a82b1e97f5b7589207087d710"
+}

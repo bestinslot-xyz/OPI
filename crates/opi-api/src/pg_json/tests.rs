@@ -3,10 +3,102 @@
 //! and TZ=UTC.
 
 use {
-    super::{PgJsonError, decode_text},
-    crate::js::json_stringify,
+    super::{PgJsonError, ToJs, decode_text, oid},
+    crate::js::{JsValue, json_stringify},
     jiff::tz::TimeZone,
 };
+
+fn typed(value: impl ToJs) -> String {
+    json_stringify(&value.to_js()).unwrap()
+}
+
+#[test]
+fn typed_values_take_their_node_pg_form() {
+    // int2/int4 are numbers, int8 its decimal text, as pg-types answers
+    assert_eq!(typed(7i16), "7");
+    assert_eq!(typed(-5i32), "-5");
+    assert_eq!(typed(i64::MAX), r#""9223372036854775807""#);
+    assert_eq!(typed(Some(328239i32)), "328239");
+    assert_eq!(typed(None::<i32>), "null");
+    assert_eq!(typed(true), "true");
+    assert_eq!(typed("t".to_string()), r#""t""#);
+    assert_eq!(typed(vec![Some("a".to_string()), None]), r#"["a",null]"#);
+    assert_eq!(typed(vec![1i64, -2]), r#"["1","-2"]"#);
+    assert_eq!(typed(vec![1i32, -2]), "[1,-2]");
+    // float8 is exact; float4 is parseFloat of Postgres's shortest float4
+    // text (0.1::float4 prints "0.1", not 0.10000000149011612)
+    assert_eq!(typed(1.5f64), "1.5");
+    assert_eq!(typed(0.1f32), "0.1");
+    assert_eq!(typed(16777217f32), "16777216");
+    assert_eq!(typed(1e21f32), "1e+21");
+    assert_eq!(typed(f32::NAN), "null");
+    assert_eq!(typed(f32::INFINITY), "null");
+    assert_eq!(
+        f32::NEG_INFINITY.to_js(),
+        JsValue::Number(f64::NEG_INFINITY)
+    );
+}
+
+#[test]
+fn text_casts_decode_with_the_text_rules() {
+    // numeric, jsonb and timestamps arrive as `::text` columns
+    let tz = TimeZone::UTC;
+    assert_eq!(
+        json_stringify(&decode_text(oid::NUMERIC, Some("1.50"), &tz).unwrap()).unwrap(),
+        r#""1.50""#
+    );
+    assert_eq!(
+        json_stringify(&super::text(oid::JSONB, Some(r#"{"b": 1, "a": 2}"#)).unwrap()).unwrap(),
+        r#"{"b":1,"a":2}"#
+    );
+    assert_eq!(
+        super::text(oid::NUMERIC_ARRAY, None).unwrap(),
+        JsValue::Null
+    );
+}
+
+#[test]
+fn date_is_a_local_midnight() {
+    let cases: &[(&str, &str, &str)] = &[
+        // text, TZ=Europe/London, TZ=UTC
+        (
+            "2024-07-02",
+            r#""2024-07-01T23:00:00.000Z""#,
+            r#""2024-07-02T00:00:00.000Z""#,
+        ),
+        (
+            "2024-01-02",
+            r#""2024-01-02T00:00:00.000Z""#,
+            r#""2024-01-02T00:00:00.000Z""#,
+        ),
+        // London's local mean time before 1847 is -00:01:15
+        (
+            "0099-01-02",
+            r#""0099-01-02T00:01:15.000Z""#,
+            r#""0099-01-02T00:00:00.000Z""#,
+        ),
+        (
+            "0044-03-15 BC",
+            r#""-000043-03-15T00:01:15.000Z""#,
+            r#""-000043-03-15T00:00:00.000Z""#,
+        ),
+        (
+            "12345-01-01",
+            r#""+012345-01-01T00:00:00.000Z""#,
+            r#""+012345-01-01T00:00:00.000Z""#,
+        ),
+        ("infinity", "null", "null"),
+        ("-infinity", "null", "null"),
+    ];
+    for &(text, in_london, in_utc) in cases {
+        assert_eq!(json(oid::DATE, text, &london()), in_london, "{text:?}");
+        assert_eq!(json(oid::DATE, text, &TimeZone::UTC), in_utc, "{text:?}");
+    }
+    assert_eq!(
+        json(1182, "{2024-07-02,NULL}", &london()),
+        r#"["2024-07-01T23:00:00.000Z",null]"#
+    );
+}
 
 fn london() -> TimeZone {
     TimeZone::get("Europe/London").unwrap()
@@ -184,8 +276,8 @@ fn null_is_null_for_every_type() {
 
 #[test]
 fn an_unknown_type_is_an_error() {
-    // date (1082), uuid (2950), name[] (1003) and custom types have no rule.
-    for oid in [1082, 2950, 1003, 99999] {
+    // uuid (2950), name[] (1003) and custom types have no rule.
+    for oid in [2950, 1003, 99999] {
         match decode_text(oid, Some("x"), &TimeZone::UTC) {
             Err(PgJsonError::UnsupportedType(got)) => assert_eq!(got, oid),
             other => panic!("{oid}: {other:?}"),

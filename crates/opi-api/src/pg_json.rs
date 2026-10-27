@@ -1,13 +1,16 @@
-//! Postgres text-format values as node-pg 8 (pg-types 2.2.0 text parsers)
-//! hands them to the routes.
+//! Postgres values in the form node-pg 8 (pg-types 2.2.0 text parsers)
+//! hands them to the routes. A typed column sqlx decodes maps through
+//! [`ToJs`]; a column a route casts to text decodes with [`text`] (or
+//! [`decode_text`]) by these rules:
 //!
 //! - int2, int4, oid: `parseInt(text, 10)`; float4, float8: `parseFloat`.
 //! - int8, numeric, text, varchar, bpchar, name: the text as a string.
 //! - bool: true for `TRUE t true y yes on 1`.
 //! - json, jsonb: `JSON.parse`.
-//! - timestamp, timestamptz: a JS `Date`, which reaches the client as its
-//!   `toJSON()` ISO string, or `null` for an invalid date; `±infinity` is
-//!   the number `±Infinity`. A timestamp without a zone reads as local time.
+//! - date, timestamp, timestamptz: a JS `Date`, which reaches the client as
+//!   its `toJSON()` ISO string, or `null` for an invalid date; `±infinity`
+//!   is the number `±Infinity`. A date or a timestamp without a zone reads
+//!   as local time.
 //! - the arrays pg-types registers for those types, parsed by
 //!   postgres-array 2.0.0 (numeric[] elements go through `parseFloat`).
 //!
@@ -17,7 +20,7 @@
 use {
     crate::js::{JsValue, json_parse, parse_float_str, parse_int_base10},
     jiff::{Timestamp, tz::TimeZone},
-    std::fmt,
+    std::{fmt, sync::LazyLock},
 };
 
 #[cfg(test)]
@@ -66,7 +69,8 @@ fn rule(oid: u32) -> Option<(Scalar, bool)> {
         16 => (Bool, false),
         25 | 1043 | 1042 | 19 | 1700 => (Text, false),
         114 | 3802 => (Json, false),
-        1114 | 1184 => (Date, false),
+        1082 | 1114 | 1184 => (Date, false),
+        1182 => (Date, true),
         1005 | 1007 => (Int, true),
         1016 => (BigInt, true),
         1021 | 1022 | 1231 => (Float, true),
@@ -468,4 +472,112 @@ fn date_to_json(time: f64) -> JsValue {
         in_day / 1000 % 60,
         in_day % 1000
     ))
+}
+
+/// The type OIDs of the columns a route casts to text.
+pub mod oid {
+    pub const JSON: u32 = 114;
+    pub const FLOAT4: u32 = 700;
+    pub const FLOAT8: u32 = 701;
+    pub const DATE: u32 = 1082;
+    pub const TIMESTAMP: u32 = 1114;
+    pub const TIMESTAMPTZ: u32 = 1184;
+    pub const NUMERIC: u32 = 1700;
+    pub const NUMERIC_ARRAY: u32 = 1231;
+    pub const JSONB: u32 = 3802;
+}
+
+static LOCAL: LazyLock<TimeZone> = LazyLock::new(TimeZone::system);
+
+/// A column cast to text (`col::text as col`) as node-pg reads a column
+/// of the type `oid`. Timestamps without a zone and dates read in the
+/// process's local time zone (TZ), as node does.
+pub fn text(oid: u32, text: Option<&str>) -> Result<JsValue, PgJsonError> {
+    decode_text(oid, text, &LOCAL)
+}
+
+/// A value sqlx decodes from binary, in the form node-pg gives it.
+///
+/// - `i16`, `i32`, `f64`: a number (`parseInt`/`parseFloat` of Postgres's
+///   text give the same value). `f32`: `parseFloat` of Postgres's shortest
+///   float4 text, so `0.1::float4` is `0.1`.
+/// - `i64`: its decimal text, as node-pg leaves int8.
+/// - `bool`, `String`: as they are. `Option`: `None` is null. `Vec`: an
+///   array of the elements' forms.
+///
+/// numeric, json, jsonb, date and timestamps have no typed form here: a
+/// route casts them to text and decodes them with [`text`], since binary
+/// decoding loses numeric's scale and NaN, jsonb's key order, and the text
+/// node-pg's date parser reads.
+pub trait ToJs {
+    fn to_js(self) -> JsValue;
+}
+
+impl ToJs for i16 {
+    fn to_js(self) -> JsValue {
+        JsValue::Number(self.into())
+    }
+}
+
+impl ToJs for i32 {
+    fn to_js(self) -> JsValue {
+        JsValue::Number(self.into())
+    }
+}
+
+impl ToJs for i64 {
+    fn to_js(self) -> JsValue {
+        JsValue::String(self.to_string())
+    }
+}
+
+impl ToJs for f64 {
+    fn to_js(self) -> JsValue {
+        JsValue::Number(self)
+    }
+}
+
+impl ToJs for f32 {
+    fn to_js(self) -> JsValue {
+        if !self.is_finite() {
+            return JsValue::Number(self.into());
+        }
+        // Rust prints an f32's shortest round-tripping digits, as
+        // Postgres's float4out does
+        JsValue::Number(
+            self.to_string()
+                .parse()
+                .expect("a finite f32 prints a number"),
+        )
+    }
+}
+
+impl ToJs for bool {
+    fn to_js(self) -> JsValue {
+        JsValue::Bool(self)
+    }
+}
+
+impl ToJs for String {
+    fn to_js(self) -> JsValue {
+        JsValue::String(self)
+    }
+}
+
+impl ToJs for &str {
+    fn to_js(self) -> JsValue {
+        JsValue::from(self)
+    }
+}
+
+impl<T: ToJs> ToJs for Option<T> {
+    fn to_js(self) -> JsValue {
+        self.map_or(JsValue::Null, ToJs::to_js)
+    }
+}
+
+impl<T: ToJs> ToJs for Vec<T> {
+    fn to_js(self) -> JsValue {
+        JsValue::Array(self.into_iter().map(ToJs::to_js).collect())
+    }
 }

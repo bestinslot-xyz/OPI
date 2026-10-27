@@ -1,25 +1,27 @@
-//! A module's database, queried the way node-pg queries it.
+//! A module's database.
 //!
-//! node-pg sends a query with parameters as an unnamed prepared statement
-//! whose parameters have no declared type, each value as text, so Postgres
-//! types `$n` from its context; it reads every result in text format. A
-//! query string with each `$n` replaced by an untyped string literal (or
-//! `NULL`) gets the same typing, and the simple query protocol answers in
-//! text format, which [`pg_json`](crate::pg_json) decodes as node-pg's
-//! type parsers do.
+//! Routes query the pool with sqlx's checked macros (`query!`,
+//! `query_as!`, `query_scalar!`), whose offline data lives in
+//! `crates/opi-api/.sqlx`. Each parameter is the Rust type Postgres infers
+//! for it, the type node-pg's untyped text parameters resolve to; the
+//! [`params`](crate::params) helpers parse a JS value into that type with
+//! Postgres's input rules. Each result column maps to its node-pg JSON form
+//! through [`pg_json`](crate::pg_json).
+//!
+//! sqlx sets the session `TimeZone` to UTC when it connects, where node-pg
+//! keeps the server's default. A timestamptz still reaches the client as
+//! the same instant: binary values carry no zone, and a timestamptz cast to
+//! text carries its offset, which node-pg's date parser applies. SQL whose
+//! result depends on the session time zone (`now()::date`, `timestamptz::date`,
+//! `to_char` on a timestamptz, `AT TIME ZONE` without a zone name, ...) would
+//! answer differently, so no route may use it.
 
 use {
-    crate::{
-        config::DbConfig,
-        js::{JsObject, JsValue, json_stringify},
-        pg_json::decode_text,
-    },
-    anyhow::{Result, anyhow, bail},
-    futures::TryStreamExt,
-    jiff::tz::TimeZone,
+    crate::{config::DbConfig, config::Module, js::JsValue, pg_json::ToJs},
+    anyhow::{Result, anyhow},
     sqlx::{
-        AssertSqlSafe, Column, Either, PgPool, Row, TypeInfo, ValueRef,
-        postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgValueFormat},
+        PgPool,
+        postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
     },
     std::{sync::Arc, time::Duration},
 };
@@ -27,17 +29,18 @@ use {
 #[cfg(test)]
 mod tests;
 
-type FakeHandler = dyn Fn(&str, &[JsValue]) -> Result<Vec<JsObject>> + Send + Sync;
+type FakeHeights = dyn Fn(Module) -> Result<JsValue> + Send + Sync;
 
-/// A module's database: a Postgres pool, or a test double.
+/// A module's database: a Postgres pool, or a test double that answers
+/// only [`Db::latest_block_height`].
 #[derive(Clone)]
 pub struct Db {
     inner: Arc<Inner>,
 }
 
 enum Inner {
-    Pg { pool: PgPool, local: TimeZone },
-    Fake(Box<FakeHandler>),
+    Pg(PgPool),
+    Fake(Box<FakeHeights>),
 }
 
 impl Db {
@@ -56,7 +59,8 @@ impl Db {
             } else {
                 PgSslMode::Disable
             })
-            // node-pg leaves extra_float_digits at the server's setting
+            // node-pg leaves extra_float_digits at the server's setting,
+            // which shapes the float text of a `::text` cast
             .extra_float_digits(None);
         if let Some(port) = config.pg_port()? {
             options = options.port(port);
@@ -72,253 +76,68 @@ impl Db {
         Ok(Db::from_pool(pool))
     }
 
-    /// Queries `pool`; timestamps without a zone read in the process's
-    /// local time zone (TZ), as node does.
     pub fn from_pool(pool: PgPool) -> Db {
         Db {
-            inner: Arc::new(Inner::Pg {
-                pool,
-                local: TimeZone::system(),
-            }),
+            inner: Arc::new(Inner::Pg(pool)),
         }
     }
 
-    /// A test double: `handler(sql, params)` answers the rows or an error.
-    pub fn fake(
-        handler: impl Fn(&str, &[JsValue]) -> Result<Vec<JsObject>> + Send + Sync + 'static,
-    ) -> Db {
+    /// A test double: `heights(module)` answers
+    /// [`latest_block_height`](Self::latest_block_height); every other
+    /// query fails.
+    pub fn fake(heights: impl Fn(Module) -> Result<JsValue> + Send + Sync + 'static) -> Db {
         Db {
-            inner: Arc::new(Inner::Fake(Box::new(handler))),
+            inner: Arc::new(Inner::Fake(Box::new(heights))),
         }
     }
 
-    /// `db_pool.query(sql, params)` and its `rows`: one object per row,
-    /// keyed by column name (a repeated name keeps the last value).
-    pub async fn query(&self, sql: &str, params: &[JsValue]) -> Result<Vec<JsObject>> {
-        let (pool, local) = match &*self.inner {
-            Inner::Fake(handler) => return handler(sql, params),
-            Inner::Pg { pool, local } => (pool, local),
+    /// The pool route queries run on. A test double has none, so a route
+    /// that queries it fails with the 500 answer.
+    pub fn pool(&self) -> Result<&PgPool> {
+        match &*self.inner {
+            Inner::Pg(pool) => Ok(pool),
+            Inner::Fake(_) => Err(anyhow!("a test database runs no queries")),
+        }
+    }
+
+    /// `(await query('SELECT max(block_height) as max_block_height FROM
+    /// <module>_block_hashes;')).rows[0].max_block_height`: a number, or
+    /// null for an empty table.
+    pub async fn latest_block_height(&self, module: Module) -> Result<JsValue> {
+        let pool = match &*self.inner {
+            Inner::Fake(heights) => return heights(module),
+            Inner::Pg(pool) => pool,
         };
-        let prepared: Vec<Option<String>> = params.iter().map(prepare_value).collect();
-        let text = bind_params(sql, &prepared)?;
-        let mut results = sqlx::raw_sql(AssertSqlSafe(text)).fetch_many(pool);
-        let mut rows = Vec::new();
-        let mut statements = 0;
-        while let Some(item) = results.try_next().await? {
-            match item {
-                Either::Left(_) => statements += 1,
-                Either::Right(row) => rows.push(row_object(&row, local)?),
-            }
-        }
-        // node-pg answers several result sets as an array, which has no
-        // `rows`; Postgres refuses several statements with parameters.
-        if statements > 1 {
-            bail!("the query holds {statements} statements; one is expected");
-        }
-        Ok(rows)
-    }
-}
-
-fn row_object(row: &PgRow, local: &TimeZone) -> Result<JsObject> {
-    let mut obj = JsObject::new();
-    for (i, column) in row.columns().iter().enumerate() {
-        let type_info = column.type_info();
-        let oid = type_info
-            .oid()
-            .ok_or_else(|| {
-                anyhow!(
-                    "column {} has no type OID ({})",
-                    column.name(),
-                    type_info.name()
+        let height: Option<i32> = match module {
+            Module::Brc20 => {
+                sqlx::query_scalar!(
+                    "SELECT max(block_height) as max_block_height FROM brc20_block_hashes;"
                 )
-            })?
-            .0;
-        let raw = row.try_get_raw(i)?;
-        let text = if raw.is_null() {
-            None
-        } else {
-            if raw.format() != PgValueFormat::Text {
-                bail!("column {} arrived in binary format", column.name());
+                .fetch_one(pool)
+                .await?
             }
-            Some(raw.as_str().map_err(|e| anyhow!(e))?)
+            Module::Bitmap => {
+                sqlx::query_scalar!(
+                    "SELECT max(block_height) as max_block_height FROM bitmap_block_hashes;"
+                )
+                .fetch_one(pool)
+                .await?
+            }
+            Module::Sns => {
+                sqlx::query_scalar!(
+                    "SELECT max(block_height) as max_block_height FROM sns_block_hashes;"
+                )
+                .fetch_one(pool)
+                .await?
+            }
+            Module::Runes => {
+                sqlx::query_scalar!(
+                    "SELECT max(block_height) as max_block_height FROM runes_block_hashes;"
+                )
+                .fetch_one(pool)
+                .await?
+            }
         };
-        let value =
-            decode_text(oid, text, local).map_err(|e| anyhow!("column {}: {e}", column.name()))?;
-        obj.set(column.name(), value);
+        Ok(height.to_js())
     }
-    Ok(obj)
-}
-
-/// node-pg's prepareValue: the text node-pg sends for a parameter, or
-/// `None` for SQL NULL.
-pub fn prepare_value(value: &JsValue) -> Option<String> {
-    match value {
-        JsValue::Undefined | JsValue::Null => None,
-        JsValue::Array(items) => Some(array_string(items)),
-        JsValue::Object(_) => json_stringify(value),
-        primitive => Some(
-            primitive
-                .to_js_string()
-                .expect("a primitive converts to a string"),
-        ),
-    }
-}
-
-/// node-pg's arrayString: a Postgres array literal.
-fn array_string(items: &[JsValue]) -> String {
-    let elements: Vec<String> = items
-        .iter()
-        .map(|item| match item {
-            JsValue::Undefined | JsValue::Null => "NULL".to_string(),
-            JsValue::Array(inner) => array_string(inner),
-            other => {
-                let text = prepare_value(other).unwrap_or_default();
-                format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
-            }
-        })
-        .collect();
-    format!("{{{}}}", elements.join(","))
-}
-
-/// A string literal Postgres reads like an untyped text parameter, quoted
-/// as libpq's PQescapeLiteral quotes it.
-fn literal(value: &str) -> Result<String> {
-    if value.contains('\0') {
-        bail!("invalid byte sequence for encoding \"UTF8\": 0x00");
-    }
-    let quoted = value.replace('\'', "''");
-    Ok(if value.contains('\\') {
-        format!(" E'{}'", quoted.replace('\\', "\\\\"))
-    } else {
-        format!("'{quoted}'")
-    })
-}
-
-fn is_ident_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '$' || !c.is_ascii()
-}
-
-/// Replaces each `$n` placeholder with the literal of `params[n - 1]`,
-/// skipping quoted strings, quoted identifiers, dollar-quoted strings and
-/// comments. As Postgres does, it refuses a parameter count other than the
-/// highest placeholder number.
-pub fn bind_params(sql: &str, params: &[Option<String>]) -> Result<String> {
-    let chars: Vec<char> = sql.chars().collect();
-    let mut out = String::with_capacity(sql.len());
-    let mut highest = 0;
-    let mut i = 0;
-    let prev_is_ident = |i: usize| i > 0 && is_ident_char(chars[i - 1]);
-    let copy = |out: &mut String, from: usize, to: usize| out.extend(&chars[from..to]);
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        let start = i;
-        match c {
-            '\'' => {
-                let escapes =
-                    start > 0 && matches!(chars[start - 1], 'E' | 'e') && !prev_is_ident(start - 1);
-                i += 1;
-                while i < chars.len() {
-                    match chars[i] {
-                        '\\' if escapes => i += 2,
-                        '\'' if chars.get(i + 1) == Some(&'\'') => i += 2,
-                        '\'' => {
-                            i += 1;
-                            break;
-                        }
-                        _ => i += 1,
-                    }
-                }
-                copy(&mut out, start, i.min(chars.len()));
-            }
-            '"' => {
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '"' {
-                        if chars.get(i + 1) == Some(&'"') {
-                            i += 2;
-                            continue;
-                        }
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-                copy(&mut out, start, i);
-            }
-            '-' if next == Some('-') => {
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-                copy(&mut out, start, i);
-            }
-            '/' if next == Some('*') => {
-                let mut depth = 0;
-                while i < chars.len() {
-                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
-                        depth += 1;
-                        i += 2;
-                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
-                        depth -= 1;
-                        i += 2;
-                        if depth == 0 {
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-                copy(&mut out, start, i.min(chars.len()));
-            }
-            '$' if !prev_is_ident(start) && next.is_some_and(|n| n.is_ascii_digit()) => {
-                i += 1;
-                while i < chars.len() && chars[i].is_ascii_digit() {
-                    i += 1;
-                }
-                let number: String = chars[start + 1..i].iter().collect();
-                let n: usize = number
-                    .parse()
-                    .map_err(|_| anyhow!("bad placeholder ${number}"))?;
-                highest = highest.max(n);
-                match params.get(n.wrapping_sub(1)) {
-                    Some(Some(value)) => out.push_str(&literal(value)?),
-                    Some(None) => out.push_str("NULL"),
-                    None => {}
-                }
-            }
-            '$' if !prev_is_ident(start) => {
-                // a dollar quote: $$ or $tag$ with tag = [A-Za-z_][A-Za-z0-9_]*
-                let mut j = i + 1;
-                while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
-                    j += 1;
-                }
-                let tag_ok = chars.get(j) == Some(&'$')
-                    && chars.get(i + 1).is_none_or(|c| !c.is_ascii_digit());
-                if tag_ok {
-                    let tag: String = chars[i..=j].iter().collect();
-                    let body_start = j + 1;
-                    let rest: String = chars[body_start..].iter().collect();
-                    let end = rest.find(&tag).map_or(chars.len(), |p| {
-                        body_start + rest[..p].chars().count() + tag.chars().count()
-                    });
-                    copy(&mut out, start, end);
-                    i = end;
-                } else {
-                    out.push(c);
-                    i += 1;
-                }
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    if highest != params.len() {
-        bail!(
-            "bind message supplies {} parameters, but prepared statement \"\" requires {highest}",
-            params.len()
-        );
-    }
-    Ok(out)
 }
