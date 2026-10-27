@@ -162,7 +162,8 @@ async fn get_hash_of_all_registered_names(State(db): State<Db>) -> Result<Reply,
             inscription_number: row.inscription_number.to_js(),
         })
         .collect();
-    let hash_hex = registered_names_hash(&rows)?;
+    // the whole table is joined and hashed in memory, off the async workers
+    let hash_hex = tokio::task::spawn_blocking(move || registered_names_hash(&rows)).await??;
     let indexer_version = indexer_version(&db).await?;
 
     Ok(Reply::send_json(js_object! {

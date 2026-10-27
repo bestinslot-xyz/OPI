@@ -522,7 +522,9 @@ async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply,
             "available_balance" => pg_json::text(oid::NUMERIC, row.available_balance.as_deref())?,
         });
     }
-    let rows: Vec<JsValue> = order_holders(objects)?
+    // a rune with many holders sorts a large set, off the async workers
+    let rows: Vec<JsValue> = tokio::task::spawn_blocking(move || order_holders(objects))
+        .await??
         .into_iter()
         .map(JsValue::from)
         .collect();
@@ -635,7 +637,8 @@ async fn get_hash_of_all_current_balances(State(db): State<Db>) -> Result<Reply,
             available_balance: pg_json::text(oid::NUMERIC, row.available_balance.as_deref())?,
         });
     }
-    let hash_hex = current_balances_hash(balances)?;
+    // the whole table is sorted and hashed in memory, off the async workers
+    let hash_hex = tokio::task::spawn_blocking(move || current_balances_hash(balances)).await??;
     let indexer_version = indexer_version(&db).await?;
 
     Ok(Reply::send_json(js_object! {

@@ -423,7 +423,9 @@ async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply,
             "total_balance" => pg_json::text(oid::NUMERIC, row.total_balance.as_deref())?,
         });
     }
-    let rows: Vec<JsValue> = order_holders(objects)?
+    // a rune with many holders sorts a large set, off the async workers
+    let rows: Vec<JsValue> = tokio::task::spawn_blocking(move || order_holders(objects))
+        .await??
         .into_iter()
         .map(|mut row| {
             row.set("rune_name", rune_name.clone());
