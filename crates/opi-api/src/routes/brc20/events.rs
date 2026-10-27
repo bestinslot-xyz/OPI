@@ -22,10 +22,18 @@
 //! The feeds page by key: `limit` (default 100, at most 500) and
 //! `before_id`, the `next_before_id` of the previous page. A page holds the
 //! events with an id below `before_id`, so a page never repeats or skips an
-//! event when new events arrive, and a deep page costs what the first costs
-//! (an offset would walk and discard every row before it). `has_more` tells
+//! event when new events arrive (an offset would shift). `has_more` tells
 //! whether an older event exists and `next_before_id` is the id to ask with
 //! (null on the last page). `type` keeps one event type, by its name.
+//!
+//! A ticker feed page costs the same at any depth (an index range scan from
+//! the cursor); a wallet feed page costs in proportion to the wallet's total
+//! events, since the party index does not order by id.
+//!
+//! A database uses one event table per mode (full mode writes `brc20_events`,
+//! light mode `brc20_light_events`), which the cursor relies on: an id names
+//! one event. A reorg rewinds the ids with the blocks, so a cursor taken
+//! above a rewound tip can skip or repeat events of the rewound range.
 //!
 //! A ticker's events are those whose event object has `tick` equal to the
 //! lowercased ticker. A wallet's events are those where the wallet is any
@@ -308,8 +316,10 @@ pub async fn wallet_events(
             )
             .fetch_optional(db.pool()?)
             .await?;
+            // a mapped EVM address answers as its Bitcoin address, an
+            // unmapped one (no events) as the address asked for
             let key = mapped.clone();
-            (mapped, None, key)
+            (Some(mapped.unwrap_or(address)), None, key)
         }
         Wallet::Address(address) => (Some(address.clone()), None, Some(address)),
         Wallet::PkScript(pkscript) => (None, Some(pkscript.clone()), Some(pkscript)),

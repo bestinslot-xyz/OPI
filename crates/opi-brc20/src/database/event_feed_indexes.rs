@@ -75,6 +75,10 @@ pub const INDEXES: [(&str, &str); 4] = [
     ),
 ];
 
+/// The indexes on `(event ->> 'tick')` alone, dropped at start once the
+/// `(tick, id)` indexes exist.
+pub const SUPERSEDED: [&str; 2] = ["brc20_events_ticker_idx", "brc20_light_events_ticker_idx"];
+
 /// Creates each missing index. The pg_indexes lookup comes first, so a start
 /// that finds the index never waits on the table lock.
 pub async fn create_if_missing(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
@@ -90,12 +94,74 @@ pub async fn create_if_missing(pool: &Pool<Postgres>) -> Result<(), sqlx::Error>
             sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
         }
     }
+    // The `(tick)` indexes are prefixes of the `(tick, id)` ones.
+    for name in SUPERSEDED {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP INDEX IF EXISTS public.{name}"
+        )))
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes an event of type `T` built from `superset` and returns the
+    /// keys of its party fields.
+    fn party_keys<T: serde::Serialize + serde::de::DeserializeOwned>(
+        superset: &serde_json::Value,
+    ) -> Vec<String> {
+        let event: T = serde_json::from_value(superset.clone()).unwrap();
+        serde_json::to_value(&event)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| key.ends_with("_pkScript") || key.ends_with("_wallet"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn every_party_field_of_every_event_type_is_indexed() {
+        use crate::types::events::*;
+        let mut superset = serde_json::json!({
+            "tick": "t", "original_tick": "T", "amount": "1", "decimals": "18",
+            "max_supply": "1", "limit_per_mint": "1", "is_self_mint": "false",
+            "hash": "h", "block_height": "1", "parent_id": "p", "using_tx_id": "u",
+            "contract_address": "c", "contract_inscription_id": "c",
+            "data": "d", "base64_data": "d", "byte_len": "0", "btc_txId": "b",
+        });
+        for prefix in ["deployer", "minted", "source", "spent", "predeployer"] {
+            superset[format!("{prefix}_pkScript")] = "00".into();
+            superset[format!("{prefix}_wallet")] = "w".into();
+        }
+        let mut keys = Vec::new();
+        keys.extend(party_keys::<DeployInscribeEvent>(&superset));
+        keys.extend(party_keys::<PreDeployInscribeEvent>(&superset));
+        keys.extend(party_keys::<MintInscribeEvent>(&superset));
+        keys.extend(party_keys::<TransferInscribeEvent>(&superset));
+        keys.extend(party_keys::<TransferTransferEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgDeployInscribeEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgDeployTransferEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgCallInscribeEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgCallTransferEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgWithdrawInscribeEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgWithdrawTransferEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgTransactInscribeEvent>(&superset));
+        keys.extend(party_keys::<Brc20ProgTransactTransferEvent>(&superset));
+        assert!(keys.len() >= 20, "{keys:?}");
+        let indexed = parties!();
+        for key in keys {
+            assert!(
+                indexed.contains(&format!("->> '{key}'")),
+                "{key} is not an indexed party"
+            );
+        }
+    }
 
     #[test]
     fn db_init_creates_the_indexes() {
@@ -176,25 +242,44 @@ mod db_tests {
             ]
             .map(String::from)
             .into();
+            let old = |database: &Brc20Database| {
+                let client = database.client.clone();
+                async move {
+                    sqlx::query_scalar::<_, String>(
+                        "SELECT indexname FROM pg_indexes
+                         WHERE indexname IN ('brc20_events_ticker_idx', 'brc20_light_events_ticker_idx')",
+                    )
+                    .fetch_all(&client)
+                    .await
+                    .unwrap()
+                }
+            };
             let first = start(&db_name).await;
             assert_eq!(present(&first).await, expected);
+            assert!(old(&first).await.is_empty());
 
-            // A database from before the indexes gets them at the next start.
+            // A database from before the indexes, with the `(tick)` indexes,
+            // gets the new ones and loses the old at the next start.
             sqlx::raw_sql(
                 "DROP INDEX brc20_events_parties_idx;
                  DROP INDEX brc20_events_ticker_id_idx;
                  DROP INDEX brc20_light_events_parties_idx;
-                 DROP INDEX brc20_light_events_ticker_id_idx;",
+                 DROP INDEX brc20_light_events_ticker_id_idx;
+                 CREATE INDEX brc20_events_ticker_idx ON public.brc20_events USING btree (((\"event\" ->> 'tick'::text)));
+                 CREATE INDEX brc20_light_events_ticker_idx ON public.brc20_light_events USING btree (((\"event\" ->> 'tick'::text)));",
             )
             .execute(&first.client)
             .await
             .unwrap();
             assert!(present(&first).await.is_empty());
+            assert_eq!(old(&first).await.len(), 2);
             let second = start(&db_name).await;
             assert_eq!(present(&second).await, expected);
+            assert!(old(&second).await.is_empty());
             // and a start that finds them changes nothing
             let third = start(&db_name).await;
             assert_eq!(present(&third).await, expected);
+            assert!(old(&third).await.is_empty());
         })
         .await;
         sqlx::query(sqlx::AssertSqlSafe(format!(

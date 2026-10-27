@@ -42,7 +42,6 @@ CREATE UNIQUE INDEX brc20_events_event_type_inscription_id_idx ON public.brc20_e
 CREATE INDEX brc20_events_block_height_idx ON public.brc20_events USING btree (block_height);
 CREATE INDEX brc20_events_event_type_idx ON public.brc20_events USING btree (event_type);
 CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree (inscription_id);
-CREATE INDEX brc20_events_ticker_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)));
 
 CREATE TABLE public.brc20_light_events (
 	id bigserial NOT NULL,
@@ -56,7 +55,6 @@ CREATE UNIQUE INDEX brc20_light_events_event_type_inscription_id_idx ON public.b
 CREATE INDEX brc20_light_events_block_height_idx ON public.brc20_light_events USING btree (block_height);
 CREATE INDEX brc20_light_events_event_type_idx ON public.brc20_light_events USING btree (event_type);
 CREATE INDEX brc20_light_events_inscription_id_idx ON public.brc20_light_events USING btree (inscription_id);
-CREATE INDEX brc20_light_events_ticker_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)));
 
 CREATE TABLE IF NOT EXISTS public.evm_addresses (
 	id serial PRIMARY KEY,

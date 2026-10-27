@@ -365,7 +365,7 @@ async fn seeded_wallet_events_match_any_party() {
             &format!("/v1/brc20/wallet/events?address={STRANGER_EVM}"),
             200,
             JSON,
-            &ok(r#"{"address":null,"pkscript":null,"decimals":18,"event_type":null,"events":[],"limit":100,"has_more":false,"next_before_id":null,"block_height":301}"#),
+            &ok(&format!(r#"{{"address":"{STRANGER_EVM}","pkscript":null,"decimals":18,"event_type":null,"events":[],"limit":100,"has_more":false,"next_before_id":null,"block_height":301}}"#)),
         )
         .await;
         expect(
