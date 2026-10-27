@@ -1,6 +1,7 @@
 pub mod client;
 pub mod config;
 pub mod database;
+pub mod fail_stop;
 pub mod indexer;
 pub mod module;
 pub mod service_runtime;

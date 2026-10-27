@@ -10,7 +10,10 @@ use {
     futures::future::BoxFuture,
     jsonrpsee::server::ServerHandle,
     opi_bitmap::{BitmapConfig, BitmapModule},
-    opi_brc20::{config::Brc20IndexerConfig, module::Brc20Module, service_runtime::ServiceRuntime},
+    opi_brc20::{
+        config::Brc20IndexerConfig, fail_stop::RPC_THREAD_NAME, module::Brc20Module,
+        service_runtime::ServiceRuntime,
+    },
     opi_core::{BlockSource, Module},
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime},
@@ -89,6 +92,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
+    opi_brc20::fail_stop::install_panic_hook();
     let config = Config::from_env()?;
     let module_configs = ModuleConfigs::load(&config)?;
 
@@ -242,7 +246,7 @@ struct PublicRpc {
 impl PublicRpc {
     /// Starts the server on `brc20_prog_rpc_server_url`.
     fn start(brc20_prog: &Brc20Prog) -> Result<Self> {
-        let runtime = ServiceRuntime::new("opi-rpc")?;
+        let runtime = ServiceRuntime::new(RPC_THREAD_NAME)?;
         let server = runtime
             .handle()
             .block_on(brc20_prog.start_public_rpc_server())

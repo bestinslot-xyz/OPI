@@ -99,6 +99,7 @@ fn confirm(prompt: &str, yes: bool) -> bool {
 
 /// Runs a brc20 command to completion on its own runtime.
 pub fn run(args: Args) -> Result<()> {
+    opi_brc20::fail_stop::install_panic_hook();
     // Checked first so that a bad combination is an error, not a panic in
     // the config's default.
     BitcoinRpcAuth::from_env()?;

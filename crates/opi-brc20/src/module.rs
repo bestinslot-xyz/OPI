@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use crate::{
     config::Brc20IndexerConfig,
     database::{Brc20Database, get_brc20_database, replace_brc20_database},
+    fail_stop::BRC20_THREAD_NAME,
     indexer::Brc20Indexer,
     types::Brc20Tx,
 };
@@ -269,7 +270,7 @@ fn spawn_on_brc20_thread(job: Job) {
     JOBS.get_or_init(|| {
         let (jobs, mut received) = mpsc::unbounded_channel::<Job>();
         std::thread::Builder::new()
-            .name("brc20".into())
+            .name(BRC20_THREAD_NAME.into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
