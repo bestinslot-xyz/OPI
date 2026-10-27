@@ -435,6 +435,13 @@ The parity tests in `tools/parity/tests` compare the modules with the Python ref
 OPI_TEST_PG=1 uv run --with 'psycopg[binary]' --with pytest --with json5 python -m pytest tools/parity/tests
 ```
 
+`tools/parity/api_compare.py` replays every API route (plus bad-parameter cases) against the four per-module APIs and the merged API and diffs status and body. Documented differences are reported as ALLOWED; any other difference gives exit code 1. Run it on databases nobody is writing to, and restart the per-module apps before each run (an old handler can end its process):
+
+```bash
+python3 tools/parity/api_compare.py --brc20 http://127.0.0.1:8000 --bitmap http://127.0.0.1:8001 \
+  --sns http://127.0.0.1:8002 --runes http://127.0.0.1:8003 --new http://127.0.0.1:8010
+```
+
 # Update
 
 - Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
