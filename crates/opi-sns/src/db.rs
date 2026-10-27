@@ -11,6 +11,13 @@ use crate::rules::{
 
 const DB_INIT: &str = include_str!("db_init.sql");
 
+/// The index behind the API's name prefix search and its name order: a
+/// btree in the `C` collation serves `"name" COLLATE "C" LIKE 'prefix%'` and
+/// `ORDER BY "name" COLLATE "C"` under any database collation. A start
+/// creates it when missing.
+const NAME_PREFIX_INDEX: &str = "CREATE INDEX IF NOT EXISTS sns_names_name_c_idx \
+     ON public.sns_names USING btree (\"name\" COLLATE \"C\")";
+
 /// The finished hashes of one block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockHashes {
@@ -63,7 +70,10 @@ impl Db {
                 .fetch_optional(&self.pool)
                 .await?;
         match version {
-            Some(DB_VERSION) => Ok(()),
+            Some(DB_VERSION) => {
+                sqlx::query(NAME_PREFIX_INDEX).execute(&self.pool).await?;
+                Ok(())
+            }
             Some(other) => Err(anyhow!(
                 "sns db_version {other} is not {DB_VERSION}; the database must be recreated"
             )),

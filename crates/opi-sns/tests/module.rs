@@ -156,6 +156,41 @@ async fn version_gate_requires_5() {
     .await;
 }
 
+/// A start creates the name prefix index on a new database and again on one
+/// that lacks it (a database from before the index).
+#[tokio::test]
+async fn a_start_creates_the_name_prefix_index() {
+    async fn index(conn: &mut PgConnection) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'sns_names_name_c_idx'",
+        )
+        .fetch_optional(conn)
+        .await?)
+    }
+    with_database("name_index", |name| async move {
+        SnsModule::new(config(&name), Arc::new(Journal { tip_fails: false }))
+            .await
+            .unwrap();
+        let mut conn = PgConnection::connect_with(&admin().database(&name))
+            .await
+            .unwrap();
+        let def = index(&mut conn)
+            .await
+            .unwrap()
+            .expect("created with the schema");
+        assert!(def.contains(r#"(name COLLATE "C")"#), "{def}");
+        sqlx::query("DROP INDEX sns_names_name_c_idx")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        SnsModule::new(config(&name), Arc::new(Journal { tip_fails: false }))
+            .await
+            .unwrap();
+        assert_eq!(index(&mut conn).await.unwrap(), Some(def));
+    })
+    .await;
+}
+
 fn config(name: &str) -> SnsConfig {
     SnsConfig {
         db_user: "alper".into(),

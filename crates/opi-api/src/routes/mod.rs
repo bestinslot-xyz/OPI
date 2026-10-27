@@ -4,6 +4,7 @@
 
 mod bitmap;
 mod brc20;
+pub mod paging;
 mod runes;
 mod sns;
 

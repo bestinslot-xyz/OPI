@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select inscription_id, inscription_number, bitmap_number, block_height\n            from bitmaps\n            where inscription_id = $1\n            order by bitmap_number\n            limit 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "inscription_number"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "bitmap_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "bitmap_number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "block_height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7bbe2b1047ac06725161296451c2589256948987989cd30365d3b5029993c8d9"
+}

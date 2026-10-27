@@ -46,17 +46,12 @@ use {
     axum::extract::State,
 };
 
+pub use crate::routes::paging::{
+    BadParam, DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET, integer, prefix_pattern, required, single,
+};
+
 #[cfg(test)]
 mod tests;
-
-/// The page size when a request names none.
-pub const DEFAULT_LIMIT: i64 = 100;
-
-/// The largest page a request may ask for.
-pub const MAX_LIMIT: i64 = 500;
-
-/// The largest offset a request may ask for.
-pub const MAX_OFFSET: i64 = 1_000_000_000;
 
 /// The fractional digits of every stored amount: an amount divided by
 /// 10^18 is in tokens.
@@ -67,57 +62,6 @@ pub const AMOUNT_DECIMALS: i32 = 18;
 /// `BRC20_PROG_OP_RETURN_PKSCRIPT`. Its balance is the sum the BRC2.0
 /// balances list per EVM address, so the BRC-20 side leaves it out.
 pub const BRC20_PROG_MODULE_PKSCRIPT: &str = "6a09425243323050524f47";
-
-/// A parameter the route refuses, with the reason it answers in its 400.
-#[derive(Debug, PartialEq, Eq)]
-pub struct BadParam(pub String);
-
-impl BadParam {
-    pub(super) fn reply(self) -> Reply {
-        Reply::error(400, &self.0)
-    }
-}
-
-/// The string value of `key`, or `None` when the request leaves it out. A
-/// repeated or bracketed parameter is refused.
-pub(super) fn single<'a>(query: &'a JsObject, key: &str) -> Result<Option<&'a str>, BadParam> {
-    match query.get(key) {
-        JsValue::Undefined => Ok(None),
-        JsValue::String(value) => Ok(Some(value)),
-        _ => Err(BadParam(format!("{key} must be a single value"))),
-    }
-}
-
-/// The non-empty string value of `key`.
-fn required<'a>(query: &'a JsObject, key: &str) -> Result<&'a str, BadParam> {
-    match single(query, key)? {
-        Some(value) if !value.is_empty() => Ok(value),
-        _ => Err(BadParam(format!("{key} is required"))),
-    }
-}
-
-/// The integer value of `key` in `min..=max`, written in decimal digits, or
-/// `default` when the request leaves it out.
-pub(super) fn integer(
-    query: &JsObject,
-    key: &str,
-    default: i64,
-    min: i64,
-    max: i64,
-) -> Result<i64, BadParam> {
-    let Some(text) = single(query, key)? else {
-        return Ok(default);
-    };
-    let invalid = || BadParam(format!("{key} must be an integer from {min} to {max}"));
-    if text.is_empty() || text.len() > 18 || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid());
-    }
-    let value: i64 = text.parse().map_err(|_| invalid())?;
-    if !(min..=max).contains(&value) {
-        return Err(invalid());
-    }
-    Ok(value)
-}
 
 /// A page of a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,19 +144,6 @@ pub struct TickersRequest {
     /// The LIKE pattern of the `search` prefix.
     pub pattern: Option<String>,
     pub page: Page,
-}
-
-/// A LIKE pattern matching the strings that start with `prefix`.
-pub fn prefix_pattern(prefix: &str) -> String {
-    let mut pattern = String::with_capacity(prefix.len() + 1);
-    for c in prefix.chars() {
-        if matches!(c, '\\' | '%' | '_') {
-            pattern.push('\\');
-        }
-        pattern.push(c);
-    }
-    pattern.push('%');
-    pattern
 }
 
 impl TickersRequest {

@@ -16,6 +16,7 @@ CREATE TABLE public.sns_names (
 	CONSTRAINT sns_names_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX sns_names_name_idx ON public.sns_names USING btree ("name");
+CREATE INDEX sns_names_name_c_idx ON public.sns_names USING btree ("name" COLLATE "C");
 CREATE INDEX sns_names_domain_idx ON public.sns_names USING btree (domain);
 CREATE INDEX sns_names_block_height_idx ON public.sns_names USING btree (block_height);
 CREATE INDEX sns_names_inscription_id_idx ON public.sns_names USING btree (inscription_id);

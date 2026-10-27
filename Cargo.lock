@@ -5014,6 +5014,7 @@ dependencies = [
  "hyper 1.12.0",
  "hyper-util",
  "jiff",
+ "opi-sns",
  "sha2 0.10.9",
  "sqlx",
  "tokio",

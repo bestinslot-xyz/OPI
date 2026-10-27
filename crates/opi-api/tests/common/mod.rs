@@ -115,6 +115,76 @@ pub fn live(module: Module, var: &str) -> Option<(Router, PgPool)> {
     Some((app(module, Db::from_pool(pool.clone())), pool))
 }
 
+/// Runs `body` with `module`'s app on a throwaway database on the local
+/// Postgres (127.0.0.1:5432, the current user) built by running `scripts` in
+/// order, created with `collation` (a LC_COLLATE, the template's when
+/// `None`) and dropped even when `body` panics. Skips unless
+/// `OPI_TEST_PG=1`.
+pub async fn with_seeded<F, Fut>(
+    module: Module,
+    tag: &str,
+    collation: Option<&str>,
+    scripts: &[&str],
+    body: F,
+) where
+    F: FnOnce(Router, PgPool) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    use sqlx::Connection;
+    if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
+        eprintln!("OPI_TEST_PG is not 1; skipping");
+        return;
+    }
+    let user = std::env::var("USER").unwrap();
+    let options = || {
+        PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(5432)
+            .username(&user)
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let name = format!("opi_api_{tag}_{}_{nanos}", std::process::id());
+    let mut root = sqlx::PgConnection::connect_with(&options().database("postgres"))
+        .await
+        .unwrap();
+    let create = match collation {
+        None => format!("CREATE DATABASE {name}"),
+        Some(collation) => format!(
+            "CREATE DATABASE {name} TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE '{collation}' LC_CTYPE '{collation}'"
+        ),
+    };
+    sqlx::query(sqlx::AssertSqlSafe(create))
+        .execute(&mut root)
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new().max_connections(2).connect_lazy_with(
+        options()
+            .database(&name)
+            .options([("plan_cache_mode", opi_api::db::PLAN_CACHE_MODE)]),
+    );
+    for script in scripts {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(script.to_string()))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let router = app(module, Db::from_pool(pool.clone()));
+    let result = tokio::spawn(body(router, pool.clone())).await;
+    pool.close().await;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP DATABASE {name} WITH (FORCE)"
+    )))
+    .execute(&mut root)
+    .await
+    .unwrap();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error.into_panic());
+    }
+}
+
 /// `text` for a query string, with every byte but ASCII letters and digits
 /// percent-encoded.
 pub fn encode(text: &str) -> String {
