@@ -56,7 +56,7 @@ for module in modules:
   res = stdiomask.getpass(label + " password (blank keeps the current one): ")
   if res != '':
     settings[prefix + "_PASSWD"] = res
-  settings[prefix + "_SSL"] = ask(label + " use SSL, may need to be false on Windows machines", existing.get(prefix + "_SSL") or "true")
+  settings[prefix + "_SSL"] = ask(label + " use SSL, may need to be false on Windows machines", existing.get(prefix + "_SSL") or "false")
 
 settings["DB_MAX_CONNECTIONS"] = ask("Max connections per module database", existing.get("DB_MAX_CONNECTIONS") or "10")
 settings["API_HOST"] = ask("API host", existing.get("API_HOST") or "127.0.0.1")
