@@ -193,15 +193,10 @@ def test_pair_has_no_allowed_entries():
         assert ac.classify_pair(request(path), ac.Response(0, "x", "x"), full(200, "{}"))[0] == "DIFF"
 
 
-def test_status_modules_compare_without_key_order():
-    req = request("/v1/status")
-    a = full(200, '{"ok":true,"modules":{"brc20":1,"sns":2}}')
-    b = full(200, '{"ok":true,"modules":{"sns":2,"brc20":1}}')
-    assert ac.classify_pair(req, a, b)[0] == "PASS"
-    c = full(200, '{"ok":true,"modules":{"sns":3,"brc20":1}}')
-    assert ac.classify_pair(req, a, c)[0] == "DIFF"
-    d = full(200, '{"modules":{"sns":2,"brc20":1},"ok":true}')
-    assert ac.classify_pair(req, a, d)[0] == "DIFF"
+def test_modules_key_order_is_only_free_on_the_status_route():
+    a = full(200, '{"error":null,"result":{"modules":{"brc20":1,"sns":2}}}')
+    b = full(200, '{"error":null,"result":{"modules":{"sns":2,"brc20":1}}}')
+    assert ac.classify_pair(request("/v1/status"), a, b)[0] == "PASS"
     assert ac.classify_pair(request("/v1/brc20/activity_on_block"), a, b)[0] == "DIFF"
 
 
@@ -357,3 +352,47 @@ def test_rate_limit_run_compares_position_by_position(monkeypatch, capsys):
 
     monkeypatch.setattr(ac, "fetch", drifting)
     assert ac.run(args) == 1
+
+
+def unreachable():
+    return ac.Response(0, "connection refused", "connection error: connection refused")
+
+
+def test_two_unreachable_servers_are_a_diff():
+    verdict, detail = ac.classify_pair(request("/v1/brc20/ip"), unreachable(), unreachable())
+    assert verdict == "DIFF" and "no HTTP answer" in detail
+    assert ac.classify_pair(request("/v1/brc20/ip"), unreachable(), full(200, "x"))[0] == "DIFF"
+    assert ac.classify_pair(request("/v1/brc20/ip"), full(200, "x"), unreachable())[0] == "DIFF"
+
+
+def test_unreachable_servers_fail_the_runs(monkeypatch, capsys):
+    monkeypatch.setattr(ac, "fetch", lambda base, request, timeout: unreachable())
+    assert ac.run(ac.parse_args(["--pair", "js-rust", "--only", "bitmap"])) == 1
+    assert ac.run(ac.parse_args(["--pair", "js-rust", "--rate-limit"])) == 1
+
+
+def test_status_module_values_compare_by_exact_json_text():
+    req = request("/v1/status")
+
+    def status(modules):
+        return full(200, '{"error":null,"result":{"modules":' + modules + "}}")
+
+    base = status('{"brc20":{"a":1,"b":2},"sns":{"h":1}}')
+    assert ac.classify_pair(req, base, status('{"sns":{"h":1},"brc20":{"a":1,"b":2}}'))[0] == "PASS"
+    assert ac.classify_pair(req, base, status('{"brc20":{"b":2,"a":1},"sns":{"h":1}}'))[0] == "DIFF"
+    for spelling in ("1.0", "true"):
+        other = status('{"brc20":{"a":1,"b":2},"sns":{"h":' + spelling + "}}")
+        assert ac.classify_pair(req, base, other)[0] == "DIFF"
+    assert ac.classify_pair(req, base, status('{"brc20":{"a":1,"b":2}}'))[0] == "DIFF"
+
+
+def test_only_the_row_list_is_reordered_not_the_contents_of_a_row():
+    req = request("/v1/runes/holders")
+    a = full(200, '{"error":null,"result":[{"id":1,"xs":[{"k":1},{"k":2}]},{"id":2,"xs":[]}]}')
+    rows_moved = full(200, '{"error":null,"result":[{"id":2,"xs":[]},{"id":1,"xs":[{"k":1},{"k":2}]}]}')
+    assert ac.classify_pair(req, a, rows_moved)[0] == "ORDER"
+    inner_moved = full(200, '{"error":null,"result":[{"id":1,"xs":[{"k":2},{"k":1}]},{"id":2,"xs":[]}]}')
+    assert ac.classify_pair(req, a, inner_moved)[0] == "DIFF"
+    nested = full(200, '{"result":{"items":[{"a":1},{"a":2}]}}')
+    nested_moved = full(200, '{"result":{"items":[{"a":2},{"a":1}]}}')
+    assert ac.classify_pair(request("/v1/brc20/explorer/balances"), nested, nested_moved)[0] == "ORDER"

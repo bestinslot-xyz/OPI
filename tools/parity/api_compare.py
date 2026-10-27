@@ -330,16 +330,27 @@ def classify(request: Request, old: Response, new: Response, rules: list = ALLOW
 
 
 def canonical_rows(value: Any) -> Any:
-    """Sorts every list of objects (rows) by its canonical JSON text, so two
-    values compare equal when they hold the same rows in any order. Lists of
-    scalars keep their order, which keeps parallel arrays aligned."""
-    if isinstance(value, dict):
-        return {key: canonical_rows(item) for key, item in value.items()}
+    """Sorts the row lists of an answer by their canonical JSON text, so two
+    answers compare equal when they hold the same rows in any order. A row
+    list is a list of objects that is the answer itself, a member of the
+    answer object or a member of its `result` object. Nothing inside a row is
+    reordered, so an order change within a row stays a difference."""
+
+    def sort_rows(rows: list) -> list:
+        if not any(isinstance(row, dict) for row in rows):
+            return rows
+        return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
+
+    def sort_members(obj: dict) -> dict:
+        return {k: sort_rows(v) if isinstance(v, list) else v for k, v in obj.items()}
+
     if isinstance(value, list):
-        items = [canonical_rows(item) for item in value]
-        if any(isinstance(item, dict) for item in items):
-            items.sort(key=lambda item: json.dumps(item, sort_keys=True))
-        return items
+        return sort_rows(value)
+    if isinstance(value, dict):
+        out = sort_members(value)
+        if isinstance(out.get("result"), dict):
+            out["result"] = sort_members(out["result"])
+        return out
     return value
 
 
@@ -351,35 +362,40 @@ def status_bodies_match(js: Response, rust: Response) -> bool:
     """`/v1/status` bodies match when everything but the order of the keys of
     `modules` matches."""
     a, b = js.body, rust.body
-    # The answer is {"error": ..., "result": {"modules": {...}}}; a bare
-    # {"modules": {...}} is read the same way.
-    for holder_a, holder_b in ((a, b), (a.get("result") if isinstance(a, dict) else None, b.get("result") if isinstance(b, dict) else None)):
-        if not (isinstance(holder_a, dict) and isinstance(holder_b, dict)):
-            continue
-        if not (isinstance(holder_a.get("modules"), dict) and isinstance(holder_b.get("modules"), dict)):
-            continue
-        if holder_a["modules"] != holder_b["modules"]:
-            return False
-        if holder_a is a:
-            return list(a.keys()) == list(b.keys()) and json.dumps(
-                {k: v for k, v in a.items() if k != "modules"}
-            ) == json.dumps({k: v for k, v in b.items() if k != "modules"})
-        outer_a = {k: v for k, v in a.items() if k != "result"}
-        outer_b = {k: v for k, v in b.items() if k != "result"}
-        inner_a = {k: v for k, v in holder_a.items() if k != "modules"}
-        inner_b = {k: v for k, v in holder_b.items() if k != "modules"}
-        return (
-            list(a.keys()) == list(b.keys())
-            and list(holder_a.keys()) == list(holder_b.keys())
-            and json.dumps(outer_a) == json.dumps(outer_b)
-            and json.dumps(inner_a) == json.dumps(inner_b)
-        )
-    return js.raw == rust.raw
+    if not (isinstance(a, dict) and isinstance(b, dict)):
+        return js.raw == rust.raw
+    # The answer is {"error": ..., "result": {"modules": {...}}}.
+    result_a, result_b = a.get("result"), b.get("result")
+    if not (isinstance(result_a, dict) and isinstance(result_b, dict)):
+        return js.raw == rust.raw
+    modules_a, modules_b = result_a.get("modules"), result_b.get("modules")
+    if not (isinstance(modules_a, dict) and isinstance(modules_b, dict)):
+        return js.raw == rust.raw
+    # Each module value compares by its exact JSON text, so nested key order
+    # and number spelling count; only the order of the module names is free.
+    if set(modules_a) != set(modules_b):
+        return False
+    if any(json.dumps(modules_a[name]) != json.dumps(modules_b[name]) for name in modules_a):
+        return False
+    # Everything around `modules` compares exactly, key order included.
+    return (
+        list(a) == list(b)
+        and list(result_a) == list(result_b)
+        and without(a, "result") == without(b, "result")
+        and without(result_a, "modules") == without(result_b, "modules")
+    )
+
+
+def without(obj: dict, key: str) -> str:
+    """The JSON text of `obj` with `key` left out."""
+    return json.dumps({k: v for k, v in obj.items() if k != key})
 
 
 def classify_pair(request: Request, js: Response, rust: Response):
     """Returns (verdict, detail) with verdict PASS, ORDER or DIFF. No rule
     excuses a difference."""
+    if js.status == 0 or rust.status == 0:
+        return "DIFF", f"no HTTP answer (js={js.status} rust={rust.status}): {clip(js.raw)} | {clip(rust.raw)}"
     if js.status != rust.status:
         return "DIFF", f"status js={js.status} rust={rust.status}"
     if js.content_type != rust.content_type:
@@ -1053,7 +1069,8 @@ def run_rate_limit(args) -> int:
     differences = 0
     for request, a, b in zip(requests, js, rust):
         same = (
-            a.status == b.status
+            a.status != 0
+            and a.status == b.status
             and a.content_type == b.content_type
             and a.raw == b.raw
             and rate_limit_headers_match(a, b)
