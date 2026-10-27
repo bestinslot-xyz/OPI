@@ -5,7 +5,8 @@
 //! and lasts `windowMs`; the hit that ends past the window starts a new one.
 //! A request is limited when the window's hits exceed the limit. Numbers
 //! follow JavaScript arithmetic, so a NaN limit never limits and reports
-//! `NaN`.
+//! `NaN`. The store holds at most [`MAX_KEYS`] keys; see
+//! [`RateLimiter::with_max_keys`] for a full store.
 
 use {crate::js::number_to_string, std::collections::HashMap, std::sync::Mutex};
 
@@ -30,11 +31,17 @@ struct Client {
 struct Store {
     clients: HashMap<String, Client>,
     next_sweep: f64,
+    /// The earliest time the full-store warning logs again.
+    next_warning: f64,
 }
+
+/// The keys a limiter tracks at once.
+pub const MAX_KEYS: usize = 1_000_000;
 
 pub struct RateLimiter {
     window_ms: f64,
     limit: f64,
+    max_keys: usize,
     store: Mutex<Store>,
 }
 
@@ -48,13 +55,24 @@ fn js_max(a: f64, b: f64) -> f64 {
 }
 
 impl RateLimiter {
+    /// A limiter that tracks up to [`MAX_KEYS`] keys.
     pub fn new(window_ms: f64, limit: f64) -> Self {
+        Self::with_max_keys(window_ms, limit, MAX_KEYS)
+    }
+
+    /// A limiter that tracks up to `max_keys` keys at once. While the store
+    /// is full, a request from a new key is served untracked: it is never
+    /// limited and its headers show a fresh window with every request left.
+    /// Keys already tracked keep their limits.
+    pub fn with_max_keys(window_ms: f64, limit: f64, max_keys: usize) -> Self {
         RateLimiter {
             window_ms,
             limit,
+            max_keys,
             store: Mutex::new(Store {
                 clients: HashMap::new(),
                 next_sweep: f64::NEG_INFINITY,
+                next_warning: f64::NEG_INFINITY,
             }),
         }
     }
@@ -69,16 +87,27 @@ impl RateLimiter {
                 store.clients.retain(|_, c| c.reset_at > now_ms);
                 store.next_sweep = now_ms + self.window_ms.max(1.0);
             }
-            let client = store.clients.entry(key.to_string()).or_insert(Client {
-                hits: 0.0,
-                reset_at: now_ms + self.window_ms,
-            });
-            if client.reset_at <= now_ms {
-                client.hits = 0.0;
-                client.reset_at = now_ms + self.window_ms;
+            if store.clients.len() >= self.max_keys && !store.clients.contains_key(key) {
+                if now_ms >= store.next_warning {
+                    store.next_warning = now_ms + self.window_ms.max(1.0);
+                    tracing::warn!(
+                        "the rate limiter tracks {} clients; requests from new clients go unlimited until a window ends",
+                        self.max_keys
+                    );
+                }
+                (0.0, now_ms + self.window_ms)
+            } else {
+                let client = store.clients.entry(key.to_string()).or_insert(Client {
+                    hits: 0.0,
+                    reset_at: now_ms + self.window_ms,
+                });
+                if client.reset_at <= now_ms {
+                    client.hits = 0.0;
+                    client.reset_at = now_ms + self.window_ms;
+                }
+                client.hits += 1.0;
+                (client.hits, client.reset_at)
             }
-            client.hits += 1.0;
-            (client.hits, client.reset_at)
         };
         let limit = number_to_string(self.limit);
         let window_seconds = number_to_string((self.window_ms / 1000.0).ceil());

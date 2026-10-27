@@ -101,6 +101,35 @@ fn a_negative_limit_blocks_and_reports_it() {
 }
 
 #[test]
+fn a_full_store_serves_new_keys_untracked_and_keeps_existing_limits() {
+    let limiter = RateLimiter::with_max_keys(60_000.0, 1.0, 2);
+    let t0 = 1_000_000.0;
+    assert!(!limiter.hit("a", t0).blocked);
+    assert!(!limiter.hit("b", t0).blocked);
+    // "c" is new and the store is full: never limited, nothing recorded
+    for i in 0..3 {
+        let hit = limiter.hit("c", t0 + f64::from(i));
+        assert!(!hit.blocked);
+        assert_eq!(
+            headers(&hit),
+            [
+                ("RateLimit-Policy", "1;w=60".to_string()),
+                ("RateLimit-Limit", "1".to_string()),
+                ("RateLimit-Remaining", "1".to_string()),
+                ("RateLimit-Reset", "60".to_string()),
+            ]
+        );
+    }
+    assert_eq!(limiter.clients(), 2);
+    // tracked keys keep their limits
+    assert!(limiter.hit("a", t0 + 10.0).blocked);
+    // once the windows end the sweep frees room and "c" is tracked
+    assert!(!limiter.hit("c", t0 + 60_001.0).blocked);
+    assert!(limiter.hit("c", t0 + 60_002.0).blocked);
+    assert_eq!(limiter.clients(), 1);
+}
+
+#[test]
 fn expired_clients_are_dropped() {
     let limiter = RateLimiter::new(1000.0, 5.0);
     for i in 0..100 {
