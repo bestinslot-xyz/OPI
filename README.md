@@ -432,10 +432,17 @@ at the same 60 second header-read timeout.
 The API only reads from the module databases, so give it a read-only database
 role (see `OPI_ENV_FILE` below for pointing it at its own env file).
 
-The brc20 explorer routes and the unused-transaction routes read the tables
-`evm_addresses`, `brc20_unused_tx_inscrs` and `brc20_extras_block_hashes`,
-which neither the indexer nor `brc20 reindex-extras` creates; they answer the
-500 body until those tables exist in the brc20 database.
+The brc20 explorer routes read `evm_addresses`, which the brc20 module creates
+and keeps current: each block's events add their addresses, and a database
+without the table gets it filled from the indexed events on the next start
+(an existing table is adopted as it is). When `opi-indexer` takes over a
+database whose `evm_addresses` the Python sidecar
+`brc20_update_evm_addresses_custom.py` maintains, stop the sidecar.
+
+The unused-transaction routes read the tables `brc20_unused_tx_inscrs` and
+`brc20_extras_block_hashes`, which neither the indexer nor
+`brc20 reindex-extras` creates; they answer the 500 body until those tables
+exist in the brc20 database.
 
 ### API configuration
 
@@ -515,10 +522,10 @@ with `cargo sqlx prepare` (sqlx-cli 0.9) against a database that holds the
 schema, then verify it with `cargo sqlx prepare --check`. The `DATABASE_URL`
 needs an explicit user.
 
-For `opi-api`, build a throwaway database from the four schemas plus the three
-tables the API reads that no `db_init.sql` creates (`brc20_unused_tx_inscrs`,
-`brc20_extras_block_hashes` and `evm_addresses`), whose DDL goes in a local
-file `api_extra_tables.sql`:
+For `opi-api`, build a throwaway database from the four schemas plus the two
+tables the API reads that no `db_init.sql` creates (`brc20_unused_tx_inscrs`
+and `brc20_extras_block_hashes`), whose DDL goes in a local file
+`api_extra_tables.sql`:
 
 ```sql
 CREATE TABLE public.brc20_unused_tx_inscrs (
@@ -529,9 +536,6 @@ CREATE TABLE public.brc20_unused_tx_inscrs (
 CREATE TABLE public.brc20_extras_block_hashes (
 	id bigserial NOT NULL, block_height int4 NOT NULL, block_hash text NOT NULL,
 	CONSTRAINT brc20_extras_block_hashes_pk PRIMARY KEY (id));
-CREATE TABLE public.evm_addresses (
-	evm_address text NOT NULL, btc_address text NOT NULL,
-	CONSTRAINT evm_addresses_pk PRIMARY KEY (evm_address));
 ```
 
 ```bash

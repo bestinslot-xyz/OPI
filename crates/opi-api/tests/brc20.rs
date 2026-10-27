@@ -262,10 +262,11 @@ async fn live() -> Option<(Router, sqlx::PgPool)> {
     Some((app(Db::from_pool(pool.clone())), pool))
 }
 
-/// No repository holds the DDL of evm_addresses and brc20_unused_tx_inscrs,
-/// so a NULL in any column they are read from keeps JavaScript's null. The
-/// test builds both as temporary tables on its one session (they shadow any
-/// real ones and vanish with the connection), so the database is unchanged.
+/// No repository holds the DDL of brc20_unused_tx_inscrs, so a NULL in any
+/// column the API reads keeps JavaScript's null. The test builds it and
+/// evm_addresses as temporary tables with nullable columns on its one session
+/// (they shadow any real ones and vanish with the connection), so the
+/// database is unchanged.
 #[tokio::test]
 async fn live_null_columns_read_as_null() {
     let Ok(url) = std::env::var("OPI_API_TEST_DATABASE_URL") else {

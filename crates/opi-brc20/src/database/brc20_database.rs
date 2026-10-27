@@ -1605,7 +1605,7 @@ impl Brc20Database {
                 ),
             self.network,
         );
-        evm_addresses::insert_rows(&mut tx, &evm_address_rows).await?;
+        evm_addresses::insert_rows(&mut tx, evm_addresses::TABLE, &evm_address_rows).await?;
 
         if !self.log_timer_inserts.is_empty() {
             let mut all_log_data = Vec::new();

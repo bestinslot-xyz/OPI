@@ -57,6 +57,12 @@ CREATE INDEX brc20_light_events_event_type_idx ON public.brc20_light_events USIN
 CREATE INDEX brc20_light_events_inscription_id_idx ON public.brc20_light_events USING btree (inscription_id);
 CREATE INDEX brc20_light_events_ticker_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)));
 
+CREATE TABLE IF NOT EXISTS public.evm_addresses (
+	id serial PRIMARY KEY,
+	evm_address text NOT NULL UNIQUE,
+	btc_address text NOT NULL UNIQUE
+);
+
 CREATE TABLE public.brc20_tickers (
 	id bigserial NOT NULL,
 	original_tick text NOT NULL,

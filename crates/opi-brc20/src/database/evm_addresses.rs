@@ -88,18 +88,40 @@ pub fn rows_for_events<'a>(
 /// Events read per query when filling a new table.
 pub const FILL_BATCH: i64 = 10_000;
 
-/// The table as blockscout-setup's extra_sqls.sql defines it, with the same
-/// sequence and constraint names.
-const CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS evm_addresses (
-    id serial PRIMARY KEY,
-    evm_address text NOT NULL UNIQUE,
-    btc_address text NOT NULL UNIQUE
-)";
+/// The table opi-api reads.
+pub const TABLE: &str = "evm_addresses";
 
-/// Inserts `rows` in order. A row whose Bitcoin address the table holds is
-/// skipped before it takes an id, so ids stay dense.
+/// The table a fill writes into before it becomes `evm_addresses`.
+pub const FILL_TABLE: &str = "evm_addresses_fill";
+
+/// The table as blockscout-setup's extra_sqls.sql defines it. Under the name
+/// `evm_addresses` the sequence and constraints get extra_sqls.sql's names.
+fn create_table_sql(table: &str) -> String {
+    format!(
+        "CREATE TABLE {table} (
+            id serial PRIMARY KEY,
+            evm_address text NOT NULL UNIQUE,
+            btc_address text NOT NULL UNIQUE
+        )"
+    )
+}
+
+/// Gives the filled table, its sequence, primary key and unique constraints
+/// (with their indexes) the names extra_sqls.sql's DDL produces.
+const RENAME_FILL_TABLE: [&str; 6] = [
+    "ALTER TABLE evm_addresses_fill RENAME TO evm_addresses",
+    "ALTER SEQUENCE evm_addresses_fill_id_seq RENAME TO evm_addresses_id_seq",
+    "ALTER TABLE evm_addresses RENAME CONSTRAINT evm_addresses_fill_pkey TO evm_addresses_pkey",
+    "ALTER TABLE evm_addresses RENAME CONSTRAINT evm_addresses_fill_evm_address_key TO evm_addresses_evm_address_key",
+    "ALTER TABLE evm_addresses RENAME CONSTRAINT evm_addresses_fill_btc_address_key TO evm_addresses_btc_address_key",
+    "ALTER TABLE evm_addresses ALTER COLUMN id SET DEFAULT nextval('evm_addresses_id_seq'::regclass)",
+];
+
+/// Inserts `rows` into `table` in order. A row whose Bitcoin address the
+/// table holds is skipped before it takes an id, so ids stay dense.
 pub async fn insert_rows(
     conn: &mut PgConnection,
+    table: &str,
     rows: &[EvmAddressRow],
 ) -> Result<(), sqlx::Error> {
     if rows.is_empty() {
@@ -109,14 +131,14 @@ pub async fn insert_rows(
         .iter()
         .map(|row| (row.btc_address.as_str(), row.evm_address.as_str()))
         .unzip();
-    sqlx::query(
-        "INSERT INTO evm_addresses (btc_address, evm_address)
+    sqlx::query(AssertSqlSafe(format!(
+        "INSERT INTO {table} (btc_address, evm_address)
          SELECT r.btc_address, r.evm_address
          FROM UNNEST($1::text[], $2::text[]) WITH ORDINALITY AS r(btc_address, evm_address, ord)
-         WHERE NOT EXISTS (SELECT 1 FROM evm_addresses e WHERE e.btc_address = r.btc_address)
+         WHERE NOT EXISTS (SELECT 1 FROM {table} e WHERE e.btc_address = r.btc_address)
          ORDER BY r.ord
-         ON CONFLICT DO NOTHING",
-    )
+         ON CONFLICT DO NOTHING"
+    )))
     .bind(&btc_addresses)
     .bind(&evm_addresses)
     .execute(conn)
@@ -124,10 +146,15 @@ pub async fn insert_rows(
     Ok(())
 }
 
-/// Creates `evm_addresses` when the database has no such table and fills it
-/// from brc20_events and then brc20_light_events in id order, `batch` events
-/// per query, in one transaction. An existing table is used as it is.
-/// Returns whether the table was created.
+/// Makes sure `evm_addresses` exists before indexing.
+///
+/// An existing table is adopted as it is, less the sidecar's row with an
+/// empty `btc_address`. A database without the table gets one filled from
+/// brc20_events and then brc20_light_events in id order: the rows go into
+/// `evm_addresses_fill`, `batch` events per committed transaction, and the
+/// finished table is renamed to `evm_addresses`. A fill table left by an
+/// interrupted start is dropped and the fill starts over. Returns whether
+/// the table was filled.
 pub async fn create_and_fill_if_missing(
     pool: &Pool<Postgres>,
     network: Network,
@@ -138,25 +165,34 @@ pub async fn create_and_fill_if_missing(
         .await?
         .get(0);
     if exists {
+        sqlx::query("DELETE FROM evm_addresses WHERE btc_address = ''")
+            .execute(pool)
+            .await?;
         return Ok(false);
     }
 
-    tracing::info!("Creating evm_addresses and filling it from the indexed events");
-    let mut tx = pool.begin().await?;
-    sqlx::query("SET LOCAL statement_timeout = 0")
-        .execute(&mut *tx)
+    tracing::info!("Filling evm_addresses from the indexed events");
+    sqlx::query(AssertSqlSafe(format!("DROP TABLE IF EXISTS {FILL_TABLE}")))
+        .execute(pool)
         .await?;
-    sqlx::query(CREATE_TABLE).execute(&mut *tx).await?;
+    sqlx::query(AssertSqlSafe(create_table_sql(FILL_TABLE)))
+        .execute(pool)
+        .await?;
     for events_table in ["brc20_events", "brc20_light_events"] {
-        fill_from(&mut tx, events_table, network, batch).await?;
+        fill_from(pool, events_table, network, batch).await?;
+    }
+    let mut tx = pool.begin().await?;
+    for statement in RENAME_FILL_TABLE {
+        sqlx::query(statement).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     tracing::info!("Filled evm_addresses");
     Ok(true)
 }
 
+/// Fills `evm_addresses_fill` from `events_table`, committing each batch.
 async fn fill_from(
-    conn: &mut PgConnection,
+    pool: &Pool<Postgres>,
     events_table: &str,
     network: Network,
     batch: i64,
@@ -169,7 +205,7 @@ async fn fill_from(
         )))
         .bind(after_id)
         .bind(batch)
-        .fetch_all(&mut *conn)
+        .fetch_all(pool)
         .await?;
         let Some(last) = events.last() else {
             break;
@@ -179,8 +215,10 @@ async fn fill_from(
             .iter()
             .map(|event| (event.get("event_type"), event.get("event")))
             .collect();
+        let mut conn = pool.acquire().await?;
         insert_rows(
-            conn,
+            &mut conn,
+            FILL_TABLE,
             &rows_for_events(events.iter().map(|(t, e)| (*t, e)), network),
         )
         .await?;
@@ -366,6 +404,7 @@ mod db_tests {
     const P2TR_ADDR: &str = "tb1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqp3mvzv";
     const P2TR_EVM: &str = "0xc63da1b33495397e478732178bb4ab151f87db36";
     const NULLDATA: &str = "6a0b68656c6c6f20776f726c64";
+    const NULLDATA_EVM: &str = "0x26b86118b28b9037b8a5e61c2766fd8312d477ac";
 
     /// The sidecar's DDL (blockscout-setup extra_sqls.sql) without its
     /// OWNER statements.
@@ -629,12 +668,16 @@ mod db_tests {
                 .execute(&first.client)
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO evm_addresses (btc_address, evm_address) VALUES ($1, $2)")
-                .bind(P2SH_ADDR)
-                .bind(P2SH_EVM)
-                .execute(&first.client)
-                .await
-                .unwrap();
+            // The sidecar stores its first script without an address under
+            // an empty btc_address.
+            for (btc, evm) in [(P2SH_ADDR, P2SH_EVM), ("", NULLDATA_EVM)] {
+                sqlx::query("INSERT INTO evm_addresses (btc_address, evm_address) VALUES ($1, $2)")
+                    .bind(btc)
+                    .bind(evm)
+                    .execute(&first.client)
+                    .await
+                    .unwrap();
+            }
 
             let mut adopted = database(&name, false).await;
             assert_eq!(table(&adopted).await, expected(&[(P2SH_ADDR, P2SH_EVM)]));
@@ -644,8 +687,102 @@ mod db_tests {
             adopted.flush_queries_to_db().await.unwrap();
             assert_eq!(
                 table(&adopted).await,
-                expected(&[(P2SH_ADDR, P2SH_EVM), (P2TR_ADDR, P2TR_EVM)])
+                vec![
+                    (1, P2SH_ADDR.to_string(), P2SH_EVM.to_string()),
+                    (3, P2TR_ADDR.to_string(), P2TR_EVM.to_string()),
+                ]
             );
+        })
+        .await;
+    }
+
+    /// The table's columns, constraints, indexes and id sequence, by name.
+    async fn shape(database: &Brc20Database) -> Vec<String> {
+        let queries = [
+            "SELECT column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '')
+             FROM information_schema.columns WHERE table_name = 'evm_addresses'",
+            "SELECT conname || ' ' || contype || ' ' || pg_get_constraintdef(oid)
+             FROM pg_constraint WHERE conrelid = 'evm_addresses'::regclass",
+            "SELECT indexname || ' ' || indexdef FROM pg_indexes WHERE tablename = 'evm_addresses'",
+            "SELECT pg_get_serial_sequence('evm_addresses', 'id')",
+            "SELECT sequencename || ' ' || data_type::text FROM pg_sequences
+             WHERE sequencename LIKE 'evm_addresses%'",
+        ];
+        let mut shape = Vec::new();
+        for query in queries {
+            let mut rows: Vec<String> = sqlx::query(query)
+                .fetch_all(&database.client)
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            rows.sort();
+            shape.extend(rows);
+        }
+        shape
+    }
+
+    #[tokio::test]
+    async fn a_filled_table_has_the_sidecar_tables_names() {
+        with_database("shape", |name| async move {
+            let database = database(&name, false).await;
+            sqlx::query("DROP TABLE evm_addresses")
+                .execute(&database.client)
+                .await
+                .unwrap();
+            assert!(
+                create_and_fill_if_missing(&database.client, Network::Signet, FILL_BATCH)
+                    .await
+                    .unwrap()
+            );
+            let filled = shape(&database).await;
+
+            sqlx::query("DROP TABLE evm_addresses")
+                .execute(&database.client)
+                .await
+                .unwrap();
+            sqlx::raw_sql(SIDECAR_DDL)
+                .execute(&database.client)
+                .await
+                .unwrap();
+            assert_eq!(filled, shape(&database).await);
+            assert!(
+                filled
+                    .iter()
+                    .any(|line| line.contains("evm_addresses_id_seq"))
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_fill_table_left_by_an_interrupted_start_is_dropped() {
+        with_database("restart", |name| async move {
+            let mut full = database(&name, false).await;
+            index_two_blocks(&mut full);
+            full.flush_queries_to_db().await.unwrap();
+            let indexed = table(&full).await;
+
+            sqlx::raw_sql(AssertSqlSafe(format!(
+                "DROP TABLE evm_addresses;
+                 {};
+                 INSERT INTO evm_addresses_fill (btc_address, evm_address) VALUES ('junk', '0xjunk')",
+                create_table_sql(FILL_TABLE)
+            )))
+            .execute(&full.client)
+            .await
+            .unwrap();
+
+            let restarted = database(&name, false).await;
+            assert_eq!(table(&restarted).await, indexed);
+            let fill_table_gone: bool =
+                sqlx::query("SELECT to_regclass('evm_addresses_fill') IS NULL")
+                    .fetch_one(&restarted.client)
+                    .await
+                    .unwrap()
+                    .get(0);
+            assert!(fill_table_gone);
         })
         .await;
     }
