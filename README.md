@@ -138,8 +138,7 @@ answer (an unknown transaction, or a transaction not yet in a block) is reused
 only within the block that looked it up: in full mode a later block asks
 bitcoind again, while light mode replays the rows full nodes published. A
 stored `getrawtransaction` answer is likewise served in full mode only when
-the block it names is indexed, and a reorg deletes the answers that name an
-orphaned block. In
+the block it names is indexed; otherwise bitcoind is asked again. In
 full mode a miss goes to bitcoind at `BITCOIN_RPC_URL`, authenticated with
 `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or with `BITCOIN_RPC_COOKIE`, which
 is re-read on every request. Full mode requires one of the two credentials; the

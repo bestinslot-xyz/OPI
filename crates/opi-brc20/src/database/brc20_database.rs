@@ -111,14 +111,6 @@ pub struct BalanceUpdateData {
     pub event_id: i64,
 }
 
-/// Deletes the cached `getrawtransaction` answers confirmed in a block above the
-/// reorg height (`$1`). The hashes come from `brc20_block_hashes`, so the
-/// statement runs before that table's rows above `$1` are deleted.
-const ORPHANED_BLOCK_CACHE_ROWS_DELETE: &str = "DELETE FROM brc20_bitcoin_rpc_result_cache \
-     WHERE method = 'getrawtransaction' \
-     AND response->'result'->>'blockhash' IN \
-     (SELECT block_hash FROM brc20_block_hashes WHERE block_height > $1)";
-
 static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
 
 /// Held by every unit test that replaces or locks the global database, so
@@ -288,11 +280,20 @@ impl Brc20Database {
             .await?;
         };
 
-        // Lookups ask whether a block hash is indexed; databases created
-        // before the index existed get it here.
-        sqlx::query("CREATE INDEX IF NOT EXISTS brc20_block_hashes_block_hash_idx ON brc20_block_hashes (block_hash)")
-            .execute(&self.client)
-            .await?;
+        // Lookups ask whether a block hash is indexed; this creates that index
+        // on an existing database. The check comes first so a process that
+        // finds the index never waits on the table lock.
+        let has_block_hash_index = sqlx::query(
+            "SELECT 1 FROM pg_indexes WHERE indexname = 'brc20_block_hashes_block_hash_idx'",
+        )
+        .fetch_optional(&self.client)
+        .await?
+        .is_some();
+        if !has_block_hash_index {
+            sqlx::query("CREATE INDEX IF NOT EXISTS brc20_block_hashes_block_hash_idx ON brc20_block_hashes (block_hash)")
+                .execute(&self.client)
+                .await?;
+        }
 
         self.fetch_current_event_id().await?;
 
@@ -1034,14 +1035,6 @@ impl Brc20Database {
             .await?;
 
         sqlx::query("DELETE FROM brc20_bitcoin_rpc_result_cache WHERE block_height > $1")
-            .bind(block_height)
-            .execute(&mut *tx)
-            .await?;
-
-        // A row recorded at a lower height can name an orphaned block as the
-        // one confirming its transaction. This runs before the block hashes
-        // are deleted.
-        sqlx::query(ORPHANED_BLOCK_CACHE_ROWS_DELETE)
             .bind(block_height)
             .execute(&mut *tx)
             .await?;
