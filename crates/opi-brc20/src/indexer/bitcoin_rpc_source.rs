@@ -20,6 +20,7 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use axum::body::Bytes;
 use bitcoin::{BlockHash, Network, Transaction, Txid, consensus::encode};
 use bitcoincore_rpc::{
@@ -77,8 +78,9 @@ impl BitcoinRpcBufferSlot {
 /// brc20-prog's Bitcoin data source, backed by the Bitcoin RPC result cache.
 ///
 /// A lookup reads the installed buffer, then the
-/// `brc20_bitcoin_rpc_result_cache` table, when `BITCOIN_RPC_CACHE_ENABLED`
-/// is on. In full mode a miss goes to bitcoind, authenticating with
+/// `brc20_bitcoin_rpc_result_cache` table's newest row, when
+/// `BITCOIN_RPC_CACHE_ENABLED` is on. In full mode a stored "not yet" row is
+/// skipped (see `serves_stored`). In full mode a miss goes to bitcoind, authenticating with
 /// `bitcoin_rpc_auth`. A success, or an unknown transaction, answered to a
 /// lookup from the brc20 indexing thread is buffered under the next block's
 /// height; every other answer is returned unbuffered. In light mode a miss is
@@ -218,11 +220,29 @@ impl Worker {
                 self.first_inscription_height,
             )
         });
-        if let Some(cache) = &cache {
+        self.answer_with(cache.as_ref().map(|c| c as &dyn CacheRows), request, writer)
+            .await
+    }
+
+    /// `answer` over `cache`, which is `None` for a lookup past the cache.
+    async fn answer_with(
+        &self,
+        cache: Option<&dyn CacheRows>,
+        request: &Value,
+        writer: bool,
+    ) -> Result<Bytes, BitcoinRpcError> {
+        if let Some(cache) = cache {
             let key = serde_json::to_vec(request)?;
-            match cache.get(&key).await {
+            match cache.buffered(&key).await {
                 Ok(Some(response)) => return Ok(response),
                 Ok(None) => {}
+                Err(e) => return Err(cache_error("reading", e)),
+            }
+            match cache.stored(&key).await {
+                Ok(Some(response)) if serves_stored(self.light_client_mode, request, &response) => {
+                    return Ok(response);
+                }
+                Ok(_) => {}
                 Err(e) => return Err(cache_error("reading", e)),
             }
         }
@@ -240,13 +260,71 @@ impl Worker {
             .body(body.clone());
         let response = self.auth.authorize(post).await?.send().await?;
         let response = response.bytes().await?;
-        if let Some(cache) = &cache
+        if let Some(cache) = cache
             && buffers(writer, request, &response)
             && let Err(e) = cache.cache(&body, &response).await
         {
             return Err(cache_error("writing", e));
         }
         Ok(response)
+    }
+}
+
+/// The cache a lookup reads and writes: the buffer of this block's lookups,
+/// then the stored rows.
+#[async_trait]
+trait CacheRows: Send + Sync {
+    /// The answer in the buffer.
+    async fn buffered(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>>;
+    /// The newest stored answer.
+    async fn stored(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>>;
+    /// Buffers bitcoind's `response` to `request`.
+    async fn cache(&self, request: &[u8], response: &[u8]) -> Result<(), Box<dyn Error>>;
+}
+
+#[async_trait]
+impl CacheRows for BitcoinRpcCache {
+    async fn buffered(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
+        self.get_buffered(request)
+    }
+
+    async fn stored(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
+        self.get_stored(request).await
+    }
+
+    async fn cache(&self, request: &[u8], response: &[u8]) -> Result<(), Box<dyn Error>> {
+        BitcoinRpcCache::cache(self, request, response).await
+    }
+}
+
+/// Whether a stored row's `response` to `request` answers a lookup. Light mode
+/// replays every row. Full mode skips a "not yet" row, which was true only at
+/// the block that asked: a later block asks bitcoind again and buffers that
+/// answer under its own height.
+fn serves_stored(light_client_mode: bool, request: &Value, response: &[u8]) -> bool {
+    if light_client_mode {
+        return true;
+    }
+    match serde_json::from_slice::<Value>(response) {
+        Ok(response) => !is_not_yet(request, &response),
+        // An unreadable row is not served; bitcoind answers instead.
+        Err(_) => false,
+    }
+}
+
+/// Whether `response` to `request` is a "not yet" answer: `getrawtransaction`
+/// with error -5 at either verbosity, or with verbose=true and a result that
+/// has no `blockhash` (known to the node but unconfirmed). A found
+/// verbose=false answer has no block hash and its body cannot change.
+fn is_not_yet(request: &Value, response: &Value) -> bool {
+    if request["method"] != json!("getrawtransaction") {
+        return false;
+    }
+    match response.get("error") {
+        None | Some(Value::Null) => {
+            request["params"][1] == json!(true) && response["result"]["blockhash"].is_null()
+        }
+        Some(error) => error["code"] == json!(NOT_FOUND),
     }
 }
 
@@ -836,6 +914,216 @@ mod tests {
             &tx,
             b"<html>work queue depth exceeded</html>"
         ));
+    }
+
+    fn rpc_error_value(code: i32) -> Value {
+        json!({ "jsonrpc": "2.0", "error": { "code": code, "message": "x" } })
+    }
+
+    /// The verbose `getrawtransaction` answer for `TX_INFO` without its block.
+    fn unconfirmed_info() -> Value {
+        let mut response = signet_response(&raw_transaction_request(&txid(TX_INFO), true));
+        response["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("blockhash");
+        response
+    }
+
+    #[test]
+    fn a_not_yet_answer_is_a_getrawtransaction_without_a_block() {
+        let raw = raw_transaction_request(&txid(TX), false);
+        let verbose = raw_transaction_request(&txid(TX_INFO), true);
+        let header = block_header_request(&block_hash(HEADER));
+        let confirmed = signet_response(&verbose);
+        let found_raw = signet_response(&raw);
+
+        // Unknown transaction, either verbosity.
+        assert!(is_not_yet(&raw, &rpc_error_value(-5)));
+        assert!(is_not_yet(&verbose, &rpc_error_value(-5)));
+        // Known but unconfirmed.
+        assert!(is_not_yet(&verbose, &unconfirmed_info()));
+        let mut null_hash = confirmed.clone();
+        null_hash["result"]["blockhash"] = Value::Null;
+        assert!(is_not_yet(&verbose, &null_hash));
+        // Confirmed.
+        assert!(!is_not_yet(&verbose, &confirmed));
+        // A found raw transaction carries no block hash and cannot change.
+        assert!(!is_not_yet(&raw, &found_raw));
+        // Other errors and other methods.
+        assert!(!is_not_yet(&raw, &rpc_error_value(-8)));
+        assert!(!is_not_yet(&verbose, &rpc_error_value(-28)));
+        assert!(!is_not_yet(&header, &rpc_error_value(-5)));
+        assert!(!is_not_yet(
+            &header,
+            &signet_response(&block_header_request(&block_hash(HEADER)))
+        ));
+    }
+
+    #[test]
+    fn light_mode_replays_not_yet_rows_and_full_mode_skips_them() {
+        let raw = raw_transaction_request(&txid(TX), false);
+        let verbose = raw_transaction_request(&txid(TX_INFO), true);
+        let not_yet = rpc_error_value(-5).to_string();
+        let unconfirmed = unconfirmed_info().to_string();
+        let confirmed = signet_response(&verbose).to_string();
+        let found_raw = signet_response(&raw).to_string();
+
+        for (request, response) in [
+            (&raw, &not_yet),
+            (&verbose, &not_yet),
+            (&verbose, &unconfirmed),
+        ] {
+            assert!(serves_stored(true, request, response.as_bytes()));
+            assert!(!serves_stored(false, request, response.as_bytes()));
+        }
+        for (request, response) in [(&verbose, &confirmed), (&raw, &found_raw)] {
+            assert!(serves_stored(true, request, response.as_bytes()));
+            assert!(serves_stored(false, request, response.as_bytes()));
+        }
+        // An unreadable row in full mode goes to bitcoind.
+        assert!(!serves_stored(false, &raw, b"<html>"));
+    }
+
+    /// A cache over a map, with a fixed stored row.
+    #[derive(Default)]
+    struct FakeRows {
+        buffer: Mutex<HashMap<Vec<u8>, Bytes>>,
+        stored: Mutex<Option<Bytes>>,
+    }
+
+    impl FakeRows {
+        fn with_stored(response: Value) -> Self {
+            let rows = FakeRows::default();
+            *rows.stored.lock().unwrap() = Some(Bytes::from(response.to_string()));
+            rows
+        }
+
+        fn buffered_count(&self) -> usize {
+            self.buffer.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl CacheRows for FakeRows {
+        async fn buffered(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
+            Ok(self.buffer.lock().unwrap().get(request).cloned())
+        }
+
+        async fn stored(&self, _: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
+            Ok(self.stored.lock().unwrap().clone())
+        }
+
+        async fn cache(&self, request: &[u8], response: &[u8]) -> Result<(), Box<dyn Error>> {
+            let key = serde_json::to_vec(&without_id(&serde_json::from_slice(request)?))?;
+            self.buffer
+                .lock()
+                .unwrap()
+                .insert(key, Bytes::copy_from_slice(response));
+            Ok(())
+        }
+    }
+
+    /// A worker for `light_client_mode` in front of the bitcoind at `url`.
+    fn worker(url: &str, light_client_mode: bool) -> Worker {
+        let config = config(url, light_client_mode, true);
+        Worker {
+            pool: connect_pool(&config, 1, Some(Duration::from_millis(100))),
+            slot: BitcoinRpcBufferSlot::default(),
+            client: Client::new(),
+            bitcoin_rpc_url: url.to_string(),
+            auth: BitcoinRpcAuth::None,
+            light_client_mode,
+            cache_enabled: true,
+            first_inscription_height: 0,
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    /// A bitcoind that has confirmed `TX_INFO`.
+    fn confirmed_bitcoind() -> (String, Seen) {
+        stub_bitcoind(|request| {
+            reply(
+                request,
+                signet_response(&raw_transaction_request(&txid(TX_INFO), true)),
+            )
+        })
+    }
+
+    #[tokio::test]
+    async fn full_mode_asks_bitcoind_past_a_not_yet_row_and_buffers_the_fresh_answer() {
+        let (url, seen) = confirmed_bitcoind();
+        let worker = worker(&url, false);
+        let request = raw_transaction_request(&txid(TX_INFO), true);
+        for not_yet in [rpc_error_value(-5), unconfirmed_info()] {
+            seen.lock().unwrap().clear();
+            let rows = FakeRows::with_stored(not_yet);
+
+            let answer = worker
+                .answer_with(Some(&rows), &request, true)
+                .await
+                .unwrap();
+            let answer: Value = serde_json::from_slice(&answer).unwrap();
+            assert_eq!(
+                answer["result"]["blockhash"],
+                json!(TX_INFO_BLOCK),
+                "the fresh answer"
+            );
+            assert_eq!(seen.lock().unwrap().len(), 1);
+            assert_eq!(rows.buffered_count(), 1);
+
+            // The block's next lookup is served from the buffer.
+            worker
+                .answer_with(Some(&rows), &request, true)
+                .await
+                .unwrap();
+            assert_eq!(seen.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn full_mode_serves_a_confirmed_row_without_bitcoind() {
+        let (url, seen) = stub_bitcoind(|request| rpc_error(request, -1));
+        let worker = worker(&url, false);
+        let request = raw_transaction_request(&txid(TX_INFO), true);
+        let rows = FakeRows::with_stored(signet_response(&request));
+        let answer = worker
+            .answer_with(Some(&rows), &request, true)
+            .await
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&answer).unwrap();
+        assert_eq!(answer["result"]["blockhash"], json!(TX_INFO_BLOCK));
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(rows.buffered_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn full_mode_does_not_buffer_a_fresh_answer_off_the_indexing_thread() {
+        let (url, seen) = confirmed_bitcoind();
+        let worker = worker(&url, false);
+        let request = raw_transaction_request(&txid(TX_INFO), true);
+        let rows = FakeRows::with_stored(rpc_error_value(-5));
+        worker
+            .answer_with(Some(&rows), &request, false)
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(rows.buffered_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn light_mode_serves_a_not_yet_row_without_bitcoind() {
+        let (url, seen) = confirmed_bitcoind();
+        let worker = worker(&url, true);
+        let request = raw_transaction_request(&txid(TX_INFO), true);
+        let rows = FakeRows::with_stored(rpc_error_value(-5));
+        let answer = worker
+            .answer_with(Some(&rows), &request, true)
+            .await
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&answer).unwrap();
+        assert_eq!(answer["error"]["code"], json!(NOT_FOUND));
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[test]

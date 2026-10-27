@@ -133,7 +133,10 @@ brc20-prog's configuration docs).
 
 The engine gets its Bitcoin data in process, through the indexer. A lookup reads the Bitcoin RPC cache first
 when `BITCOIN_RPC_CACHE_ENABLED=true` (an in-memory buffer, then the Postgres
-table; the code default is `false`, `.env_sample` sets `true`). In full mode a
+table; the code default is `false`, `.env_sample` sets `true`). A "not yet"
+answer (an unknown transaction, or a transaction not yet in a block) is reused
+only within the block that looked it up: in full mode a later block asks
+bitcoind again, while light mode replays the rows full nodes published. In full mode a
 miss goes to bitcoind at `BITCOIN_RPC_URL`, authenticated with
 `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or with `BITCOIN_RPC_COOKIE`, which
 is re-read on every request. Full mode requires one of the two credentials; the

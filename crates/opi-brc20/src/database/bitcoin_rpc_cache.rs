@@ -87,66 +87,44 @@ impl BitcoinRpcCache {
         select_current_block_height(&self.pool, self.first_inscription_height).await
     }
 
+    /// The buffered answer, else the newest stored one.
     pub async fn get(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
+        if let Some(response) = self.get_buffered(request)? {
+            return Ok(Some(response));
+        }
+        self.get_stored(request).await
+    }
+
+    /// The answer in the in-memory buffer: this block's lookups, not yet
+    /// committed.
+    pub fn get_buffered(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
         if !self.enabled {
             return Ok(None);
         }
-
-        let Ok(request_json) = serde_json::from_slice::<serde_json::Value>(request) else {
-            return Err("Failed to parse Bitcoin RPC request as JSON".into());
-        };
-
-        let request_id = request_json.get("id");
-
-        tracing::debug!(
-            "Fetching Bitcoin RPC request from cache: {:?} with id {:?}",
-            request_json,
-            request_id
-        );
-
-        let Some(request_json_without_id) = request_json.as_object().map(|obj| {
-            let mut obj_clone = obj.clone();
-            obj_clone.remove("id");
-            serde_json::Value::Object(obj_clone)
-        }) else {
-            return Err("Bitcoin RPC request does not contain a valid JSON object".into());
-        };
-
-        let request_method = request_json_without_id
-            .get("method")
-            .and_then(|m| m.as_str())
-            .ok_or("Bitcoin RPC request does not contain a method")?;
-
-        let response_without_id = self
+        let request = ParsedRequest::parse(request)?;
+        let response = self
             .buffer
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(&request_json_without_id)
+            .get(&request.without_id)
             .map(|x| x.response.clone());
+        response
+            .map(|response| request.answer(response))
+            .transpose()
+    }
 
-        let response_without_id = if let Some(response_without_id) = response_without_id {
-            response_without_id
-        } else {
-            let Some(response_without_id) =
-                select_cached_response(&self.pool, request_method, &request_json_without_id)
-                    .await?
-            else {
-                return Ok(None);
-            };
-            response_without_id
+    /// The newest answer in the `brc20_bitcoin_rpc_result_cache` table.
+    pub async fn get_stored(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let request = ParsedRequest::parse(request)?;
+        let Some(response) =
+            select_cached_response(&self.pool, &request.method, &request.without_id).await?
+        else {
+            return Ok(None);
         };
-
-        let response_bytes = if let Some(id) = request_id {
-            let mut response_with_id = response_without_id.clone();
-            if let Some(obj) = response_with_id.as_object_mut() {
-                obj.insert("id".to_string(), id.clone());
-            }
-            serde_json::to_vec(&response_with_id)?
-        } else {
-            serde_json::to_vec(&response_without_id)?
-        };
-
-        Ok(Some(Bytes::from(response_bytes)))
+        request.answer(response).map(Some)
     }
 
     /// Buffers the response for the next commit.
@@ -209,6 +187,52 @@ impl BitcoinRpcCache {
     }
 }
 
+/// A cache request split into its key (the request without its `id`), the
+/// method and the `id` its answer carries.
+struct ParsedRequest {
+    without_id: serde_json::Value,
+    method: String,
+    id: Option<serde_json::Value>,
+}
+
+impl ParsedRequest {
+    fn parse(request: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let Ok(request_json) = serde_json::from_slice::<serde_json::Value>(request) else {
+            return Err("Failed to parse Bitcoin RPC request as JSON".into());
+        };
+        let Some(object) = request_json.as_object() else {
+            return Err("Bitcoin RPC request does not contain a valid JSON object".into());
+        };
+        let id = object.get("id").cloned();
+        let mut without_id = object.clone();
+        without_id.remove("id");
+        let without_id = serde_json::Value::Object(without_id);
+        let method = without_id
+            .get("method")
+            .and_then(|m| m.as_str())
+            .ok_or("Bitcoin RPC request does not contain a method")?
+            .to_string();
+        tracing::debug!(
+            "Fetching Bitcoin RPC request from cache: {:?} with id {:?}",
+            request_json,
+            id
+        );
+        Ok(ParsedRequest {
+            without_id,
+            method,
+            id,
+        })
+    }
+
+    /// The stored `response` as bytes, carrying the request's `id` if it had one.
+    fn answer(&self, mut response: serde_json::Value) -> Result<Bytes, Box<dyn Error>> {
+        if let (Some(id), Some(object)) = (&self.id, response.as_object_mut()) {
+            object.insert("id".to_string(), id.clone());
+        }
+        Ok(Bytes::from(serde_json::to_vec(&response)?))
+    }
+}
+
 /// The highest indexed block, or `first_inscription_height - 1` before the
 /// first one. A database error is an error.
 pub(crate) async fn select_current_block_height(
@@ -223,13 +247,14 @@ pub(crate) async fn select_current_block_height(
     Ok(row.map_or(first_inscription_height - 1, |row| row.block_height))
 }
 
+/// The newest row (highest block height) for the request.
 async fn select_cached_response(
     pool: &Pool<Postgres>,
     method: &str,
     request_without_id: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, sqlx::Error> {
     Ok(sqlx::query!(
-        "SELECT response FROM brc20_bitcoin_rpc_result_cache WHERE method = $1 AND request = $2 LIMIT 1",
+        "SELECT response FROM brc20_bitcoin_rpc_result_cache WHERE method = $1 AND request = $2 ORDER BY block_height DESC LIMIT 1",
         method,
         request_without_id
     )

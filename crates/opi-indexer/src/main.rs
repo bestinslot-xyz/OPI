@@ -267,8 +267,9 @@ fn is_lock_error(message: &str) -> bool {
 }
 
 /// How long shutdown waits for the brc20 thread to finish its last request.
-/// It covers a stalled Bitcoin lookup's retries.
-const BRC20_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// It covers a stalled Bitcoin lookup's retries: 6 attempts bounded at 20 s
+/// each take about 125 s.
+const BRC20_IDLE_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// Waits up to `BRC20_IDLE_TIMEOUT` for the brc20 thread to go idle.
 async fn wait_for_brc20_idle() {
