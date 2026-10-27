@@ -96,6 +96,15 @@ impl std::fmt::Display for ApiError {
     }
 }
 
+impl ApiError {
+    /// The error and its causes on one line: an error text that quotes
+    /// client input (a parameter that Postgres could not parse, say) may
+    /// hold a newline, which escaped here cannot start a new log line.
+    pub fn log_text(&self) -> String {
+        self.to_string().escape_debug().to_string()
+    }
+}
+
 /// The 500 answer the app's error middleware sends.
 pub fn internal_error() -> Response {
     Reply::error(500, "internal error").into_response()
@@ -103,7 +112,7 @@ pub fn internal_error() -> Response {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        tracing::error!("{:#}", self.0);
+        tracing::error!("{}", self.log_text());
         internal_error()
     }
 }

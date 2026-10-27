@@ -123,7 +123,17 @@ fn insert_headers(response: &mut Response, rate_headers: &[(&'static str, String
     }
 }
 
-async fn handle(State(front): State<Arc<FrontDoor>>, mut request: Request, next: Next) -> Response {
+/// Answers the request and logs its method, path (as received, without the
+/// query string) and status at debug level.
+async fn handle(State(front): State<Arc<FrontDoor>>, request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let response = answer(front, request, next).await;
+    tracing::debug!("{method} {path:?} {}", response.status().as_u16());
+    response
+}
+
+async fn answer(front: Arc<FrontDoor>, mut request: Request, next: Next) -> Response {
     if request.method() == Method::OPTIONS {
         return preflight(request.headers());
     }

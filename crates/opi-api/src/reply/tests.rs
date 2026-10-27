@@ -115,6 +115,20 @@ fn encode_url_encodes_a_bad_escape_with_the_character_it_takes() {
 }
 
 #[test]
+fn an_error_with_a_newline_logs_as_one_line() {
+    let error = ApiError::from(
+        anyhow::anyhow!("invalid input syntax for type integer: \"1\nERROR forged\r\"")
+            .context("a query"),
+    );
+    let line = error.log_text();
+    assert!(!line.contains('\n') && !line.contains('\r'), "{line}");
+    assert_eq!(
+        line,
+        r#"a query: invalid input syntax for type integer: \"1\nERROR forged\r\""#
+    );
+}
+
+#[test]
 fn encode_url_and_escape_html_match_express() {
     assert_eq!(
         escape_html(&encode_url("/v1/nope/<a>\"q'&$#é%")),
