@@ -16,14 +16,13 @@ use tokio::runtime::Handle;
 use crate::{
     config::{BitcoinRpcAuth, Brc20IndexerConfig},
     database::{BitcoinRpcBuffer, BitcoinRpcCache, connect_pool},
+    indexer::bitcoin_rpc_source::BITCOIND_TIMEOUT,
 };
 
 /// How long a proxy start retries an address that is still in use.
 const BIND_RETRY: Duration = Duration::from_secs(5);
 /// The pause between two bind attempts.
 const BIND_RETRY_PAUSE: Duration = Duration::from_millis(100);
-/// How long a forwarded request may take before the proxy answers 502.
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Starts the Bitcoin RPC proxy the engine calls for Bitcoin data and returns
 /// the address it listens on. It binds
@@ -69,7 +68,7 @@ fn start_with_retry(
             config.bitcoin_rpc_cache_enabled,
             config.first_inscription_height,
         ),
-        client: Client::builder().timeout(UPSTREAM_TIMEOUT).build()?,
+        client: Client::builder().timeout(BITCOIND_TIMEOUT).build()?,
         bitcoin_rpc_url: config.bitcoin_rpc_url.clone(),
         auth: config.bitcoin_rpc_auth.clone(),
         light_client_mode: config.light_client_mode,
@@ -181,9 +180,8 @@ async fn proxy(
         .post(&target_uri)
         .body(body.clone())
         .headers(headers);
-    let request = match upstream.auth.credentials().await {
-        Ok(Some((user, pass))) => request.basic_auth(user, Some(pass)),
-        Ok(None) => request,
+    let request = match upstream.auth.authorize(request).await {
+        Ok(request) => request,
         Err(e) => {
             tracing::error!("the Bitcoin RPC proxy cannot authenticate to bitcoind: {e:#}");
             return StatusCode::BAD_GATEWAY.into_response();

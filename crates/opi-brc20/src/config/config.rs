@@ -315,6 +315,17 @@ impl BitcoinRpcAuth {
             BitcoinRpcAuth::None => Ok(None),
         }
     }
+
+    /// `request` carrying the credentials to present now (see `credentials`).
+    pub async fn authorize(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
+        Ok(match self.credentials().await? {
+            Some((user, pass)) => request.basic_auth(user, Some(pass)),
+            None => request,
+        })
+    }
 }
 
 /// Chain id brc20-prog uses on mainnet ("BRC20" in hex).

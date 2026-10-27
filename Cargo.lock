@@ -1833,9 +1833,9 @@ dependencies = [
 
 [[package]]
 name = "brc20-prog"
-version = "0.16.5"
+version = "0.16.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59c1ac0a5fb2cdd3020525cd68db1bbef789f6daa0cc4c6cebe87eec166de0bf"
+checksum = "7cc02f1e01d874477bd47189986b8b259e0fd5bb7acc3285eaaa4500ca70a941"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -5028,6 +5028,7 @@ dependencies = [
  "axum",
  "axum-server",
  "bitcoin",
+ "bitcoincore-rpc",
  "brc20-prog",
  "hex",
  "lazy_static",
