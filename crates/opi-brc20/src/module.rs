@@ -148,6 +148,17 @@ impl Module for Brc20Module {
     }
 }
 
+/// Held by `serve` for an instance's whole life, so instances never share the
+/// global database.
+static INSTANCE: Mutex<()> = Mutex::const_new(());
+
+/// Returns once no instance runs on the brc20 thread: the last module handle
+/// is dropped and the request in flight, such as an engine commit, has
+/// finished.
+pub async fn wait_until_idle() {
+    drop(INSTANCE.lock().await);
+}
+
 /// Starts the indexer and answers `requests` until the module handle is
 /// dropped. `ready` receives the start-up's outcome.
 async fn serve(
@@ -157,9 +168,6 @@ async fn serve(
     mut requests: mpsc::UnboundedReceiver<Request>,
     ready: oneshot::Sender<anyhow::Result<()>>,
 ) {
-    // Held for this instance's whole life, so instances never share the
-    // global database.
-    static INSTANCE: Mutex<()> = Mutex::const_new(());
     let _instance = INSTANCE.lock().await;
 
     install_fresh_database(&config).await;
@@ -390,4 +398,59 @@ pub fn get_wallet(pkscript: &str, network: Network) -> String {
     )
     .map(|addr| addr.to_string())
     .unwrap_or_else(|_| "".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+
+    use super::*;
+
+    /// A module whose instance holds `INSTANCE` as `serve` does and answers
+    /// each request after blocking the brc20 thread, as an engine call does.
+    /// Dropping the module mid-request leaves `wait_until_idle` pending until
+    /// that request has finished.
+    #[tokio::test]
+    async fn wait_until_idle_waits_for_the_request_in_flight() {
+        let (requests, mut receiver) = mpsc::unbounded_channel::<Request>();
+        let (holding, held) = oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let answered = finished.clone();
+        spawn_on_brc20_thread(Box::new(move || {
+            Box::pin(async move {
+                let _instance = INSTANCE.lock().await;
+                holding.send(()).ok();
+                while let Some(request) = receiver.recv().await {
+                    std::thread::sleep(Duration::from_millis(500));
+                    answered.store(true, Ordering::SeqCst);
+                    if let Request::Cursor(reply) = request {
+                        reply.send(Ok(None)).ok();
+                    }
+                }
+            })
+        }));
+        held.await.unwrap();
+
+        let mut module = Brc20Module {
+            requests,
+            network: Network::Regtest,
+            first_inscription_height: 0,
+            height_limit: i32::MAX,
+        };
+        // The caller gives up on the reply and drops the module, as a
+        // shutdown does, while the request is still running.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), module.cursor())
+                .await
+                .is_err()
+        );
+        drop(module);
+        assert!(!finished.load(Ordering::SeqCst));
+
+        wait_until_idle().await;
+        assert!(finished.load(Ordering::SeqCst));
+    }
 }

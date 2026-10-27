@@ -123,11 +123,20 @@ fn run() -> Result<()> {
         }
     };
 
+    let brc20_enabled = brc20_prog.is_some();
     let exit = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(anyhow::Error::from)
-        .and_then(|runtime| runtime.block_on(supervise(&handle, module_configs, brc20_prog)));
+        .and_then(|runtime| {
+            let exit = runtime.block_on(supervise(&handle, module_configs, brc20_prog));
+            // The brc20 module may still be finishing its last block, such
+            // as an engine commit, which the public RPC must outlive.
+            if brc20_enabled {
+                runtime.block_on(wait_for_brc20_idle());
+            }
+            exit
+        });
 
     // The modules have stopped; the public RPC server stops before the source.
     if let Some(public_rpc) = public_rpc {
@@ -230,6 +239,18 @@ fn is_lock_error(message: &str) -> bool {
             && ["Resource temporarily unavailable", "Permission denied"]
                 .iter()
                 .any(|reason| message.contains(reason))
+}
+
+/// How long shutdown waits for the brc20 thread to finish its last request.
+const BRC20_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Waits up to `BRC20_IDLE_TIMEOUT` for the brc20 thread to go idle.
+async fn wait_for_brc20_idle() {
+    tracing::info!("waiting for brc20 to finish its last request");
+    match tokio::time::timeout(BRC20_IDLE_TIMEOUT, opi_brc20::module::wait_until_idle()).await {
+        Ok(()) => tracing::info!("brc20 is idle"),
+        Err(_) => tracing::warn!("brc20 did not go idle within {BRC20_IDLE_TIMEOUT:?}"),
+    }
 }
 
 /// How long `PublicRpc::stop` waits for in-flight public calls to finish.
