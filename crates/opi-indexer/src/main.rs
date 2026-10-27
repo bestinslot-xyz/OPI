@@ -43,9 +43,9 @@ enum Command {
     /// either side.
     Validate(validate::Args),
     /// BRC-20 light client and maintenance commands. Reads only brc20's
-    /// environment, so it runs on light-client hosts. `event-str` and `report`
-    /// run alongside `run`; every other command needs `run` stopped, since
-    /// it opens brc20-prog's database.
+    /// environment, so it runs on light-client hosts. `event-str` runs
+    /// alongside `run`; every other command needs `run` stopped, since it
+    /// opens brc20-prog's database.
     Brc20(brc20::Args),
 }
 
@@ -221,11 +221,15 @@ fn open_engine(engine_config: Brc20ProgConfig) -> Result<Brc20Prog> {
 /// process holds the `LOCK` file, or this process already has the database
 /// open.
 fn is_lock_error(message: &str) -> bool {
-    ["While lock file", "lock hold by current process"]
-        .iter()
-        .any(|marker| message.contains(marker))
-        || message.contains("LOCK") && message.contains("Resource temporarily unavailable")
+    message.contains("lock hold by current process")
+        || message.contains("While lock file")
+            && ["Resource temporarily unavailable", "Permission denied"]
+                .iter()
+                .any(|reason| message.contains(reason))
 }
+
+/// How long `PublicRpc::stop` waits for in-flight public calls to finish.
+const RPC_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The engine's public JSON-RPC server and the runtime it runs on. The
 /// runtime has threads of its own, since the engine blocks the thread that
@@ -246,11 +250,17 @@ impl PublicRpc {
         Ok(PublicRpc { server, runtime })
     }
 
-    /// Stops the server, waits for it to finish, then stops the runtime.
+    /// Stops the server, waits up to `RPC_STOP_TIMEOUT` for it to finish,
+    /// then stops the runtime.
     fn stop(self) {
         let PublicRpc { server, runtime } = self;
         server.stop().ok();
-        runtime.handle().block_on(server.stopped());
+        let stopped = runtime
+            .handle()
+            .block_on(async { tokio::time::timeout(RPC_STOP_TIMEOUT, server.stopped()).await });
+        if stopped.is_err() {
+            tracing::warn!("the brc20-prog RPC server did not stop within {RPC_STOP_TIMEOUT:?}");
+        }
         drop(runtime);
     }
 }
@@ -427,6 +437,12 @@ mod tests {
         assert!(is_lock_error(
             "IO error: lock hold by current process, acquire time 1 acquiring thread 2: /db/LOCK: No locks available"
         ));
+        assert!(is_lock_error(
+            "IO error: While lock file: /db/LOCK: Permission denied"
+        ));
+        assert!(!is_lock_error(
+            "IO error: While lock file: /db/LOCK: No locks available"
+        ));
         assert!(!is_lock_error("Invalid block number"));
         assert!(!is_lock_error("failed to read block 5"));
     }
@@ -493,10 +509,6 @@ mod tests {
             }
         ));
         assert!(matches!(
-            brc20_command(&["report", "7"]),
-            brc20::Command::Report { height: 7 }
-        ));
-        assert!(matches!(
             brc20_command(&["recalculate-hashes", "5"]),
             brc20::Command::RecalculateHashes { from: 5 }
         ));
@@ -523,10 +535,9 @@ mod tests {
         assert!(brc20_fails(&[]));
         assert!(brc20_fails(&["reorg"]));
         assert!(brc20_fails(&["reorg", "abc"]));
-        assert!(brc20_fails(&["report", "1.5"]));
+        assert!(brc20_fails(&["report", "7"]));
         assert!(brc20_fails(&["event-str", "x"]));
         assert!(brc20_fails(&["light", "--yes"]));
-        assert!(brc20_fails(&["report", "1", "--yes"]));
         for removed in [
             "--setup",
             "--reset",

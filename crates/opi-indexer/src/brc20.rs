@@ -3,7 +3,7 @@
 //! These commands read only brc20's own environment
 //! (`Brc20IndexerConfig::default()`). They never load the shared `Config`
 //! or open the journal, so they run on a light-client host with no `OPI_*`
-//! settings. `event-str` and `report` read only Postgres and run alongside a
+//! settings. `event-str` reads only Postgres and runs alongside a
 //! running `opi-indexer run`. Every other command opens brc20-prog's database,
 //! which one process holds at a time, so `run` must be stopped first.
 
@@ -13,7 +13,7 @@ use {
     opi_brc20::{
         config::Brc20IndexerConfig,
         database::{Brc20Database, get_brc20_database, set_brc20_database},
-        indexer::{Brc20Indexer, report_block_from_journal},
+        indexer::Brc20Indexer,
     },
     std::{
         io::{self, BufRead, Write},
@@ -49,12 +49,6 @@ pub enum Command {
         height: i32,
         #[command(flatten)]
         confirm: Confirm,
-    },
-    /// Report the BRC-20 data of a block height to the OPI network. Runs
-    /// alongside `run`.
-    Report {
-        /// Block height to report.
-        height: i32,
     },
     /// Recompute the cumulative event hashes from a height to the latest indexed block.
     /// Stop `run` first.
@@ -121,31 +115,27 @@ pub fn run(args: Args) -> Result<()> {
 // keeps the message.
 async fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
-    // `event-str` and `report` read Postgres only, so they leave the engine's
-    // database to a running `opi-indexer run`.
+    // `event-str` reads Postgres only, so it leaves the engine's database to
+    // a running `opi-indexer run`.
     match command {
-        Command::EventStr { height } => {
-            let database = get_brc20_database();
-            let mut database = database.lock().await;
-            database.init().await.map_err(|e| anyhow!("{e}"))?;
-            match database
-                .get_block_events_str(height)
-                .await
-                .map_err(|e| anyhow!("{e}"))?
-            {
-                Some(text) => println!("Block Event String at height {height}:\n{text}"),
-                None => println!("No events found at height {height}"),
-            }
-            Ok(())
-        }
-        Command::Report { height } => {
-            tracing::info!("Reporting block at height {height}");
-            report_block_from_journal(&config, None, height)
-                .await
-                .map_err(|e| anyhow!("{e}"))
-        }
+        Command::EventStr { height } => event_str(height).await,
         command => execute_with_engine(command, config).await,
     }
+}
+
+async fn event_str(height: i32) -> Result<()> {
+    let database = get_brc20_database();
+    let mut database = database.lock().await;
+    database.init().await.map_err(|e| anyhow!("{e}"))?;
+    match database
+        .get_block_events_str(height)
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+    {
+        Some(text) => println!("Block Event String at height {height}:\n{text}"),
+        None => println!("No events found at height {height}"),
+    }
+    Ok(())
 }
 
 /// Runs a command that needs the engine, which opens its database for
@@ -154,9 +144,7 @@ async fn execute_with_engine(command: Command, config: Brc20IndexerConfig) -> Re
     let brc20_prog = crate::open_brc20_prog(&config)?;
     let mut indexer = Brc20Indexer::new(config, brc20_prog, None);
     match command {
-        Command::EventStr { .. } | Command::Report { .. } => {
-            unreachable!("these commands run without the engine")
-        }
+        Command::EventStr { height } => event_str(height).await?,
         Command::Light => indexer.run().await.map_err(|e| anyhow!("{e}"))?,
         Command::Reset(Confirm { yes }) => {
             if !confirm(
