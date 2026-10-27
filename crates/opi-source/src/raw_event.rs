@@ -153,7 +153,7 @@ mod inscription_id {
 mod inscription_id_seq {
     use super::*;
 
-    pub fn serialize<S: Serializer>(ids: &Vec<InscriptionId>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(ids: &[InscriptionId], s: S) -> Result<S::Ok, S::Error> {
         s.collect_seq(ids.iter().map(|id| InscriptionIdFields::from(*id)))
     }
 
