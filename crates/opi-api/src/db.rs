@@ -90,11 +90,12 @@ impl Db {
         }
     }
 
-    /// The integer input rules of the server behind the pool, from the
-    /// `server_version_num` it reports when a connection starts. The first
-    /// call reads it (the server reports it to every connection, so no
-    /// query runs) and later calls reuse it; a failed read is retried on
-    /// the next call. A test double answers the Postgres 14 rules.
+    /// The integer input rules of the server behind the pool. The server
+    /// reports its `server_version` (as `14.15`, say) to every connection
+    /// as it starts, and sqlx parses it into a version number, so no query
+    /// runs. The first call reads it from a pooled connection and later
+    /// calls reuse it; a failed read is retried on the next call. A test
+    /// double answers the Postgres 14 rules.
     pub async fn int_rules(&self) -> Result<IntRules> {
         let (pool, int_rules) = match &*self.inner {
             Inner::Fake(_) => return Ok(IntRules::Pg14),

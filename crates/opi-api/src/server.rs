@@ -1,13 +1,14 @@
-//! The HTTP server: hyper's HTTP/1 and HTTP/2 connection handling, a
-//! header-read timeout for clients that open a connection and never finish
-//! a request, and a graceful shutdown bounded in time.
+//! The HTTP server: HTTP/1 only, as the Express app serves, with a
+//! header-read timeout on every connection, so a client that connects and
+//! sends nothing, or never finishes a request's headers, is dropped; and a
+//! graceful shutdown bounded in time.
 
 use {
     axum::{Router, body::Body, extract::ConnectInfo},
-    hyper::{Request, body::Incoming, service::service_fn},
+    hyper::{Request, body::Incoming, server::conn::http1, service::service_fn},
     hyper_util::{
-        rt::{TokioExecutor, TokioIo, TokioTimer},
-        server::{conn::auto::Builder, graceful::GracefulShutdown},
+        rt::{TokioIo, TokioTimer},
+        server::graceful::GracefulShutdown,
     },
     std::{future::Future, time::Duration},
     tokio::net::TcpListener,
@@ -15,7 +16,9 @@ use {
 };
 
 pub struct ServeOptions {
-    /// How long a client has to send a request's headers.
+    /// How long a client has to send a request's headers, from the moment
+    /// the server starts waiting for them (on a new connection, as it is
+    /// accepted).
     pub header_read_timeout: Duration,
     /// How long requests in flight may run on after the shutdown signal;
     /// the server then stops with them unanswered.
@@ -41,9 +44,8 @@ pub async fn serve_listener(
     options: ServeOptions,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let mut builder = Builder::new(TokioExecutor::new());
+    let mut builder = http1::Builder::new();
     builder
-        .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(options.header_read_timeout);
     let graceful = GracefulShutdown::new();
@@ -55,8 +57,10 @@ pub async fn serve_listener(
                 Err(err) => {
                     // a full file table, say; the next accept may succeed
                     tracing::warn!("accepting a connection: {err}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_millis(100)) => continue,
+                        () = &mut shutdown => break,
+                    }
                 }
             },
             () = &mut shutdown => break,
@@ -66,9 +70,7 @@ pub async fn serve_listener(
             request.extensions_mut().insert(ConnectInfo(peer));
             app.clone().oneshot(request.map(Body::new))
         });
-        let connection = builder
-            .serve_connection_with_upgrades(TokioIo::new(stream), service)
-            .into_owned();
+        let connection = builder.serve_connection(TokioIo::new(stream), service);
         let connection = graceful.watch(connection);
         tokio::spawn(async move {
             if let Err(err) = connection.await {

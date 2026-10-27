@@ -122,6 +122,71 @@ async fn a_client_that_never_finishes_its_headers_is_dropped() {
     server.done.await.unwrap().unwrap();
 }
 
+/// Connects, sends `bytes`, and answers how long the server took to close
+/// the connection, and what it sent first.
+async fn closed_after(addr: std::net::SocketAddr, bytes: &[u8]) -> (Duration, String) {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(bytes).await.unwrap();
+    let started = Instant::now();
+    let mut buf = [0; 1024];
+    let read = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut total = Vec::new();
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return total,
+                Ok(n) => total.extend_from_slice(&buf[..n]),
+            }
+        }
+    })
+    .await
+    .expect("the server closes the connection");
+    (
+        started.elapsed(),
+        String::from_utf8_lossy(&read).into_owned(),
+    )
+}
+
+#[tokio::test]
+async fn a_client_that_sends_nothing_is_dropped() {
+    let mut server = start(ServeOptions {
+        header_read_timeout: Duration::from_millis(300),
+        ..ServeOptions::default()
+    })
+    .await;
+    let (elapsed, text) = closed_after(server.addr, b"").await;
+    assert!(elapsed >= Duration::from_millis(250), "{elapsed:?}");
+    assert!(
+        text.is_empty() || text.starts_with("HTTP/1.1 408"),
+        "{text}"
+    );
+    server.stop.take().unwrap().send(()).unwrap();
+    server.done.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn http2_is_not_served() {
+    // Express speaks HTTP/1 only. The HTTP/2 preface is not an HTTP/1
+    // request, so the connection ends without an HTTP/2 answer.
+    let mut server = start(ServeOptions {
+        header_read_timeout: Duration::from_millis(300),
+        ..ServeOptions::default()
+    })
+    .await;
+    for preface in [
+        &b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"[..],
+        b"PRI * HTTP/2.0\r\n",
+    ] {
+        let (_, text) = closed_after(server.addr, preface).await;
+        // hyper answers a malformed HTTP/1 request with 400, or closes
+        assert!(
+            text.is_empty() || text.starts_with("HTTP/1.1 4"),
+            "{preface:?}: {text}"
+        );
+    }
+    server.stop.take().unwrap().send(()).unwrap();
+    server.done.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn shutdown_lets_a_request_in_flight_finish() {
     let mut server = start(ServeOptions {
