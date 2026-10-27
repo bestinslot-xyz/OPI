@@ -52,8 +52,9 @@ transaction's input and burn events canonically.
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
   which needs undo data.
 - One Postgres database per enabled module.
-- brc20-prog, reachable at `BRC20_PROG_RPC_URL` (its admin listener), when
-  `brc20` is enabled. The brc20 module always runs BRC2.0.
+- A writable directory for the brc20-prog engine (`BRC20_PROG_DB_PATH`) when
+  `brc20` is enabled. The engine runs inside the indexer process, and the
+  brc20 module always runs BRC2.0.
 
 ### Configuration
 

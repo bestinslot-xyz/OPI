@@ -1,6 +1,6 @@
 use std::{error::Error, str::FromStr};
 
-use jsonrpsee::http_client::HttpClient;
+use brc20_prog::Brc20Prog;
 use serde_json::json;
 
 use crate::{
@@ -17,7 +17,7 @@ pub struct Brc20SwapRefund;
 impl Brc20SwapRefund {
     pub async fn generate_and_process_refunds(
         block_height: i32,
-        brc20_prog_client: &HttpClient,
+        brc20_prog_client: &Brc20Prog,
         config: &Brc20IndexerConfig,
         block_time: u64,
         block_hash: &str,

@@ -1,10 +1,9 @@
 use std::error::Error;
 
 use brc20_prog::{
-    Brc20ProgApiClient,
+    Brc20Prog, Brc20ProgApiServer,
     types::{B256ED, Base64Bytes, RawBytes},
 };
-use jsonrpsee::http_client::HttpClient;
 
 use crate::{
     config::{BRC20_PROG_OP_RETURN_PKSCRIPT, Brc20IndexerConfig, NO_TX_ID, NO_WALLET, OP_RETURN},
@@ -59,7 +58,7 @@ impl EventProcessor {
     }
 
     pub async fn brc20_prog_deploy_transfer(
-        prog_client: &HttpClient,
+        prog_client: &Brc20Prog,
         block_height: i32,
         block_time: u64,
         block_hash: &str,
@@ -109,7 +108,7 @@ impl EventProcessor {
     }
 
     pub async fn brc20_prog_call_transfer(
-        prog_client: &HttpClient,
+        prog_client: &Brc20Prog,
         block_height: i32,
         block_time: u64,
         block_hash: &str,
@@ -170,7 +169,7 @@ impl EventProcessor {
     }
 
     pub async fn brc20_prog_transact_transfer(
-        prog_client: &HttpClient,
+        prog_client: &Brc20Prog,
         block_height: i32,
         block_hash: &str,
         inscription_id: &str,
@@ -220,7 +219,7 @@ impl EventProcessor {
 
     #[allow(clippy::too_many_arguments)] // the transfer context is passed individually
     pub async fn brc20_prog_withdraw_transfer(
-        prog_client: &HttpClient,
+        prog_client: &Brc20Prog,
         block_height: i32,
         block_hash: &str,
         block_time: u64,
@@ -435,7 +434,7 @@ impl EventProcessor {
 
     #[allow(clippy::too_many_arguments)] // the transfer context is passed individually
     pub async fn brc20_transfer_transfer(
-        prog_client: &HttpClient,
+        prog_client: &Brc20Prog,
         block_height: i32,
         block_time: u64,
         block_hash: &str,

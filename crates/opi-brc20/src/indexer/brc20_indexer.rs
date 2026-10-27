@@ -1,7 +1,6 @@
 use std::{cmp::min, error::Error, sync::Arc};
 
-use brc20_prog::Brc20ProgApiClient;
-use jsonrpsee::http_client::HttpClient;
+use brc20_prog::{Brc20Prog, Brc20ProgApiServer};
 use opi_core::BlockSource;
 use tokio::task::JoinHandle;
 use versions::{Requirement, Versioning};
@@ -27,7 +26,7 @@ use crate::{
     indexer::{
         EventGenerator, EventProcessor,
         brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
-        brc20_prog_client::{build_brc20_prog_http_client, retrieve_brc20_prog_traces_hash},
+        brc20_prog_client::retrieve_brc20_prog_traces_hash,
         brc20_reporter::Brc20Reporter,
         brc20_swap_refund::Brc20SwapRefund,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
@@ -56,7 +55,7 @@ pub struct Brc20Indexer {
     pub(crate) last_opi_block: i32,
     last_reported_block: Option<i32>,
     config: Brc20IndexerConfig,
-    brc20_prog_client: HttpClient,
+    brc20_prog: Brc20Prog,
     brc20_reporter: Brc20Reporter,
     bitcoin_proxy_server_handle: Option<JoinHandle<()>>,
 }
@@ -70,8 +69,11 @@ impl Drop for Brc20Indexer {
 }
 
 impl Brc20Indexer {
-    pub fn new(config: Brc20IndexerConfig, journal: Option<Arc<dyn BlockSource>>) -> Self {
-        let brc20_prog_client = build_brc20_prog_http_client(&config);
+    pub fn new(
+        config: Brc20IndexerConfig,
+        brc20_prog: Brc20Prog,
+        journal: Option<Arc<dyn BlockSource>>,
+    ) -> Self {
         let brc20_reporter = Brc20Reporter::new(&config);
         let event_provider_client =
             EventProviderClient::new(&config).expect("Failed to create EventProviderClient");
@@ -81,7 +83,7 @@ impl Brc20Indexer {
             config,
             last_opi_block: 0,
             last_reported_block: None,
-            brc20_prog_client,
+            brc20_prog,
             brc20_reporter,
             event_provider_client,
             bitcoin_proxy_server_handle: None,
@@ -102,7 +104,7 @@ impl Brc20Indexer {
 
         tracing::info!(
             "Prog Block Height: {}",
-            parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
+            parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
         );
 
         // Wait for the servers to start
@@ -187,7 +189,7 @@ impl Brc20Indexer {
         // leave it below brc20.
         self.reorg_to_last_synced_block_height().await?;
 
-        let brc20_prog_version = self.brc20_prog_client.brc20_version().await?;
+        let brc20_prog_version = self.brc20_prog.brc20_version().await?;
         let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).unwrap_or_else(|| {
             panic!(
                 "Invalid BRC20_PROG_VERSION requirement: {}",
@@ -204,10 +206,9 @@ impl Brc20Indexer {
             .into());
         }
 
-        let brc20_prog_block_height =
-            parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?;
+        let brc20_prog_block_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
 
-        self.brc20_prog_client
+        self.brc20_prog
             .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
             .await?;
 
@@ -221,10 +222,10 @@ impl Brc20Indexer {
                     current_prog_height,
                     next_prog_height
                 );
-                self.brc20_prog_client
+                self.brc20_prog
                     .brc20_mine((next_prog_height - current_prog_height) as u64, 0)
                     .await?;
-                self.brc20_prog_client.brc20_commit_to_database().await?;
+                self.brc20_prog.brc20_commit_to_database().await?;
                 current_prog_height = next_prog_height;
             }
         }
@@ -268,7 +269,7 @@ impl Brc20Indexer {
                     );
                 }
                 let Some(block_trace_hash) = self
-                    .brc20_prog_client
+                    .brc20_prog
                     .debug_get_block_trace_hash(block_height.to_string())
                     .await?
                 else {
@@ -328,7 +329,7 @@ impl Brc20Indexer {
 
         let function_timer = start_timer(SPAN, "clear_caches", current_block_height);
 
-        self.brc20_prog_client.brc20_clear_caches().await?;
+        self.brc20_prog.brc20_clear_caches().await?;
 
         if get_brc20_database()
             .lock()
@@ -350,9 +351,7 @@ impl Brc20Indexer {
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         tracing::info!("Reorganizing BRC20 indexer database...");
         if block_height >= self.config.first_brc20_prog_phase_one_height {
-            self.brc20_prog_client
-                .brc20_reorg(block_height as u64)
-                .await?;
+            self.brc20_prog.brc20_reorg(block_height as u64).await?;
         }
         get_brc20_database()
             .lock()
@@ -533,7 +532,7 @@ impl Brc20Indexer {
 
             let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
             let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
-                retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
+                retrieve_brc20_prog_traces_hash(&self.brc20_prog, next_block).await?
             } else {
                 String::new()
             };
@@ -584,9 +583,7 @@ impl Brc20Indexer {
                     .await
                     .reorg(next_block - 1)
                     .await?;
-                self.brc20_prog_client
-                    .brc20_reorg((next_block - 1) as u64)
-                    .await?;
+                self.brc20_prog.brc20_reorg((next_block - 1) as u64).await?;
                 tracing::error!("Cumulative event hash mismatch!!");
                 tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
                 tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
@@ -716,7 +713,7 @@ impl Brc20Indexer {
 
         let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
         let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
-            retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, next_block).await?
+            retrieve_brc20_prog_traces_hash(&self.brc20_prog, next_block).await?
         } else {
             String::new()
         };
@@ -933,7 +930,7 @@ impl Brc20Indexer {
         block_height: i32,
     ) -> Result<Option<String>, Box<dyn Error>> {
         let Ok(Some(trace_string)) = self
-            .brc20_prog_client
+            .brc20_prog
             .debug_get_block_trace_string(block_height.to_string())
             .await
         else {
@@ -979,7 +976,7 @@ impl Brc20Indexer {
             .unwrap_or_default();
 
         let block_traces_hash = if block_height >= self.config.first_brc20_prog_phase_one_height {
-            retrieve_brc20_prog_traces_hash(&self.brc20_prog_client, block_height).await?
+            retrieve_brc20_prog_traces_hash(&self.brc20_prog, block_height).await?
         } else {
             String::new()
         };
@@ -1043,11 +1040,11 @@ impl Brc20Indexer {
     ) -> Result<(), Box<dyn Error>> {
         if block_height >= self.config.first_brc20_prog_phase_one_height {
             let function_timer = start_timer(SPAN, "finalise_block_for_brc20_prog", block_height);
-            self.brc20_prog_client
+            self.brc20_prog
                 .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
                 .await?;
             if is_synced || block_height % 10 == 0 {
-                self.brc20_prog_client.brc20_commit_to_database().await?;
+                self.brc20_prog.brc20_commit_to_database().await?;
             }
             stop_timer(&function_timer).await;
         }
@@ -1110,7 +1107,7 @@ impl Brc20Indexer {
                     0,
                 )?;
                 match EventProcessor::brc20_prog_deploy_transfer(
-                    &self.brc20_prog_client,
+                    &self.brc20_prog,
                     block_height,
                     block_time,
                     block_hash,
@@ -1146,7 +1143,7 @@ impl Brc20Indexer {
                     0,
                 )?;
                 match EventProcessor::brc20_prog_call_transfer(
-                    &self.brc20_prog_client,
+                    &self.brc20_prog,
                     block_height,
                     block_time,
                     block_hash,
@@ -1184,7 +1181,7 @@ impl Brc20Indexer {
                     0,
                 )?;
                 match EventProcessor::brc20_prog_transact_transfer(
-                    &self.brc20_prog_client,
+                    &self.brc20_prog,
                     block_height,
                     block_hash,
                     inscription_id,
@@ -1245,7 +1242,7 @@ impl Brc20Indexer {
                     ticker.decimals,
                 )?;
                 match EventProcessor::brc20_prog_withdraw_transfer(
-                    &self.brc20_prog_client,
+                    &self.brc20_prog,
                     block_height,
                     block_hash,
                     block_time,
@@ -1343,7 +1340,7 @@ impl Brc20Indexer {
                     ticker.decimals,
                 )?;
                 match EventProcessor::brc20_transfer_transfer(
-                    &self.brc20_prog_client,
+                    &self.brc20_prog,
                     block_height,
                     block_time,
                     block_hash,
@@ -1411,7 +1408,7 @@ impl Brc20Indexer {
         if block_height == self.config.brc20_swap_refund_activation_height {
             Brc20SwapRefund::generate_and_process_refunds(
                 block_height,
-                &self.brc20_prog_client,
+                &self.brc20_prog,
                 &self.config,
                 block_time,
                 block_hash,
@@ -1540,7 +1537,7 @@ impl Brc20Indexer {
                         {
                             Ok(event) => {
                                 match EventProcessor::brc20_prog_deploy_transfer(
-                                    &self.brc20_prog_client,
+                                    &self.brc20_prog,
                                     block_height,
                                     block_time,
                                     block_hash,
@@ -1616,7 +1613,7 @@ impl Brc20Indexer {
                         {
                             Ok(event) => {
                                 match EventProcessor::brc20_prog_call_transfer(
-                                    &self.brc20_prog_client,
+                                    &self.brc20_prog,
                                     block_height,
                                     block_time,
                                     block_hash,
@@ -1684,7 +1681,7 @@ impl Brc20Indexer {
                             Ok(event) => {
                                 if let Ok(txes_executed) =
                                     EventProcessor::brc20_prog_transact_transfer(
-                                        &self.brc20_prog_client,
+                                        &self.brc20_prog,
                                         block_height,
                                         block_hash,
                                         &transfer.inscription_id,
@@ -1836,7 +1833,7 @@ impl Brc20Indexer {
                     )
                     .await?;
                     match EventProcessor::brc20_prog_withdraw_transfer(
-                        &self.brc20_prog_client,
+                        &self.brc20_prog,
                         block_height,
                         block_hash,
                         block_time,
@@ -2175,7 +2172,7 @@ impl Brc20Indexer {
                     {
                         Ok((event_id, event)) => {
                             match EventProcessor::brc20_transfer_transfer(
-                                &self.brc20_prog_client,
+                                &self.brc20_prog,
                                 block_height,
                                 block_time,
                                 block_hash,
@@ -2307,7 +2304,7 @@ impl Brc20Indexer {
             if last_brc20_block_height < self.config.first_brc20_prog_phase_one_height {
                 self.config.first_brc20_prog_phase_one_height - 1
             } else {
-                parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
+                parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
             };
         if let Some(mismatch) = brc20_prog_height_mismatch(
             last_brc20_block_height,
@@ -2331,7 +2328,7 @@ impl Brc20Indexer {
             .get_block_hash(last_brc20_block_height)
             .await?;
         let brc20_prog_block_hash = self
-            .brc20_prog_client
+            .brc20_prog
             .eth_get_block_by_number(last_brc20_block_height.to_string(), Some(false))
             .await?
             .hash
@@ -2361,13 +2358,13 @@ impl Brc20Indexer {
             if last_brc20_block_height < self.config.first_brc20_prog_phase_one_height {
                 self.config.first_brc20_prog_phase_one_height - 1
             } else {
-                parse_hex_number(&self.brc20_prog_client.eth_block_number().await?)?
+                parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
             };
 
         // BRC20 indexer has not indexed any blocks yet, no need to reorg BRC20
         if last_brc20_block_height < self.config.first_brc20_height {
             if last_brc20_prog_block_height > self.config.first_brc20_prog_phase_one_height {
-                self.brc20_prog_client
+                self.brc20_prog
                     .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
                     .await?;
             }
@@ -2393,7 +2390,7 @@ impl Brc20Indexer {
                     "BRC20 Prog is ahead of BRC20, reorging BRC20 prog to current BRC20 height: {}",
                     last_brc20_block_height
                 );
-                self.brc20_prog_client
+                self.brc20_prog
                     .brc20_reorg(last_brc20_block_height as u64)
                     .await?;
 
@@ -2445,7 +2442,7 @@ impl Brc20Indexer {
                 if current_brc20_height < self.config.first_brc20_prog_phase_one_height {
                     opi_block_hash.clone()
                 } else {
-                    self.brc20_prog_client
+                    self.brc20_prog
                         .eth_get_block_by_number(current_brc20_height.to_string(), Some(false))
                         .await?
                         .hash
@@ -2481,7 +2478,7 @@ impl Brc20Indexer {
                     .reorg(current_brc20_height)
                     .await?;
                 if current_brc20_height >= self.config.first_brc20_prog_phase_one_height {
-                    self.brc20_prog_client
+                    self.brc20_prog
                         .brc20_reorg(current_brc20_prog_height as u64)
                         .await?;
                 }
@@ -2499,7 +2496,7 @@ impl Brc20Indexer {
                     .await
                     .reorg(self.config.first_brc20_height)
                     .await?;
-                self.brc20_prog_client
+                self.brc20_prog
                     .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
                     .await?;
                 break;
@@ -2550,6 +2547,7 @@ fn compares_brc20_prog_hash(last_brc20: i32, first_brc20_height: i32, phase_one:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indexer::brc20_prog_client::test_engine::TestEngine;
     use opi_core::{BlockInfo, BlockView, InscriptionInfo, InscriptionRecord};
 
     const FIRST: i32 = 112_402;
@@ -2607,27 +2605,32 @@ mod tests {
         }
     }
 
-    fn full_indexer(journal: Option<StubJournal>) -> Brc20Indexer {
+    fn full_indexer(prog: &Brc20Prog, journal: Option<StubJournal>) -> Brc20Indexer {
         let config = Brc20IndexerConfig {
             light_client_mode: false,
             ..Default::default()
         };
         Brc20Indexer::new(
             config,
+            prog.clone(),
             journal.map(|journal| Arc::new(journal) as Arc<dyn BlockSource>),
         )
     }
 
     #[tokio::test]
     async fn tip_hash_and_time_come_from_the_journal() {
-        let indexer = full_indexer(Some(StubJournal {
-            tip: Some(840_001),
-            block: Some(BlockInfo {
-                height: 840_000,
-                hash: "ab".repeat(32),
-                time: 1_713_571_767,
+        let engine = TestEngine::open();
+        let indexer = full_indexer(
+            &engine.prog,
+            Some(StubJournal {
+                tip: Some(840_001),
+                block: Some(BlockInfo {
+                    height: 840_000,
+                    hash: "ab".repeat(32),
+                    time: 1_713_571_767,
+                }),
             }),
-        }));
+        );
         assert_eq!(indexer.get_opi_block_height().await.unwrap(), 840_001);
         assert_eq!(
             indexer.journal_block_hash_and_time(840_000).unwrap(),
@@ -2635,13 +2638,16 @@ mod tests {
         );
         assert!(indexer.journal_block_hash_and_time(1).is_err());
 
-        let empty = full_indexer(Some(StubJournal {
-            tip: None,
-            block: None,
-        }));
+        let empty = full_indexer(
+            &engine.prog,
+            Some(StubJournal {
+                tip: None,
+                block: None,
+            }),
+        );
         assert!(empty.get_opi_block_height().await.is_err());
 
-        let without_journal = full_indexer(None);
+        let without_journal = full_indexer(&engine.prog, None);
         assert!(without_journal.get_opi_block_height().await.is_err());
         assert!(
             without_journal

@@ -3,7 +3,8 @@ mod config;
 mod validate;
 
 use {
-    anyhow::{Result, bail},
+    anyhow::{Result, anyhow, bail},
+    brc20_prog::Brc20Prog,
     clap::{Parser, Subcommand},
     config::{Config, ModuleConfigs},
     futures::future::BoxFuture,
@@ -90,6 +91,13 @@ fn run() -> Result<()> {
     let config = Config::from_env()?;
     let module_configs = ModuleConfigs::load(&config)?;
 
+    // The engine opens once, before anything starts; module restarts reuse it.
+    let brc20_prog = module_configs
+        .brc20
+        .is_some()
+        .then(open_brc20_prog)
+        .transpose()?;
+
     // The source blocks on its own runtime, so it starts and stops outside
     // the runtime below.
     let handle = spawn_source(config.source.clone())?;
@@ -98,7 +106,7 @@ fn run() -> Result<()> {
         .enable_all()
         .build()
         .map_err(anyhow::Error::from)
-        .and_then(|runtime| runtime.block_on(supervise(&handle, module_configs)));
+        .and_then(|runtime| runtime.block_on(supervise(&handle, module_configs, brc20_prog)));
 
     handle.shutdown();
     let joined = handle.join();
@@ -119,11 +127,15 @@ fn run() -> Result<()> {
 
 /// Runs the enabled modules over the journal until a signal arrives or the
 /// source driver exits, then stops them.
-async fn supervise(handle: &SourceHandle, configs: ModuleConfigs) -> Result<Exit> {
+async fn supervise(
+    handle: &SourceHandle,
+    configs: ModuleConfigs,
+    brc20_prog: Option<Brc20Prog>,
+) -> Result<Exit> {
     let journal: Arc<dyn BlockSource> = Arc::new(handle.reader());
     let mut runtime = Runtime::new(journal.clone());
-    if configs.brc20.is_some() {
-        runtime.add("brc20", brc20_factory(journal.clone()));
+    if let Some(brc20_prog) = brc20_prog {
+        runtime.add("brc20", brc20_factory(brc20_prog, journal.clone()));
     }
     if let Some(config) = configs.bitmap {
         runtime.add("bitmap", bitmap_factory(config, journal.clone()));
@@ -165,12 +177,20 @@ async fn supervise(handle: &SourceHandle, configs: ModuleConfigs) -> Result<Exit
     Ok(exit)
 }
 
+/// Opens the BRC2.0 engine from brc20's environment and brc20-prog's own.
+pub(crate) fn open_brc20_prog() -> Result<Brc20Prog> {
+    let engine_config = Brc20IndexerConfig::default().brc20_prog_config()?;
+    Brc20Prog::open(engine_config).map_err(|e| anyhow!("failed to open the brc20-prog engine: {e}"))
+}
+
 /// Builds a brc20 module on a fresh database for every start and restart.
-fn brc20_factory(journal: Arc<dyn BlockSource>) -> ModuleFactory {
+/// Every module shares the one engine.
+fn brc20_factory(brc20_prog: Brc20Prog, journal: Arc<dyn BlockSource>) -> ModuleFactory {
     Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
-        let journal = journal.clone();
+        let (brc20_prog, journal) = (brc20_prog.clone(), journal.clone());
         Box::pin(async move {
-            let module = Brc20Module::new(Brc20IndexerConfig::default(), journal).await?;
+            let module =
+                Brc20Module::new(Brc20IndexerConfig::default(), brc20_prog, journal).await?;
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })

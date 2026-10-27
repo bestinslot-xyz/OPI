@@ -119,7 +119,8 @@ pub fn run(args: Args) -> Result<()> {
 // keeps the message.
 async fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
-    let mut indexer = Brc20Indexer::new(config, None);
+    let brc20_prog = crate::open_brc20_prog()?;
+    let mut indexer = Brc20Indexer::new(config, brc20_prog, None);
     match command {
         Command::Light => indexer.run().await.map_err(|e| anyhow!("{e}"))?,
         Command::Reset(Confirm { yes }) => {

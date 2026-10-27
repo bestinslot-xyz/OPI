@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::anyhow;
 use bitcoin::Network;
+use brc20_prog::Brc20Prog;
 use opi_core::{BlockRef, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, Module};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -61,6 +62,7 @@ impl Brc20Module {
     /// `journal` serves the tip and the block times that reporting reads.
     pub async fn new(
         config: Brc20IndexerConfig,
+        brc20_prog: Brc20Prog,
         journal: Arc<dyn BlockSource>,
     ) -> anyhow::Result<Brc20Module> {
         if config.light_client_mode {
@@ -75,7 +77,7 @@ impl Brc20Module {
         let (requests, receiver) = mpsc::unbounded_channel();
         let (ready, started) = oneshot::channel();
         spawn_on_brc20_thread(Box::new(move || {
-            Box::pin(serve(config, journal, receiver, ready))
+            Box::pin(serve(config, brc20_prog, journal, receiver, ready))
         }));
         started.await.map_err(|_| worker_stopped())??;
 
@@ -149,6 +151,7 @@ impl Module for Brc20Module {
 /// dropped. `ready` receives the start-up's outcome.
 async fn serve(
     config: Brc20IndexerConfig,
+    brc20_prog: Brc20Prog,
     journal: Arc<dyn BlockSource>,
     mut requests: mpsc::UnboundedReceiver<Request>,
     ready: oneshot::Sender<anyhow::Result<()>>,
@@ -159,7 +162,7 @@ async fn serve(
     let _instance = INSTANCE.lock().await;
 
     install_fresh_database(&config).await;
-    let mut indexer = Brc20Indexer::new(config, Some(journal));
+    let mut indexer = Brc20Indexer::new(config, brc20_prog, Some(journal));
     let started = indexer.init().await.map_err(into_anyhow);
     let failed = started.is_err();
     if ready.send(started).is_err() || failed {
