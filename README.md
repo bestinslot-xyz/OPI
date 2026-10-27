@@ -105,7 +105,7 @@ back when its stored hashes differ from the journal's. A module error or panic
 restarts that module, with a freshly built instance and database state, after a
 backoff of 5 seconds, doubling to 5 minutes; the other modules and the source
 keep running. A panic in brc20 stops the process instead (see BRC2.0 engine).
-On shutdown `run` waits up to 60 seconds for brc20 to finish the block in
+On shutdown `run` waits up to 150 seconds for brc20 to finish the block in
 flight. Log verbosity follows `RUST_LOG`. Logs go to stderr for every
 command.
 
@@ -136,8 +136,8 @@ when `BITCOIN_RPC_CACHE_ENABLED=true` (an in-memory buffer, then the Postgres
 table; the code default is `false`, `.env_sample` sets `true`). A "not yet"
 answer (an unknown transaction, or a transaction not yet in a block) is reused
 only within the block that looked it up: in full mode a later block asks
-bitcoind again, while light mode replays the rows full nodes published. In full mode a
-miss goes to bitcoind at `BITCOIN_RPC_URL`, authenticated with
+bitcoind again, while light mode replays the rows full nodes published. In
+full mode a miss goes to bitcoind at `BITCOIN_RPC_URL`, authenticated with
 `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or with `BITCOIN_RPC_COOKIE`, which
 is re-read on every request. Full mode requires one of the two credentials; the
 config check fails otherwise. Light mode needs no bitcoind and no Bitcoin

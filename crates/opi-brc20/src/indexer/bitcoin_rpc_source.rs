@@ -80,8 +80,8 @@ impl BitcoinRpcBufferSlot {
 /// A lookup reads the installed buffer, then the
 /// `brc20_bitcoin_rpc_result_cache` table's newest row, when
 /// `BITCOIN_RPC_CACHE_ENABLED` is on. In full mode a stored "not yet" row is
-/// skipped (see `serves_stored`). In full mode a miss goes to bitcoind, authenticating with
-/// `bitcoin_rpc_auth`. A success, or an unknown transaction, answered to a
+/// skipped (see `serves_stored`) and a miss goes to bitcoind, authenticating
+/// with `bitcoin_rpc_auth`. A success, or an unknown transaction, answered to a
 /// lookup from the brc20 indexing thread is buffered under the next block's
 /// height; every other answer is returned unbuffered. In light mode a miss is
 /// an error, since a light client has no bitcoind. `network()` asks bitcoind's

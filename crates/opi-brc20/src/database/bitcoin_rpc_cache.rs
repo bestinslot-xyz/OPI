@@ -87,14 +87,6 @@ impl BitcoinRpcCache {
         select_current_block_height(&self.pool, self.first_inscription_height).await
     }
 
-    /// The buffered answer, else the newest stored one.
-    pub async fn get(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
-        if let Some(response) = self.get_buffered(request)? {
-            return Ok(Some(response));
-        }
-        self.get_stored(request).await
-    }
-
     /// The answer in the in-memory buffer: this block's lookups, not yet
     /// committed.
     pub fn get_buffered(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {

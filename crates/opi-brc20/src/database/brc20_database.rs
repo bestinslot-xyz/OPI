@@ -1382,13 +1382,6 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn get_bitcoin_rpc_request(
-        &self,
-        request: &Bytes,
-    ) -> Result<Option<Bytes>, Box<dyn Error>> {
-        self.bitcoin_rpc_cache.get(request).await
-    }
-
     pub async fn cache_bitcoin_rpc_request(
         &mut self,
         request: &[u8],
