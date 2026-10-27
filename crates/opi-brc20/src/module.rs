@@ -16,7 +16,7 @@ use crate::{
     config::Brc20IndexerConfig,
     database::{Brc20Database, get_brc20_database, replace_brc20_database},
     fail_stop::BRC20_THREAD_NAME,
-    indexer::Brc20Indexer,
+    indexer::{BitcoinRpcBufferSlot, Brc20Indexer},
     types::Brc20Tx,
 };
 
@@ -57,13 +57,15 @@ enum Request {
 
 impl Brc20Module {
     /// Builds an instance on a fresh database in brc20's global slot and runs
-    /// the indexer's start-up: schema, the Bitcoin RPC proxy when enabled,
-    /// residue cleanup and the reconciliation of brc20 with brc20-prog, the
-    /// trace hash upgrade, and brc20-prog's version check and initialisation.
-    /// `journal` serves the tip and the block times that reporting reads.
+    /// the indexer's start-up: schema, pointing the engine's Bitcoin RPC
+    /// source (through `bitcoin_rpc_buffer`) at the database's buffer, residue
+    /// cleanup and the reconciliation of brc20 with brc20-prog, the trace hash
+    /// upgrade, and brc20-prog's version check and initialisation. `journal`
+    /// serves the tip and the block times that reporting reads.
     pub async fn new(
         config: Brc20IndexerConfig,
         brc20_prog: Brc20Prog,
+        bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
         journal: Arc<dyn BlockSource>,
     ) -> anyhow::Result<Brc20Module> {
         if config.light_client_mode {
@@ -78,7 +80,14 @@ impl Brc20Module {
         let (requests, receiver) = mpsc::unbounded_channel();
         let (ready, started) = oneshot::channel();
         spawn_on_brc20_thread(Box::new(move || {
-            Box::pin(serve(config, brc20_prog, journal, receiver, ready))
+            Box::pin(serve(
+                config,
+                brc20_prog,
+                bitcoin_rpc_buffer,
+                journal,
+                receiver,
+                ready,
+            ))
         }));
         started.await.map_err(|_| worker_stopped())??;
 
@@ -164,14 +173,20 @@ pub async fn wait_until_idle() {
 async fn serve(
     config: Brc20IndexerConfig,
     brc20_prog: Brc20Prog,
+    bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
     journal: Arc<dyn BlockSource>,
     mut requests: mpsc::UnboundedReceiver<Request>,
     ready: oneshot::Sender<anyhow::Result<()>>,
 ) {
     let _instance = INSTANCE.lock().await;
+    // The start was cancelled while an earlier instance ran; nobody waits for
+    // this one, so it leaves the database and the engine to the next.
+    if ready.is_closed() {
+        return;
+    }
 
     install_fresh_database(&config).await;
-    let mut indexer = Brc20Indexer::new(config, brc20_prog, Some(journal));
+    let mut indexer = Brc20Indexer::new(config, brc20_prog, bitcoin_rpc_buffer, Some(journal));
     let started = indexer.init().await.map_err(into_anyhow);
     let failed = started.is_err();
     if ready.send(started).is_err() || failed {
@@ -452,5 +467,67 @@ mod tests {
 
         wait_until_idle().await;
         assert!(finished.load(Ordering::SeqCst));
+    }
+
+    /// A journal with no blocks.
+    struct NoBlocks;
+
+    impl BlockSource for NoBlocks {
+        fn tip(&self) -> anyhow::Result<Option<u32>> {
+            Ok(None)
+        }
+
+        fn block_info(&self, _: u32) -> anyhow::Result<Option<opi_core::BlockInfo>> {
+            Ok(None)
+        }
+
+        fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<opi_core::InscriptionRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
+            Ok(None)
+        }
+
+        fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
+            Ok(None)
+        }
+    }
+
+    /// A start whose caller gave up, as a cancelled `Brc20Module::new` does
+    /// while an earlier instance still holds `INSTANCE`, returns once it takes
+    /// `INSTANCE`: the global database and the engine stay as they are.
+    #[tokio::test]
+    async fn a_cancelled_start_returns_without_starting() {
+        use crate::indexer::brc20_prog_client::test_engine::TestEngine;
+
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        // Nothing listens on port 1, so a start that went ahead fails.
+        let config = Brc20IndexerConfig {
+            db_port: "1".to_string(),
+            light_client_mode: false,
+            ..Default::default()
+        };
+        replace_brc20_database(Brc20Database::new(&config)).await;
+        get_brc20_database().lock().await.current_event_id = 42;
+        let engine = TestEngine::open();
+
+        let (_requests, receiver) = mpsc::unbounded_channel();
+        let (ready, started) = oneshot::channel();
+        drop(started);
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            serve(
+                config,
+                engine.prog.clone(),
+                engine.bitcoin_rpc_buffer.clone(),
+                Arc::new(NoBlocks),
+                receiver,
+                ready,
+            ),
+        )
+        .await
+        .expect("serve returns");
+        assert_eq!(get_brc20_database().lock().await.current_event_id, 42);
     }
 }

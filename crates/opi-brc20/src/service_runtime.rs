@@ -1,8 +1,8 @@
 use tokio::runtime::{Builder, Handle, Runtime};
 
 /// A multi-thread tokio runtime on its own OS threads, for services that the
-/// engine reaches with blocking calls (the Bitcoin RPC proxy, the engine's
-/// public JSON-RPC server). The indexer awaits engine calls on a
+/// engine reaches with blocking calls (the engine's Bitcoin RPC source, the
+/// engine's public JSON-RPC server). The indexer awaits engine calls on a
 /// single-threaded runtime, so a service that shared that thread could never
 /// answer while the engine waits on it.
 ///

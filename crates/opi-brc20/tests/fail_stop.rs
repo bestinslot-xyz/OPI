@@ -26,7 +26,7 @@ fn panics_abort_only_on_the_brc20_and_rpc_threads() {
     for (name, aborts) in [
         (BRC20_THREAD_NAME, true),
         (RPC_THREAD_NAME, true),
-        ("brc20-services", false),
+        ("brc20-bitcoin-rpc", false),
     ] {
         let status = Command::new(std::env::current_exe().unwrap())
             .args([

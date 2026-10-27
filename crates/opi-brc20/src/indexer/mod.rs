@@ -3,8 +3,7 @@ pub use brc20_indexer::Brc20Indexer;
 
 mod bitcoin_rpc_source;
 pub use bitcoin_rpc_source::{BitcoinRpcBufferSlot, CachedBitcoinRpc};
-pub(crate) mod brc20_prog_btc_proxy_server;
-mod brc20_prog_client;
+pub(crate) mod brc20_prog_client;
 mod brc20_swap_refund;
 
 mod utils;

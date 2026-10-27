@@ -16,7 +16,7 @@ pub struct BitcoinRpcResultRecord {
 }
 
 /// Results cached since the last commit, keyed by the request without its id.
-/// Shared by the indexer's database and the Bitcoin RPC proxy. The lock is
+/// Shared by the indexer's database and the engine's Bitcoin RPC source. The lock is
 /// never held across an await, so neither side can block the other.
 pub type BitcoinRpcBuffer = Arc<Mutex<HashMap<serde_json::Value, BitcoinRpcResultRecord>>>;
 
@@ -44,7 +44,7 @@ pub(crate) fn remove_committed(buffer: &BitcoinRpcBuffer, requests: &[serde_json
 /// The Bitcoin RPC result cache: a buffer of uncommitted results in front of
 /// the `brc20_bitcoin_rpc_result_cache` table.
 ///
-/// The indexer's database and the proxy each hold one, built on their own
+/// The indexer's database and the Bitcoin RPC source each hold one, built on their own
 /// Postgres pool and sharing one buffer. A pool's connections are driven by the
 /// runtime that opened them, so each side reads and writes the table only
 /// through its own pool.
@@ -273,7 +273,7 @@ mod tests {
             .collect();
         assert_eq!(written, vec![first.clone()]);
 
-        // Until the commit succeeds the result stays visible to the proxy.
+        // Until the commit succeeds the result stays visible to the source.
         assert!(buffer.lock().unwrap().contains_key(&first));
 
         // A result buffered while the commit ran survives it.

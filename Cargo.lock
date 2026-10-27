@@ -5026,7 +5026,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "axum-server",
  "bitcoin",
  "bitcoincore-rpc",
  "brc20-prog",

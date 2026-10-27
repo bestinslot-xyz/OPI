@@ -154,12 +154,6 @@ pub const BRC20_MODULE_BRC20PROG: &str = "BRC20PROG";
 pub const BITCOIN_RPC_CACHE_ENABLED_KEY: &str = "BITCOIN_RPC_CACHE_ENABLED";
 pub const BITCOIN_RPC_CACHE_ENABLED_DEFAULT: &str = "false";
 
-pub const BITCOIN_RPC_PROXY_SERVER_ENABLED: &str = "BITCOIN_RPC_PROXY_SERVER_ENABLED";
-pub const BITCOIN_RPC_PROXY_SERVER_ENABLED_DEFAULT: &str = "false";
-
-pub const BITCOIN_RPC_PROXY_SERVER_ADDR_KEY: &str = "BITCOIN_RPC_PROXY_SERVER_ADDR";
-pub const BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT: &str = "127.0.0.1:18547";
-
 pub const BITCOIN_RPC_URL_KEY: &str = "BITCOIN_RPC_URL";
 pub const BITCOIN_RPC_URL_DEFAULT: &str = "http://localhost:38332";
 
@@ -250,14 +244,14 @@ pub const BITCOIN_RPC_USER_KEY: &str = "BITCOIN_RPC_USER";
 pub const BITCOIN_RPC_PASSWD_KEY: &str = "BITCOIN_RPC_PASSWD";
 pub const BITCOIN_RPC_COOKIE_KEY: &str = "BITCOIN_RPC_COOKIE";
 
-/// How the Bitcoin RPC proxy authenticates to bitcoind.
+/// How the engine's Bitcoin RPC source authenticates to bitcoind.
 #[derive(Clone, PartialEq, Eq)]
 pub enum BitcoinRpcAuth {
     UserPass(String, String),
     /// bitcoind's cookie file, read on every request since bitcoind rewrites
     /// it on restart.
     Cookie(PathBuf),
-    /// No credentials, for a bitcoind (or light-client host) that needs none.
+    /// No credentials, for a light client, which never calls bitcoind.
     None,
 }
 
@@ -346,16 +340,13 @@ fn parse_rpc_server_enabled(value: Option<&str>) -> bool {
 /// - `bitcoin_rpc_network` and `chain_id` follow `network_type` (the `NETWORK_TYPE`
 ///   value): `mainnet` maps to `bitcoin` and the mainnet chain id, every other
 ///   network keeps its name and takes the testnets chain id.
-/// - `bitcoin_rpc_url` is the Bitcoin RPC proxy when `proxy_addr` is set, with
-///   no credentials, since the proxy authenticates to bitcoind itself.
-///   Without the proxy it is `bitcoin_rpc_url`, and the engine needs
-///   `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`.
+///
+/// The engine reads Bitcoin data through the indexer's `CachedBitcoinRpc`, so
+/// its own Bitcoin RPC URL and credentials stay as `base` has them, unused.
 fn apply_engine_settings(
     mut base: Brc20ProgConfig,
     get: impl Fn(&str) -> Option<String>,
     network_type: &str,
-    proxy_addr: Option<&str>,
-    bitcoin_rpc_url: &str,
 ) -> anyhow::Result<Brc20ProgConfig> {
     base.db_path = get(BRC20_PROG_DB_PATH_KEY)
         .filter(|value| !value.is_empty())
@@ -369,27 +360,19 @@ fn apply_engine_settings(
         base.chain_id = BRC20_PROG_CHAIN_ID_TESTNETS;
     }
 
-    match proxy_addr {
-        Some(addr) => {
-            base.bitcoin_rpc_url = format!("http://{addr}");
-            base.bitcoin_rpc_user = String::new();
-            base.bitcoin_rpc_password = String::new();
-        }
-        None => {
-            base.bitcoin_rpc_url = bitcoin_rpc_url.to_string();
-            let user = get(BITCOIN_RPC_USER_KEY).filter(|value| !value.is_empty());
-            let password = get(BITCOIN_RPC_PASSWD_KEY).filter(|value| !value.is_empty());
-            let (Some(user), Some(password)) = (user, password) else {
-                anyhow::bail!(
-                    "brc20-prog needs {BITCOIN_RPC_USER_KEY} and {BITCOIN_RPC_PASSWD_KEY} when the Bitcoin RPC proxy is disabled; enable the proxy (BITCOIN_RPC_PROXY_SERVER_ENABLED=true) or set them"
-                );
-            };
-            base.bitcoin_rpc_user = user;
-            base.bitcoin_rpc_password = password;
-        }
-    }
-
     Ok(base)
+}
+
+/// Checks that a full-mode indexer can reach bitcoind: it needs
+/// `BITCOIN_RPC_COOKIE`, or `BITCOIN_RPC_USER` with `BITCOIN_RPC_PASSWD`. A
+/// light client never calls bitcoind and needs neither.
+fn check_bitcoin_rpc_auth(light_client_mode: bool, auth: &BitcoinRpcAuth) -> anyhow::Result<()> {
+    if !light_client_mode && *auth == BitcoinRpcAuth::None {
+        anyhow::bail!(
+            "full mode reaches bitcoind; set {BITCOIN_RPC_COOKIE_KEY} or {BITCOIN_RPC_USER_KEY} and {BITCOIN_RPC_PASSWD_KEY}"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -431,14 +414,12 @@ pub struct Brc20IndexerConfig {
     /// BRC20 swap module pkScript
     pub brc20_swap_module_pkscript: String,
 
-    pub brc20_prog_bitcoin_rpc_proxy_server_enabled: bool,
-    pub brc20_prog_bitcoin_rpc_proxy_server_addr: String,
     /// Whether the embedded engine serves its public JSON-RPC (`BRC20_PROG_RPC_SERVER_ENABLED`).
     pub brc20_prog_rpc_server_enabled: bool,
 
     pub bitcoin_rpc_cache_enabled: bool,
     pub bitcoin_rpc_url: String,
-    /// How the Bitcoin RPC proxy authenticates to bitcoind.
+    /// How the engine's Bitcoin RPC source authenticates to bitcoind.
     pub bitcoin_rpc_auth: BitcoinRpcAuth,
 
     pub height_limit: i32,
@@ -447,21 +428,14 @@ pub struct Brc20IndexerConfig {
 impl Brc20IndexerConfig {
     /// Builds the embedded engine's config from brc20-prog's own environment
     /// variables plus the settings opi-indexer owns (see `apply_engine_settings`).
-    /// Errors when `BRC20_PROG_DB_PATH` is not set, and in light mode without
-    /// the Bitcoin RPC proxy, which serves a light client's prefetched results.
+    /// Errors when `BRC20_PROG_DB_PATH` is not set, and in full mode without
+    /// Bitcoin RPC credentials (see `check_bitcoin_rpc_auth`).
     pub fn brc20_prog_config(&self) -> anyhow::Result<Brc20ProgConfig> {
-        if self.light_client_mode && !self.brc20_prog_bitcoin_rpc_proxy_server_enabled {
-            anyhow::bail!("light mode needs {BITCOIN_RPC_PROXY_SERVER_ENABLED}=true");
-        }
-        let proxy_addr = self
-            .brc20_prog_bitcoin_rpc_proxy_server_enabled
-            .then_some(self.brc20_prog_bitcoin_rpc_proxy_server_addr.as_str());
+        check_bitcoin_rpc_auth(self.light_client_mode, &self.bitcoin_rpc_auth)?;
         apply_engine_settings(
             Brc20ProgConfig::from_env(),
             |key| std::env::var(key).ok(),
             &self.network_type_string,
-            proxy_addr,
-            &self.bitcoin_rpc_url,
         )
     }
 }
@@ -541,15 +515,6 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| SAVE_LOGS_DEFAULT.to_string())
                 == "true",
 
-            brc20_prog_bitcoin_rpc_proxy_server_enabled: std::env::var(
-                BITCOIN_RPC_PROXY_SERVER_ENABLED,
-            )
-            .unwrap_or_else(|_| BITCOIN_RPC_PROXY_SERVER_ENABLED_DEFAULT.to_string())
-                == "true",
-            brc20_prog_bitcoin_rpc_proxy_server_addr: std::env::var(
-                BITCOIN_RPC_PROXY_SERVER_ADDR_KEY,
-            )
-            .unwrap_or_else(|_| BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT.to_string()),
             brc20_prog_rpc_server_enabled: parse_rpc_server_enabled(
                 std::env::var(BRC20_PROG_RPC_SERVER_ENABLED_KEY)
                     .ok()
@@ -583,14 +548,10 @@ mod tests {
         move |key| map.get(key).cloned()
     }
 
-    fn engine(
-        pairs: &[(&str, &str)],
-        network: &str,
-        proxy_addr: Option<&str>,
-    ) -> anyhow::Result<Brc20ProgConfig> {
-        // A pure base: brc20-prog's own BITCOIN_RPC_PASSWORD and BITCOIN_RPC_NETWORK
-        // are overridden by apply_engine_settings.
-        let base = Brc20ProgConfig::new(
+    /// A pure engine config, independent of the process environment, whose
+    /// Bitcoin RPC URL and credentials are recognisable.
+    fn base() -> Brc20ProgConfig {
+        let mut base = Brc20ProgConfig::new(
             "127.0.0.1:18545".to_string(),
             false,
             None,
@@ -608,7 +569,14 @@ mod tests {
             100 * 1024 * 1024,
             50,
         );
-        apply_engine_settings(base, vars(pairs), network, proxy_addr, "http://btc:8332")
+        base.bitcoin_rpc_url = "http://btc:8332".to_string();
+        base.bitcoin_rpc_user = "engine-user".to_string();
+        base.bitcoin_rpc_password = "engine-password".to_string();
+        base
+    }
+
+    fn engine(pairs: &[(&str, &str)], network: &str) -> anyhow::Result<Brc20ProgConfig> {
+        apply_engine_settings(base(), vars(pairs), network)
     }
 
     const DB: (&str, &str) = (BRC20_PROG_DB_PATH_KEY, "/data/prog");
@@ -616,30 +584,21 @@ mod tests {
     const PASSWD: (&str, &str) = (BITCOIN_RPC_PASSWD_KEY, "p");
 
     #[test]
-    fn proxy_disabled_requires_user_and_password() {
-        for pairs in [
-            vec![DB],
-            vec![DB, USER],
-            vec![DB, PASSWD],
-            vec![DB, USER, (BITCOIN_RPC_PASSWD_KEY, "")],
-            vec![DB, (BITCOIN_RPC_USER_KEY, ""), PASSWD],
-        ] {
-            let err = engine(&pairs, "signet", None).unwrap_err().to_string();
-            assert!(
-                err.contains("BITCOIN_RPC_USER and BITCOIN_RPC_PASSWD"),
-                "{err}"
-            );
-        }
+    fn engine_settings_leave_the_engines_bitcoin_rpc_settings_alone() {
+        let config = engine(&[DB, USER, PASSWD], "signet").unwrap();
+        assert_eq!(config.bitcoin_rpc_url, "http://btc:8332");
+        assert_eq!(config.bitcoin_rpc_user, "engine-user");
+        assert_eq!(config.bitcoin_rpc_password, "engine-password");
     }
 
     #[test]
-    fn proxy_enabled_does_not_require_credentials() {
-        assert!(engine(&[DB], "signet", Some("127.0.0.1:18547")).is_ok());
+    fn engine_settings_need_no_bitcoin_rpc_credentials() {
+        assert!(engine(&[DB], "signet").is_ok());
     }
 
     #[test]
     fn mainnet_maps_to_bitcoin_and_mainnet_chain_id() {
-        let config = engine(&[DB, USER, PASSWD], "mainnet", None).unwrap();
+        let config = engine(&[DB], "mainnet").unwrap();
         assert_eq!(config.bitcoin_rpc_network, "bitcoin");
         assert_eq!(config.chain_id, 0x4252433230);
     }
@@ -647,76 +606,66 @@ mod tests {
     #[test]
     fn other_networks_keep_name_and_use_testnets_chain_id() {
         for network in ["signet", "testnet", "testnet4", "regtest"] {
-            let config = engine(&[DB, USER, PASSWD], network, None).unwrap();
+            let config = engine(&[DB], network).unwrap();
             assert_eq!(config.bitcoin_rpc_network, network);
             assert_eq!(config.chain_id, 0x425243323073, "{network}");
         }
     }
 
     #[test]
-    fn proxy_enabled_points_at_proxy_without_credentials() {
-        let config = engine(
-            &[
-                DB,
-                (BITCOIN_RPC_USER_KEY, "u"),
-                (BITCOIN_RPC_PASSWD_KEY, "p"),
-            ],
-            "signet",
-            Some("127.0.0.1:18547"),
-        )
-        .unwrap();
-        assert_eq!(config.bitcoin_rpc_url, "http://127.0.0.1:18547");
-        assert_eq!(config.bitcoin_rpc_user, "");
-        assert_eq!(config.bitcoin_rpc_password, "");
-    }
-
-    #[test]
-    fn proxy_disabled_uses_bitcoin_rpc_url_and_credentials() {
-        let config = engine(
-            &[
-                DB,
-                (BITCOIN_RPC_USER_KEY, "u"),
-                (BITCOIN_RPC_PASSWD_KEY, "p"),
-            ],
-            "signet",
-            None,
-        )
-        .unwrap();
-        assert_eq!(config.bitcoin_rpc_url, "http://btc:8332");
-        assert_eq!(config.bitcoin_rpc_user, "u");
-        assert_eq!(config.bitcoin_rpc_password, "p");
-    }
-
-    #[test]
     fn db_path_is_taken_from_env() {
-        let config = engine(&[DB, USER, PASSWD], "signet", None).unwrap();
+        let config = engine(&[DB], "signet").unwrap();
         assert_eq!(config.db_path, "/data/prog");
     }
 
     #[test]
     fn missing_or_empty_db_path_errors() {
-        let err = engine(&[USER, PASSWD], "signet", None).unwrap_err();
+        let err = engine(&[USER, PASSWD], "signet").unwrap_err();
         assert!(err.to_string().contains("BRC20_PROG_DB_PATH"));
-        assert!(
-            engine(
-                &[(BRC20_PROG_DB_PATH_KEY, ""), USER, PASSWD],
-                "signet",
-                None
-            )
-            .is_err()
-        );
+        assert!(engine(&[(BRC20_PROG_DB_PATH_KEY, ""), USER, PASSWD], "signet").is_err());
     }
 
     #[test]
-    fn light_mode_needs_the_proxy() {
+    fn full_mode_needs_bitcoin_rpc_credentials() {
+        let err = check_bitcoin_rpc_auth(false, &BitcoinRpcAuth::None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "full mode reaches bitcoind; set BITCOIN_RPC_COOKIE or BITCOIN_RPC_USER and BITCOIN_RPC_PASSWD"
+        );
+        for auth in [
+            BitcoinRpcAuth::UserPass("u".into(), "p".into()),
+            BitcoinRpcAuth::Cookie(PathBuf::from("/btc/.cookie")),
+        ] {
+            assert!(check_bitcoin_rpc_auth(false, &auth).is_ok(), "{auth:?}");
+        }
+    }
+
+    #[test]
+    fn light_mode_needs_no_bitcoin_rpc_credentials() {
+        for auth in [
+            BitcoinRpcAuth::None,
+            BitcoinRpcAuth::UserPass("u".into(), "p".into()),
+            BitcoinRpcAuth::Cookie(PathBuf::from("/btc/.cookie")),
+        ] {
+            assert!(check_bitcoin_rpc_auth(true, &auth).is_ok(), "{auth:?}");
+        }
+    }
+
+    #[test]
+    fn the_engine_config_checks_the_credentials_first() {
         let config = Brc20IndexerConfig {
-            light_client_mode: true,
-            brc20_prog_bitcoin_rpc_proxy_server_enabled: false,
+            light_client_mode: false,
+            bitcoin_rpc_auth: BitcoinRpcAuth::None,
             ..Default::default()
         };
-        assert_eq!(
-            config.brc20_prog_config().unwrap_err().to_string(),
-            "light mode needs BITCOIN_RPC_PROXY_SERVER_ENABLED=true"
+        assert!(
+            config
+                .brc20_prog_config()
+                .unwrap_err()
+                .to_string()
+                .starts_with("full mode reaches bitcoind"),
         );
     }
 

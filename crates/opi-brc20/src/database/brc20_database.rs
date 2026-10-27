@@ -1779,7 +1779,7 @@ impl Brc20Database {
         }
 
         tx.commit().await?;
-        // The buffered results stay visible to the proxy until their rows are
+        // The buffered results stay visible to the source until their rows are
         // committed.
         remove_committed(&bitcoin_rpc_buffer, &all_requests);
         Ok(())

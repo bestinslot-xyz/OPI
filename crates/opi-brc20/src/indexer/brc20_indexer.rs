@@ -23,15 +23,13 @@ use crate::{
         timer::{start_timer, stop_timer},
     },
     indexer::{
-        EventGenerator, EventProcessor,
-        brc20_prog_btc_proxy_server::start_bitcoin_proxy_server,
+        BitcoinRpcBufferSlot, EventGenerator, EventProcessor,
         brc20_prog_client::retrieve_brc20_prog_traces_hash,
         brc20_reporter::Brc20Reporter,
         brc20_swap_refund::Brc20SwapRefund,
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
     no_default,
-    service_runtime::ServiceRuntime,
     types::{
         Brc20Tx,
         events::{
@@ -57,15 +55,18 @@ pub struct Brc20Indexer {
     config: Brc20IndexerConfig,
     brc20_prog: Brc20Prog,
     brc20_reporter: Brc20Reporter,
-    /// Hosts the Bitcoin RPC proxy on its own threads, since the engine calls
-    /// the proxy with blocking requests. Dropping it stops the proxy.
-    services: Option<ServiceRuntime>,
+    /// The buffer slot of the engine's Bitcoin RPC source, which `init` points
+    /// at this indexer's database.
+    bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
 }
 
 impl Brc20Indexer {
+    /// An indexer driving `brc20_prog`, whose Bitcoin RPC source reads its
+    /// uncommitted results through `bitcoin_rpc_buffer`.
     pub fn new(
         config: Brc20IndexerConfig,
         brc20_prog: Brc20Prog,
+        bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
         journal: Option<Arc<dyn BlockSource>>,
     ) -> Self {
         let brc20_reporter = Brc20Reporter::new(&config);
@@ -80,11 +81,26 @@ impl Brc20Indexer {
             brc20_prog,
             brc20_reporter,
             event_provider_client,
-            services: None,
+            bitcoin_rpc_buffer,
         }
     }
 
+    /// Points the engine's Bitcoin RPC source at the global database's buffer
+    /// of uncommitted results, so lookups read and write this indexer's block.
+    pub(crate) async fn install_bitcoin_rpc_buffer(&self) {
+        let buffer = get_brc20_database()
+            .lock()
+            .await
+            .bitcoin_rpc_cache
+            .buffer()
+            .clone();
+        self.bitcoin_rpc_buffer.install(buffer);
+    }
+
+    /// Starts the indexer. The engine's Bitcoin RPC source reads this
+    /// indexer's buffer before the first engine call that can reach Bitcoin.
     pub(crate) async fn init(&mut self) -> Result<(), Box<dyn Error>> {
+        self.install_bitcoin_rpc_buffer().await;
         get_brc20_database().lock().await.init().await?;
 
         tracing::info!(
@@ -100,19 +116,6 @@ impl Brc20Indexer {
             "Prog Block Height: {}",
             parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
         );
-
-        // The proxy listens once the start returns.
-        if self.config.brc20_prog_bitcoin_rpc_proxy_server_enabled {
-            let services = ServiceRuntime::new("brc20-services")?;
-            let buffer = get_brc20_database()
-                .lock()
-                .await
-                .bitcoin_rpc_cache
-                .buffer()
-                .clone();
-            start_bitcoin_proxy_server(&self.config, buffer, &services.handle())?;
-            self.services = Some(services);
-        }
 
         self.reorg_to_last_synced_block_height().await?; // Ensure no residue before proceeding
 
@@ -2586,23 +2589,54 @@ mod tests {
         }
     }
 
-    fn full_indexer(prog: &Brc20Prog, journal: Option<StubJournal>) -> Brc20Indexer {
+    fn full_indexer(engine: &TestEngine, journal: Option<StubJournal>) -> Brc20Indexer {
         let config = Brc20IndexerConfig {
             light_client_mode: false,
             ..Default::default()
         };
         Brc20Indexer::new(
             config,
-            prog.clone(),
+            engine.prog.clone(),
+            engine.bitcoin_rpc_buffer.clone(),
             journal.map(|journal| Arc::new(journal) as Arc<dyn BlockSource>),
         )
+    }
+
+    /// `init` starts by pointing the engine's Bitcoin RPC source at the
+    /// global database's buffer, so a light client's prefetched results and
+    /// a full node's buffered ones are what the engine reads.
+    #[tokio::test]
+    async fn the_source_reads_the_installed_databases_buffer() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        crate::database::replace_brc20_database(crate::database::Brc20Database::new(
+            &Brc20IndexerConfig::default(),
+        ))
+        .await;
+        let engine = TestEngine::open();
+        let indexer = full_indexer(&engine, None);
+        let database_buffer = get_brc20_database()
+            .lock()
+            .await
+            .bitcoin_rpc_cache
+            .buffer()
+            .clone();
+        assert!(!Arc::ptr_eq(
+            &engine.bitcoin_rpc_buffer.current(),
+            &database_buffer
+        ));
+
+        indexer.install_bitcoin_rpc_buffer().await;
+        assert!(Arc::ptr_eq(
+            &engine.bitcoin_rpc_buffer.current(),
+            &database_buffer
+        ));
     }
 
     #[tokio::test]
     async fn tip_hash_and_time_come_from_the_journal() {
         let engine = TestEngine::open();
         let indexer = full_indexer(
-            &engine.prog,
+            &engine,
             Some(StubJournal {
                 tip: Some(840_001),
                 block: Some(BlockInfo {
@@ -2620,7 +2654,7 @@ mod tests {
         assert!(indexer.journal_block_hash_and_time(1).is_err());
 
         let empty = full_indexer(
-            &engine.prog,
+            &engine,
             Some(StubJournal {
                 tip: None,
                 block: None,
@@ -2628,7 +2662,7 @@ mod tests {
         );
         assert!(empty.get_opi_block_height().await.is_err());
 
-        let without_journal = full_indexer(&engine.prog, None);
+        let without_journal = full_indexer(&engine, None);
         assert!(without_journal.get_opi_block_height().await.is_err());
         assert!(
             without_journal

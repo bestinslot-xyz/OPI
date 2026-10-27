@@ -1,8 +1,8 @@
 //! The embedded engine's source of Bitcoin data: brc20-prog's lookups,
 //! answered from the Bitcoin RPC result cache and, in full mode, bitcoind.
 //!
-//! Cache keys and stored responses are the ones bitcoincore_rpc 0.19 produces
-//! through a JSON-RPC proxy, so the cache table stays interchangeable with
+//! Cache keys and stored responses are bitcoincore_rpc 0.19's requests and
+//! bitcoind's answers to them, so the cache table stays interchangeable with
 //! what full nodes publish and light clients replay: the key is the request
 //! object `{"method", "params", "jsonrpc": "2.0"}` without its `id`, with
 //! trailing default parameters left out, and the stored response is
@@ -41,7 +41,7 @@ use crate::{
 };
 
 /// How long one request to bitcoind may take.
-pub(crate) const BITCOIND_TIMEOUT: Duration = Duration::from_secs(30);
+const BITCOIND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a lookup may take, cache reads and writes included.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -374,8 +374,8 @@ mod tests {
         str::FromStr,
     };
 
-    /// Rows of `brc20_bitcoin_rpc_result_cache` that the proxy wrote on signet
-    /// for bitcoincore_rpc 0.19's requests.
+    /// Rows of a signet node's `brc20_bitcoin_rpc_result_cache`, keyed by
+    /// bitcoincore_rpc 0.19's requests.
     const SIGNET_ROWS: &str = include_str!("testdata/bitcoin_rpc_cache_signet.json");
 
     const TX: &str = "7499c1a1627d28bd918f751a2a4a237d6de016b6b4deafef646c60b0d257ee14";

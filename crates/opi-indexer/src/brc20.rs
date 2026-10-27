@@ -142,11 +142,11 @@ async fn event_str(height: i32) -> Result<()> {
     Ok(())
 }
 
-/// Runs a command that needs the engine, which opens its database for
-/// the command's whole run.
+/// Runs a command that needs the engine, which opens its database and its
+/// own Bitcoin RPC source for the command's whole run.
 async fn execute_with_engine(command: Command, config: Brc20IndexerConfig) -> Result<()> {
-    let brc20_prog = crate::open_brc20_prog(&config)?;
-    let mut indexer = Brc20Indexer::new(config, brc20_prog, None);
+    let engine = crate::open_brc20_prog(&config)?;
+    let mut indexer = Brc20Indexer::new(config, engine.prog, engine.bitcoin_rpc_buffer, None);
     match command {
         Command::EventStr { .. } => unreachable!("event-str runs without the engine"),
         Command::Light => indexer.run().await.map_err(|e| anyhow!("{e}"))?,

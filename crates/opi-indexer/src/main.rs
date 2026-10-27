@@ -4,14 +4,17 @@ mod validate;
 
 use {
     anyhow::{Result, anyhow, bail},
-    brc20_prog::{Brc20Prog, Brc20ProgConfig},
+    brc20_prog::{BitcoinRpc, Brc20Prog, Brc20ProgConfig},
     clap::{Parser, Subcommand},
     config::{Config, ModuleConfigs},
     futures::future::BoxFuture,
     jsonrpsee::server::ServerHandle,
     opi_bitmap::{BitmapConfig, BitmapModule},
     opi_brc20::{
-        config::Brc20IndexerConfig, fail_stop::RPC_THREAD_NAME, module::Brc20Module,
+        config::Brc20IndexerConfig,
+        fail_stop::RPC_THREAD_NAME,
+        indexer::{BitcoinRpcBufferSlot, CachedBitcoinRpc},
+        module::Brc20Module,
         service_runtime::ServiceRuntime,
     },
     opi_core::{BlockSource, Module},
@@ -96,17 +99,18 @@ fn run() -> Result<()> {
     let config = Config::from_env()?;
     let module_configs = ModuleConfigs::load(&config)?;
 
-    // The engine opens once, before anything starts; module restarts reuse it.
-    let brc20_prog = module_configs
+    // The engine and its Bitcoin RPC source open once, before anything
+    // starts; module restarts reuse them.
+    let brc20_engine = module_configs
         .brc20
         .as_ref()
         .map(open_brc20_prog)
         .transpose()?;
 
     // Serves for the whole process, so brc20 module restarts keep it.
-    let public_rpc = match (&brc20_prog, &module_configs.brc20) {
-        (Some(brc20_prog), Some(brc20)) if brc20.brc20_prog_rpc_server_enabled => {
-            Some(PublicRpc::start(brc20_prog)?)
+    let public_rpc = match (&brc20_engine, &module_configs.brc20) {
+        (Some(engine), Some(brc20)) if brc20.brc20_prog_rpc_server_enabled => {
+            Some(PublicRpc::start(&engine.prog)?)
         }
         _ => None,
     };
@@ -123,13 +127,13 @@ fn run() -> Result<()> {
         }
     };
 
-    let brc20_enabled = brc20_prog.is_some();
+    let brc20_enabled = brc20_engine.is_some();
     let exit = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(anyhow::Error::from)
         .and_then(|runtime| {
-            let exit = runtime.block_on(supervise(&handle, module_configs, brc20_prog));
+            let exit = runtime.block_on(supervise(&handle, module_configs, brc20_engine));
             // The brc20 module may still be finishing its last block, such
             // as an engine commit, which the public RPC must outlive.
             if brc20_enabled {
@@ -164,12 +168,12 @@ fn run() -> Result<()> {
 async fn supervise(
     handle: &SourceHandle,
     configs: ModuleConfigs,
-    brc20_prog: Option<Brc20Prog>,
+    brc20_engine: Option<Brc20Engine>,
 ) -> Result<Exit> {
     let journal: Arc<dyn BlockSource> = Arc::new(handle.reader());
     let mut runtime = Runtime::new(journal.clone());
-    if let Some(brc20_prog) = brc20_prog {
-        runtime.add("brc20", brc20_factory(brc20_prog, journal.clone()));
+    if let Some(engine) = brc20_engine {
+        runtime.add("brc20", brc20_factory(engine, journal.clone()));
     }
     if let Some(config) = configs.bitmap {
         runtime.add("bitmap", bitmap_factory(config, journal.clone()));
@@ -211,16 +215,37 @@ async fn supervise(
     Ok(exit)
 }
 
-/// Opens the BRC2.0 engine from brc20's environment and brc20-prog's own.
-pub(crate) fn open_brc20_prog(config: &Brc20IndexerConfig) -> Result<Brc20Prog> {
-    open_engine(config.brc20_prog_config()?)
+/// The BRC2.0 engine and the buffer slot of the Bitcoin RPC source it reads
+/// Bitcoin data from. Each brc20 indexer installs its database's buffer there.
+#[derive(Clone)]
+pub(crate) struct Brc20Engine {
+    pub(crate) prog: Brc20Prog,
+    pub(crate) bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
 }
 
-/// Opens the engine at `engine_config.db_path`. RocksDB admits one process
-/// per database, so a lock failure means another `opi-indexer` holds it.
-fn open_engine(engine_config: Brc20ProgConfig) -> Result<Brc20Prog> {
+/// Opens the BRC2.0 engine from brc20's environment and brc20-prog's own,
+/// with a `CachedBitcoinRpc` for `config` as its source of Bitcoin data. The
+/// engine holds the source for the rest of the process.
+pub(crate) fn open_brc20_prog(config: &Brc20IndexerConfig) -> Result<Brc20Engine> {
+    let engine_config = config.brc20_prog_config()?;
+    let source = CachedBitcoinRpc::new(config)?;
+    let bitcoin_rpc_buffer = source.buffer_slot().clone();
+    let prog = open_engine(engine_config, Arc::new(source))?;
+    Ok(Brc20Engine {
+        prog,
+        bitcoin_rpc_buffer,
+    })
+}
+
+/// Opens the engine at `engine_config.db_path` on `bitcoin_rpc`. RocksDB
+/// admits one process per database, so a lock failure means another
+/// `opi-indexer` holds it.
+fn open_engine(
+    engine_config: Brc20ProgConfig,
+    bitcoin_rpc: Arc<dyn BitcoinRpc>,
+) -> Result<Brc20Prog> {
     let db_path = engine_config.db_path.clone();
-    Brc20Prog::open(engine_config).map_err(|e| {
+    Brc20Prog::open_with_bitcoin_rpc(engine_config, bitcoin_rpc).map_err(|e| {
         let message = e.to_string();
         if is_lock_error(&message) {
             anyhow!("brc20-prog's database at {db_path} is in use; stop `opi-indexer run` first")
@@ -291,13 +316,18 @@ impl PublicRpc {
 }
 
 /// Builds a brc20 module on a fresh database for every start and restart.
-/// Every module shares the one engine.
-fn brc20_factory(brc20_prog: Brc20Prog, journal: Arc<dyn BlockSource>) -> ModuleFactory {
+/// Every module shares the one engine and its Bitcoin RPC source.
+fn brc20_factory(engine: Brc20Engine, journal: Arc<dyn BlockSource>) -> ModuleFactory {
     Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
-        let (brc20_prog, journal) = (brc20_prog.clone(), journal.clone());
+        let (engine, journal) = (engine.clone(), journal.clone());
         Box::pin(async move {
-            let module =
-                Brc20Module::new(Brc20IndexerConfig::default(), brc20_prog, journal).await?;
+            let module = Brc20Module::new(
+                Brc20IndexerConfig::default(),
+                engine.prog,
+                engine.bitcoin_rpc_buffer,
+                journal,
+            )
+            .await?;
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })
@@ -349,19 +379,49 @@ async fn source_finished(handle: &SourceHandle) {
 mod tests {
     use {
         super::{Cli, Command, PublicRpc, brc20, is_lock_error, open_engine},
-        brc20_prog::{Brc20Prog, Brc20ProgConfig},
+        bitcoin::{BlockHash, Network, Transaction, Txid},
+        brc20_prog::{BitcoinRpc, BitcoinRpcError, Brc20Prog, Brc20ProgConfig},
         clap::Parser,
         std::{
             io::{Read, Write},
             net::{TcpListener, TcpStream},
             path::PathBuf,
-            sync::{Mutex, MutexGuard},
+            sync::{Arc, Mutex, MutexGuard},
         },
     };
 
-    /// Serialises the tests that open an engine, since `Brc20Prog::open` sets
-    /// process-wide configuration.
+    /// Serialises the tests that open an engine, since opening one sets
+    /// process-wide configuration and the process-wide Bitcoin RPC source.
     static ENGINE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A Bitcoin RPC source that cannot answer, for tests that never reach
+    /// Bitcoin.
+    struct NoBitcoin;
+
+    impl BitcoinRpc for NoBitcoin {
+        fn get_transaction(&self, _: &Txid) -> Result<Option<Transaction>, BitcoinRpcError> {
+            Err("no bitcoind".into())
+        }
+
+        fn get_transaction_with_block_hash(
+            &self,
+            _: &Txid,
+        ) -> Result<Option<(Transaction, Option<BlockHash>)>, BitcoinRpcError> {
+            Err("no bitcoind".into())
+        }
+
+        fn get_block_height(&self, _: &BlockHash) -> Result<usize, BitcoinRpcError> {
+            Err("no bitcoind".into())
+        }
+
+        fn network(&self) -> Result<Network, BitcoinRpcError> {
+            Err("no bitcoind".into())
+        }
+    }
+
+    fn no_bitcoin() -> Arc<dyn BitcoinRpc> {
+        Arc::new(NoBitcoin)
+    }
 
     /// An engine config on a fresh temp directory, removed on drop.
     struct EngineDir {
@@ -383,10 +443,7 @@ mod tests {
             ));
             let mut config = Brc20ProgConfig::from_env();
             config.db_path = dir.to_string_lossy().into_owned();
-            config.bitcoin_rpc_url = "http://127.0.0.1:1".to_string();
             config.bitcoin_rpc_network = "regtest".to_string();
-            config.bitcoin_rpc_user = String::new();
-            config.bitcoin_rpc_password = String::new();
             config.brc20_prog_rpc_server_url = free_address();
             EngineDir {
                 config,
@@ -428,8 +485,9 @@ mod tests {
     #[test]
     fn a_second_open_of_the_same_database_asks_to_stop_run() {
         let dir = EngineDir::new();
-        let _first = open_engine(dir.config.clone()).expect("the first open succeeds");
-        let err = open_engine(dir.config.clone())
+        let _first =
+            open_engine(dir.config.clone(), no_bitcoin()).expect("the first open succeeds");
+        let err = open_engine(dir.config.clone(), no_bitcoin())
             .err()
             .expect("the second open fails");
         assert_eq!(
@@ -446,12 +504,27 @@ mod tests {
         let dir = EngineDir::new();
         let mut config = dir.config.clone();
         config.db_path = String::new();
-        let err = open_engine(config).err().expect("an empty path fails");
+        let err = open_engine(config, no_bitcoin())
+            .err()
+            .expect("an empty path fails");
         assert!(
             err.to_string()
                 .starts_with("failed to open the brc20-prog engine: "),
             "{err}"
         );
+    }
+
+    /// The engine reads Bitcoin data from the source it opens with, so its
+    /// own Bitcoin RPC URL may be empty even when Bitcoin RPC errors are fatal.
+    #[test]
+    fn the_engine_opens_on_a_source_without_a_bitcoin_rpc_url() {
+        let dir = EngineDir::new();
+        let mut config = dir.config.clone();
+        config.bitcoin_rpc_url = String::new();
+        config.bitcoin_rpc_user = String::new();
+        config.bitcoin_rpc_password = String::new();
+        config.fail_on_bitcoin_rpc_error = true;
+        assert!(open_engine(config, no_bitcoin()).is_ok());
     }
 
     #[test]
@@ -475,7 +548,7 @@ mod tests {
     #[test]
     fn the_public_rpc_server_answers_on_its_own_runtime_and_rejects_indexer_methods() {
         let dir = EngineDir::new();
-        let prog: Brc20Prog = open_engine(dir.config.clone()).unwrap();
+        let prog: Brc20Prog = open_engine(dir.config.clone(), no_bitcoin()).unwrap();
         // No async runtime drives this thread; only the service runtime can answer.
         let rpc = PublicRpc::start(&prog).expect("the server starts");
         let address = &dir.config.brc20_prog_rpc_server_url;

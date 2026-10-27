@@ -45,7 +45,7 @@ mod tests {
             None,
             Some("main"),
             Some("tokio-runtime-worker"),
-            Some("brc20-services"),
+            Some("brc20-bitcoin-rpc"),
             Some("opi-rpc-test"),
             Some(""),
         ] {

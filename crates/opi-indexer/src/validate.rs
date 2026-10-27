@@ -8,7 +8,11 @@
 use {
     anyhow::{Result, anyhow, bail},
     clap::Args as ClapArgs,
-    opi_brc20::{client::EventProviderClient, config::Brc20IndexerConfig, database::Brc20Database},
+    opi_brc20::{
+        client::EventProviderClient,
+        config::{BitcoinRpcAuth, Brc20IndexerConfig},
+        database::Brc20Database,
+    },
     std::fmt,
 };
 
@@ -124,6 +128,9 @@ pub fn run(args: Args) -> Result<bool> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    // Checked first so that a bad combination is an error, not a panic in
+    // the config's default.
+    BitcoinRpcAuth::from_env()?;
     let config = Brc20IndexerConfig::default();
     let database = {
         let _guard = runtime.enter();
