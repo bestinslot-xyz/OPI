@@ -318,9 +318,9 @@ impl BitcoinRpcAuth {
 }
 
 /// Chain id brc20-prog uses on mainnet ("BRC20" in hex).
-const BRC20_PROG_CHAIN_ID_MAINNET: u64 = 0x4252433230;
+pub const BRC20_PROG_CHAIN_ID_MAINNET: u64 = 0x4252433230;
 /// Chain id brc20-prog uses on every other network ("BRC20s" in hex).
-const BRC20_PROG_CHAIN_ID_TESTNETS: u64 = 0x425243323073;
+pub const BRC20_PROG_CHAIN_ID_TESTNETS: u64 = 0x425243323073;
 
 /// Whether the embedded engine serves its public JSON-RPC. On when unset or
 /// exactly `true`; any other value, including an empty one, turns it off.
@@ -436,8 +436,12 @@ pub struct Brc20IndexerConfig {
 impl Brc20IndexerConfig {
     /// Builds the embedded engine's config from brc20-prog's own environment
     /// variables plus the settings opi-indexer owns (see `apply_engine_settings`).
-    /// Errors when `BRC20_PROG_DB_PATH` is not set.
+    /// Errors when `BRC20_PROG_DB_PATH` is not set, and in light mode without
+    /// the Bitcoin RPC proxy, which serves a light client's prefetched results.
     pub fn brc20_prog_config(&self) -> anyhow::Result<Brc20ProgConfig> {
+        if self.light_client_mode && !self.brc20_prog_bitcoin_rpc_proxy_server_enabled {
+            anyhow::bail!("light mode needs {BITCOIN_RPC_PROXY_SERVER_ENABLED}=true");
+        }
         let proxy_addr = self
             .brc20_prog_bitcoin_rpc_proxy_server_enabled
             .then_some(self.brc20_prog_bitcoin_rpc_proxy_server_addr.as_str());
@@ -689,6 +693,19 @@ mod tests {
                 None
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn light_mode_needs_the_proxy() {
+        let config = Brc20IndexerConfig {
+            light_client_mode: true,
+            brc20_prog_bitcoin_rpc_proxy_server_enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            config.brc20_prog_config().unwrap_err().to_string(),
+            "light mode needs BITCOIN_RPC_PROXY_SERVER_ENABLED=true"
         );
     }
 
