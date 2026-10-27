@@ -18,8 +18,9 @@ use serde_json::json;
 use sqlx::{AssertSqlSafe, Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
-use super::bitcoin_rpc_cache::{
-    BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer,
+use super::{
+    bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer},
+    evm_addresses,
 };
 use crate::{
     config::{
@@ -294,6 +295,13 @@ impl Brc20Database {
                 .execute(&self.client)
                 .await?;
         }
+
+        evm_addresses::create_and_fill_if_missing(
+            &self.client,
+            self.network,
+            evm_addresses::FILL_BATCH,
+        )
+        .await?;
 
         self.fetch_current_event_id().await?;
 
@@ -1585,6 +1593,19 @@ impl Brc20Database {
 
     pub async fn flush_queries_to_db(&mut self) -> Result<(), Box<dyn Error>> {
         let mut tx = self.client.begin().await?;
+
+        let evm_address_rows = evm_addresses::rows_for_events(
+            self.event_inserts
+                .iter()
+                .map(|event| (event.event_type_id, &event.event))
+                .chain(
+                    self.light_event_inserts
+                        .iter()
+                        .map(|event| (event.event_type_id, &event.event)),
+                ),
+            self.network,
+        );
+        evm_addresses::insert_rows(&mut tx, &evm_address_rows).await?;
 
         if !self.log_timer_inserts.is_empty() {
             let mut all_log_data = Vec::new();

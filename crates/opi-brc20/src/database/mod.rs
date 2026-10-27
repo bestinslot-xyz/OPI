@@ -8,4 +8,5 @@ pub use brc20_database::{
     replace_brc20_database, set_brc20_database,
 };
 
+pub mod evm_addresses;
 pub mod timer;

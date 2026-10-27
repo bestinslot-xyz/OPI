@@ -5042,6 +5042,7 @@ dependencies = [
 name = "opi-brc20"
 version = "2.0.14"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "async-trait",
  "axum",
