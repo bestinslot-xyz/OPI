@@ -1,15 +1,19 @@
-# pip install python-dotenvAdd commentMore actions
-# pip install psycopg2-binary
-# pip install stdiomask
+# pip install -r ../../requirements.txt
+#
+# Writes the brc20 settings into the repository root .env, the file opi-indexer
+# reads, and initialises the brc20 database from it. Other settings already in
+# that file are kept. Run it from crates/opi-brc20.
 
 import os, psycopg2, stdiomask
-from dotenv import load_dotenv, dotenv_values
+from dotenv import dotenv_values, set_key
+
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.env')
 
 init_env = True
 
 # does .env file exist?
-if os.path.isfile('.env'):
-  res = input("Do you want to re-initialise .env file? (y/n) ")
+if os.path.isfile(ENV_PATH):
+  res = input("Do you want to re-initialise the brc20 settings in the root .env file? (y/n) ")
   if res != 'y':
     init_env = False
 
@@ -17,7 +21,7 @@ if init_env:
   DB_USER="postgres"
   DB_HOST="localhost"
   DB_PORT="5432"
-  DB_DATABASE="postgres"
+  DB_DATABASE=""
   DB_PASSWD=""
   DB_SSL="false"
   OPERATION_MODE="full"
@@ -33,18 +37,18 @@ if init_env:
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
-  other_env_exists = os.path.isfile('../../.env')
+  other_env_exists = bool(dotenv_values(dotenv_path=ENV_PATH).get("DB_DATABASE")) if os.path.isfile(ENV_PATH) else False
   if other_env_exists:
-    res = input("The repository root .env already exists, do you want to use values from there? (y/n) ")
+    res = input("The repository root .env already has brc20 DB settings, do you want to use them? (y/n) ")
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    env = dotenv_values(dotenv_path='../../.env')
+    env = dotenv_values(dotenv_path=ENV_PATH)
     DB_USER = env.get("DB_USER") or "postgres"
     DB_HOST = env.get("DB_HOST") or "localhost"
     DB_PORT = env.get("DB_PORT") or "5432"
-    DB_DATABASE = env.get("DB_DATABASE") or "postgres"
-    DB_PASSWD = env.get("DB_PASSWD")
+    DB_DATABASE = env.get("DB_DATABASE")
+    DB_PASSWD = env.get("DB_PASSWD") or ""
     DB_SSL = env.get("DB_SSL") or "false"
   else:
     res = input("BRC20 Postgres DB username (Default: postgres): ")
@@ -56,9 +60,13 @@ if init_env:
     res = input("BRC20 Postgres DB port (Default: 5432): ")
     if res != '':
       DB_PORT = res
-    res = input("BRC20 Postgres DB name (Default: postgres) leave default if no new dbs are created: ")
-    if res != '':
-      DB_DATABASE = res
+    while True:
+      res = input("BRC20 Postgres DB name (required, brc20's own database): ")
+      if res != '':
+        DB_DATABASE = res
+        break
+      else:
+        print('DB name cannot be empty')
     res = stdiomask.getpass("BRC20 Postgres DB password: ")
     DB_PASSWD = res
     res = input("BRC20 Postgres DB SSL (Default: false) options: true, false: ")
@@ -98,35 +106,42 @@ if init_env:
   if res != '':
     BRC20_PROG_RPC_PASSWORD = res
 
-  f = open('.env', 'w')
-  f.write('DB_USER="' + DB_USER + '"\n')
-  f.write('DB_HOST="' + DB_HOST + '"\n')
-  f.write('DB_PORT="' + DB_PORT + '"\n')
-  f.write('DB_DATABASE="' + DB_DATABASE + '"\n')
-  f.write('DB_PASSWD="' + DB_PASSWD + '"\n')
-  f.write('DB_SSL="' + DB_SSL + '"\n')
-  f.write('OPERATION_MODE="' + OPERATION_MODE + '"\n')
-  f.write('NETWORK_TYPE="' + NETWORK_TYPE + '"\n')
-  f.write('REPORT_TO_INDEXER="' + REPORT_TO_INDEXER + '"\n')
-  f.write('REPORT_URL="' + REPORT_URL + '"\n')
-  f.write('REPORT_RETRIES="' + REPORT_RETRIES + '"\n')
-  f.write('REPORT_NAME="' + REPORT_NAME + '"\n')
-  f.write('BRC20_PROG_RPC_URL="' + BRC20_PROG_RPC_URL + '"\n')
-  f.write('BRC20_PROG_RPC_USER="' + BRC20_PROG_RPC_USER + '"\n')
-  f.write('BRC20_PROG_RPC_PASSWORD="' + BRC20_PROG_RPC_PASSWORD + '"\n')
-  f.close()
+  if not os.path.isfile(ENV_PATH):
+    open(ENV_PATH, 'a').close()
+  settings = {
+    "DB_USER": DB_USER,
+    "DB_HOST": DB_HOST,
+    "DB_PORT": DB_PORT,
+    "DB_DATABASE": DB_DATABASE,
+    "DB_PASSWD": DB_PASSWD,
+    "DB_SSL": DB_SSL,
+    "OPERATION_MODE": OPERATION_MODE,
+    "NETWORK_TYPE": NETWORK_TYPE,
+    "REPORT_TO_INDEXER": REPORT_TO_INDEXER,
+    "REPORT_URL": REPORT_URL,
+    "REPORT_RETRIES": REPORT_RETRIES,
+    "REPORT_NAME": REPORT_NAME,
+    "BRC20_PROG_RPC_URL": BRC20_PROG_RPC_URL,
+    "BRC20_PROG_RPC_USER": BRC20_PROG_RPC_USER,
+    "BRC20_PROG_RPC_PASSWORD": BRC20_PROG_RPC_PASSWORD,
+  }
+  for key, value in settings.items():
+    set_key(ENV_PATH, key, value, quote_mode='always')
 
 res = input("Are you sure you want to initialise/reset the brc20 database? (y/n) ")
 if res != 'y':
   print('aborting')
   exit(1)
 
-load_dotenv()
-db_user = os.getenv("DB_USER") or "postgres"
-db_host = os.getenv("DB_HOST") or "localhost"
-db_port = int(os.getenv("DB_PORT") or "5432")
-db_database = os.getenv("DB_DATABASE") or "postgres"
-db_password = os.getenv("DB_PASSWD")
+env = dotenv_values(dotenv_path=ENV_PATH) if os.path.isfile(ENV_PATH) else {}
+db_user = env.get("DB_USER") or "postgres"
+db_host = env.get("DB_HOST") or "localhost"
+db_port = int(env.get("DB_PORT") or "5432")
+db_database = env.get("DB_DATABASE")
+if not db_database:
+  print('DB_DATABASE is not set in ' + os.path.normpath(ENV_PATH))
+  exit(1)
+db_password = env.get("DB_PASSWD")
 
 ## connect to db
 conn = psycopg2.connect(

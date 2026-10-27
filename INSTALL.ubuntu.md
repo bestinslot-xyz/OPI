@@ -154,7 +154,7 @@ cargo build --release --locked -p opi-indexer;
 
 Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start.
 
-`opi-indexer` and the API read this one `.env`. `python3 api/reset_init.py` asks for the API settings and writes them into it. `crates/opi-brc20/reset_init.py` is an optional helper that writes brc20's settings to `crates/opi-brc20/.env` and initialises the brc20 database; copy its values into the root `.env`.
+`opi-indexer` and the API read this one `.env`. `python3 api/reset_init.py` asks for the API settings and writes them into it. `crates/opi-brc20/reset_init.py` is an optional helper that writes brc20's settings into the root `.env` and initialises the brc20 database from it; run it from `crates/opi-brc20`.
 
 Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
 

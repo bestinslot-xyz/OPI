@@ -402,7 +402,7 @@ Copy `.env_sample` to `.env` in the repository root and fill it in, as described
 
 `python3 api/reset_init.py` writes the API settings into the same `.env`.
 
-`crates/opi-brc20/reset_init.py` is an optional helper for brc20: run it from `crates/opi-brc20`. It asks for brc20's settings, writes them to `crates/opi-brc20/.env`, and initialises the brc20 database. Copy those values into the root `.env`, which is the file `opi-indexer` reads.
+`crates/opi-brc20/reset_init.py` is an optional helper for brc20: run it from `crates/opi-brc20`. It asks for brc20's settings, writes them into the root `.env` (the file `opi-indexer` reads, keeping the other settings in it), and initialises the brc20 database from that file.
 
 # Run
 
