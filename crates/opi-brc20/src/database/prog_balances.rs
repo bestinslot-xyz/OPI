@@ -180,14 +180,21 @@ fn address_from_topic(topic: &B256) -> String {
     format!("0x{}", hex::encode(&topic[12..32]))
 }
 
-/// The amount in bytes 16..32 of a log's data, the low 128 bits of its first
-/// word.
+/// The amount in the first 32-byte word of a log's data. A value above 128
+/// bits is an error.
 fn amount_from_data(data: &[u8]) -> Result<u128, String> {
-    let word: [u8; 16] = data
-        .get(16..32)
-        .and_then(|bytes| bytes.try_into().ok())
+    let word = data
+        .get(..32)
         .ok_or_else(|| format!("Transfer data is {} bytes, expected 32", data.len()))?;
-    Ok(u128::from_be_bytes(word))
+    let (high, low) = word.split_at(16);
+    if high.iter().any(|byte| *byte != 0) {
+        return Err(format!(
+            "Transfer value 0x{} exceeds 128 bits",
+            hex::encode(word)
+        ));
+    }
+    let low: [u8; 16] = low.try_into().expect("16 bytes");
+    Ok(u128::from_be_bytes(low))
 }
 
 /// Sorts out the logs the rules act on: `BRC20Created` from the controller and
@@ -780,19 +787,33 @@ mod tests {
     }
 
     #[test]
-    fn transfer_log_reads_its_parties_and_the_low_128_bits_of_its_value() {
-        let amount = (U256::from(7u8) << 200) + U256::from(1_000u32);
+    fn transfer_log_reads_its_parties_and_value() {
         assert_eq!(
-            classify(&transfer_log(TOKEN, ALICE, BOB, amount)),
+            classify(&transfer_log(TOKEN, ALICE, BOB, U256::from(u128::MAX))),
             Ok(Some(ClassifiedLog::Transfer {
                 contract_address: TOKEN.into(),
                 transfer: Ok(TransferLog {
                     from: ALICE.into(),
                     to: BOB.into(),
-                    amount: 1_000,
+                    amount: u128::MAX,
                 }),
             }))
         );
+    }
+
+    #[test]
+    fn a_transfer_value_above_128_bits_is_an_error() {
+        for amount in [
+            (U256::from(7u8) << 200) + U256::from(1_000u32),
+            U256::from(u128::MAX) + U256::from(1u8),
+        ] {
+            let Ok(Some(ClassifiedLog::Transfer { transfer, .. })) =
+                classify(&transfer_log(TOKEN, ALICE, BOB, amount))
+            else {
+                panic!("a Transfer log");
+            };
+            assert!(transfer.is_err(), "{amount}");
+        }
     }
 
     #[test]

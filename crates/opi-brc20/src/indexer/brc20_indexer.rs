@@ -233,7 +233,8 @@ impl Brc20Indexer {
     }
 
     /// Fills the BRC2.0 balance tables from the engine's logs when they are
-    /// marked for filling, up to the block both brc20 and the engine hold.
+    /// marked for filling, up to brc20's block, which the engine must also
+    /// hold (see `prog_balance_fill_height`).
     async fn fill_prog_balances(&self) -> Result<(), Box<dyn Error>> {
         let (pool, brc20_height) = {
             let database = get_brc20_database();
@@ -243,12 +244,20 @@ impl Brc20Indexer {
                 database.get_current_block_height().await?,
             )
         };
+        if prog_balances::fill_progress(&pool).await?.is_none() {
+            return Ok(());
+        }
         let prog_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
+        let to_height = prog_balance_fill_height(
+            brc20_height,
+            prog_height,
+            self.config.first_brc20_prog_phase_one_height,
+        )?;
         prog_balances::fill(
             &pool,
             &self.brc20_prog,
             self.config.first_brc20_prog_phase_one_height,
-            brc20_height.min(prog_height),
+            to_height,
             Brc20ProgConfig::from_env().get_logs_max_blocks,
             prog_balances::FILL_BLOCKS,
         )
@@ -2601,6 +2610,18 @@ fn compares_brc20_prog_hash(last_brc20: i32, first_brc20_height: i32, phase_one:
     last_brc20 >= first_brc20_height && last_brc20 >= phase_one
 }
 
+/// The last block the BRC2.0 balance fill replays: brc20's height. From
+/// phase one on the engine must hold exactly that block, since a fill that
+/// stops short would still finish and drop its marker.
+fn prog_balance_fill_height(brc20: i32, prog: i32, phase_one: i32) -> Result<i32, String> {
+    if brc20 >= phase_one && prog != brc20 {
+        return Err(format!(
+            "BRC2.0 balance fill: brc20 is at block {brc20} but brc20-prog at {prog}"
+        ));
+    }
+    Ok(brc20)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2609,6 +2630,30 @@ mod tests {
 
     const FIRST: i32 = 112_402;
     const PHASE_ONE: i32 = 230_000;
+
+    #[test]
+    fn the_fill_needs_brc20_and_the_engine_at_one_height_from_phase_one() {
+        // Below phase one the engine sits at phase one - 1 and nothing fills.
+        assert_eq!(
+            prog_balance_fill_height(200_000, PHASE_ONE - 1, PHASE_ONE),
+            Ok(200_000)
+        );
+        assert_eq!(
+            prog_balance_fill_height(PHASE_ONE - 1, PHASE_ONE - 1, PHASE_ONE),
+            Ok(PHASE_ONE - 1)
+        );
+        assert_eq!(
+            prog_balance_fill_height(PHASE_ONE, PHASE_ONE, PHASE_ONE),
+            Ok(PHASE_ONE)
+        );
+        assert_eq!(
+            prog_balance_fill_height(300_000, 300_000, PHASE_ONE),
+            Ok(300_000)
+        );
+        assert!(prog_balance_fill_height(300_000, 299_990, PHASE_ONE).is_err());
+        assert!(prog_balance_fill_height(300_000, 300_001, PHASE_ONE).is_err());
+        assert!(prog_balance_fill_height(PHASE_ONE, PHASE_ONE - 1, PHASE_ONE).is_err());
+    }
 
     #[test]
     fn prog_height_check_matches_the_reconciliation_conditions() {
