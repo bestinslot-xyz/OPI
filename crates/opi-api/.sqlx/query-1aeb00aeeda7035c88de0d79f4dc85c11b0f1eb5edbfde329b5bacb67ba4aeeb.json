@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT db_version FROM brc20_indexer_version;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "db_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_indexer_version",
+            "name": "db_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1aeb00aeeda7035c88de0d79f4dc85c11b0f1eb5edbfde329b5bacb67ba4aeeb"
+}

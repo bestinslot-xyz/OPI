@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.event::text as \"event\", u.event_type as \"event_type!\", u.inscription_id as \"inscription_id!\"\n            from (select id, event, event_type, inscription_id\n                  from brc20_events\n                  where inscription_id = $1\n                  union select id, event, event_type, inscription_id\n                  from brc20_light_events\n                  where inscription_id = $1) u\n            order by u.id asc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "inscription_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "266afc6e6e4863005f6a709b4e4b6ff541cef2332438c028e6745c58f80f1ddb"
+}

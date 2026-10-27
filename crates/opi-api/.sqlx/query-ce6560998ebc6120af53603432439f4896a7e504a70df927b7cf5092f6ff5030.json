@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bt.tick, bt.decimals, (bt.max_supply - bt.remaining_supply)::text as \"total_supply\", count(*) as holder_count\n                from brc20_tickers bt\n                join brc20_current_balances bcb on bt.tick = bcb.tick\n                where bt.tick ilike $1 and bcb.overall_balance > 0\n                group by 1, 2, 3\n                order by holder_count desc, bt.tick asc\n                limit $2 offset $3;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tick",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "tick"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "decimals",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "decimals"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "total_supply",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "holder_count",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "ce6560998ebc6120af53603432439f4896a7e504a70df927b7cf5092f6ff5030"
+}

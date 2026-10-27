@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select event_type_name, event_type_id from brc20_event_types;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_event_types",
+            "name": "event_type_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_event_types",
+            "name": "event_type_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "10d9bf7b4ee09096f2127ca432cc40b03e8d91762615c394f21de867717443a3"
+}

@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n            method, request::text as \"request\", response::text as \"response\"\n            from brc20_bitcoin_rpc_result_cache\n            where block_height = $1\n            order by id asc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "method",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_bitcoin_rpc_result_cache",
+            "name": "method"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "request",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "response",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "9ca28956d4f94fe0d909b318a349a364855b63c925ceb758e3a45278bbf617aa"
+}

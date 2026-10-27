@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as brc20_count\n                from brc20_current_balances\n                where wallet = $1 and overall_balance > 0;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "brc20_count",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "20ac1f1c8c4cbe63af59cd8207f019a46db8155de9c7c4e25ca2377e8ec659cf"
+}

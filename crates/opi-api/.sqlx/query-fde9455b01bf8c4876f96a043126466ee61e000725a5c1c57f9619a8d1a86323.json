@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select overall_balance::text as \"overall_balance\", available_balance::text as \"available_balance\"\n            from brc20_historic_balances\n            where block_height < $1\n              and pkscript = $2\n              and tick = $3\n            order by id desc\n            limit 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "overall_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "available_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "fde9455b01bf8c4876f96a043126466ee61e000725a5c1c57f9619a8d1a86323"
+}
