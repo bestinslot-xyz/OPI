@@ -1,0 +1,141 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.tick, t.original_tick, t.decimals,\n                t.max_supply::text as \"max_supply!\",\n                (t.max_supply - t.remaining_supply)::text as \"minted_supply!\",\n                t.remaining_supply::text as \"remaining_supply!\",\n                t.burned_supply::text as \"burned_supply!\",\n                t.limit_per_mint::text as \"limit_per_mint!\",\n                t.is_self_mint, t.deploy_inscription_id, t.block_height,\n                coalesce(h.holders, 0) as \"holders!\",\n                coalesce(h.prog_holders, 0) as \"prog_holders!\"\n            from brc20_tickers t\n            left join brc20_ticker_holders h on h.tick = t.tick\n            where ($1::text is null or t.tick like $1)\n            order by\n                case when $2::text = 'holders' and $3::text = 'asc' then coalesce(h.holders, 0) end asc,\n                case when $2::text = 'holders' and $3::text = 'desc' then coalesce(h.holders, 0) end desc,\n                case when $2::text = 'prog_holders' and $3::text = 'asc' then coalesce(h.prog_holders, 0) end asc,\n                case when $2::text = 'prog_holders' and $3::text = 'desc' then coalesce(h.prog_holders, 0) end desc,\n                case when $2::text = 'max_supply' and $3::text = 'asc' then t.max_supply end asc,\n                case when $2::text = 'max_supply' and $3::text = 'desc' then t.max_supply end desc,\n                case when $2::text = 'mint_progress' and $3::text = 'asc' then\n                    case when t.max_supply = 0 then 0 else (t.max_supply - t.remaining_supply) / t.max_supply end\n                end asc,\n                case when $2::text = 'mint_progress' and $3::text = 'desc' then\n                    case when t.max_supply = 0 then 0 else (t.max_supply - t.remaining_supply) / t.max_supply end\n                end desc,\n                case when $2::text = 'deploy_height' and $3::text = 'asc' then t.block_height end asc,\n                case when $2::text = 'deploy_height' and $3::text = 'desc' then t.block_height end desc,\n                t.tick asc\n            limit $4 offset $5;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tick",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "tick"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "original_tick",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "original_tick"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "decimals",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "decimals"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "max_supply!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "minted_supply!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "remaining_supply!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "burned_supply!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "limit_per_mint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "is_self_mint",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "is_self_mint"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "deploy_inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "deploy_inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "holders!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "prog_holders!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "ce7a434081a91ab43c3eff6ea3d8821a9059b0cd394202f76bdcc335eea2fc72"
+}

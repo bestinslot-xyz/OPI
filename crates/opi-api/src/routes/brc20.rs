@@ -1,7 +1,8 @@
 //! The brc20 module's routes, including the
-//! `/v1/brc20/explorer/...` routes for the BRC2.0 blockscout frontend.
+//! `/v1/brc20/explorer/...` routes for the BRC2.0 blockscout frontend and the
+//! ticker routes of [`tickers`], which have no JavaScript counterpart.
 //!
-//! Each handler follows its JavaScript counterpart line by line: query
+//! Each other handler follows its JavaScript counterpart line by line: query
 //! params keep their JavaScript values ([`JsValue`]) through the checks and
 //! coercions the route applies, and become typed SQL params (with
 //! Postgres's input rules, see [`params`]) where the route runs its query.
@@ -23,6 +24,8 @@ use {
     axum::{Router, extract::State, routing::get},
     sha2::{Digest, Sha256},
 };
+
+mod tickers;
 
 #[cfg(test)]
 mod tests;
@@ -81,6 +84,10 @@ pub fn routes(router: Router, db: Db) -> Router {
                 get(explorer_address_tabs_counters),
             )
             .route("/v1/brc20/explorer/tokens", get(explorer_tokens))
+            .route("/v1/brc20/ticker", get(tickers::ticker_info))
+            .route("/v1/brc20/tickers", get(tickers::tickers))
+            .route("/v1/brc20/ticker/holders", get(tickers::holders))
+            .route("/v1/brc20/wallet/balances", get(tickers::wallet_balances))
             .with_state(db),
     )
 }
