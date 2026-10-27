@@ -119,6 +119,18 @@ impl BitcoinRpcCache {
         request.answer(response).map(Some)
     }
 
+    /// Whether `brc20_block_hashes` holds `block_hash`, through its
+    /// `block_hash` index.
+    pub async fn is_block_indexed(&self, block_hash: &str) -> Result<bool, Box<dyn Error>> {
+        Ok(
+            sqlx::query("SELECT 1 FROM brc20_block_hashes WHERE block_hash = $1 LIMIT 1")
+                .bind(block_hash)
+                .fetch_optional(&self.pool)
+                .await?
+                .is_some(),
+        )
+    }
+
     /// Buffers the response for the next commit.
     pub async fn cache(&self, request: &[u8], response: &[u8]) -> Result<(), Box<dyn Error>> {
         if !self.enabled {

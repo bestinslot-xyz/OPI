@@ -238,12 +238,22 @@ impl Worker {
                 Ok(None) => {}
                 Err(e) => return Err(cache_error("reading", e)),
             }
-            match cache.stored(&key).await {
-                Ok(Some(response)) if serves_stored(self.light_client_mode, request, &response) => {
+            let stored = cache
+                .stored(&key)
+                .await
+                .map_err(|e| cache_error("reading", e))?;
+            if let Some(response) = stored {
+                let block_indexed =
+                    match confirming_block(self.light_client_mode, request, &response) {
+                        Some(hash) => cache
+                            .block_indexed(&hash)
+                            .await
+                            .map_err(|e| cache_error("reading", e))?,
+                        None => true,
+                    };
+                if serves_stored(self.light_client_mode, request, &response, block_indexed) {
                     return Ok(response);
                 }
-                Ok(_) => {}
-                Err(e) => return Err(cache_error("reading", e)),
             }
         }
         if self.light_client_mode {
@@ -278,6 +288,8 @@ trait CacheRows: Send + Sync {
     async fn buffered(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>>;
     /// The newest stored answer.
     async fn stored(&self, request: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>>;
+    /// Whether the indexer has indexed the block with this hash.
+    async fn block_indexed(&self, block_hash: &str) -> Result<bool, Box<dyn Error>>;
     /// Buffers bitcoind's `response` to `request`.
     async fn cache(&self, request: &[u8], response: &[u8]) -> Result<(), Box<dyn Error>>;
 }
@@ -292,23 +304,50 @@ impl CacheRows for BitcoinRpcCache {
         self.get_stored(request).await
     }
 
+    async fn block_indexed(&self, block_hash: &str) -> Result<bool, Box<dyn Error>> {
+        self.is_block_indexed(block_hash).await
+    }
+
     async fn cache(&self, request: &[u8], response: &[u8]) -> Result<(), Box<dyn Error>> {
         BitcoinRpcCache::cache(self, request, response).await
     }
 }
 
-/// Whether a stored row's `response` to `request` answers a lookup. Light mode
-/// replays every row. Full mode skips a "not yet" row, which was true only at
-/// the block that asked: a later block asks bitcoind again and buffers that
-/// answer under its own height.
-fn serves_stored(light_client_mode: bool, request: &Value, response: &[u8]) -> bool {
+/// Whether a stored row's `response` to `request` answers a lookup.
+/// `block_indexed` is whether the block `confirming_block` names is indexed
+/// (true when it names none). Light mode replays every row. Full mode skips a
+/// "not yet" row, which was true only at the block that asked, and a row whose
+/// confirming block is not indexed, which may have been orphaned: a later
+/// block asks bitcoind again and buffers that answer under its own height.
+fn serves_stored(
+    light_client_mode: bool,
+    request: &Value,
+    response: &[u8],
+    block_indexed: bool,
+) -> bool {
     if light_client_mode {
         return true;
     }
     match serde_json::from_slice::<Value>(response) {
-        Ok(response) => !is_not_yet(request, &response),
+        Ok(response) => block_indexed && !is_not_yet(request, &response),
         // An unreadable row is not served; bitcoind answers instead.
         Err(_) => false,
+    }
+}
+
+/// The hash of the block a stored verbose `getrawtransaction` answer was
+/// confirmed in, when full mode must check that the indexer has indexed it.
+fn confirming_block(light_client_mode: bool, request: &Value, response: &[u8]) -> Option<String> {
+    if light_client_mode
+        || request["method"] != json!("getrawtransaction")
+        || request["params"][1] != json!(true)
+    {
+        return None;
+    }
+    let response = serde_json::from_slice::<Value>(response).ok()?;
+    match response.get("error") {
+        None | Some(Value::Null) => response["result"]["blockhash"].as_str().map(str::to_string),
+        Some(_) => None,
     }
 }
 
@@ -974,15 +1013,56 @@ mod tests {
             (&verbose, &not_yet),
             (&verbose, &unconfirmed),
         ] {
-            assert!(serves_stored(true, request, response.as_bytes()));
-            assert!(!serves_stored(false, request, response.as_bytes()));
+            assert!(serves_stored(true, request, response.as_bytes(), true));
+            assert!(!serves_stored(false, request, response.as_bytes(), true));
         }
         for (request, response) in [(&verbose, &confirmed), (&raw, &found_raw)] {
-            assert!(serves_stored(true, request, response.as_bytes()));
-            assert!(serves_stored(false, request, response.as_bytes()));
+            assert!(serves_stored(true, request, response.as_bytes(), true));
+            assert!(serves_stored(false, request, response.as_bytes(), true));
         }
         // An unreadable row in full mode goes to bitcoind.
-        assert!(!serves_stored(false, &raw, b"<html>"));
+        assert!(!serves_stored(false, &raw, b"<html>", true));
+    }
+
+    #[test]
+    fn full_mode_serves_a_confirmed_row_only_when_its_block_is_indexed() {
+        let verbose = raw_transaction_request(&txid(TX_INFO), true);
+        let confirmed = signet_response(&verbose).to_string();
+
+        assert!(serves_stored(false, &verbose, confirmed.as_bytes(), true));
+        assert!(!serves_stored(false, &verbose, confirmed.as_bytes(), false));
+        // Light mode replays the row whatever the indexer has indexed.
+        assert!(serves_stored(true, &verbose, confirmed.as_bytes(), false));
+    }
+
+    #[test]
+    fn only_a_full_mode_confirmed_verbose_row_names_a_block_to_check() {
+        let raw = raw_transaction_request(&txid(TX), false);
+        let verbose = raw_transaction_request(&txid(TX_INFO), true);
+        let header = block_header_request(&block_hash(HEADER));
+        let confirmed = signet_response(&verbose).to_string();
+        let found_raw = signet_response(&raw).to_string();
+
+        assert_eq!(
+            confirming_block(false, &verbose, confirmed.as_bytes()),
+            Some(TX_INFO_BLOCK.to_string())
+        );
+        assert_eq!(confirming_block(true, &verbose, confirmed.as_bytes()), None);
+        assert_eq!(confirming_block(false, &raw, found_raw.as_bytes()), None);
+        assert_eq!(
+            confirming_block(false, &verbose, rpc_error_value(-5).to_string().as_bytes()),
+            None
+        );
+        assert_eq!(
+            confirming_block(false, &verbose, unconfirmed_info().to_string().as_bytes()),
+            None
+        );
+        assert_eq!(confirming_block(false, &verbose, b"<html>"), None);
+        let header_row = signet_response(&header).to_string();
+        assert_eq!(
+            confirming_block(false, &header, header_row.as_bytes()),
+            None
+        );
     }
 
     /// A cache over a map, with a fixed stored row.
@@ -990,13 +1070,23 @@ mod tests {
     struct FakeRows {
         buffer: Mutex<HashMap<Vec<u8>, Bytes>>,
         stored: Mutex<Option<Bytes>>,
+        /// The block hashes the indexer has indexed.
+        indexed: Mutex<Vec<String>>,
     }
 
     impl FakeRows {
+        /// A stored row; the indexer has indexed `TX_INFO_BLOCK` only.
         fn with_stored(response: Value) -> Self {
             let rows = FakeRows::default();
             *rows.stored.lock().unwrap() = Some(Bytes::from(response.to_string()));
+            rows.indexed.lock().unwrap().push(TX_INFO_BLOCK.to_string());
             rows
+        }
+
+        /// The indexer has indexed no block.
+        fn with_no_indexed_blocks(self) -> Self {
+            self.indexed.lock().unwrap().clear();
+            self
         }
 
         fn buffered_count(&self) -> usize {
@@ -1012,6 +1102,10 @@ mod tests {
 
         async fn stored(&self, _: &[u8]) -> Result<Option<Bytes>, Box<dyn Error>> {
             Ok(self.stored.lock().unwrap().clone())
+        }
+
+        async fn block_indexed(&self, block_hash: &str) -> Result<bool, Box<dyn Error>> {
+            Ok(self.indexed.lock().unwrap().iter().any(|h| h == block_hash))
         }
 
         async fn cache(&self, request: &[u8], response: &[u8]) -> Result<(), Box<dyn Error>> {
@@ -1095,6 +1189,45 @@ mod tests {
         assert_eq!(answer["result"]["blockhash"], json!(TX_INFO_BLOCK));
         assert!(seen.lock().unwrap().is_empty());
         assert_eq!(rows.buffered_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn full_mode_asks_bitcoind_past_a_row_whose_block_is_not_indexed() {
+        let (url, seen) = confirmed_bitcoind();
+        let worker = worker(&url, false);
+        let request = raw_transaction_request(&txid(TX_INFO), true);
+        let rows = FakeRows::with_stored(signet_response(&request)).with_no_indexed_blocks();
+
+        let answer = worker
+            .answer_with(Some(&rows), &request, true)
+            .await
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&answer).unwrap();
+        assert_eq!(answer["result"]["blockhash"], json!(TX_INFO_BLOCK));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(rows.buffered_count(), 1);
+
+        // The block's next lookup is served from the buffer.
+        worker
+            .answer_with(Some(&rows), &request, true)
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn light_mode_serves_a_row_whose_block_is_not_indexed_without_bitcoind() {
+        let (url, seen) = confirmed_bitcoind();
+        let worker = worker(&url, true);
+        let request = raw_transaction_request(&txid(TX_INFO), true);
+        let rows = FakeRows::with_stored(signet_response(&request)).with_no_indexed_blocks();
+        let answer = worker
+            .answer_with(Some(&rows), &request, true)
+            .await
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&answer).unwrap();
+        assert_eq!(answer["result"]["blockhash"], json!(TX_INFO_BLOCK));
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

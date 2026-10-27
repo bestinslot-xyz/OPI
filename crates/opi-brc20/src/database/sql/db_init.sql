@@ -5,6 +5,7 @@ CREATE TABLE public.brc20_block_hashes (
 	CONSTRAINT brc20_block_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_block_hashes_block_height_idx ON public.brc20_block_hashes USING btree (block_height);
+CREATE INDEX IF NOT EXISTS brc20_block_hashes_block_hash_idx ON public.brc20_block_hashes USING btree (block_hash);
 
 CREATE TABLE public.brc20_historic_balances (
 	id bigserial NOT NULL,
