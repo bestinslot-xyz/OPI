@@ -120,8 +120,7 @@ function register(app, db_pool) {
     let query = ` select inscription_id, inscription_number, "namespace"
                   from sns_namespaces;`
 
-    // eslint-disable-next-line no-undef
-    let res = await db_pool.query(query, params)
+    let res = await db_pool.query(query)
 
     response.send({ error: null, result: res.rows })
   });

@@ -31,6 +31,19 @@ function createPools(config) {
   return pools
 }
 
+// Express 4 ignores the promise an async handler returns, so a rejection would
+// go unhandled and end the process. This forwards it to the error middleware.
+function guard(handler) {
+  return (request, response, next) => Promise.resolve(handler(request, response, next)).catch(next)
+}
+
+// The registration surface the route files use: `get` with every handler guarded.
+function guarded_routes(app) {
+  return {
+    get: (path, ...handlers) => app.get(path, ...handlers.map(guard)),
+  }
+}
+
 // Builds the express app for the enabled modules. `pools` maps each enabled
 // module to an object with a pg-style `query(sql, params)`.
 function createApp(config, pools) {
@@ -54,7 +67,9 @@ function createApp(config, pools) {
     app.use(limiter)
   }
 
-  app.get('/v1/status', async (request, response) => {
+  const routes = guarded_routes(app)
+
+  routes.get('/v1/status', async (request, response) => {
     const modules = {}
     for (const module_name of config.modules) {
       try {
@@ -71,13 +86,23 @@ function createApp(config, pools) {
 
   for (const module_name of MODULES) {
     if (config.modules.includes(module_name)) {
-      ROUTES[module_name](app, pools[module_name])
+      ROUTES[module_name](routes, pools[module_name])
     } else {
       app.use(`/v1/${module_name}`, (request, response) => {
         response.status(404).send({ error: `${module_name} is not enabled on this node` })
       })
     }
   }
+
+  // express identifies an error middleware by its four parameters
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, request, response, next) => {
+    console.log(err)
+    if (response.headersSent) {
+      return request.socket.destroy()
+    }
+    response.status(500).send({ error: 'internal error', result: null })
+  })
 
   return app
 }

@@ -139,6 +139,47 @@ test('the ip route of each enabled module stays', async () => {
   })
 })
 
+test('an async handler failure answers 500 and the process keeps serving', async () => {
+  const pools = {
+    bitmap: fake_pool(() => {
+      throw new Error('down')
+    }),
+    sns: fake_pool((sql) => {
+      if (/sns_namespaces/.test(sql)) return [{ namespace: 'n' }]
+      throw new Error('down')
+    }),
+    runes: fake_pool(() => []),
+  }
+  const log = console.log
+  const error = console.error
+  console.log = () => {}
+  console.error = () => {}
+  try {
+    await with_app({ ...ENV, OPI_MODULES: 'bitmap,sns,runes' }, pools, async (base) => {
+      for (const path of ['/v1/bitmap/get_hash_of_all_activity', '/v1/sns/get_hash_of_all_activity']) {
+        const res = await fetch(base + path)
+        assert.strictEqual(res.status, 500, path)
+        assert.deepStrictEqual(await res.json(), { error: 'internal error', result: null })
+      }
+      const ok = await fetch(base + '/v1/runes/ip')
+      assert.strictEqual(ok.status, 200)
+    })
+  } finally {
+    console.log = log
+    console.error = error
+  }
+})
+
+test('sns get_registered_namespaces queries without a params argument', async () => {
+  const sns = fake_pool(() => [{ namespace: 'n' }])
+  await with_app({ ...ENV, OPI_MODULES: 'sns' }, { sns }, async (base) => {
+    const res = await fetch(base + '/v1/sns/get_registered_namespaces')
+    assert.strictEqual(res.status, 200)
+    assert.deepStrictEqual(await res.json(), { error: null, result: [{ namespace: 'n' }] })
+    assert.deepStrictEqual(sns.calls[0].params, [])
+  })
+})
+
 test('the rate limiter applies to every module when enabled', async () => {
   const env = { DB_DATABASE: 'b', RATE_LIMIT_ENABLE: 'true', RATE_LIMIT_MAX: '2' }
   await with_app(env, { brc20: fake_pool(() => []) }, async (base) => {
