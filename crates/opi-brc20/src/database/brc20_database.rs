@@ -301,7 +301,8 @@ impl Brc20Database {
             self.network,
             evm_addresses::FILL_BATCH,
         )
-        .await?;
+        .await
+        .map_err(|error| format!("evm_addresses: {error}"))?;
 
         self.fetch_current_event_id().await?;
 

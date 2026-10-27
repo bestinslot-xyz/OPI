@@ -10,3 +10,5 @@ drop table if exists brc20_current_balances;
 drop table if exists brc20_unused_txes;
 drop table if exists brc20_bitcoin_rpc_result_cache;
 drop table if exists brc20_logs;
+drop table if exists evm_addresses;
+drop table if exists evm_addresses_fill;

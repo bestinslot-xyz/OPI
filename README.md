@@ -467,7 +467,14 @@ and keeps current: each block's events add their addresses, and a database
 without the table gets it filled from the indexed events on the next start
 (an existing table is adopted as it is). When `opi-indexer` takes over a
 database whose `evm_addresses` the Python sidecar
-`brc20_update_evm_addresses_custom.py` maintains, stop the sidecar.
+`brc20_update_evm_addresses_custom.py` maintains, stop the sidecar; no wait is
+needed. The next start adds the rows for the blocks above the sidecar's
+progress table `brc20_block_hashes_evm_addresses` and drops that table. The
+sidecar's DDL makes `postgres` the table owner, so the indexer's database role
+needs INSERT and DELETE on `evm_addresses` and USAGE on
+`evm_addresses_id_seq`, or ownership
+(`ALTER TABLE evm_addresses OWNER TO <role>`), and the right to drop the
+progress table (its owner or a superuser).
 
 The unused-transaction routes read the tables `brc20_unused_tx_inscrs` and
 `brc20_extras_block_hashes`, which neither the indexer nor

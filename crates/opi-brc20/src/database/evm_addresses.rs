@@ -146,13 +146,19 @@ pub async fn insert_rows(
     Ok(())
 }
 
-/// Makes sure `evm_addresses` exists before indexing.
+/// The sidecar's progress table: one row per block it has written.
+const SIDECAR_PROGRESS_TABLE: &str = "brc20_block_hashes_evm_addresses";
+
+/// Makes sure `evm_addresses` exists and is current before indexing.
 ///
-/// An existing table is adopted as it is, less the sidecar's row with an
-/// empty `btc_address`. A database without the table gets one filled from
-/// brc20_events and then brc20_light_events in id order: the rows go into
-/// `evm_addresses_fill`, `batch` events per committed transaction, and the
-/// finished table is renamed to `evm_addresses`. A fill table left by an
+/// An existing table is adopted, less the sidecar's row with an empty
+/// `btc_address`. When the sidecar's progress table
+/// `brc20_block_hashes_evm_addresses` exists, the events in blocks above its
+/// highest block (every event when it is empty) add their rows and the
+/// progress table is dropped. A database without the table gets one filled
+/// from brc20_events and then brc20_light_events in id order: the rows go
+/// into `evm_addresses_fill`, `batch` events per committed transaction, and
+/// the finished table is renamed to `evm_addresses`. A fill table left by an
 /// interrupted start is dropped and the fill starts over. Returns whether
 /// the table was filled.
 pub async fn create_and_fill_if_missing(
@@ -168,6 +174,7 @@ pub async fn create_and_fill_if_missing(
         sqlx::query("DELETE FROM evm_addresses WHERE btc_address = ''")
             .execute(pool)
             .await?;
+        catch_up_from_sidecar(pool, network, batch).await?;
         return Ok(false);
     }
 
@@ -179,7 +186,7 @@ pub async fn create_and_fill_if_missing(
         .execute(pool)
         .await?;
     for events_table in ["brc20_events", "brc20_light_events"] {
-        fill_from(pool, events_table, network, batch).await?;
+        fill_from(pool, events_table, FILL_TABLE, i32::MIN, network, batch).await?;
     }
     let mut tx = pool.begin().await?;
     for statement in RENAME_FILL_TABLE {
@@ -190,43 +197,103 @@ pub async fn create_and_fill_if_missing(
     Ok(true)
 }
 
-/// Fills `evm_addresses_fill` from `events_table`, committing each batch.
-async fn fill_from(
+/// Adds the rows of the events above the sidecar's last written block to
+/// `evm_addresses`, then drops the sidecar's progress table. Does nothing
+/// when the progress table is absent.
+async fn catch_up_from_sidecar(
     pool: &Pool<Postgres>,
-    events_table: &str,
     network: Network,
     batch: i64,
 ) -> Result<(), Box<dyn Error>> {
+    let has_progress: bool = sqlx::query(AssertSqlSafe(format!(
+        "SELECT to_regclass('{SIDECAR_PROGRESS_TABLE}') IS NOT NULL"
+    )))
+    .fetch_one(pool)
+    .await?
+    .get(0);
+    if !has_progress {
+        return Ok(());
+    }
+    let sidecar_height: Option<i32> = sqlx::query(AssertSqlSafe(format!(
+        "SELECT max(block_height)::int4 FROM {SIDECAR_PROGRESS_TABLE}"
+    )))
+    .fetch_one(pool)
+    .await?
+    .get(0);
+    // Block heights are never negative, so -1 selects every event.
+    let sidecar_height = sidecar_height.unwrap_or(-1);
+    tracing::info!("evm_addresses: adding rows for blocks above {sidecar_height}");
+    for events_table in ["brc20_events", "brc20_light_events"] {
+        fill_from(pool, events_table, TABLE, sidecar_height, network, batch).await?;
+    }
+    sqlx::query(AssertSqlSafe(format!(
+        "DROP TABLE {SIDECAR_PROGRESS_TABLE}"
+    )))
+    .execute(pool)
+    .await?;
+    tracing::info!("evm_addresses: dropped {SIDECAR_PROGRESS_TABLE}");
+    Ok(())
+}
+
+/// A SQL expression for the pkScript of a row's event: the field
+/// `event_pkscript_field` names for its `event_type`, NULL for a type
+/// without one.
+fn pkscript_sql() -> String {
+    let mut cases = String::new();
+    for event_type in 0..=12 {
+        if let Some(field) = event_pkscript_field(event_type) {
+            cases.push_str(&format!(" WHEN {event_type} THEN event->>'{field}'"));
+        }
+    }
+    format!("CASE event_type{cases} END")
+}
+
+/// Inserts into `target` the rows of the events of `events_table` in blocks
+/// above `above_height`, committing each batch. Logs the events read per
+/// source table.
+async fn fill_from(
+    pool: &Pool<Postgres>,
+    events_table: &str,
+    target: &str,
+    above_height: i32,
+    network: Network,
+    batch: i64,
+) -> Result<(), Box<dyn Error>> {
+    let query = format!(
+        "SELECT id, {} AS pkscript FROM {events_table}
+         WHERE id > $1 AND block_height > $2 ORDER BY id LIMIT $3",
+        pkscript_sql()
+    );
     let mut after_id = i64::MIN;
     let mut read = 0usize;
     loop {
-        let events = sqlx::query(AssertSqlSafe(format!(
-            "SELECT id, event_type, event FROM {events_table} WHERE id > $1 ORDER BY id LIMIT $2"
-        )))
-        .bind(after_id)
-        .bind(batch)
-        .fetch_all(pool)
-        .await?;
+        let events = sqlx::query(AssertSqlSafe(query.as_str()))
+            .bind(after_id)
+            .bind(above_height)
+            .bind(batch)
+            .fetch_all(pool)
+            .await?;
         let Some(last) = events.last() else {
             break;
         };
         after_id = last.get("id");
-        let events: Vec<(i32, Value)> = events
+        let mut seen = HashSet::new();
+        let rows: Vec<EvmAddressRow> = events
             .iter()
-            .map(|event| (event.get("event_type"), event.get("event")))
+            .filter_map(|event| {
+                let pkscript: Option<String> = event.get("pkscript");
+                evm_address_row(&pkscript?, network)
+            })
+            .filter(|row| seen.insert(row.btc_address.clone()))
             .collect();
         let mut conn = pool.acquire().await?;
-        insert_rows(
-            &mut conn,
-            FILL_TABLE,
-            &rows_for_events(events.iter().map(|(t, e)| (*t, e)), network),
-        )
-        .await?;
+        insert_rows(&mut conn, target, &rows).await?;
         read += events.len();
         if read % 1_000_000 < events.len() {
             tracing::info!("evm_addresses: read {read} events from {events_table}");
         }
     }
+    tracing::info!("evm_addresses: read {read} events from {events_table} in total");
     Ok(())
 }
 
@@ -692,6 +759,121 @@ mod db_tests {
                     (3, P2TR_ADDR.to_string(), P2TR_EVM.to_string()),
                 ]
             );
+        })
+        .await;
+    }
+
+    /// The sidecar's progress table, with its blocks at `heights`.
+    async fn sidecar_progress(database: &Brc20Database, heights: &[i32]) {
+        sqlx::raw_sql(
+            "CREATE TABLE brc20_block_hashes_evm_addresses (
+                id serial PRIMARY KEY, block_height int4 NOT NULL, block_hash text NOT NULL)",
+        )
+        .execute(&database.client)
+        .await
+        .unwrap();
+        for height in heights {
+            sqlx::query(
+                "INSERT INTO brc20_block_hashes_evm_addresses (block_height, block_hash) VALUES ($1, 'h')",
+            )
+            .bind(height)
+            .execute(&database.client)
+            .await
+            .unwrap();
+        }
+    }
+
+    async fn progress_table_gone(database: &Brc20Database) -> bool {
+        sqlx::query("SELECT to_regclass('brc20_block_hashes_evm_addresses') IS NULL")
+            .fetch_one(&database.client)
+            .await
+            .unwrap()
+            .get(0)
+    }
+
+    /// Swaps the table for the sidecar's, holding `rows`.
+    async fn swap_in_sidecar_table(database: &Brc20Database, rows: &[(&str, &str)]) {
+        sqlx::query("DROP TABLE evm_addresses")
+            .execute(&database.client)
+            .await
+            .unwrap();
+        sqlx::raw_sql(SIDECAR_DDL)
+            .execute(&database.client)
+            .await
+            .unwrap();
+        for (btc, evm) in rows {
+            sqlx::query("INSERT INTO evm_addresses (btc_address, evm_address) VALUES ($1, $2)")
+                .bind(btc)
+                .bind(evm)
+                .execute(&database.client)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn adoption_catches_up_from_the_sidecars_progress_table() {
+        with_database("catchup", |name| async move {
+            let mut first = database(&name, false).await;
+            index_two_blocks(&mut first);
+            first.flush_queries_to_db().await.unwrap();
+            let mut light = database(&name, true).await;
+            light.current_event_id = 100;
+            push_light_event(&mut light, 202, 1, json!({ "minted_pkScript": P2SH }));
+            light.flush_queries_to_db().await.unwrap();
+
+            // The sidecar wrote block 200 only.
+            swap_in_sidecar_table(&first, &[(P2TR_ADDR, P2TR_EVM), (P2WPKH_ADDR, P2WPKH_EVM)])
+                .await;
+            sidecar_progress(&first, &[199, 200]).await;
+
+            let adopted = database(&name, false).await;
+            assert_eq!(
+                table(&adopted).await,
+                expected(&[
+                    (P2TR_ADDR, P2TR_EVM),
+                    (P2WPKH_ADDR, P2WPKH_EVM),
+                    (P2PKH_ADDR, P2PKH_EVM),
+                    (P2SH_ADDR, P2SH_EVM),
+                ])
+            );
+            assert!(progress_table_gone(&adopted).await);
+
+            // A second start has nothing more to do.
+            let before = table(&adopted).await;
+            let again = database(&name, false).await;
+            assert_eq!(table(&again).await, before);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_empty_progress_table_catches_up_every_event() {
+        with_database("emptyprogress", |name| async move {
+            let mut first = database(&name, false).await;
+            index_two_blocks(&mut first);
+            first.flush_queries_to_db().await.unwrap();
+            let indexed = table(&first).await;
+            swap_in_sidecar_table(&first, &[]).await;
+            sidecar_progress(&first, &[]).await;
+
+            let adopted = database(&name, false).await;
+            assert_eq!(table(&adopted).await, indexed);
+            assert!(progress_table_gone(&adopted).await);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reset_drops_the_table_and_a_fresh_init_recreates_it_empty() {
+        with_database("reset", |name| async move {
+            let mut first = database(&name, false).await;
+            index_two_blocks(&mut first);
+            first.flush_queries_to_db().await.unwrap();
+            assert_eq!(table(&first).await.len(), 3);
+            first.reset().await.unwrap();
+            let fresh = database(&name, false).await;
+            assert_eq!(table(&fresh).await, Vec::new());
         })
         .await;
     }
