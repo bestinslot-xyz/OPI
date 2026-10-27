@@ -1,5 +1,5 @@
 """Prints the SNS spec vectors as JSON: an independent implementation of the
-SNS indexing rules (opi-indexer/README.md, "SNS indexing rules") applied to a
+SNS indexing rules (README.indexer.md, "SNS indexing rules") applied to a
 corpus of inscription contents.
 
 The rules come from the SNS spec
@@ -20,8 +20,8 @@ reads it. This file shares no code with the Rust implementation:
 
 Run it with the parity venv (json5==0.12.0, Python 3.15):
 
-  python3 -I opi-indexer/tools/parity/sns_spec_vectors.py \
-    > opi-indexer/crates/opi-sns/tests/spec_vectors.json
+  python3 -I tools/parity/sns_spec_vectors.py \
+    > crates/opi-sns/tests/spec_vectors.json
 
 Each vector holds:
 - content_hex: the inscription content;

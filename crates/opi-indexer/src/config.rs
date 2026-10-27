@@ -2,8 +2,8 @@
 
 use {
     anyhow::{Context, Result, anyhow, bail},
-    brc20_index::config::Brc20IndexerConfig,
     opi_bitmap::BitmapConfig,
+    opi_brc20::config::Brc20IndexerConfig,
     opi_runes::RunesConfig,
     opi_sns::SnsConfig,
     opi_source::{

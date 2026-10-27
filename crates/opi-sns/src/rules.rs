@@ -1,7 +1,7 @@
 //! The SNS indexing rules: the written spec
 //! (<https://docs.satsnames.org/sats-names/sns-spec/index-names.md>,
 //! <https://docs.satsnames.org/sats-names/sns-spec/mint-names>) with the
-//! decisions it leaves open. `opi-indexer/README.md` ("SNS indexing rules")
+//! decisions it leaves open. `README.indexer.md` ("SNS indexing rules")
 //! lists the same rules.
 //!
 //! 1. Inscriptions: creations of blessed inscriptions (number >= 0) whose

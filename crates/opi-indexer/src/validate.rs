@@ -7,10 +7,8 @@
 
 use {
     anyhow::{Result, anyhow, bail},
-    brc20_index::{
-        client::EventProviderClient, config::Brc20IndexerConfig, database::Brc20Database,
-    },
     clap::Args as ClapArgs,
+    opi_brc20::{client::EventProviderClient, config::Brc20IndexerConfig, database::Brc20Database},
     std::fmt,
 };
 

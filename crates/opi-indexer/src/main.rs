@@ -3,11 +3,11 @@ mod validate;
 
 use {
     anyhow::{Result, bail},
-    brc20_index::{config::Brc20IndexerConfig, module::Brc20Module},
     clap::{Parser, Subcommand},
     config::{Config, ModuleConfigs},
     futures::future::BoxFuture,
     opi_bitmap::{BitmapConfig, BitmapModule},
+    opi_brc20::{config::Brc20IndexerConfig, module::Brc20Module},
     opi_core::{BlockSource, Module},
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime},
@@ -212,7 +212,7 @@ async fn source_finished(handle: &SourceHandle) {
 
 #[cfg(test)]
 mod tests {
-    /// This binary links brc20-index, which turns on serde_json's
+    /// This binary links opi-brc20, which turns on serde_json's
     /// `arbitrary_precision`; the first assertion pins that the test runs
     /// under that feature set.
     #[test]

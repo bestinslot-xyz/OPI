@@ -27,13 +27,13 @@ if init_env:
   print("Initialising .env file")
   print("leave blank to use default values")
   use_other_env = False
-  other_env_exists = os.path.isfile('../brc20_index/.env')
+  other_env_exists = os.path.isfile('../../crates/opi-brc20/.env')
   if other_env_exists:
-    res = input(".env on brc20_index already exists, do you want to use values from there? (y/n) ")
+    res = input(".env on opi-brc20 already exists, do you want to use values from there? (y/n) ")
     if res == 'y':
       use_other_env = True
   if use_other_env:
-    env = dotenv_values(dotenv_path='../brc20_index/.env')
+    env = dotenv_values(dotenv_path='../../crates/opi-brc20/.env')
     DB_USER = env.get("DB_USER") or "postgres"
     DB_HOST = env.get("DB_HOST") or "localhost"
     DB_PORT = env.get("DB_PORT") or "5432"

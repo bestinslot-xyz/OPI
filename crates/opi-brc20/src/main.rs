@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use brc20_index::{
+use opi_brc20::{
     config::Brc20IndexerConfig,
     database::{Brc20Database, get_brc20_database, set_brc20_database},
     indexer::Brc20Indexer,

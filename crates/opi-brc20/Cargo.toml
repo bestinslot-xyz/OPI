@@ -1,7 +1,7 @@
 [package]
-name = "brc20-index"
+name = "opi-brc20"
 version = "2.0.14"
-edition = "2024"
+edition.workspace = true
 
 [dependencies]
 anyhow = "1"
@@ -17,7 +17,7 @@ jsonrpsee = { version = "0.26.1", features = ["client", "http-client", "tokio"] 
 lazy_static = "1.5.1"
 num-traits = "0.2.19"
 once_cell = "1.21.4"
-opi-core = { path = "../../opi-indexer/crates/opi-core" }
+opi-core = { path = "../opi-core" }
 rand = "0.10.3"
 reqwest = { version = "0.13.5", features = ["json"] }
 rust-embed = "8.13.0"

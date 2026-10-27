@@ -53,8 +53,8 @@ variables.
 
 `opi-indexer` reads one `.env`, from its working directory. brc20's own
 variables (`DB_*`, `BRC20_PROG_*`, ...) go into that same file; they are listed
-in `modules/brc20_index/.env_sample`, and `reset_init.py` writes them to
-`modules/brc20_index/.env`. `DB_DATABASE` has no default for brc20 either and
+in `crates/opi-brc20/.env_sample`, and `reset_init.py` writes them to
+`crates/opi-brc20/.env`. `DB_DATABASE` has no default for brc20 either and
 is required when `brc20` is enabled; set it to brc20's own database, not
 `postgres`. brc20 runs in full mode (`OPERATION_MODE=full`). All enabled
 modules' settings are read and checked before the source starts, so a missing
@@ -62,7 +62,7 @@ or invalid one fails the start.
 
 `BITCOIN_RPC_URL` is one variable shared by the source and brc20's Bitcoin RPC
 proxy. Set it once in this `.env` and leave out the `BITCOIN_RPC_URL` line from
-`modules/brc20_index/.env_sample`: when a key appears twice, the first
+`crates/opi-brc20/.env_sample`: when a key appears twice, the first
 occurrence wins.
 
 ## Build
@@ -162,7 +162,7 @@ and the ord data dir and index again.
 
 Dependencies track their latest releases, except:
 
-- `brc20-prog` (in `modules/brc20_index`) stays within
+- `brc20-prog` (in `crates/opi-brc20`) stays within
   `BRC20_PROG_VERSION_REQUIREMENT` (`~0.16.0`), which must match the brc20-prog
   server the node runs.
 - `redb` stays at `=3.1.3`, ord's locked version (see above), although redb 4
@@ -170,8 +170,8 @@ Dependencies track their latest releases, except:
 - `bitcoin` follows ord's lock (0.32.102) rather than a 0.33 pre-release.
 
 `reqwest` 0.13 uses rustls (aws-lc-rs with the platform certificate verifier)
-as its default TLS backend, in both workspaces; ord pulls the same reqwest with
-default features. brc20-index's `sqlx` also uses rustls (`tls-rustls`), so
+as its default TLS backend; ord pulls the same reqwest with
+default features. opi-brc20's `sqlx` also uses rustls (`tls-rustls`), so
 neither binary links native-tls.
 
 ## Upstream assumptions

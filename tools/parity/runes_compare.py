@@ -3,7 +3,7 @@
 
 The reference is written by modules/runes_index/index_runes.js (see commit
 b3379c5), the candidate by the opi-runes module. Both use
-the schema in opi-indexer/crates/opi-runes/src/db_init.sql.
+the schema in crates/opi-runes/src/db_init.sql.
 Every table is streamed per height through server-side cursors, so memory use
 is bounded by one block of rows per side.
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use bitcoin::Network;
-use brc20_index::{
+use opi_brc20::{
     config::Brc20IndexerConfig,
     database::get_brc20_database,
     module::{get_wallet, install_fresh_database, transfers},
