@@ -6,12 +6,24 @@
       {
         "ordinal": 0,
         "name": "overall_balance",
-        "type_info": "Numeric"
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "brc20_historic_balances",
+            "name": "overall_balance"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "available_balance",
-        "type_info": "Numeric"
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "brc20_historic_balances",
+            "name": "available_balance"
+          }
+        }
       }
     ],
     "parameters": {

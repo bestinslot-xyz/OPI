@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "block_height",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_height"
+          }
+        }
       }
     ],
     "parameters": {

@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "db_version",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_indexer_version",
+            "name": "db_version"
+          }
+        }
       }
     ],
     "parameters": {

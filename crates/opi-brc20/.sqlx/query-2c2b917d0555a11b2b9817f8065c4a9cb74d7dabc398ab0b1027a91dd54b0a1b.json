@@ -6,52 +6,112 @@
       {
         "ordinal": 0,
         "name": "tick",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "tick"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "original_tick",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "original_tick"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "max_supply",
-        "type_info": "Numeric"
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "max_supply"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "remaining_supply",
-        "type_info": "Numeric"
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "remaining_supply"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "burned_supply",
-        "type_info": "Numeric"
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "burned_supply"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "limit_per_mint",
-        "type_info": "Numeric"
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "limit_per_mint"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "decimals",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "decimals"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "is_self_mint",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "is_self_mint"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "deploy_inscription_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "deploy_inscription_id"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "block_height",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "block_height"
+          }
+        }
       }
     ],
     "parameters": {

@@ -6,42 +6,90 @@
       {
         "ordinal": 0,
         "name": "schemaname",
-        "type_info": "Name"
+        "type_info": "Name",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "schemaname"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "tablename",
-        "type_info": "Name"
+        "type_info": "Name",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "tablename"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "tableowner",
-        "type_info": "Name"
+        "type_info": "Name",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "tableowner"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "tablespace",
-        "type_info": "Name"
+        "type_info": "Name",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "tablespace"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "hasindexes",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "hasindexes"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "hasrules",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "hasrules"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "hastriggers",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "hastriggers"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "rowsecurity",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "rowsecurity"
+          }
+        }
       }
     ],
     "parameters": {
