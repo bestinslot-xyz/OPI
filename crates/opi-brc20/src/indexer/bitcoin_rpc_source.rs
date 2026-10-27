@@ -15,6 +15,7 @@ use std::{
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
+        mpsc::RecvTimeoutError,
     },
     time::Duration,
 };
@@ -35,11 +36,15 @@ use tokio::sync::mpsc;
 use crate::{
     config::{BitcoinRpcAuth, Brc20IndexerConfig},
     database::{BitcoinRpcBuffer, BitcoinRpcCache, connect_pool},
+    fail_stop::BRC20_THREAD_NAME,
     service_runtime::ServiceRuntime,
 };
 
 /// How long one request to bitcoind may take.
 pub(crate) const BITCOIND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a lookup may take, cache reads and writes included.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// bitcoind's error code for an unknown transaction or block
 /// (RPC_INVALID_ADDRESS_OR_KEY).
@@ -71,19 +76,22 @@ impl BitcoinRpcBufferSlot {
 /// A lookup reads the installed buffer, then the
 /// `brc20_bitcoin_rpc_result_cache` table, when `BITCOIN_RPC_CACHE_ENABLED`
 /// is on. In full mode a miss goes to bitcoind, authenticating with
-/// `bitcoin_rpc_auth`, and the answer is buffered under the next block's
-/// height. In light mode a miss is an error, since a light client has no
+/// `bitcoin_rpc_auth`. A success, or an unknown transaction, answered to a
+/// lookup from the brc20 indexing thread is buffered under the next block's
+/// height; every other answer is returned unbuffered. In light mode a miss is an error, since a light client has no
 /// bitcoind. `network()` asks bitcoind's `getblockchaininfo` past the cache in
 /// full mode and reports `NETWORK_TYPE` in light mode.
 ///
 /// Each lookup runs on a worker on the source's own runtime, with its own
 /// Postgres pool and HTTP client, while the calling thread waits on a std
-/// channel. Lookups therefore complete from any thread outside that runtime,
-/// including a current-thread runtime's, and never take the brc20 database
-/// lock.
+/// channel for at most 60 seconds. Lookups therefore complete from any thread
+/// outside that runtime, including a current-thread runtime's, and never take
+/// the brc20 database lock.
 pub struct CachedBitcoinRpc {
     lookups: mpsc::UnboundedSender<Lookup>,
     slot: BitcoinRpcBufferSlot,
+    /// The bound on one lookup, on both sides of the channel.
+    timeout: Duration,
     light_client_mode: bool,
     network: Network,
     /// Drives the worker, its pool and its client; dropping it stops them.
@@ -93,6 +101,11 @@ pub struct CachedBitcoinRpc {
 impl CachedBitcoinRpc {
     /// Starts the source's runtime and worker for `config`.
     pub fn new(config: &Brc20IndexerConfig) -> anyhow::Result<Self> {
+        Self::start(config, LOOKUP_TIMEOUT)
+    }
+
+    /// Starts the source with lookups bounded by `timeout`.
+    fn start(config: &Brc20IndexerConfig, timeout: Duration) -> anyhow::Result<Self> {
         let runtime = ServiceRuntime::new("brc20-bitcoin-rpc")?;
         let handle = runtime.handle();
         let slot = BitcoinRpcBufferSlot::default();
@@ -116,7 +129,10 @@ impl CachedBitcoinRpc {
             while let Some(lookup) = queue.recv().await {
                 let worker = worker.clone();
                 tokio::spawn(async move {
-                    let answer = worker.answer(&lookup.request, lookup.cached).await;
+                    let answer = worker.answer(&lookup.request, lookup.cached, lookup.writer);
+                    let answer = tokio::time::timeout(timeout, answer)
+                        .await
+                        .unwrap_or_else(|_| Err(timed_out(timeout)));
                     lookup.answer.send(answer).ok();
                 });
             }
@@ -124,6 +140,7 @@ impl CachedBitcoinRpc {
         Ok(CachedBitcoinRpc {
             lookups,
             slot,
+            timeout,
             light_client_mode: config.light_client_mode,
             network: config.network_type,
             _runtime: runtime,
@@ -136,26 +153,34 @@ impl CachedBitcoinRpc {
     }
 
     /// bitcoind's answer to `request` (a cache key), read through the cache
-    /// when `cached`. Blocks the calling thread until the worker answers.
+    /// when `cached`. Blocks the calling thread until the worker answers or
+    /// the lookup times out.
     fn lookup(&self, request: Value, cached: bool) -> Result<Bytes, BitcoinRpcError> {
         let (answer, answered) = std::sync::mpsc::channel();
         self.lookups
             .send(Lookup {
                 request,
                 cached,
+                writer: on_indexing_thread(),
                 answer,
             })
             .map_err(|_| "the Bitcoin RPC source has stopped")?;
-        answered
-            .recv()
-            .map_err(|_| "the Bitcoin RPC source dropped a lookup")?
+        match answered.recv_timeout(self.timeout) {
+            Ok(answer) => answer,
+            Err(RecvTimeoutError::Timeout) => Err(timed_out(self.timeout)),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err("the Bitcoin RPC source dropped a lookup".into())
+            }
+        }
     }
 }
 
-/// One lookup for the worker, answered on `answer`.
+/// One lookup for the worker, answered on `answer`. `writer` is whether it
+/// comes from the indexing thread.
 struct Lookup {
     request: Value,
     cached: bool,
+    writer: bool,
     answer: std::sync::mpsc::Sender<Result<Bytes, BitcoinRpcError>>,
 }
 
@@ -175,7 +200,12 @@ struct Worker {
 }
 
 impl Worker {
-    async fn answer(&self, request: &Value, cached: bool) -> Result<Bytes, BitcoinRpcError> {
+    async fn answer(
+        &self,
+        request: &Value,
+        cached: bool,
+        writer: bool,
+    ) -> Result<Bytes, BitcoinRpcError> {
         let cache = cached.then(|| {
             BitcoinRpcCache::new(
                 self.pool.clone(),
@@ -207,12 +237,42 @@ impl Worker {
         let response = self.auth.authorize(post).await?.send().await?;
         let response = response.bytes().await?;
         if let Some(cache) = &cache
+            && buffers(writer, request, &response)
             && let Err(e) = cache.cache(&body, &response).await
         {
             return Err(cache_error("writing", e));
         }
         Ok(response)
     }
+}
+
+/// Whether bitcoind's answer `body` to `request` goes into the buffer: only
+/// for the indexing thread (`writer`), and only a success or an unknown
+/// transaction, since both stay true for the chain the cache is published
+/// for. Any other error, transient ones included, is returned unbuffered.
+fn buffers(writer: bool, request: &Value, body: &[u8]) -> bool {
+    if !writer {
+        return false;
+    }
+    let Ok(response) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    match response.get("error") {
+        None | Some(Value::Null) => true,
+        Some(error) => {
+            error["code"] == json!(NOT_FOUND) && request["method"] == json!("getrawtransaction")
+        }
+    }
+}
+
+/// Whether the calling thread is brc20's indexing thread. Lookups from other
+/// threads (the public JSON-RPC's workers) read the cache but never write it.
+fn on_indexing_thread() -> bool {
+    std::thread::current().name() == Some(BRC20_THREAD_NAME)
+}
+
+fn timed_out(timeout: Duration) -> BitcoinRpcError {
+    format!("the Bitcoin RPC lookup took longer than {timeout:?}").into()
 }
 
 fn cache_error(action: &str, error: Box<dyn Error>) -> BitcoinRpcError {
@@ -722,6 +782,7 @@ mod tests {
     #[tokio::test]
     async fn a_lookup_while_the_brc20_database_is_locked_completes() {
         let (source, _) = source_for_tx();
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
         replace_brc20_database(Brc20Database::new(&config(
             "http://127.0.0.1:1",
             false,
@@ -740,5 +801,77 @@ mod tests {
             .recv_timeout(Duration::from_secs(20))
             .expect("the lookup completes while the lock is held");
         assert_is_tx(tx.unwrap());
+    }
+
+    #[test]
+    fn the_indexer_buffers_successes_and_unknown_transactions_only() {
+        let tx = raw_transaction_request(&txid(TX), false);
+        let header = block_header_request(&block_hash(HEADER));
+        let error = |code: i32| {
+            json!({ "jsonrpc": "2.0", "error": { "code": code, "message": "x" } }).to_string()
+        };
+        let success = signet_response(&tx).to_string();
+
+        assert!(buffers(true, &tx, success.as_bytes()));
+        assert!(buffers(
+            true,
+            &tx,
+            br#"{"result":"00","error":null,"id":1}"#
+        ));
+        assert!(buffers(true, &tx, error(-5).as_bytes()));
+        assert!(buffers(
+            true,
+            &raw_transaction_request(&txid(TX), true),
+            error(-5).as_bytes()
+        ));
+        assert!(!buffers(true, &header, error(-5).as_bytes()));
+        assert!(!buffers(true, &tx, error(-8).as_bytes()));
+        assert!(!buffers(true, &tx, error(-28).as_bytes()));
+        assert!(!buffers(
+            true,
+            &tx,
+            b"<html>work queue depth exceeded</html>"
+        ));
+    }
+
+    #[test]
+    fn other_threads_never_buffer() {
+        let tx = raw_transaction_request(&txid(TX), false);
+        let success = signet_response(&tx).to_string();
+        assert!(!buffers(false, &tx, success.as_bytes()));
+    }
+
+    #[test]
+    fn only_the_brc20_thread_is_the_indexing_thread() {
+        use crate::fail_stop::{BRC20_THREAD_NAME, RPC_THREAD_NAME};
+        let on = |name: Option<&str>| {
+            let builder = std::thread::Builder::new();
+            let builder = match name {
+                Some(name) => builder.name(name.to_string()),
+                None => builder,
+            };
+            builder.spawn(on_indexing_thread).unwrap().join().unwrap()
+        };
+        assert!(on(Some(BRC20_THREAD_NAME)));
+        assert!(!on(Some(RPC_THREAD_NAME)));
+        assert!(!on(Some("brc20-bitcoin-rpc")));
+        assert!(!on(None));
+    }
+
+    #[test]
+    fn a_lookup_bitcoind_never_answers_times_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            // Holds every connection open without answering.
+            let held: Vec<_> = listener.incoming().flatten().collect();
+            drop(held);
+        });
+        let source =
+            CachedBitcoinRpc::start(&config(&url, false, false), Duration::from_millis(300))
+                .unwrap();
+        let started = std::time::Instant::now();
+        assert!(source.get_transaction(&txid(TX)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

@@ -209,15 +209,18 @@ impl BitcoinRpcCache {
     }
 }
 
+/// The highest indexed block, or `first_inscription_height - 1` before the
+/// first one. A database error is an error.
 pub(crate) async fn select_current_block_height(
     pool: &Pool<Postgres>,
     first_inscription_height: i32,
 ) -> Result<i32, Box<dyn Error>> {
-    sqlx::query!("SELECT block_height FROM brc20_block_hashes ORDER BY block_height DESC LIMIT 1")
-        .fetch_one(pool)
-        .await
-        .map(|row| row.block_height)
-        .or_else(|_| Ok(first_inscription_height - 1)) // If no rows found, return first_brc20_height - 1
+    let row = sqlx::query!(
+        "SELECT block_height FROM brc20_block_hashes ORDER BY block_height DESC LIMIT 1"
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map_or(first_inscription_height - 1, |row| row.block_height))
 }
 
 async fn select_cached_response(
@@ -245,6 +248,15 @@ mod tests {
             response: serde_json::json!({ "result": 1 }),
             block_height: 7,
         }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_database_is_an_error_not_the_first_height() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(2))
+            .connect_lazy("postgres://postgres@127.0.0.1:1/postgres")
+            .unwrap();
+        assert!(select_current_block_height(&pool, 10).await.is_err());
     }
 
     #[test]

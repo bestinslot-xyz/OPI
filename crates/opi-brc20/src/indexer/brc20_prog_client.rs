@@ -206,6 +206,7 @@ mod tests {
         // them, so the proxy answers without reaching Postgres. The test holds
         // brc20's database lock throughout, as the brc20 thread can while an
         // engine call is in flight; the proxy must not need it.
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
         replace_brc20_database(Brc20Database::new(&config)).await;
         let database = get_brc20_database();
         let held = database.lock().await;

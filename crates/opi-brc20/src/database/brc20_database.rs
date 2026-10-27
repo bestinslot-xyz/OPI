@@ -113,6 +113,11 @@ pub struct BalanceUpdateData {
 
 static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
 
+/// Held by every unit test that replaces or locks the global database, so
+/// those tests never see each other's database.
+#[cfg(test)]
+pub(crate) static BRC20_DATABASE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
 pub fn get_brc20_database() -> Arc<Mutex<Brc20Database>> {
     BRC20_DATABASE
         .get()
