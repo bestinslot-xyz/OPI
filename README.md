@@ -493,7 +493,7 @@ resolved filters (`sort` and `order`, `ticker`, `address`, `pkscript`,
 ticker, an EVM address answered as its mapped Bitcoin address, the lowercase
 SNS prefix and namespace. Parameters are bounded: `offset` is at most
 `1000000000`, `before_id` at most `999999999999999999`, the bitmap `after` at
-most `2147483647`, `address` and `inscription_id` at most 128 characters,
+most `2147483647`, `address` and `inscription_id` at most 128 bytes,
 `pkscript` at most 20000 hex digits, `ticker`, `search` and `type` at most 256
 bytes, and the SNS `prefix`, `namespace` and `after` at most 2048 bytes. A
 text parameter holds no NUL byte.
