@@ -147,11 +147,7 @@ impl EventProviderClient {
                 event_provider.url, block_height
             );
 
-            let response = self
-                .client
-                .get(&url)
-                .send()
-                .await;
+            let response = self.client.get(&url).send().await;
 
             let response: BitcoinRpcResultResponse = match response {
                 Ok(resp) => match resp.json().await {

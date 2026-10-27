@@ -274,7 +274,10 @@ impl Brc20Database {
         Ok(())
     }
 
-    pub async fn maybe_fix_refund_order(&mut self, refund_height: i32) -> Result<bool, Box<dyn Error>> {
+    pub async fn maybe_fix_refund_order(
+        &mut self,
+        refund_height: i32,
+    ) -> Result<bool, Box<dyn Error>> {
         if self.network != Network::Bitcoin {
             return Ok(false);
         }
