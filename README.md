@@ -104,7 +104,9 @@ non-zero. Each module indexes a block once the journal finalizes it, and rolls
 back when its stored hashes differ from the journal's. A module error or panic
 restarts that module, with a freshly built instance and database state, after a
 backoff of 5 seconds, doubling to 5 minutes; the other modules and the source
-keep running. Log verbosity follows `RUST_LOG`. Logs go to stderr for every
+keep running. A panic in brc20 stops the process instead (see BRC2.0 engine).
+On shutdown `run` waits up to 60 seconds for brc20 to finish the block in
+flight. Log verbosity follows `RUST_LOG`. Logs go to stderr for every
 command.
 
 #### BRC2.0 engine
@@ -121,17 +123,28 @@ runs inside the `opi-indexer` process. There is no separate brc20-prog server.
 
 `run` serves brc20-prog's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL`.
 Blockscout, the swap sequencer and other clients connect there. It rejects the
-indexer methods (`brc20_mine` and the like). The engine reads its remaining
-settings from brc20-prog's own variables (HTTP basic auth, `EVM_CALL_GAS_LIMIT`,
-request limits; see brc20-prog's configuration docs). Its Bitcoin RPC endpoint is
-the Bitcoin RPC proxy (`BITCOIN_RPC_PROXY_SERVER_ADDR`) when
-`BITCOIN_RPC_PROXY_SERVER_ENABLED=true` (the code default is `false`; `.env_sample`
-sets `true`). With the proxy off it is `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER`
-and `BITCOIN_RPC_PASSWD`, which are then required; `BITCOIN_RPC_COOKIE` is not
-used for it. The
-network and chain id follow `NETWORK_TYPE`; brc20-prog's own `BITCOIN_RPC_URL`,
-`BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_NETWORK` have no
-effect.
+indexer methods (`brc20_mine` and the like) and takes no credentials, so bind
+it to loopback or firewall it. brc20-prog's `BRC20_PROG_RPC_SERVER_ENABLE_AUTH`,
+`BRC20_PROG_RPC_SERVER_USER` and `BRC20_PROG_RPC_SERVER_PASSWORD` do not apply
+to it; `BRC20_PROG_RPC_SERVER_ENABLE_AUTH=true` without a user and password
+makes the engine fail to open. The engine reads its remaining settings from
+brc20-prog's own variables (`EVM_CALL_GAS_LIMIT`, request limits; see
+brc20-prog's configuration docs).
+
+The engine's Bitcoin RPC endpoint is the Bitcoin RPC proxy
+(`BITCOIN_RPC_PROXY_SERVER_ADDR`) when `BITCOIN_RPC_PROXY_SERVER_ENABLED=true`
+(the code default is `false`; `.env_sample` sets `true`). The proxy
+authenticates to bitcoind at `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and
+`BITCOIN_RPC_PASSWD`, or with `BITCOIN_RPC_COOKIE`, which it re-reads on every
+request. With the proxy off the engine calls `BITCOIN_RPC_URL` itself and needs
+`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`. Light mode needs the proxy on.
+
+The network and chain id follow `NETWORK_TYPE`. brc20-prog's own
+`BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_NETWORK` have no effect.
+
+A panic on the brc20 thread or in the engine's public JSON-RPC server stops the
+whole process, since the engine may be left mid-write. Run `opi-indexer` under a
+supervisor such as systemd that restarts it.
 
 To move a node that ran the standalone brc20-prog server, stop that server and
 point `BRC20_PROG_DB_PATH` at its database; the on-disk format is the same.
