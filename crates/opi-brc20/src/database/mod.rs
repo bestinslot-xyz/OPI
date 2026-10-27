@@ -11,4 +11,5 @@ pub use brc20_database::{
 pub mod block_time;
 pub mod evm_addresses;
 pub mod prog_balances;
+pub mod ticker_holders;
 pub mod timer;

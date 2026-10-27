@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 
 use super::{
     bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer},
-    block_time, evm_addresses, prog_balances,
+    block_time, evm_addresses, prog_balances, ticker_holders,
 };
 use crate::{
     config::{
@@ -309,8 +309,13 @@ impl Brc20Database {
         .await
         .map_err(|error| format!("evm_addresses: {error}"))?;
 
-        if prog_balances::create_if_missing(&self.client).await? {
+        let prog_tables_created = prog_balances::create_if_missing(&self.client).await?;
+        if prog_tables_created {
             tracing::info!("Created the BRC2.0 balance tables; they fill before indexing resumes");
+        }
+
+        if ticker_holders::create_if_missing(&self.client, prog_tables_created).await? {
+            tracing::info!("Created and filled the ticker holder counts");
         }
 
         self.fetch_current_event_id().await?;
@@ -878,6 +883,8 @@ impl Brc20Database {
             .await?;
         }
 
+        ticker_holders::recount_all_brc20(&mut tx).await?;
+
         tracing::info!("Initial index of extra tables completed");
 
         tx.commit().await?;
@@ -913,6 +920,10 @@ impl Brc20Database {
                 (wallet, overall_balance, available_balance),
             );
         }
+        let changed_ticks: Vec<String> = balance_changes_map
+            .keys()
+            .map(|(_, tick)| tick.clone())
+            .collect();
         for ((pkscript, tick), (wallet, overall_balance, available_balance)) in balance_changes_map
         {
             sqlx::query!(
@@ -931,6 +942,7 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
         }
+        ticker_holders::recount_brc20(&mut tx, changed_ticks.iter().map(String::as_str)).await?;
 
         let events = sqlx::query(AssertSqlSafe(format!(
             "select event, id, event_type, inscription_id
@@ -1155,6 +1167,13 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
         }
+        ticker_holders::recount_brc20(
+            &mut tx,
+            to_replace_balances
+                .iter()
+                .map(|row| row.get::<&str, _>("tick")),
+        )
+        .await?;
 
         tracing::info!("Resetting brc20_unused_txes");
 

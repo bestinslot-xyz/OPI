@@ -15,7 +15,8 @@
 //! at each height where it changed. Each block's rows are written in the
 //! transaction that stores the block's hashes, and a reorg deletes the rows
 //! above its height and restores each affected current balance from its
-//! latest historical row.
+//! latest historical row. Both keep the BRC2.0 holder counts of
+//! `ticker_holders` current.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -530,13 +531,15 @@ pub async fn write_block(
         .bind(block_height)
         .execute(&mut *conn)
         .await?;
+        super::ticker_holders::recount_prog(conn, tickers).await?;
     }
     Ok(())
 }
 
-/// Deletes the rows above `block_height` and restores each deleted current
-/// balance from its latest remaining historical row. A pair without one has
-/// no current balance.
+/// Deletes the rows above `block_height`, restores each deleted current
+/// balance from its latest remaining historical row and recounts the BRC2.0
+/// holders of the tickers involved. A pair without a historical row has no
+/// current balance.
 pub async fn reorg(conn: &mut PgConnection, block_height: i32) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM brc20_prog_tickers WHERE block_height > $1")
         .bind(block_height)
@@ -569,6 +572,7 @@ pub async fn reorg(conn: &mut PgConnection, block_height: i32) -> Result<(), sql
     .bind(&tickers)
     .execute(&mut *conn)
     .await?;
+    super::ticker_holders::recount_prog(conn, tickers.iter().map(String::as_str)).await?;
     Ok(())
 }
 

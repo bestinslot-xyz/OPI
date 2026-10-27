@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_ticker_holders (tick, holders)\n         SELECT t.tick,\n                (SELECT count(*) FROM brc20_current_balances b\n                 WHERE b.tick = t.tick AND b.overall_balance > 0)\n         FROM UNNEST($1::text[]) AS t(tick)\n         ON CONFLICT (tick) DO UPDATE SET holders = excluded.holders",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f8df0484b98166f35f8a06c1e6b58da04482efd7089b2f4cccddb0c4d40816b7"
+}
