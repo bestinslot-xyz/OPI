@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select indexer_version from sns_names_indexer_version;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "indexer_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names_indexer_version",
+            "name": "indexer_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9fb5bbc44d90fcebd2d532ba623bbbf3de31da47230337082610d6e79468d9a8"
+}

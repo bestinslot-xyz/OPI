@@ -10,6 +10,7 @@
 //! [`pg_json::text`].
 
 use {
+    super::no_row,
     crate::{
         config::Module,
         db::Db,
@@ -82,14 +83,6 @@ pub fn routes(router: Router, db: Db) -> Router {
             .route("/v1/brc20/explorer/tokens", get(explorer_tokens))
             .with_state(db),
     )
-}
-
-/// `TypeError: Cannot read properties of undefined (reading '<field>')`,
-/// which `res.rows[0].<field>` throws on an empty result.
-fn no_row(field: &str) -> JsError {
-    JsError::type_error(format!(
-        "Cannot read properties of undefined (reading '{field}')"
-    ))
 }
 
 /// get_block_height_of_db: the latest indexed height (a number, or null for
@@ -386,6 +379,11 @@ async fn get_current_balance_of_wallet(
     }))
 }
 
+/// A brc20_unused_tx_inscrs row as get_valid_tx_notes_of_wallet reads it:
+/// tick, inscription_id, amount (as text) and genesis_height. No
+/// repository holds the table's DDL, so every column may be NULL.
+type UnusedTxRow = (Option<String>, Option<String>, Option<String>, Option<i32>);
+
 async fn get_valid_tx_notes_of_wallet(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -396,9 +394,9 @@ async fn get_valid_tx_notes_of_wallet(
     let current_block_height = block_height_of_db(&db).await;
     let pool = db.pool()?;
     // `address != ''` swaps the query's first `pkscript` for `wallet`
-    let rows: Vec<(String, String, Option<String>, i32)> = if !address.loose_eq(&"".into())? {
+    let rows: Vec<UnusedTxRow> = if !address.loose_eq(&"".into())? {
         sqlx::query!(
-            r#"select tick, inscription_id, amount::text as "amount", block_height as genesis_height
+            r#"select tick as "tick?", inscription_id as "inscription_id?", amount::text as "amount", block_height as "genesis_height?"
                 from brc20_unused_tx_inscrs
                 where current_holder_wallet = $1
                 order by tick asc;"#,
@@ -411,7 +409,7 @@ async fn get_valid_tx_notes_of_wallet(
         .collect()
     } else {
         sqlx::query!(
-            r#"select tick, inscription_id, amount::text as "amount", block_height as genesis_height
+            r#"select tick as "tick?", inscription_id as "inscription_id?", amount::text as "amount", block_height as "genesis_height?"
                 from brc20_unused_tx_inscrs
                 where current_holder_pkscript = $1
                 order by tick asc;"#,
@@ -429,8 +427,8 @@ async fn get_valid_tx_notes_of_wallet(
     let mut unused_txes = Vec::with_capacity(rows.len());
     for (tick, inscription_id, amount, genesis_height) in rows {
         unused_txes.push(JsValue::from(js_object! {
-            "tick" => tick,
-            "inscription_id" => inscription_id,
+            "tick" => tick.to_js(),
+            "inscription_id" => inscription_id.to_js(),
             "amount" => pg_json::text(oid::NUMERIC, amount.as_deref())?,
             "genesis_height" => genesis_height.to_js(),
         }));
@@ -452,7 +450,7 @@ async fn get_valid_tx_notes_of_ticker(
 
     let current_block_height = block_height_of_db(&db).await;
     let rows = sqlx::query!(
-        r#"select current_holder_pkscript, current_holder_wallet, inscription_id, amount::text as "amount", block_height as genesis_height
+        r#"select current_holder_pkscript as "current_holder_pkscript?", current_holder_wallet as "current_holder_wallet?", inscription_id as "inscription_id?", amount::text as "amount", block_height as "genesis_height?"
             from brc20_unused_tx_inscrs
             where tick = $1
             order by current_holder_pkscript asc;"#,
@@ -466,9 +464,9 @@ async fn get_valid_tx_notes_of_ticker(
     let mut unused_txes = Vec::with_capacity(rows.len());
     for row in rows {
         unused_txes.push(JsValue::from(js_object! {
-            "current_holder_pkscript" => row.current_holder_pkscript,
+            "current_holder_pkscript" => row.current_holder_pkscript.to_js(),
             "current_holder_wallet" => row.current_holder_wallet.to_js(),
-            "inscription_id" => row.inscription_id,
+            "inscription_id" => row.inscription_id.to_js(),
             "amount" => pg_json::text(oid::NUMERIC, row.amount.as_deref())?,
             "genesis_height" => row.genesis_height.to_js(),
         }));
@@ -690,18 +688,19 @@ async fn event(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, A
 }
 
 /// get_btc_address_of_evm_address: the BTC address evm_addresses maps an
-/// EVM address to, or null.
+/// EVM address to, or null when no row matches or the row's address is
+/// NULL (no repository holds the table's DDL).
 async fn btc_address_of_evm_address(
     db: &Db,
     evm_address: &JsValue,
 ) -> Result<Option<String>, ApiError> {
     let rows = sqlx::query_scalar!(
-        "select btc_address from evm_addresses where evm_address = lower($1);",
+        r#"select btc_address as "btc_address?" from evm_addresses where evm_address = lower($1);"#,
         params::text(evm_address)?,
     )
     .fetch_all(db.pool()?)
     .await?;
-    Ok(rows.into_iter().next())
+    Ok(rows.into_iter().next().flatten())
 }
 
 async fn explorer_btc_address(

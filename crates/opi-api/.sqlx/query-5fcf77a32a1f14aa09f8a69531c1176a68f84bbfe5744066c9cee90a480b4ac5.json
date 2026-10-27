@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select tick, inscription_id, amount::text as \"amount\", block_height as genesis_height\n                from brc20_unused_tx_inscrs\n                where current_holder_pkscript = $1\n                order by tick asc;",
+  "query": "select tick as \"tick?\", inscription_id as \"inscription_id?\", amount::text as \"amount\", block_height as \"genesis_height?\"\n                from brc20_unused_tx_inscrs\n                where current_holder_pkscript = $1\n                order by tick asc;",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "tick",
+        "name": "tick?",
         "type_info": "Varchar",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "inscription_id",
+        "name": "inscription_id?",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -33,7 +33,7 @@
       },
       {
         "ordinal": 3,
-        "name": "genesis_height",
+        "name": "genesis_height?",
         "type_info": "Int4",
         "origin": {
           "Table": {
@@ -55,5 +55,5 @@
       false
     ]
   },
-  "hash": "27d8d242ea11bbe307895f3ed5a8baecbd1659f58069ba0584d195caca7755dd"
+  "hash": "5fcf77a32a1f14aa09f8a69531c1176a68f84bbfe5744066c9cee90a480b4ac5"
 }

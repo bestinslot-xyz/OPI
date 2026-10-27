@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select rune_name from runes_id_to_entry where rune_id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rune_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "78fc71c3273d6195e0f97a79a9dbcf852e488bd580c656314454517ab14619a8"
+}

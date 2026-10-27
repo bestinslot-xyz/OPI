@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select inscription_id\n            from bitmaps\n            where bitmap_number = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "inscription_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2858e3b425b777ab41e4a485c9749fc2811350d812060a6b1ce14e29d20cd878"
+}

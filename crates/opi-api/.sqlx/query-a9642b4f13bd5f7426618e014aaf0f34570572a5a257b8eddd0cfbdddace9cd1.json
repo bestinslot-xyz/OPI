@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pkscript as \"pkscript?\", wallet_addr as \"wallet_addr?\", rite.rune_id as \"rune_id?\", rite.rune_name as \"rune_name?\", sum(balance)::text as \"total_balance\"\n                from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)\n                left join runes_id_to_entry rite on rite.rune_id = u.rune_id\n                where pkscript = $1 and spent = false\n                group by pkscript, wallet_addr, rite.rune_id, rite.rune_name;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pkscript?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "wallet_addr?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "wallet_addr"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rune_id?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "rune_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "total_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a9642b4f13bd5f7426618e014aaf0f34570572a5a257b8eddd0cfbdddace9cd1"
+}

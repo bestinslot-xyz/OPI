@@ -20,7 +20,7 @@ use {
     crate::{config::DbConfig, config::Module, js::JsValue, params::IntRules, pg_json::ToJs},
     anyhow::{Result, anyhow},
     sqlx::{
-        PgPool,
+        PgConnection, PgPool,
         postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
     },
     std::{sync::Arc, time::Duration},
@@ -31,6 +31,23 @@ use {
 mod tests;
 
 type FakeHeights = dyn Fn(Module) -> Result<JsValue> + Send + Sync;
+
+/// Sets up a new pooled connection's session to plan as node-pg's do.
+///
+/// node-pg sends every query as an unnamed statement, which Postgres plans
+/// at each execution with that execution's parameter values. sqlx caches a
+/// named statement per connection, which Postgres may switch to a generic
+/// plan from its sixth execution on, and a query without a full ORDER BY
+/// (a GROUP BY, say) then lists its rows in another order. Forcing custom
+/// plans keeps node-pg's planning for every statement.
+pub async fn start_session(connection: &mut PgConnection) -> sqlx::Result<()> {
+    sqlx::query_scalar!(
+        r#"select set_config('plan_cache_mode', 'force_custom_plan', false) as "plan_cache_mode!""#
+    )
+    .fetch_one(connection)
+    .await?;
+    Ok(())
+}
 
 /// A module's database: a Postgres pool, or a test double that answers
 /// only [`Db::latest_block_height`].
@@ -77,6 +94,7 @@ impl Db {
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections()?)
             .acquire_timeout(Duration::from_millis(config.connection_timeout_ms))
+            .after_connect(|connection, _| Box::pin(start_session(connection)))
             .connect_lazy_with(options);
         Ok(Db::from_pool(pool))
     }

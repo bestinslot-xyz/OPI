@@ -484,6 +484,7 @@ pub mod oid {
     pub const TIMESTAMPTZ: u32 = 1184;
     pub const NUMERIC: u32 = 1700;
     pub const NUMERIC_ARRAY: u32 = 1231;
+    pub const TEXT_ARRAY: u32 = 1009;
     pub const JSONB: u32 = 3802;
 }
 

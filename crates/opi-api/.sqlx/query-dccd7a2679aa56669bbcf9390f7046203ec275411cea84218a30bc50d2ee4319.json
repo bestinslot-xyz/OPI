@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select \"name\", domain, inscription_id, inscription_number\n            from sns_names\n            order by inscription_number asc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "inscription_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "inscription_number"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dccd7a2679aa56669bbcf9390f7046203ec275411cea84218a30bc50d2ee4319"
+}

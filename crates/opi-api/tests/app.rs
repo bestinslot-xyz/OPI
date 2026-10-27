@@ -161,12 +161,12 @@ async fn a_path_outside_every_route_is_expresss_404_page() {
 
 #[tokio::test]
 async fn an_enabled_module_keeps_its_prefix_for_its_own_routes() {
-    // The stub route modules add no routes yet, so a path under an enabled
-    // module falls through to the 404 page, not the JSON 404.
+    // A path under an enabled module that none of its routes takes falls
+    // through to the 404 page, not the JSON 404.
     let app = router(&all_modules(), vec![]);
-    let answer = send(&app, Method::GET, "/v1/sns/ip").await;
+    let answer = send(&app, Method::GET, "/v1/sns/no_such_route").await;
     assert_eq!(answer.status, StatusCode::NOT_FOUND);
-    assert_eq!(answer.body, express_404("GET", "/v1/sns/ip"));
+    assert_eq!(answer.body, express_404("GET", "/v1/sns/no_such_route"));
     assert_ne!(answer.body, NOT_ENABLED_SNS);
 }
 

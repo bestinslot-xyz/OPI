@@ -1,33 +1,22 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select current_holder_pkscript, current_holder_wallet, inscription_id, amount::text as \"amount\", block_height as genesis_height\n            from brc20_unused_tx_inscrs\n            where tick = $1\n            order by current_holder_pkscript asc;",
+  "query": "select tick as \"tick?\", inscription_id as \"inscription_id?\", amount::text as \"amount\", block_height as \"genesis_height?\"\n                from brc20_unused_tx_inscrs\n                where current_holder_wallet = $1\n                order by tick asc;",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "current_holder_pkscript",
-        "type_info": "Text",
+        "name": "tick?",
+        "type_info": "Varchar",
         "origin": {
           "Table": {
             "table": "brc20_unused_tx_inscrs",
-            "name": "current_holder_pkscript"
+            "name": "tick"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "current_holder_wallet",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "brc20_unused_tx_inscrs",
-            "name": "current_holder_wallet"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
-        "name": "inscription_id",
+        "name": "inscription_id?",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -37,14 +26,14 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "amount",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 4,
-        "name": "genesis_height",
+        "ordinal": 3,
+        "name": "genesis_height?",
         "type_info": "Int4",
         "origin": {
           "Table": {
@@ -61,11 +50,10 @@
     },
     "nullable": [
       false,
-      true,
       false,
       null,
       false
     ]
   },
-  "hash": "4f11030ceae76cc76c7c74d1b8c16aeb6f806cbbbdb1e740f232acee4fa60230"
+  "hash": "a740d9795ee4cb749e9d29f7cb51106152acadc9dd3e2930043b3ab9aa8ca38d"
 }

@@ -11,7 +11,7 @@ use {
     crate::{
         config::{MODULES, Module},
         db::Db,
-        js::{JsObject, JsValue},
+        js::{JsError, JsObject, JsValue},
         js_object,
         reply::{Reply, not_found},
     },
@@ -25,6 +25,14 @@ use {
     futures::{StreamExt, stream::FuturesUnordered},
     std::sync::Arc,
 };
+
+/// `TypeError: Cannot read properties of undefined (reading '<field>')`,
+/// which `res.rows[0].<field>` throws on an empty result.
+fn no_row(field: &str) -> JsError {
+    JsError::type_error(format!(
+        "Cannot read properties of undefined (reading '{field}')"
+    ))
+}
 
 /// A module's route registration: adds the module's routes, which read
 /// from `db`, to `router`.

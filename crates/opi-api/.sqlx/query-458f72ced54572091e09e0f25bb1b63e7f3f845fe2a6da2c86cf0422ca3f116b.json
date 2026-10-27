@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select cumulative_event_hash, block_event_hash\n            from runes_cumulative_event_hashes\n            where block_height = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cumulative_event_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_cumulative_event_hashes",
+            "name": "cumulative_event_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_event_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_cumulative_event_hashes",
+            "name": "block_event_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "458f72ced54572091e09e0f25bb1b63e7f3f845fe2a6da2c86cf0422ca3f116b"
+}

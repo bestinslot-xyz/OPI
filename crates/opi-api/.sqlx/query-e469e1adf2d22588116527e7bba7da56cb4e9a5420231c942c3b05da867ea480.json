@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select cumulative_event_hash, block_event_hash\n            from sns_names_cumulative_event_hashes\n            where block_height = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cumulative_event_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names_cumulative_event_hashes",
+            "name": "cumulative_event_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_event_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names_cumulative_event_hashes",
+            "name": "block_event_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e469e1adf2d22588116527e7bba7da56cb4e9a5420231c942c3b05da867ea480"
+}
