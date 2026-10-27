@@ -1,9 +1,14 @@
 {
-    "name": "opi-brc20-indexer-api",
+    "name": "opi-api",
     "version": "0.1.0",
-    "description": "OPI BRC20 Indexer API",
+    "description": "OPI API for the modules an opi-indexer node runs (brc20, bitmap, sns, runes)",
     "license": "UNLICENSED",
-    "main": "index.js",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "test": "node --test",
+        "lint": "eslint ."
+    },
     "dependencies": {
         "cors": "^2.8.5",
         "dotenv": "16.3.1",
