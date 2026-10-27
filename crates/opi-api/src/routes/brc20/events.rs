@@ -9,8 +9,9 @@
 //! An event is
 //! `{"id","block_height","block_time","inscription_id","event_type","ticker_decimals","event"}`:
 //! `id` orders the feed, `block_time` is the block's time in seconds (null
-//! while the block's time is unknown, as for rows above the journal tip at
-//! the indexer's start), `event_type` is the name from `brc20_event_types`
+//! when the block's time is unknown: a block indexed before block times were
+//! stored that the journal did not hold at a start, or any such block in
+//! light mode), `event_type` is the name from `brc20_event_types`
 //! and `event` is the stored event object. Its amounts are raw integers as
 //! strings with 18 fractional digits, so a result's `decimals` is
 //! [`AMOUNT_DECIMALS`] and `ticker_decimals` is the deploy precision of the
@@ -45,10 +46,7 @@
 use {
     super::{
         block_height_of_db,
-        tickers::{
-            AMOUNT_DECIMALS, BadParam, DEFAULT_LIMIT, MAX_LIMIT, integer, is_evm_address, single,
-            ticker, ticker_decimals,
-        },
+        tickers::{AMOUNT_DECIMALS, is_evm_address, ticker, ticker_decimals},
     },
     crate::{
         db::Db,
@@ -57,6 +55,10 @@ use {
         js_object,
         pg_json::{self, oid},
         reply::{ApiError, Reply},
+        routes::paging::{
+            BadParam, DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_LIMIT, integer, optional_text, single,
+            split_page,
+        },
     },
     axum::extract::State,
 };
@@ -67,8 +69,8 @@ mod tests;
 /// The largest `before_id` a request may name.
 pub const MAX_BEFORE_ID: i64 = 999_999_999_999_999_999;
 
-/// The longest `address` a request may name.
-pub const MAX_ADDRESS_LEN: usize = 128;
+/// The longest `type` a request may name, in bytes.
+pub const MAX_TYPE_LEN: usize = 256;
 
 /// The longest `pkscript` a request may name, in hex digits.
 pub const MAX_PKSCRIPT_LEN: usize = 20_000;
@@ -88,7 +90,7 @@ impl FeedRequest {
             None => None,
             Some(_) => Some(integer(query, "before_id", 0, 1, MAX_BEFORE_ID)?),
         };
-        let event_type = match single(query, "type")? {
+        let event_type = match optional_text(query, "type", MAX_TYPE_LEN)? {
             None | Some("") => None,
             Some(name) => Some(name.to_string()),
         };
@@ -116,9 +118,9 @@ impl Wallet {
             (None, None) => Err(BadParam("address or pkscript is required".into())),
             (Some(_), Some(_)) => Err(BadParam("give address or pkscript, not both".into())),
             (Some(address), None) => {
-                if address.len() > MAX_ADDRESS_LEN {
+                if address.len() > MAX_ADDRESS_LEN || address.contains('\0') {
                     return Err(BadParam(format!(
-                        "address must be at most {MAX_ADDRESS_LEN} characters"
+                        "address must be at most {MAX_ADDRESS_LEN} bytes without NUL"
                     )));
                 }
                 Ok(Wallet::Address(address.to_string()))
@@ -180,9 +182,8 @@ async fn event_type_id(
 
 /// The feed fields of a result: `events` (the page's rows), the page's
 /// `limit`, `has_more` and `next_before_id`.
-fn page_fields(result: &mut JsObject, mut rows: Vec<FeedRow>, limit: i64) -> Result<(), ApiError> {
-    let has_more = rows.len() as i64 > limit;
-    rows.truncate(limit as usize);
+fn page_fields(result: &mut JsObject, rows: Vec<FeedRow>, limit: i64) -> Result<(), ApiError> {
+    let (rows, has_more) = split_page(rows, limit);
     let next_before_id = if has_more {
         rows.last().map(|row| row.id as f64)
     } else {
@@ -229,7 +230,8 @@ pub async fn ticker_events(
     };
     // Each table is read through its (tick, id) index, newest first, up to
     // one past the page; the union keeps the newest of both.
-    let rows = sqlx::query!(
+    let rows = sqlx::query_as!(
+        FeedRow,
         r#"select u.id as "id!", u.block_height as "block_height!", h.block_time as "block_time?",
                 u.inscription_id as "inscription_id!",
                 (select e.event_type_name from brc20_event_types e
@@ -262,18 +264,6 @@ pub async fn ticker_events(
     )
     .fetch_all(db.pool()?)
     .await?;
-    let rows = rows
-        .into_iter()
-        .map(|row| FeedRow {
-            id: row.id,
-            block_height: row.block_height,
-            block_time: row.block_time,
-            inscription_id: row.inscription_id,
-            event_type: row.event_type,
-            ticker_decimals: row.ticker_decimals,
-            event: row.event,
-        })
-        .collect();
     let mut result = js_object! {
         "ticker" => tick,
         "decimals" => AMOUNT_DECIMALS,
@@ -335,7 +325,8 @@ pub async fn wallet_events(
         // selectivity and so takes that walk for a rare wallet, reading the
         // whole table, while the index serves every wallet in time
         // proportional to its own events.
-        Some(key) => sqlx::query!(
+        Some(key) => sqlx::query_as!(
+            FeedRow,
             r#"select u.id as "id!", u.block_height as "block_height!", h.block_time as "block_time?",
                 u.inscription_id as "inscription_id!",
                 (select e.event_type_name from brc20_event_types e
@@ -367,18 +358,7 @@ pub async fn wallet_events(
             request.limit + 1,
         )
         .fetch_all(db.pool()?)
-        .await?
-        .into_iter()
-        .map(|row| FeedRow {
-            id: row.id,
-            block_height: row.block_height,
-            block_time: row.block_time,
-            inscription_id: row.inscription_id,
-            event_type: row.event_type,
-            ticker_decimals: row.ticker_decimals,
-            event: row.event,
-        })
-        .collect(),
+        .await?,
     };
     let mut result = js_object! {
         "address" => address,

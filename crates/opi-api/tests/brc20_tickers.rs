@@ -52,6 +52,22 @@ async fn invalid_parameters_answer_400_before_any_query() {
             "/v1/brc20/tickers?search[a]=x",
             "search must be a single value",
         ),
+        (
+            "/v1/brc20/ticker?ticker=a%00",
+            "ticker must be at most 256 bytes without NUL",
+        ),
+        (
+            "/v1/brc20/tickers?search=a%00",
+            "search must be at most 256 bytes without NUL",
+        ),
+        (
+            "/v1/brc20/ticker/holders?ticker=a%00",
+            "ticker must be at most 256 bytes without NUL",
+        ),
+        (
+            "/v1/brc20/wallet/balances?address=a%00",
+            "address must be at most 128 bytes without NUL",
+        ),
         ("/v1/brc20/ticker/holders", "ticker is required"),
         ("/v1/brc20/ticker/holders?ticker=ordi&limit=1000", limit),
         ("/v1/brc20/wallet/balances", "address is required"),

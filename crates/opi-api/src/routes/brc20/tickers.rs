@@ -46,8 +46,9 @@ use {
     axum::extract::State,
 };
 
-pub use crate::routes::paging::{
-    BadParam, DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET, integer, prefix_pattern, required, single,
+use crate::routes::paging::{
+    BadParam, DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_LIMIT, MAX_OFFSET, MAX_TICKER_LEN, integer,
+    optional_text, prefix_pattern, single, split_page, text,
 };
 
 #[cfg(test)]
@@ -86,10 +87,8 @@ impl Page {
 
     /// The page's rows of `rows` (fetched with [`Page::fetch`]), and whether
     /// more follow.
-    fn split<T>(&self, mut rows: Vec<T>) -> (Vec<T>, bool) {
-        let has_more = rows.len() as i64 > self.limit;
-        rows.truncate(self.limit as usize);
-        (rows, has_more)
+    fn split<T>(&self, rows: Vec<T>) -> (Vec<T>, bool) {
+        split_page(rows, self.limit)
     }
 
     /// The page fields of a list's result.
@@ -100,9 +99,10 @@ impl Page {
     }
 }
 
-/// The lowercase ticker of `key`, as brc20 stores tickers.
+/// The lowercase ticker of `key`, as brc20 stores tickers: at most
+/// [`MAX_TICKER_LEN`] bytes, without NUL.
 pub(super) fn ticker(query: &JsObject, key: &str) -> Result<String, BadParam> {
-    Ok(required(query, key)?.to_lowercase())
+    Ok(text(query, key, MAX_TICKER_LEN)?.to_lowercase())
 }
 
 /// The order of `/v1/brc20/tickers`.
@@ -163,7 +163,7 @@ impl TickersRequest {
             Some("asc") => true,
             Some(_) => return Err(BadParam("order must be asc or desc".into())),
         };
-        let pattern = match single(query, "search")? {
+        let pattern = match optional_text(query, "search", MAX_TICKER_LEN)? {
             None | Some("") => None,
             Some(prefix) => Some(prefix_pattern(&prefix.to_lowercase())),
         };
@@ -222,20 +222,18 @@ pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
         Err(bad) => return Ok(bad.reply()),
     };
     let current_block_height = block_height_of_db(&db).await;
-    let row = sqlx::query!(
-        r#"select t.tick, t.original_tick, t.decimals,
+    let row = sqlx::query_as!(
+        TickerRow,
+        r#"select t.tick, t.original_tick, t.decimals as ticker_decimals,
                 t.max_supply::text as "max_supply!",
                 (t.max_supply - t.remaining_supply)::text as "minted_supply!",
                 t.remaining_supply::text as "remaining_supply!",
                 t.burned_supply::text as "burned_supply!",
                 t.limit_per_mint::text as "limit_per_mint!",
-                t.is_self_mint, t.deploy_inscription_id, t.block_height,
+                t.is_self_mint, t.deploy_inscription_id,
+                t.block_height as deploy_block_height,
                 coalesce(h.holders, 0) as "holders!",
-                coalesce(h.prog_holders, 0) as "prog_holders!",
-                (select p.contract_address from brc20_prog_tickers p
-                  where p.ticker = t.tick
-                  order by p.block_height, p.contract_address
-                  limit 1) as "prog_contract_address?"
+                coalesce(h.prog_holders, 0) as "prog_holders!"
             from brc20_tickers t
             left join brc20_ticker_holders h on h.tick = t.tick
             where t.tick = $1;"#,
@@ -246,23 +244,17 @@ pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
     let Some(row) = row else {
         return Ok(Reply::error(404, "ticker not found"));
     };
-    let mut result = TickerRow {
-        tick: row.tick,
-        original_tick: row.original_tick,
-        ticker_decimals: row.decimals,
-        max_supply: row.max_supply,
-        minted_supply: row.minted_supply,
-        remaining_supply: row.remaining_supply,
-        burned_supply: row.burned_supply,
-        limit_per_mint: row.limit_per_mint,
-        is_self_mint: row.is_self_mint,
-        deploy_inscription_id: row.deploy_inscription_id,
-        deploy_block_height: row.block_height,
-        holders: row.holders,
-        prog_holders: row.prog_holders,
-    }
-    .into_object();
-    result.set("prog_contract_address", row.prog_contract_address);
+    let prog_contract_address = sqlx::query_scalar!(
+        "select contract_address from brc20_prog_tickers
+            where ticker = $1
+            order by block_height, contract_address
+            limit 1;",
+        tick,
+    )
+    .fetch_optional(db.pool()?)
+    .await?;
+    let mut result = row.into_object();
+    result.set("prog_contract_address", prog_contract_address);
     result.set("block_height", current_block_height);
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
@@ -285,14 +277,16 @@ pub async fn tickers(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
     // One static query: the sort and direction are whitelisted values bound
     // as parameters, and each connection's custom plans fold the CASEs that
     // do not apply. The prefix match uses brc20_tickers_tick_pattern_idx.
-    let rows = sqlx::query!(
-        r#"select t.tick, t.original_tick, t.decimals,
+    let rows = sqlx::query_as!(
+        TickerRow,
+        r#"select t.tick, t.original_tick, t.decimals as ticker_decimals,
                 t.max_supply::text as "max_supply!",
                 (t.max_supply - t.remaining_supply)::text as "minted_supply!",
                 t.remaining_supply::text as "remaining_supply!",
                 t.burned_supply::text as "burned_supply!",
                 t.limit_per_mint::text as "limit_per_mint!",
-                t.is_self_mint, t.deploy_inscription_id, t.block_height,
+                t.is_self_mint, t.deploy_inscription_id,
+                t.block_height as deploy_block_height,
                 coalesce(h.holders, 0) as "holders!",
                 coalesce(h.prog_holders, 0) as "prog_holders!"
             from brc20_tickers t
@@ -326,25 +320,7 @@ pub async fn tickers(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
     let (rows, has_more) = request.page.split(rows);
     let tickers: Vec<JsValue> = rows
         .into_iter()
-        .map(|row| {
-            TickerRow {
-                tick: row.tick,
-                original_tick: row.original_tick,
-                ticker_decimals: row.decimals,
-                max_supply: row.max_supply,
-                minted_supply: row.minted_supply,
-                remaining_supply: row.remaining_supply,
-                burned_supply: row.burned_supply,
-                limit_per_mint: row.limit_per_mint,
-                is_self_mint: row.is_self_mint,
-                deploy_inscription_id: row.deploy_inscription_id,
-                deploy_block_height: row.block_height,
-                holders: row.holders,
-                prog_holders: row.prog_holders,
-            }
-            .into_object()
-            .into()
-        })
+        .map(|row| row.into_object().into())
         .collect();
     let mut result = js_object! {
         "sort" => request.sort.name(),
@@ -468,7 +444,7 @@ pub async fn wallet_balances(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
 ) -> Result<Reply, ApiError> {
-    let (address, page) = match required(&query, "address")
+    let (address, page) = match text(&query, "address", MAX_ADDRESS_LEN)
         .and_then(|address| Ok((address, Page::from_query(&query)?)))
     {
         Ok(request) => request,

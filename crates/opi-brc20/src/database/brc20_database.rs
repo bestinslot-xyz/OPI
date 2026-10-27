@@ -314,7 +314,7 @@ impl Brc20Database {
             tracing::info!("Created the BRC2.0 balance tables; they fill before indexing resumes");
         }
 
-        if ticker_holders::create_if_missing(&self.client, prog_tables_created).await? {
+        if ticker_holders::create_if_missing(&self.client).await? {
             tracing::info!("Created and filled the ticker holder counts");
         }
 

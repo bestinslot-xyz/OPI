@@ -49,6 +49,10 @@ fn feeds_default_and_cap() {
             bad("before_id must be a single value"),
         ),
         ("type[a]=x", bad("type must be a single value")),
+        (
+            "type=a%00",
+            bad("type must be at most 256 bytes without NUL"),
+        ),
     ] {
         assert_eq!(FeedRequest::from_query(&query(text)), expected, "{text}");
     }
@@ -80,7 +84,11 @@ fn a_wallet_is_an_address_or_a_pkscript() {
         ("pkscript=abc", bad(pkscript)),
         (
             long_address.as_str(),
-            bad("address must be at most 128 characters"),
+            bad("address must be at most 128 bytes without NUL"),
+        ),
+        (
+            "address=a%00",
+            bad("address must be at most 128 bytes without NUL"),
         ),
         (long_pkscript.as_str(), bad(pkscript)),
     ] {

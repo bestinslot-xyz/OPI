@@ -29,13 +29,16 @@
 //! list pages by key: `limit` (default 100, at most 500) and `after`, the
 //! `next_after` of the previous page; a page holds the names after `after`.
 //! `has_more` tells whether more follow and `next_after` is the name to ask
-//! with (null on the last page).
+//! with (null on the last page). The result's `prefix` and `namespace` are
+//! the lowercase forms the search used (the form without a final sigma
+//! where two apply), and `namespace` is null when none was given.
 
 use {
     super::{
         no_row,
         paging::{
-            BadParam, DEFAULT_LIMIT, MAX_LIMIT, integer, optional_text, prefix_pattern, text,
+            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, integer, optional_text,
+            prefix_pattern, split_page, text,
         },
     },
     crate::{
@@ -53,9 +56,6 @@ use {
 };
 
 const EVENT_SEPARATOR: &str = "|";
-
-/// The longest `inscription_id` a request may name.
-pub const MAX_INSCRIPTION_ID_LEN: usize = 128;
 
 /// The longest name the indexer stores, in UTF-8 bytes; a longer prefix,
 /// namespace or cursor matches nothing and is refused.
@@ -398,7 +398,8 @@ async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply()),
     };
-    let patterns: Vec<String> = name_prefix_forms(prefix)
+    let prefix_forms = name_prefix_forms(prefix);
+    let patterns: Vec<String> = prefix_forms
         .iter()
         .map(|form| prefix_pattern(form))
         .collect();
@@ -407,7 +408,7 @@ async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
     let namespaces = namespace.map(namespace_forms);
     // Both the prefix match and the order use sns_names_name_c_idx, a btree
     // on "name" in the C collation; a keyset cursor compares in that order.
-    let mut rows = sqlx::query!(
+    let rows = sqlx::query!(
         r#"select inscription_id, inscription_number, "name", domain, block_height
             from sns_names
             where ("name" collate "C" like $1 or "name" collate "C" like $2)
@@ -423,8 +424,7 @@ async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
     )
     .fetch_all(db.pool()?)
     .await?;
-    let has_more = rows.len() as i64 > limit;
-    rows.truncate(limit as usize);
+    let (rows, has_more) = split_page(rows, limit);
     let next_after = if has_more {
         rows.last().map(|row| row.name.clone())
     } else {
@@ -447,8 +447,8 @@ async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
         "result" => js_object! {
-            "prefix" => prefix,
-            "namespace" => namespace,
+            "prefix" => prefix_forms[0].as_str(),
+            "namespace" => namespaces.as_ref().map(|forms| forms[0].as_str()),
             "limit" => limit as f64,
             "has_more" => has_more,
             "next_after" => next_after,

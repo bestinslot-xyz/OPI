@@ -258,8 +258,9 @@ mod db_tests {
             assert_eq!(present(&first).await, expected);
             assert!(old(&first).await.is_empty());
 
-            // A database from before the indexes, with the `(tick)` indexes,
-            // gets the new ones and loses the old at the next start.
+            // A database with the (tick) indexes and without the feed
+            // indexes has the feed indexes and not the (tick) ones after a
+            // start.
             sqlx::raw_sql(
                 "DROP INDEX brc20_events_parties_idx;
                  DROP INDEX brc20_events_ticker_id_idx;

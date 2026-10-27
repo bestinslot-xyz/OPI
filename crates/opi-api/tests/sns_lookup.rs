@@ -275,7 +275,7 @@ async fn search_checks(app: Router) {
         200,
         JSON,
         &ok(
-            r#"{"prefix":"B","namespace":"SATS","limit":100,"has_more":false,"next_after":null,"names":[{"inscription_id":"n08","inscription_number":8,"name":"b.sats","namespace":"sats","block_height":107}]}"#,
+            r#"{"prefix":"b","namespace":"sats","limit":100,"has_more":false,"next_after":null,"names":[{"inscription_id":"n08","inscription_number":8,"name":"b.sats","namespace":"sats","block_height":107}]}"#,
         ),
     )
     .await;

@@ -16,6 +16,23 @@ pub const MAX_LIMIT: i64 = 500;
 /// The largest offset a request may ask for.
 pub const MAX_OFFSET: i64 = 1_000_000_000;
 
+/// The longest `inscription_id` a request may name.
+pub const MAX_INSCRIPTION_ID_LEN: usize = 128;
+
+/// The longest `address` a request may name.
+pub const MAX_ADDRESS_LEN: usize = 128;
+
+/// The longest ticker a request may name, in bytes.
+pub const MAX_TICKER_LEN: usize = 256;
+
+/// The page of `rows`, fetched as one more than `limit`, and whether more
+/// follow.
+pub fn split_page<T>(mut rows: Vec<T>, limit: i64) -> (Vec<T>, bool) {
+    let has_more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    (rows, has_more)
+}
+
 /// A parameter the route refuses, with the reason it answers in its 400.
 #[derive(Debug, PartialEq, Eq)]
 pub struct BadParam(pub String);

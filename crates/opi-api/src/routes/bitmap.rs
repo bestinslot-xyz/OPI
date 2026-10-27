@@ -28,7 +28,10 @@
 use {
     super::{
         no_row,
-        paging::{BadParam, DEFAULT_LIMIT, MAX_LIMIT, integer, required, single, text},
+        paging::{
+            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, integer, required, single,
+            split_page, text,
+        },
     },
     crate::{
         config::Module,
@@ -41,9 +44,6 @@ use {
     anyhow::anyhow,
     axum::{Router, extract::State, routing::get},
 };
-
-/// The longest `inscription_id` a request may name.
-pub const MAX_INSCRIPTION_ID_LEN: usize = 128;
 
 /// The digits of the largest bitmap number, 2147483647.
 pub const MAX_PREFIX_DIGITS: usize = 10;
@@ -284,7 +284,7 @@ async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
     // Each range is an index range scan of the unique bitmap_number index,
     // cut at the page size; the ranges ascend, so the outer sort merges at
     // most 10 short lists. One row past the page tells whether more follow.
-    let mut rows = sqlx::query!(
+    let rows = sqlx::query!(
         r#"select b.inscription_id as "inscription_id!", b.inscription_number as "inscription_number!",
                 b.bitmap_number as "bitmap_number!", b.block_height as "block_height!"
             from unnest($1::int4[], $2::int4[]) as r(low, high)
@@ -305,8 +305,7 @@ async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
     )
     .fetch_all(db.pool()?)
     .await?;
-    let has_more = rows.len() as i64 > limit;
-    rows.truncate(limit as usize);
+    let (rows, has_more) = split_page(rows, limit);
     let next_after = if has_more {
         rows.last().map(|row| row.bitmap_number)
     } else {

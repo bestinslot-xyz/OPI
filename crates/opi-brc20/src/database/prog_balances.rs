@@ -604,6 +604,19 @@ pub async fn create_if_missing(pool: &Pool<Postgres>) -> Result<bool, sqlx::Erro
     )))
     .execute(&mut *tx)
     .await?;
+    // The new tables are empty and wait for their fill, which counts the
+    // BRC2.0 holders again as it writes, so an existing holder count table
+    // zeroes its BRC2.0 counts in the same transaction.
+    let holders_table: bool =
+        sqlx::query("SELECT to_regclass('public.brc20_ticker_holders') IS NOT NULL")
+            .fetch_one(&mut *tx)
+            .await?
+            .get(0);
+    if holders_table {
+        sqlx::query!("UPDATE brc20_ticker_holders SET prog_holders = 0 WHERE prog_holders <> 0")
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
     Ok(true)
 }

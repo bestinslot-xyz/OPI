@@ -59,15 +59,14 @@ pub const INDEXES: [(&str, &str); 3] = [
     ),
 ];
 
-/// Creates each missing API index, then the table when it is missing, filled
-/// from the current balances in the transaction that creates it. An existing
-/// table whose BRC2.0 tables were just created (`prog_tables_created`, empty
-/// and waiting for their fill) has its BRC2.0 counts zeroed; the fill counts
-/// them again as it writes. Returns whether it created the table.
-pub async fn create_if_missing(
-    pool: &Pool<Postgres>,
-    prog_tables_created: bool,
-) -> Result<bool, sqlx::Error> {
+/// The index the holder index replaces, dropped at start.
+pub const SUPERSEDED: &str = "brc20_current_balances_tick_positive_idx";
+
+/// Creates each missing API index and drops the superseded one, then the
+/// table when it is missing, filled from the current balances in the
+/// transaction that creates it. An existing table has the module pkScript's
+/// holder correction applied. Returns whether it created the table.
+pub async fn create_if_missing(pool: &Pool<Postgres>) -> Result<bool, sqlx::Error> {
     for (name, sql) in INDEXES {
         // The lookup comes first, so a start that finds the index never
         // waits on the table lock.
@@ -83,21 +82,28 @@ pub async fn create_if_missing(
         }
     }
 
+    let superseded =
+        sqlx::query("SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1")
+            .bind(SUPERSEDED)
+            .fetch_optional(pool)
+            .await?
+            .is_some();
+    if superseded {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP INDEX IF EXISTS public.{SUPERSEDED}"
+        )))
+        .execute(pool)
+        .await?;
+    }
+
     let missing: bool = sqlx::query("SELECT to_regclass('brc20_ticker_holders') IS NULL")
         .fetch_one(pool)
         .await?
         .get(0);
     if !missing {
-        if prog_tables_created {
-            sqlx::query!(
-                "UPDATE brc20_ticker_holders SET prog_holders = 0 WHERE prog_holders <> 0"
-            )
-            .execute(pool)
-            .await?;
-        }
-        // A table counted with the module's pkScript among the holders is
-        // recounted for the tickers that pkScript holds; with nothing to
-        // correct this changes no row.
+        // Recounts the tickers the module pkScript holds, so no count
+        // includes it. A row whose count already excludes it is not
+        // rewritten.
         sqlx::query!(
             "INSERT INTO brc20_ticker_holders (tick, holders)
              SELECT m.tick,
@@ -106,7 +112,8 @@ pub async fn create_if_missing(
                        AND b.pkscript <> '6a09425243323050524f47')
              FROM brc20_current_balances m
              WHERE m.pkscript = '6a09425243323050524f47' AND m.overall_balance > 0
-             ON CONFLICT (tick) DO UPDATE SET holders = excluded.holders"
+             ON CONFLICT (tick) DO UPDATE SET holders = excluded.holders
+             WHERE brc20_ticker_holders.holders <> excluded.holders"
         )
         .execute(pool)
         .await?;
@@ -503,8 +510,25 @@ mod db_tests {
                 .unwrap();
                 assert_eq!(found.as_deref(), Some(index));
             }
-            assert!(!create_if_missing(&restarted.client, false).await.unwrap());
+            assert!(!create_if_missing(&restarted.client).await.unwrap());
             assert_eq!(counts(&restarted).await, indexed);
+
+            // The index the holder index replaces is dropped at start.
+            sqlx::raw_sql(
+                "CREATE INDEX brc20_current_balances_tick_positive_idx
+                 ON brc20_current_balances (tick, overall_balance DESC) WHERE overall_balance > 0",
+            )
+            .execute(&restarted.client)
+            .await
+            .unwrap();
+            let without = database(&name).await;
+            let stale: Option<String> =
+                sqlx::query_scalar("SELECT indexname::text FROM pg_indexes WHERE indexname = $1")
+                    .bind(SUPERSEDED)
+                    .fetch_optional(&without.client)
+                    .await
+                    .unwrap();
+            assert_eq!(stale, None);
 
             // A table that counted the module's pkScript is corrected at
             // start.

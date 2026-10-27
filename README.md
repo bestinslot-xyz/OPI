@@ -487,7 +487,16 @@ These routes answer `{"error":null,"result":...}`. A missing or invalid
 parameter answers `400 {"error":"<reason>","result":null}`, and an unknown
 ticker or inscription answers `404` with `"ticker not found"`,
 `"bitmap not found"` or `"sns name not found"` as the error. Lists take
-`limit` (default `100`, at most `500`).
+`limit` (default `100`, at most `500`). A list result echoes the request's
+resolved filters (`sort` and `order`, `ticker`, `address`, `pkscript`,
+`event_type`, `prefix`, `namespace`), as the route applied them: a lowercased
+ticker, an EVM address answered as its mapped Bitcoin address, the lowercase
+SNS prefix and namespace. Parameters are bounded: `offset` is at most
+`1000000000`, `before_id` at most `999999999999999999`, the bitmap `after` at
+most `2147483647`, `address` and `inscription_id` at most 128 characters,
+`pkscript` at most 20000 hex digits, `ticker`, `search` and `type` at most 256
+bytes, and the SNS `prefix`, `namespace` and `after` at most 2048 bytes. A
+text parameter holds no NUL byte.
 
 | Route | Parameters | Lists |
 | --- | --- | --- |
@@ -555,12 +564,14 @@ whose Bitcoin address comes from the same table when it has one. It answers
 balance on either side, by ticker: `{"tick","decimals","ticker_decimals",
 "balance","available_balance","prog_balance","total_balance"}`. Both lists
 page with `offset` (default `0`) and `limit`, and report `offset`, `limit`
-and `has_more`.
+and `has_more`. A wallet the database does not know answers `200` with an
+empty list, here and on `/v1/brc20/wallet/events`.
 
 **Event feeds.** An event is `{"id","block_height","block_time",
 "inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the
-block's time in seconds and may be null (a block whose time the journal does
-not hold at the indexer's start), `event_type` is the name from
+block's time in seconds and is null when the block's time is unknown (a block
+indexed before block times were stored that the journal did not hold at a
+start, or any such block in light mode), `event_type` is the name from
 `brc20_event_types` and `event` is the stored event object. `type` keeps one
 event type by that name. A ticker's events are those whose `tick` is the
 ticker. A wallet's events are those where it is any party (a `*_pkScript` or
@@ -582,7 +593,8 @@ the name after its dot. `/v1/bitmap/search` lists the bitmaps whose decimal
 number starts with `prefix` (1 to 10 digits), ascending by number.
 `/v1/sns/search` lists the names that start with `prefix`, bytewise ascending,
 optionally within one `namespace`; the prefix and namespace are lowercased as
-SNS stores names, and `%`, `_` and `\` match themselves. Both page by key:
+SNS stores names (the result's `prefix` and `namespace` are those lowercase
+forms), and `%`, `_` and `\` match themselves. Both page by key:
 `after` is the previous page's `next_after`, `has_more` tells whether more
 follow and `next_after` is null on the last page.
 

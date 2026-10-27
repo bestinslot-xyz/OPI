@@ -3,7 +3,8 @@
 //!
 //! Every block write sets it. A database that predates the column gets it at
 //! start, and a full-mode indexer fills the rows without a time from the
-//! journal's block headers before it indexes again. The fill selects the rows
+//! journal's block headers before it indexes again, matching each row to the
+//! journal's block by height and hash. The fill selects the rows
 //! whose `block_time` is NULL, so it commits batch by batch and an interrupted
 //! fill resumes where it stopped.
 
@@ -38,8 +39,9 @@ pub async fn add_column_if_missing(client: &Pool<Postgres>) -> Result<(), sqlx::
 
 impl Brc20Database {
     /// Sets `block_time` of every stored block that has none and that the
-    /// journal knows, `batch` rows per transaction, and returns how many rows
-    /// it set. Heights the journal does not hold keep a NULL time.
+    /// journal knows under the same block hash, `batch` rows per transaction,
+    /// and returns how many rows it set. A height the journal does not hold,
+    /// or holds under another hash, keeps a NULL time.
     pub async fn fill_block_times(
         &self,
         journal: &dyn BlockSource,
@@ -64,10 +66,12 @@ impl Brc20Database {
 
             let mut known = Vec::with_capacity(heights.len());
             let mut times = Vec::with_capacity(heights.len());
+            let mut hashes = Vec::with_capacity(heights.len());
             for height in heights {
                 if let Some(info) = journal.block_info(height as u32)? {
                     known.push(height);
                     times.push(i64::from(info.time));
+                    hashes.push(info.hash);
                 }
             }
             if known.is_empty() {
@@ -75,11 +79,13 @@ impl Brc20Database {
             }
             filled += sqlx::query(
                 "UPDATE brc20_block_hashes AS b SET block_time = v.block_time
-                 FROM unnest($1::int4[], $2::int8[]) AS v(block_height, block_time)
-                 WHERE b.block_height = v.block_height AND b.block_time IS NULL",
+                 FROM unnest($1::int4[], $2::int8[], $3::text[]) AS v(block_height, block_time, block_hash)
+                 WHERE b.block_height = v.block_height AND b.block_hash = v.block_hash
+                   AND b.block_time IS NULL",
             )
             .bind(&known)
             .bind(&times)
+            .bind(&hashes)
             .execute(&self.client)
             .await?
             .rows_affected();
@@ -303,6 +309,28 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(filled, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_block_under_another_hash_keeps_a_null_time() {
+        with_database("hash", |name| async move {
+            let database = database(&name, false).await;
+            insert_block(&database, 1, None).await;
+            insert_block(&database, 2, None).await;
+            sqlx::query(
+                "UPDATE brc20_block_hashes SET block_hash = 'forked' WHERE block_height = 2",
+            )
+            .execute(&database.client)
+            .await
+            .unwrap();
+            let filled = database
+                .fill_block_times(&Journal { tip: 2 }, 10)
+                .await
+                .unwrap();
+            assert_eq!(filled, 1);
+            assert_eq!(times(&database).await, vec![(1, Some(1001)), (2, None)]);
         })
         .await;
     }

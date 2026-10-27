@@ -55,6 +55,22 @@ async fn invalid_parameters_answer_400_before_any_query() {
             "/v1/brc20/wallet/events?pkscript=xyz",
             "pkscript must be hex of at most 20000 digits",
         ),
+        (
+            "/v1/brc20/ticker/events?ticker=a%00",
+            "ticker must be at most 256 bytes without NUL",
+        ),
+        (
+            "/v1/brc20/ticker/events?ticker=a&type=a%00",
+            "type must be at most 256 bytes without NUL",
+        ),
+        (
+            "/v1/brc20/wallet/events?address=a%00",
+            "address must be at most 128 bytes without NUL",
+        ),
+        (
+            "/v1/brc20/wallet/events?address=a&type=a%00",
+            "type must be at most 256 bytes without NUL",
+        ),
         ("/v1/brc20/wallet/events?address=a&limit=1000", limit),
         ("/v1/brc20/wallet/events?address=a&before_id=-5", before),
     ] {

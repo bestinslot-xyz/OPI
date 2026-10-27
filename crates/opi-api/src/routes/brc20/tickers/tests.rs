@@ -56,6 +56,7 @@ fn a_page_fetches_one_more_row_to_tell_whether_more_follow() {
     assert_eq!(page.split(vec![1, 2, 3]), (vec![1, 2], true));
     assert_eq!(page.split(vec![1, 2]), (vec![1, 2], false));
     assert_eq!(page.split(Vec::<i32>::new()), (vec![], false));
+    assert_eq!(split_page(vec![1, 2, 3], 2), (vec![1, 2], true));
 }
 
 #[test]
@@ -72,6 +73,14 @@ fn tickers_are_required_and_lowercased() {
             "{text}"
         );
     }
+    let nul = Err(BadParam(
+        "ticker must be at most 256 bytes without NUL".into(),
+    ));
+    assert_eq!(ticker(&query("ticker=a%00"), "ticker"), nul);
+    assert_eq!(
+        ticker(&query(&format!("ticker={}", "a".repeat(257))), "ticker"),
+        nul
+    );
     assert_eq!(
         ticker(&query("ticker=a&ticker=b"), "ticker"),
         Err(BadParam("ticker must be a single value".into()))
@@ -119,6 +128,12 @@ fn search_is_a_lowercase_prefix_with_like_characters_escaped() {
     let pattern = |text: &str| TickersRequest::from_query(&query(text)).unwrap().pattern;
     assert_eq!(pattern("search=OR"), Some("or%".into()));
     assert_eq!(pattern("search="), None);
+    assert_eq!(
+        TickersRequest::from_query(&query("search=a%00")),
+        Err(BadParam(
+            "search must be at most 256 bytes without NUL".into()
+        ))
+    );
     assert_eq!(pattern("search=a%25_b%5C"), Some("a\\%\\_b\\\\%".into()));
 }
 

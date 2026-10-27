@@ -71,7 +71,17 @@ impl Db {
                 .await?;
         match version {
             Some(DB_VERSION) => {
-                sqlx::query(NAME_PREFIX_INDEX).execute(&self.pool).await?;
+                // The lookup comes first, so a start that finds the index
+                // never waits on the table lock.
+                let present: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_indexes \
+                     WHERE schemaname = 'public' AND indexname = 'sns_names_name_c_idx')",
+                )
+                .fetch_one(&self.pool)
+                .await?;
+                if !present {
+                    sqlx::query(NAME_PREFIX_INDEX).execute(&self.pool).await?;
+                }
                 Ok(())
             }
             Some(other) => Err(anyhow!(

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select t.tick, t.original_tick, t.decimals,\n                t.max_supply::text as \"max_supply!\",\n                (t.max_supply - t.remaining_supply)::text as \"minted_supply!\",\n                t.remaining_supply::text as \"remaining_supply!\",\n                t.burned_supply::text as \"burned_supply!\",\n                t.limit_per_mint::text as \"limit_per_mint!\",\n                t.is_self_mint, t.deploy_inscription_id, t.block_height,\n                coalesce(h.holders, 0) as \"holders!\",\n                coalesce(h.prog_holders, 0) as \"prog_holders!\",\n                (select p.contract_address from brc20_prog_tickers p\n                  where p.ticker = t.tick\n                  order by p.block_height, p.contract_address\n                  limit 1) as \"prog_contract_address?\"\n            from brc20_tickers t\n            left join brc20_ticker_holders h on h.tick = t.tick\n            where t.tick = $1;",
+  "query": "select t.tick, t.original_tick, t.decimals as ticker_decimals,\n                t.max_supply::text as \"max_supply!\",\n                (t.max_supply - t.remaining_supply)::text as \"minted_supply!\",\n                t.remaining_supply::text as \"remaining_supply!\",\n                t.burned_supply::text as \"burned_supply!\",\n                t.limit_per_mint::text as \"limit_per_mint!\",\n                t.is_self_mint, t.deploy_inscription_id,\n                t.block_height as deploy_block_height,\n                coalesce(h.holders, 0) as \"holders!\",\n                coalesce(h.prog_holders, 0) as \"prog_holders!\"\n            from brc20_tickers t\n            left join brc20_ticker_holders h on h.tick = t.tick\n            where t.tick = $1;",
   "describe": {
     "columns": [
       {
@@ -27,7 +27,7 @@
       },
       {
         "ordinal": 2,
-        "name": "decimals",
+        "name": "ticker_decimals",
         "type_info": "Int4",
         "origin": {
           "Table": {
@@ -90,7 +90,7 @@
       },
       {
         "ordinal": 10,
-        "name": "block_height",
+        "name": "deploy_block_height",
         "type_info": "Int4",
         "origin": {
           "Table": {
@@ -109,12 +109,6 @@
         "ordinal": 12,
         "name": "prog_holders!",
         "type_info": "Int8",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 13,
-        "name": "prog_contract_address?",
-        "type_info": "Text",
         "origin": "Expression"
       }
     ],
@@ -136,9 +130,8 @@
       false,
       false,
       null,
-      null,
       null
     ]
   },
-  "hash": "2c54ad122bfa12645bfbaefe17455e444d313eb87b03395569717d6f4e2b5265"
+  "hash": "c96f11a68e89bdfdcd3f68e298ddcf92a367264b779fa689396324fd23c6209a"
 }
