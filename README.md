@@ -434,7 +434,7 @@ another indexer is refused.
 `opi-indexer api` serves every module in `OPI_MODULES` on one port, from its own
 process. It reads the same `.env` as `run`.
 
-- **BRC-20** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances.
+- **BRC-20** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances, and tickers, holders, wallet balances and event feeds that merge BRC-20 and BRC2.0 (see [Ticker, wallet and lookup routes](#ticker-wallet-and-lookup-routes)).
 - **Bitmap** exposes block hash and cumulative hash at a given block, hash of all bitmaps and inscription_id of a given bitmap.
 - **SNS** exposes block hash and cumulative hash at a given block, hash of all registered names, id number and domain of a given name, id number and name tuples of a domain, and all registered namespaces endpoints.
 - **Runes** exposes activity on a block (`/v1/runes/activity_on_block`), the balance of a wallet at the start of a height (`/v1/runes/balance_on_block`), the current balance of a wallet (`/v1/runes/get_current_balance_of_wallet`), the unspent rune outpoints of a wallet (`/v1/runes/get_unspent_rune_outpoints_of_wallet`), the holders of a rune (`/v1/runes/holders`), and the block hash and cumulative hash at a height (`/v1/runes/get_hash_of_all_activity`).
@@ -480,6 +480,111 @@ The unused-transaction routes read the tables `brc20_unused_tx_inscrs` and
 `brc20_extras_block_hashes`, which neither the indexer nor
 `brc20 reindex-extras` creates; they answer the 500 body until those tables
 exist in the brc20 database.
+
+### Ticker, wallet and lookup routes
+
+These routes answer `{"error":null,"result":...}`. A missing or invalid
+parameter answers `400 {"error":"<reason>","result":null}`, and an unknown
+ticker or inscription answers `404` with `"ticker not found"`,
+`"bitmap not found"` or `"sns name not found"` as the error. Lists take
+`limit` (default `100`, at most `500`).
+
+| Route | Parameters | Lists |
+| --- | --- | --- |
+| `/v1/brc20/ticker` | `ticker` | one ticker |
+| `/v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | tickers |
+| `/v1/brc20/ticker/holders` | `ticker`, `offset`, `limit` | a ticker's holders |
+| `/v1/brc20/wallet/balances` | `address`, `offset`, `limit` | a wallet's tickers |
+| `/v1/brc20/ticker/events` | `ticker`, `type`, `before_id`, `limit` | a ticker's events, newest first |
+| `/v1/brc20/wallet/events` | `address` or `pkscript`, `type`, `before_id`, `limit` | a wallet's events, newest first |
+| `/v1/bitmap/by_inscription` | `inscription_id` | the bitmap an inscription registered |
+| `/v1/bitmap/search` | `prefix`, `after`, `limit` | bitmaps by number prefix |
+| `/v1/sns/by_inscription` | `inscription_id` | the name an inscription registered |
+| `/v1/sns/search` | `prefix`, `namespace`, `after`, `limit` | names by prefix |
+
+**Amounts.** Amounts are raw integers as strings. Every BRC-20 and BRC2.0
+amount carries 18 fractional digits (1 token is `1000000000000000000`), so
+`decimals` is always `18`: divide by `10^decimals` for tokens.
+`ticker_decimals` is the ticker's deploy precision, the most fractional digits
+an amount of it may have; it is null for a BRC2.0 balance of a ticker brc20
+does not list and for an event without a ticker. Tickers match in lowercase,
+as brc20 stores them, so `ticker=ORDI` finds `ordi`. Each answer of the brc20
+routes carries the database's `block_height`.
+
+**BRC2.0 balances.** The brc20 module keeps every wallet's BRC2.0 token balance
+in its own database (`brc20_prog_tickers`, `brc20_prog_current_balances` and
+`brc20_prog_historical_balances`), read from the engine's logs in the same
+transaction as each block. A `BRC20Created` log of the BRC20 controller
+registers a token contract under its `name()`, and the contract's ERC-20
+`Transfer` logs move balances between lowercase EVM addresses. The historical
+table holds one row per wallet, ticker and block, the balance at the end of
+that block. A database without these tables gets them filled from the engine's
+logs, from the BRC2.0 activation height up, on the next start before indexing
+resumes (a few seconds on signet). The fill needs the engine and brc20 at the
+same height and refuses to start otherwise.
+
+**Tickers.** `/v1/brc20/ticker` answers the ticker's `tick`, `original_tick`,
+`decimals`, `ticker_decimals`, `max_supply`, `minted_supply`,
+`remaining_supply`, `burned_supply`, `limit_per_mint`, `is_self_mint`,
+`deploy_inscription_id`, `deploy_block_height`, `holders`, `prog_holders` and
+`prog_contract_address` (the BRC2.0 token contract, null before the ticker's
+first deposit). `holders` counts the pkScripts with a positive BRC-20
+balance, and `prog_holders` the EVM addresses with a positive BRC2.0 balance;
+a Bitcoin address holding both counts in both. Neither counts the BRC2.0
+module's pkScript `6a09425243323050524f47` (`OP_RETURN "BRC20PROG"`), which
+holds the BRC-20 side of every deposit: that balance is listed per EVM
+address on the BRC2.0 side.
+`/v1/brc20/tickers` lists the same objects without `prog_contract_address`.
+`sort` is `holders` (default), `prog_holders`, `max_supply`, `mint_progress`
+(minted over max supply) or `deploy_height`; `order` is `desc` (default) or
+`asc`; ties order by ticker. `search` keeps the tickers that start with it.
+
+**Holders and wallet balances.** A holder is a Bitcoin address: its BRC-20
+balance and the BRC2.0 balance of its EVM address (from `evm_addresses`) form
+one row, `{"address","pkscript","evm_address","balance","available_balance",
+"prog_balance","total_balance"}`, where `total_balance` is `balance` plus
+`prog_balance`. A BRC-20 balance whose pkScript has no address is listed by
+its `pkscript`, and an EVM address without a Bitcoin address (a contract, for
+example) by its `evm_address` with a null `address`. `/v1/brc20/ticker/holders`
+orders by `total_balance`, largest first, then by holder. The module pkScript
+is left out of holders and wallet balances.
+`/v1/brc20/wallet/balances` takes a Bitcoin address, whose EVM address comes
+from `evm_addresses`, or an EVM address (`0x` and 40 hex digits, any case),
+whose Bitcoin address comes from the same table when it has one. It answers
+`address`, `evm_address` and `balances`, one row per ticker with a positive
+balance on either side, by ticker: `{"tick","decimals","ticker_decimals",
+"balance","available_balance","prog_balance","total_balance"}`. Both lists
+page with `offset` (default `0`) and `limit`, and report `offset`, `limit`
+and `has_more`.
+
+**Event feeds.** An event is `{"id","block_height","block_time",
+"inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the
+block's time in seconds and may be null (a block whose time the journal does
+not hold at the indexer's start), `event_type` is the name from
+`brc20_event_types` and `event` is the stored event object. `type` keeps one
+event type by that name. A ticker's events are those whose `tick` is the
+ticker. A wallet's events are those where it is any party (a `*_pkScript` or
+`*_wallet` field: `deployer`, `minted`, `source`, `spent`, `predeployer`);
+`address` is a Bitcoin address or an EVM address that answers as its mapped
+Bitcoin address (an unmapped one has no events), and `pkscript` is hex.
+BRC2.0 deposits are `transfer-transfer` events spent to the module pkScript,
+and withdrawals are `brc20prog-withdraw-*` events. The feeds page by key:
+`before_id` is the previous page's `next_before_id`, and a page holds the
+events with a lower id, so pages neither repeat nor skip events as new ones
+arrive. `has_more` tells whether older events exist; `next_before_id` is null
+on the last page.
+
+**Bitmap and SNS lookups.** A bitmap is `{"inscription_id",
+"inscription_number","bitmap_number","block_height"}` and a name is
+`{"inscription_id","inscription_number","name","namespace","block_height"}`,
+where `block_height` is the registering block and `namespace` is the part of
+the name after its dot. `/v1/bitmap/search` lists the bitmaps whose decimal
+number starts with `prefix` (1 to 10 digits), ascending by number.
+`/v1/sns/search` lists the names that start with `prefix`, bytewise ascending,
+optionally within one `namespace`; the prefix and namespace are lowercased as
+SNS stores names, and `%`, `_` and `\` match themselves. Both page by key:
+`after` is the previous page's `next_after`, `has_more` tells whether more
+follow and `next_after` is null on the last page.
 
 ### API configuration
 
