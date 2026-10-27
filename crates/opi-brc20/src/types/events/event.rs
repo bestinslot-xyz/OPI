@@ -28,7 +28,7 @@ pub fn number_string_with_full_decimals(number: u128, decimals: u8) -> String {
         // Pad with leading zeros if the number is less than 18 digits
         number_str = format!("0{:0>18}", number_str);
     }
-    number_str.truncate(number_str.len() as usize - 18 + decimals as usize);
+    number_str.truncate(number_str.len() - 18 + decimals as usize);
     if decimals > 0 {
         // Insert the decimal point
         let insert_index = number_str.len() - decimals as usize;
@@ -195,7 +195,7 @@ pub fn get_wallet_from_pk_script(pk_script: &str, network: bitcoin::Network) -> 
         return None;
     };
     let script = bitcoin::Script::from_bytes(pk_script_bytes.as_slice());
-    let Ok(address) = bitcoin::Address::from_script(&script, network) else {
+    let Ok(address) = bitcoin::Address::from_script(script, network) else {
         return None;
     };
     Some(address.to_string())

@@ -402,9 +402,9 @@ impl Brc20Database {
             .event_hash_version
             == TRACE_HASH_UPGRADE_EVENT_HASH_VERSION
         {
-            return Ok(true);
+            Ok(true)
         } else {
-            return Ok(false);
+            Ok(false)
         }
     }
 
@@ -648,9 +648,9 @@ impl Brc20Database {
         }
         self.log_timer_inserts
             .entry(block_height)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .entry(label)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(duration);
         Ok(())
     }
@@ -939,16 +939,16 @@ impl Brc20Database {
 
             if let Ok(max_block_height) =
                 row.and_then(|row| Row::try_get::<i32, _>(&row, "max_block_height"))
+                && max_block_height != 0
+                && block_height < max_block_height
             {
-                if max_block_height != 0 && block_height < max_block_height {
-                    tracing::info!(
-                        "Residue found in table {}: max_block_height = {}, block_height = {}",
-                        table_name,
-                        max_block_height,
-                        block_height
-                    );
-                    return Ok(true);
-                }
+                tracing::info!(
+                    "Residue found in table {}: max_block_height = {}, block_height = {}",
+                    table_name,
+                    max_block_height,
+                    block_height
+                );
+                return Ok(true);
             }
         }
         Ok(false)
@@ -1260,14 +1260,15 @@ impl Brc20Database {
     }
 
     /// Returns the event ID of the last event added to the database.
+    #[allow(clippy::too_many_arguments)] // one argument per events table column
     pub fn add_event<T>(
         &mut self,
         block_height: i32,
         inscription_id: &str,
         inscription_number: &i32,
         old_satpoint: &Option<String>,
-        new_satpoint: &String,
-        txid: &String,
+        new_satpoint: &str,
+        txid: &str,
         event: &T,
         decimals: Option<u8>,
     ) -> Result<i64, Box<dyn Error>>
@@ -1281,10 +1282,10 @@ impl Brc20Database {
             event_type_id: T::event_id(),
             block_height,
             inscription_id: inscription_id.to_string(),
-            inscription_number: inscription_number.clone(),
+            inscription_number: *inscription_number,
             old_satpoint: old_satpoint.clone(),
-            new_satpoint: new_satpoint.clone(),
-            txid: txid.clone(),
+            new_satpoint: new_satpoint.to_string(),
+            txid: txid.to_string(),
             event: serde_json::to_value(event)?,
         });
 
@@ -1351,7 +1352,7 @@ impl Brc20Database {
 
         self.block_event_strings
             .entry(block_height)
-            .or_insert_with(String::new)
+            .or_default()
             .push_str(&format!(
                 "{}{}",
                 event.get_event_str(inscription_id, decimals),
@@ -1386,10 +1387,10 @@ impl Brc20Database {
             request_id
         );
 
-        let Some(request_json_without_id) = request_json.as_object().and_then(|obj| {
+        let Some(request_json_without_id) = request_json.as_object().map(|obj| {
             let mut obj_clone = obj.clone();
             obj_clone.remove("id");
-            Some(serde_json::Value::Object(obj_clone))
+            serde_json::Value::Object(obj_clone)
         }) else {
             return Err("Bitcoin RPC request does not contain a valid JSON object".into());
         };
@@ -1402,7 +1403,7 @@ impl Brc20Database {
         let response_without_id = self
             .bitcoin_rpc_inserts
             .get(&request_json_without_id)
-            .and_then(|x| Some(x.response.clone()));
+            .map(|x| x.response.clone());
 
         let response_without_id = if let Some(response_without_id) = response_without_id {
             response_without_id
@@ -1429,7 +1430,7 @@ impl Brc20Database {
             serde_json::to_vec(&response_without_id)?
         };
 
-        return Ok(Some(Bytes::from(response_bytes)));
+        Ok(Some(Bytes::from(response_bytes)))
     }
 
     pub async fn cache_bitcoin_rpc_request(
@@ -1449,10 +1450,10 @@ impl Brc20Database {
 
         let request_json_without_id = request_json
             .as_object()
-            .and_then(|obj| {
+            .map(|obj| {
                 let mut obj_clone = obj.clone();
                 obj_clone.remove("id");
-                Some(serde_json::Value::Object(obj_clone))
+                serde_json::Value::Object(obj_clone)
             })
             .unwrap_or(request_json);
 
@@ -1464,17 +1465,17 @@ impl Brc20Database {
         };
 
         let Ok(response_json) =
-            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(&response))
+            serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(response))
         else {
             return Err("Failed to parse Bitcoin RPC response as JSON".into());
         };
 
         let response_json_without_id = response_json
             .as_object()
-            .and_then(|obj| {
+            .map(|obj| {
                 let mut obj_clone = obj.clone();
                 obj_clone.remove("id");
-                Some(serde_json::Value::Object(obj_clone))
+                serde_json::Value::Object(obj_clone)
             })
             .unwrap_or(response_json);
 

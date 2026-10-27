@@ -33,7 +33,7 @@ impl Event for Brc20ProgTransactTransferEvent {
 
     fn get_event_str(&self, inscription_id: &str, _decimals: u8) -> String {
         if let Some(btc_txid) = &self.btc_txid {
-            return format!(
+            format!(
                 "{};{};{};{};{};{};{};{}",
                 Self::event_name(),
                 inscription_id,
@@ -43,7 +43,7 @@ impl Event for Brc20ProgTransactTransferEvent {
                 self.base64_data.clone().unwrap_or_default(),
                 self.byte_len,
                 btc_txid
-            );
+            )
         } else {
             format!(
                 "{};{};{};{};{};{};{}",

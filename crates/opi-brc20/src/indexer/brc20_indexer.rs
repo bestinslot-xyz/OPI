@@ -188,15 +188,14 @@ impl Brc20Indexer {
         self.reorg_to_last_synced_block_height().await?;
 
         let brc20_prog_version = self.brc20_prog_client.brc20_version().await?;
-        let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).expect(
-            format!(
+        let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).unwrap_or_else(|| {
+            panic!(
                 "Invalid BRC20_PROG_VERSION requirement: {}",
                 BRC20_PROG_VERSION_REQUIREMENT
             )
-            .as_str(),
-        );
+        });
         let version = Versioning::new(&brc20_prog_version)
-            .expect(format!("Invalid brc20_prog version: {}", brc20_prog_version).as_str());
+            .unwrap_or_else(|| panic!("Invalid brc20_prog version: {}", brc20_prog_version));
         if !requirement.matches(&version) {
             return Err(format!(
                 "brc20_prog version mismatch, expected {}, got {}",
@@ -1083,7 +1082,7 @@ impl Brc20Indexer {
                     format!("Event type not found in event record: {:?}", event_record)
                 })?;
             let single_event_timer = start_timer(METHOD_SPAN, event_name, block_height);
-            let event_type_id = event_name_to_id(&event_name);
+            let event_type_id = event_name_to_id(event_name);
             let inscription_id = event_record
                 .get("inscription_id")
                 .and_then(|v| v.as_str())
@@ -1100,7 +1099,7 @@ impl Brc20Indexer {
                     &mut load_event::<Brc20ProgDeployInscribeEvent>(event_type_id, &event_record)?,
                     0,
                 )?;
-                EventProcessor::brc20_prog_deploy_inscribe(block_height, &inscription_id).await?;
+                EventProcessor::brc20_prog_deploy_inscribe(block_height, inscription_id).await?;
             } else if event_type_id == Brc20ProgDeployTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgDeployTransferEvent>(event_type_id, &event_record)?;
@@ -1116,7 +1115,7 @@ impl Brc20Indexer {
                     block_time,
                     block_hash,
                     brc20_prog_tx_idx,
-                    &inscription_id,
+                    inscription_id,
                     &event,
                 )
                 .await
@@ -1126,7 +1125,7 @@ impl Brc20Indexer {
                     }
                     Err(e) => {
                         tracing::error!("Failed to process Brc20ProgDeployTransferEvent: {}", e);
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             } else if event_type_id == Brc20ProgCallInscribeEvent::event_id() {
@@ -1136,7 +1135,7 @@ impl Brc20Indexer {
                     &mut load_event::<Brc20ProgCallInscribeEvent>(event_type_id, &event_record)?,
                     0,
                 )?;
-                EventProcessor::brc20_prog_call_inscribe(block_height, &inscription_id).await?;
+                EventProcessor::brc20_prog_call_inscribe(block_height, inscription_id).await?;
             } else if event_type_id == Brc20ProgCallTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgCallTransferEvent>(event_type_id, &event_record)?;
@@ -1152,8 +1151,8 @@ impl Brc20Indexer {
                     block_time,
                     block_hash,
                     brc20_prog_tx_idx,
-                    &inscription_id,
-                    &mut event,
+                    inscription_id,
+                    &event,
                 )
                 .await
                 {
@@ -1162,7 +1161,7 @@ impl Brc20Indexer {
                     }
                     Err(e) => {
                         tracing::error!("Failed to process Brc20ProgCallTransferEvent: {}", e);
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             } else if event_type_id == Brc20ProgTransactInscribeEvent::event_id() {
@@ -1174,7 +1173,7 @@ impl Brc20Indexer {
                     &mut event,
                     0,
                 )?;
-                EventProcessor::brc20_prog_transact_inscribe(block_height, &inscription_id).await?;
+                EventProcessor::brc20_prog_transact_inscribe(block_height, inscription_id).await?;
             } else if event_type_id == Brc20ProgTransactTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgTransactTransferEvent>(event_type_id, &event_record)?;
@@ -1188,7 +1187,7 @@ impl Brc20Indexer {
                     &self.brc20_prog_client,
                     block_height,
                     block_hash,
-                    &inscription_id,
+                    inscription_id,
                     block_time,
                     brc20_prog_tx_idx,
                     &event,
@@ -1200,7 +1199,7 @@ impl Brc20Indexer {
                     }
                     Err(e) => {
                         tracing::error!("Failed to process Brc20ProgTransactTransferEvent: {}", e);
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             } else if event_type_id == Brc20ProgWithdrawInscribeEvent::event_id() {
@@ -1225,7 +1224,7 @@ impl Brc20Indexer {
                     )?,
                     ticker.decimals,
                 )?;
-                EventProcessor::brc20_prog_withdraw_inscribe(block_height, &inscription_id).await?;
+                EventProcessor::brc20_prog_withdraw_inscribe(block_height, inscription_id).await?;
             } else if event_type_id == Brc20ProgWithdrawTransferEvent::event_id() {
                 let mut event =
                     load_event::<Brc20ProgWithdrawTransferEvent>(event_type_id, &event_record)?;
@@ -1251,7 +1250,7 @@ impl Brc20Indexer {
                     block_hash,
                     block_time,
                     brc20_prog_tx_idx,
-                    &inscription_id,
+                    inscription_id,
                     event_id,
                     &event,
                 )
@@ -1262,7 +1261,7 @@ impl Brc20Indexer {
                     }
                     Err(e) => {
                         tracing::error!("Failed to process Brc20ProgWithdrawTransferEvent: {}", e);
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             } else if event_type_id == DeployInscribeEvent::event_id() {
@@ -1270,12 +1269,11 @@ impl Brc20Indexer {
                 let decimals = event.decimals;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
-                    &inscription_id,
+                    inscription_id,
                     &mut event,
                     decimals,
                 )?;
-                EventProcessor::brc20_deploy_inscribe(block_height, &inscription_id, &event)
-                    .await?;
+                EventProcessor::brc20_deploy_inscribe(block_height, inscription_id, &event).await?;
             } else if event_type_id == MintInscribeEvent::event_id() {
                 let mut event = load_event::<MintInscribeEvent>(event_type_id, &event_record)?;
                 let ticker = get_brc20_database()
@@ -1287,7 +1285,7 @@ impl Brc20Indexer {
                     })?;
                 let event_id = get_brc20_database().lock().await.add_light_event(
                     block_height,
-                    &inscription_id,
+                    inscription_id,
                     &mut event,
                     ticker.decimals,
                 )?;
@@ -1296,7 +1294,7 @@ impl Brc20Indexer {
                 let mut event = load_event::<PreDeployInscribeEvent>(event_type_id, &event_record)?;
                 get_brc20_database().lock().await.add_light_event(
                     block_height,
-                    &inscription_id,
+                    inscription_id,
                     &mut event,
                     0,
                 )?;
@@ -1315,14 +1313,14 @@ impl Brc20Indexer {
                     })?;
                 let event_id = get_brc20_database().lock().await.add_light_event(
                     block_height,
-                    &inscription_id,
+                    inscription_id,
                     &mut event,
                     ticker.decimals,
                 )?;
                 EventProcessor::brc20_transfer_inscribe(
                     block_height,
                     event_id,
-                    &inscription_id,
+                    inscription_id,
                     &event,
                 )
                 .await?;
@@ -1340,7 +1338,7 @@ impl Brc20Indexer {
                     })?;
                 let event_id = get_brc20_database().lock().await.add_light_event(
                     block_height,
-                    &inscription_id,
+                    inscription_id,
                     &mut event,
                     ticker.decimals,
                 )?;
@@ -1350,7 +1348,7 @@ impl Brc20Indexer {
                     block_time,
                     block_hash,
                     brc20_prog_tx_idx,
-                    &inscription_id,
+                    inscription_id,
                     event_id,
                     &event,
                     &self.config,
@@ -1362,7 +1360,7 @@ impl Brc20Indexer {
                     }
                     Err(e) => {
                         tracing::error!("Failed to process TransferTransferEvent: {}", e);
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             } else {
@@ -1438,9 +1436,17 @@ impl Brc20Indexer {
             last_transfer_timer = match last_transfer_timer {
                 Some(timer) => {
                     stop_timer(&timer).await;
-                    Some(start_timer(METHOD_SPAN, format!("transfer"), block_height))
+                    Some(start_timer(
+                        METHOD_SPAN,
+                        "transfer".to_string(),
+                        block_height,
+                    ))
                 }
-                None => Some(start_timer(METHOD_SPAN, format!("transfer"), block_height)),
+                None => Some(start_timer(
+                    METHOD_SPAN,
+                    "transfer".to_string(),
+                    block_height,
+                )),
             };
             let transfer = &transfers[index];
             if index % 100 == 0 && transfers.len() > 100 {
@@ -1676,21 +1682,19 @@ impl Brc20Indexer {
                         .await
                         {
                             Ok(event) => {
-                                match EventProcessor::brc20_prog_transact_transfer(
-                                    &self.brc20_prog_client,
-                                    block_height,
-                                    block_hash,
-                                    &transfer.inscription_id,
-                                    block_time,
-                                    brc20_prog_tx_idx,
-                                    &event,
-                                )
-                                .await
+                                if let Ok(txes_executed) =
+                                    EventProcessor::brc20_prog_transact_transfer(
+                                        &self.brc20_prog_client,
+                                        block_height,
+                                        block_hash,
+                                        &transfer.inscription_id,
+                                        block_time,
+                                        brc20_prog_tx_idx,
+                                        &event,
+                                    )
+                                    .await
                                 {
-                                    Ok(txes_executed) => {
-                                        brc20_prog_tx_idx += txes_executed.count;
-                                    }
-                                    _ => {}
+                                    brc20_prog_tx_idx += txes_executed.count;
                                 }
                             }
                             Err(e) => {
@@ -1740,7 +1744,7 @@ impl Brc20Indexer {
                     continue;
                 };
 
-                EventGenerator::brc20_predeploy_inscribe(block_height, hash, &transfer).await?;
+                EventGenerator::brc20_predeploy_inscribe(block_height, hash, transfer).await?;
                 continue;
             }
 
@@ -1764,7 +1768,7 @@ impl Brc20Indexer {
                 continue;
             }
 
-            let ticker_length = original_ticker.as_bytes().len();
+            let ticker_length = original_ticker.len();
 
             if !(ticker_length == 4
                 || ticker_length == 5
@@ -1822,7 +1826,7 @@ impl Brc20Indexer {
                     continue;
                 };
 
-                if let Some(_) = transfer.old_satpoint.as_ref() {
+                if transfer.old_satpoint.as_ref().is_some() {
                     let (event_id, event) = EventGenerator::brc20_prog_withdraw_transfer(
                         block_height,
                         &deployed_ticker,
@@ -1851,7 +1855,7 @@ impl Brc20Indexer {
                                 "Failed to process Brc20ProgWithdrawTransferEvent: {}",
                                 e
                             );
-                            return Err(e.into());
+                            return Err(e);
                         }
                     }
                 } else {
@@ -2050,12 +2054,10 @@ impl Brc20Indexer {
                     } else {
                         is_self_mint = false;
                     }
-                    if is_self_mint {
-                        if max_supply == 0 {
-                            max_supply = MAX_AMOUNT;
-                            if limit_per_mint == 0 {
-                                limit_per_mint = MAX_AMOUNT;
-                            }
+                    if is_self_mint && max_supply == 0 {
+                        max_supply = MAX_AMOUNT;
+                        if limit_per_mint == 0 {
+                            limit_per_mint = MAX_AMOUNT;
                         }
                     }
                 }
@@ -2137,7 +2139,7 @@ impl Brc20Indexer {
             }
 
             if operation == OPERATION_TRANSFER {
-                let Ok(Some(mut deployed_ticker)) =
+                let Ok(Some(deployed_ticker)) =
                     get_brc20_database().lock().await.get_ticker(&ticker)
                 else {
                     tracing::debug!(
@@ -2164,7 +2166,7 @@ impl Brc20Indexer {
                 if transfer.old_satpoint.is_some() {
                     match EventGenerator::brc20_transfer_transfer(
                         block_height,
-                        &mut deployed_ticker,
+                        &deployed_ticker,
                         original_ticker,
                         amount,
                         transfer,
@@ -2208,7 +2210,7 @@ impl Brc20Indexer {
                 } else {
                     match EventGenerator::brc20_transfer_inscribe(
                         block_height,
-                        &mut deployed_ticker,
+                        &deployed_ticker,
                         original_ticker,
                         amount,
                         transfer,
@@ -2262,7 +2264,7 @@ impl Brc20Indexer {
     }
 
     pub async fn get_opi_block_height(&self) -> Result<i32, Box<dyn Error>> {
-        let result = if self.config.light_client_mode {
+        if self.config.light_client_mode {
             self.event_provider_client
                 .get_best_verified_block_with_retries()
                 .await
@@ -2271,8 +2273,7 @@ impl Brc20Indexer {
                 .tip()?
                 .map(|height| height as i32)
                 .ok_or("Failed to get current block height".into())
-        };
-        result
+        }
     }
 
     fn journal(&self) -> Result<&Arc<dyn BlockSource>, Box<dyn Error>> {
@@ -2607,8 +2608,10 @@ mod tests {
     }
 
     fn full_indexer(journal: Option<StubJournal>) -> Brc20Indexer {
-        let mut config = Brc20IndexerConfig::default();
-        config.light_client_mode = false;
+        let config = Brc20IndexerConfig {
+            light_client_mode: false,
+            ..Default::default()
+        };
         Brc20Indexer::new(
             config,
             journal.map(|journal| Arc::new(journal) as Arc<dyn BlockSource>),

@@ -19,7 +19,7 @@ fn is_positive_decimal(number: &str) -> bool {
                 return false;
             }
             has_dot = true;
-        } else if !c.is_digit(10) {
+        } else if !c.is_ascii_digit() {
             // Not a digit
             return false;
         } else {
@@ -62,12 +62,12 @@ pub fn get_amount_value(
         }
         result.push_str(integer_part);
         result.push_str(decimal_part);
-        for _ in decimal_part.len()..18 as usize {
+        for _ in decimal_part.len()..18_usize {
             result.push('0');
         }
     } else {
         result.push_str(number);
-        for _ in 0..18 as usize {
+        for _ in 0..18_usize {
             result.push('0');
         }
     }
@@ -82,7 +82,7 @@ pub fn get_amount_value(
 }
 
 fn is_positive_integer(number: &str) -> bool {
-    number.chars().all(|c| c.is_digit(10)) && !number.is_empty()
+    number.chars().all(|c| c.is_ascii_digit()) && !number.is_empty()
 }
 
 pub fn get_decimals_value(number: Option<&str>) -> Result<u8, Box<dyn Error>> {

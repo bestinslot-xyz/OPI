@@ -87,7 +87,7 @@ impl Brc20SwapRefund {
                 let (transfer_event_id, transfer_event) = EventGenerator::brc20_transfer_transfer(
                     block_height,
                     &ticker,
-                    &ticker.original_ticker.as_str(),
+                    ticker.original_ticker.as_str(),
                     balance.overall_balance,
                     &Brc20Tx {
                         tx_id: using_tx_id.clone(),
@@ -120,7 +120,7 @@ impl Brc20SwapRefund {
                     brc20_prog_client,
                     block_height,
                     block_time,
-                    &block_hash,
+                    block_hash,
                     0,
                     &inscription_id,
                     transfer_event_id,

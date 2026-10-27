@@ -124,11 +124,7 @@ impl EventProcessor {
             .set_transfer_validity(inscription_id, TransferValidity::Used);
 
         let contract_address = if let Some(address) = event.contract_address.clone() {
-            if let Ok(address_inner) = address.as_str().try_into() {
-                Some(address_inner)
-            } else {
-                None
-            }
+            address.as_str().try_into().ok()
         } else {
             None
         };
@@ -150,7 +146,7 @@ impl EventProcessor {
                 block_hash.try_into()?,
                 brc20_prog_tx_idx,
                 inscription_id.to_string(),
-                event.byte_len as u64,
+                event.byte_len,
                 string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
             )
             .await
@@ -222,6 +218,7 @@ impl EventProcessor {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)] // the transfer context is passed individually
     pub async fn brc20_prog_withdraw_transfer(
         prog_client: &HttpClient,
         block_height: i32,
@@ -236,7 +233,7 @@ impl EventProcessor {
         if event
             .spent_pk_script
             .as_ref()
-            .and_then(|s| Some(s.starts_with(OP_RETURN)))
+            .map(|s| s.starts_with(OP_RETURN))
             .unwrap_or(false)
         {
             get_brc20_database()
@@ -272,7 +269,7 @@ impl EventProcessor {
             let mut brc20_prog_balance = get_brc20_database()
                 .lock()
                 .await
-                .get_balance(&event.ticker, &BRC20_PROG_OP_RETURN_PKSCRIPT)
+                .get_balance(&event.ticker, BRC20_PROG_OP_RETURN_PKSCRIPT)
                 .await?;
 
             brc20_prog_balance.overall_balance -= event.amount;
@@ -281,7 +278,7 @@ impl EventProcessor {
             // Reduce balance in the BRC20PROG module
             get_brc20_database().lock().await.update_balance(
                 &event.ticker,
-                &BRC20_PROG_OP_RETURN_PKSCRIPT,
+                BRC20_PROG_OP_RETURN_PKSCRIPT,
                 NO_WALLET,
                 &Brc20Balance {
                     overall_balance: brc20_prog_balance.overall_balance,
@@ -403,7 +400,7 @@ impl EventProcessor {
         get_brc20_database()
             .lock()
             .await
-            .set_transfer_validity(&inscription_id, TransferValidity::Valid);
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
 
         let mut balance = get_brc20_database()
             .lock()
@@ -418,7 +415,7 @@ impl EventProcessor {
                 balance.available_balance,
                 event.amount
             );
-            return Err("Insufficient balance for transfer")?;
+            Err("Insufficient balance for transfer")?;
         }
 
         balance.available_balance -= event.amount;
@@ -436,6 +433,7 @@ impl EventProcessor {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)] // the transfer context is passed individually
     pub async fn brc20_transfer_transfer(
         prog_client: &HttpClient,
         block_height: i32,
@@ -492,7 +490,7 @@ impl EventProcessor {
             )?;
         } else if spent_pk_script == BRC20_PROG_OP_RETURN_PKSCRIPT {
             if (block_height < config.first_brc20_prog_all_tickers_height
-                && event.original_ticker.as_bytes().len() < 6)
+                && event.original_ticker.len() < 6)
                 || block_height < config.first_brc20_prog_phase_one_height
             {
                 // Burn tokens if BRC20 Prog is not enabled for this ticker yet
@@ -641,7 +639,7 @@ impl EventProcessor {
         get_brc20_database()
             .lock()
             .await
-            .set_transfer_validity(&inscription_id, TransferValidity::Used);
+            .set_transfer_validity(inscription_id, TransferValidity::Used);
 
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::count(prog_tx_count))

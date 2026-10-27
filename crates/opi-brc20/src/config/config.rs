@@ -313,9 +313,9 @@ impl Default for Brc20IndexerConfig {
     fn default() -> Self {
         let network_type_string =
             &std::env::var(NETWORK_TYPE_KEY).unwrap_or_else(|_| NETWORK_TYPE_DEFAULT.to_string());
-        let network_type = get_bitcoin_network_type(&network_type_string);
+        let network_type = get_bitcoin_network_type(network_type_string);
 
-        let config = Brc20IndexerConfig {
+        Brc20IndexerConfig {
             db_host: std::env::var(DB_HOST_KEY).unwrap_or_else(|_| DB_HOST_DEFAULT.to_string()),
             db_port: std::env::var(DB_PORT_KEY).unwrap_or_else(|_| DB_PORT_DEFAULT.to_string()),
             db_user: std::env::var(DB_USER_KEY).unwrap_or_else(|_| DB_USER_DEFAULT.to_string()),
@@ -413,8 +413,6 @@ impl Default for Brc20IndexerConfig {
                 .unwrap_or_else(|_| HEIGHT_LIMIT_DEFAULT.to_string())
                 .parse::<i32>()
                 .unwrap_or(HEIGHT_LIMIT_DEFAULT),
-        };
-
-        config
+        }
     }
 }

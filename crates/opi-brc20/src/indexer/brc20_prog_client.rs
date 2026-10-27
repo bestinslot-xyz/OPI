@@ -8,17 +8,17 @@ use crate::config::Brc20IndexerConfig;
 
 pub fn build_brc20_prog_http_client(config: &Brc20IndexerConfig) -> HttpClient {
     let mut headers = HeaderMap::new();
-    if let Some(user) = &config.brc20_prog_rpc_user {
-        if let Some(password) = &config.brc20_prog_rpc_password {
-            headers.insert(
-                "Authorization",
-                HeaderValue::from_str(&format!(
-                    "Basic {}",
-                    BASE64_STANDARD.encode(format!("{}:{}", user, password))
-                ))
-                .unwrap(),
-            );
-        }
+    if let Some(user) = &config.brc20_prog_rpc_user
+        && let Some(password) = &config.brc20_prog_rpc_password
+    {
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!(
+                "Basic {}",
+                BASE64_STANDARD.encode(format!("{}:{}", user, password))
+            ))
+            .unwrap(),
+        );
     }
     HttpClient::builder()
         .max_request_size(u32::MAX) // This is to support large payloads as this should never fail

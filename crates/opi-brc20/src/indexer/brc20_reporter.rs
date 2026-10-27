@@ -29,6 +29,7 @@ impl Brc20Reporter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // the report payload fields are passed individually
     pub async fn report(
         &self,
         block_height: i32,

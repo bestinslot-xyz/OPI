@@ -123,7 +123,7 @@ impl EventProviderClient {
             .data
             .unwrap_or_default()
             .best_verified_block
-            .and_then(|block| i32::from_str_radix(&block, 10).ok())
+            .and_then(|block| block.parse::<i32>().ok())
             .unwrap_or(0))
     }
 
@@ -182,7 +182,7 @@ impl EventProviderClient {
                 .result
                 .ok_or("Bitcoin RPC results not found".into());
         }
-        return Err("Failed to fetch Bitcoin RPC results after retries".into());
+        Err("Failed to fetch Bitcoin RPC results after retries".into())
     }
 
     pub async fn get_events(
@@ -234,7 +234,7 @@ impl EventProviderClient {
 
             return response.result.ok_or("Event data not found".into());
         }
-        return Err("Failed to fetch events after retries".into());
+        Err("Failed to fetch events after retries".into())
     }
 }
 

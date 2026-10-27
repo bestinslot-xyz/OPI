@@ -32,7 +32,7 @@ impl EventGenerator {
         let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe", block_height);
         let event = Brc20ProgDeployInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
-            source_wallet: transfer.new_wallet.to_string().into(),
+            source_wallet: transfer.new_wallet.to_string(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
         };
@@ -91,7 +91,7 @@ impl EventGenerator {
                 "New pk script is not brc20_prog op return pk script for inscription ID: {}",
                 transfer.inscription_id
             );
-            return Err("New pk script is not brc20_prog op return pk script")?;
+            Err("New pk script is not brc20_prog op return pk script")?;
         }
         get_brc20_database()
             .lock()
@@ -169,7 +169,7 @@ impl EventGenerator {
                 "New pk script is not brc20_prog op return pk script for inscription ID: {}",
                 transfer.inscription_id
             );
-            return Err("New pk script is not brc20_prog op return pk script")?;
+            Err("New pk script is not brc20_prog op return pk script")?;
         }
 
         let event = Brc20ProgCallTransferEvent {
@@ -213,7 +213,7 @@ impl EventGenerator {
         let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe", block_height);
         let event = Brc20ProgCallInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
-            source_wallet: transfer.new_wallet.to_string().into(),
+            source_wallet: transfer.new_wallet.to_string(),
             contract_address: contract_address.map(|s| s.to_string()).unwrap_or_default(),
             contract_inscription_id: contract_inscription_id
                 .map(|s| s.to_string())
@@ -245,7 +245,7 @@ impl EventGenerator {
         let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe", block_height);
         let event = Brc20ProgTransactInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
-            source_wallet: transfer.new_wallet.to_string().into(),
+            source_wallet: transfer.new_wallet.to_string(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
         };
@@ -305,13 +305,13 @@ impl EventGenerator {
                 "New pk script is not brc20_prog op return pk script for inscription ID: {}",
                 transfer.inscription_id
             );
-            return Err("New pk script is not brc20_prog op return pk script")?;
+            Err("New pk script is not brc20_prog op return pk script")?;
         }
 
         let event = Brc20ProgTransactTransferEvent {
             source_pk_script: inscribe_event.source_pk_script.clone(),
             source_wallet: inscribe_event.source_wallet.to_string(),
-            spent_pk_script: transfer.new_pkscript.to_string().into(),
+            spent_pk_script: transfer.new_pkscript.to_string(),
             data: data.map(|d| d.to_string()),
             base64_data: base64_data.map(|b| b.to_string()),
             byte_len: transfer.byte_len as i32,
@@ -407,7 +407,7 @@ impl EventGenerator {
         let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe", block_height);
         let event = Brc20ProgWithdrawInscribeEvent {
             source_pk_script: transfer.new_pkscript.to_string(),
-            source_wallet: transfer.new_wallet.to_string().into(),
+            source_wallet: transfer.new_wallet.to_string(),
             ticker: deployed_ticker.ticker.to_string(),
             original_ticker: original_ticker.to_string(),
             amount,
@@ -436,7 +436,7 @@ impl EventGenerator {
             predeployer_pk_script: transfer.new_pkscript.clone(),
             predeployer_wallet: transfer.new_wallet.clone(),
             hash: hash.to_string(),
-            block_height: block_height,
+            block_height,
         };
 
         get_brc20_database().lock().await.add_event(
@@ -454,6 +454,7 @@ impl EventGenerator {
         Ok(predeploy_event)
     }
 
+    #[allow(clippy::too_many_arguments)] // the deploy event fields are passed individually
     pub async fn brc20_deploy_inscribe(
         block_height: i32,
         ticker: &str,
@@ -514,7 +515,7 @@ impl EventGenerator {
                     parent_id,
                     deployed_ticker.deploy_inscription_id
                 );
-                return Err("Parent id does not match deploy inscription id")?;
+                Err("Parent id does not match deploy inscription id")?;
             }
         }
 
@@ -524,7 +525,7 @@ impl EventGenerator {
                 transfer.inscription_id,
                 deployed_ticker.ticker
             );
-            return Err("Remaining supply is 0")?;
+            Err("Remaining supply is 0")?;
         }
 
         if amount > deployed_ticker.limit_per_mint {
@@ -535,7 +536,7 @@ impl EventGenerator {
                 deployed_ticker.limit_per_mint,
                 deployed_ticker.ticker
             );
-            return Err("Amount exceeds limit per mint")?;
+            Err("Amount exceeds limit per mint")?;
         }
 
         if amount > deployed_ticker.remaining_supply {
@@ -592,7 +593,7 @@ impl EventGenerator {
                 balance.available_balance,
                 amount
             );
-            return Err("Available balance is less than amount")?;
+            Err("Available balance is less than amount")?;
         }
 
         let event = TransferInscribeEvent {

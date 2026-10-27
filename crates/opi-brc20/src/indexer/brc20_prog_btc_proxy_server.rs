@@ -31,13 +31,12 @@ pub async fn run_bitcoin_proxy_server(
         }),
     );
 
-    let addr: SocketAddr = bitcoin_rpc_proxy_addr.parse().expect(
-        format!(
+    let addr: SocketAddr = bitcoin_rpc_proxy_addr.parse().unwrap_or_else(|_| {
+        panic!(
             "Invalid Bitcoin RPC proxy URL format: {}",
             bitcoin_rpc_proxy_addr
         )
-        .as_str(),
-    );
+    });
     tracing::info!("Bitcoin RPC proxy listening on {}", addr);
     axum_server::bind(addr)
         .serve(app.into_make_service())
@@ -53,7 +52,7 @@ async fn proxy(
     light_client_mode: bool,
     network_type: String,
 ) -> Response {
-    static CLIENT: LazyLock<Client> = LazyLock::new(|| Client::new());
+    static CLIENT: LazyLock<Client> = LazyLock::new(Client::new);
     if method != Method::POST {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
@@ -115,10 +114,12 @@ async fn proxy(
 
     match forwarded {
         Ok(resp) => {
-            let status = resp.status().clone();
+            let status = resp.status();
             let headers = resp.headers().clone();
             let response_bytes = resp.bytes().await.unwrap();
 
+            #[allow(clippy::redundant_pattern_matching)]
+            // keeps the database guard's drop order unchanged
             if let Err(_) = get_brc20_database()
                 .lock()
                 .await
