@@ -73,14 +73,14 @@ pub const BRC20_PROG_MODULE_PKSCRIPT: &str = "6a09425243323050524f47";
 pub struct BadParam(pub String);
 
 impl BadParam {
-    fn reply(self) -> Reply {
+    pub(super) fn reply(self) -> Reply {
         Reply::error(400, &self.0)
     }
 }
 
 /// The string value of `key`, or `None` when the request leaves it out. A
 /// repeated or bracketed parameter is refused.
-fn single<'a>(query: &'a JsObject, key: &str) -> Result<Option<&'a str>, BadParam> {
+pub(super) fn single<'a>(query: &'a JsObject, key: &str) -> Result<Option<&'a str>, BadParam> {
     match query.get(key) {
         JsValue::Undefined => Ok(None),
         JsValue::String(value) => Ok(Some(value)),
@@ -98,7 +98,13 @@ fn required<'a>(query: &'a JsObject, key: &str) -> Result<&'a str, BadParam> {
 
 /// The integer value of `key` in `min..=max`, written in decimal digits, or
 /// `default` when the request leaves it out.
-fn integer(query: &JsObject, key: &str, default: i64, min: i64, max: i64) -> Result<i64, BadParam> {
+pub(super) fn integer(
+    query: &JsObject,
+    key: &str,
+    default: i64,
+    min: i64,
+    max: i64,
+) -> Result<i64, BadParam> {
     let Some(text) = single(query, key)? else {
         return Ok(default);
     };
@@ -151,7 +157,7 @@ impl Page {
 }
 
 /// The lowercase ticker of `key`, as brc20 stores tickers.
-fn ticker(query: &JsObject, key: &str) -> Result<String, BadParam> {
+pub(super) fn ticker(query: &JsObject, key: &str) -> Result<String, BadParam> {
     Ok(required(query, key)?.to_lowercase())
 }
 
@@ -424,7 +430,7 @@ pub async fn tickers(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
 
 /// The deploy precision of a ticker, or `None` when brc20 has no such
 /// ticker.
-async fn ticker_decimals(db: &Db, tick: &str) -> Result<Option<i32>, ApiError> {
+pub(super) async fn ticker_decimals(db: &Db, tick: &str) -> Result<Option<i32>, ApiError> {
     Ok(
         sqlx::query_scalar!("select decimals from brc20_tickers where tick = $1;", tick)
             .fetch_optional(db.pool()?)

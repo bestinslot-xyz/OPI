@@ -1,6 +1,7 @@
 //! The brc20 module's routes, including the
 //! `/v1/brc20/explorer/...` routes for the BRC2.0 blockscout frontend and the
-//! ticker routes of [`tickers`], which have no JavaScript counterpart.
+//! ticker routes of [`tickers`] and the event feeds of [`events`], which have
+//! no JavaScript counterpart.
 //!
 //! Each other handler follows its JavaScript counterpart line by line: query
 //! params keep their JavaScript values ([`JsValue`]) through the checks and
@@ -25,6 +26,7 @@ use {
     sha2::{Digest, Sha256},
 };
 
+mod events;
 mod tickers;
 
 #[cfg(test)]
@@ -88,6 +90,8 @@ pub fn routes(router: Router, db: Db) -> Router {
             .route("/v1/brc20/tickers", get(tickers::tickers))
             .route("/v1/brc20/ticker/holders", get(tickers::holders))
             .route("/v1/brc20/wallet/balances", get(tickers::wallet_balances))
+            .route("/v1/brc20/ticker/events", get(events::ticker_events))
+            .route("/v1/brc20/wallet/events", get(events::wallet_events))
             .with_state(db),
     )
 }

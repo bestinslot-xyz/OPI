@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 
 use super::{
     bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer},
-    block_time, evm_addresses, prog_balances, ticker_holders,
+    block_time, event_feed_indexes, evm_addresses, prog_balances, ticker_holders,
 };
 use crate::{
     config::{
@@ -317,6 +317,10 @@ impl Brc20Database {
         if ticker_holders::create_if_missing(&self.client, prog_tables_created).await? {
             tracing::info!("Created and filled the ticker holder counts");
         }
+
+        event_feed_indexes::create_if_missing(&self.client)
+            .await
+            .map_err(|error| format!("event feed indexes: {error}"))?;
 
         self.fetch_current_event_id().await?;
 
