@@ -15,7 +15,7 @@ use {
     ordinals::{Etching, Runestone},
     redb::{ReadableDatabase, TableHandle},
     std::path::Path,
-    support::{Harness, envelope, source_config, wait_for_tip},
+    support::{Harness, dump_tables, envelope, source_config, wait_for_tip},
 };
 
 const JSON: &[u8] = br#"{"p":"brc-20","op":"deploy","tick":"ordi","max":"21000000"}"#;
@@ -61,6 +61,59 @@ fn table_names(reader: &JournalReader) -> Vec<String> {
         .unwrap()
         .map(|handle| handle.name().to_string())
         .collect()
+}
+
+/// The same chain synced with and without runes gives the same inscription
+/// records, info rows, headers and first-transfer entries, and the same
+/// block views apart from the rune feed.
+#[test]
+fn inscription_records_match_with_and_without_runes() {
+    let harness = Harness::new();
+    let funding = harness.fund();
+    harness.runestone(&[funding], 1, etching());
+    let first = harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    harness.transfer(
+        bitcoin::OutPoint {
+            txid: first.txid,
+            vout: 0,
+        },
+        100,
+    );
+    harness.inscribe(JSON, "text/plain");
+    harness.mine(1);
+    harness.inscribe(
+        b"{\"p\":\"sns\",\"op\":\"reg\",\"name\":\"a.sats\"}",
+        "text/plain",
+    );
+    harness.mine(2);
+
+    let tables = [cf::TRANSFERS, cf::INFO, cf::HEADERS, cf::FIRST_TRANSFER];
+    let with_dir = tempfile::tempdir().unwrap();
+    let without_dir = tempfile::tempdir().unwrap();
+    let (with_source, with) = synced(&harness, with_dir.path(), true);
+    let (without_source, without) = synced(&harness, without_dir.path(), false);
+
+    let rows = dump_tables(with.journal().db(), &tables);
+    for table in tables {
+        assert!(
+            rows.iter().any(|(name, _, _)| *name == table),
+            "the chain leaves {table} empty"
+        );
+    }
+    assert_eq!(dump_tables(without.journal().db(), &tables), rows);
+
+    for height in 0..=harness.height() {
+        let a = with.block_view(height).unwrap().unwrap();
+        let b = without.block_view(height).unwrap().unwrap();
+        assert_eq!(
+            (&a.hash, a.time, &a.inscriptions),
+            (&b.hash, b.time, &b.inscriptions),
+            "height {height}"
+        );
+    }
+    stop(with_source);
+    stop(without_source);
 }
 
 #[test]
@@ -162,6 +215,7 @@ fn startup_refuses_a_journal_built_with_the_other_setting() {
 
         let config = config(&harness, tmp.path(), !built_with);
         let journal_path = config.journal_path();
+        let ord_data_dir = config.ord_data_dir.clone();
         let err = spawn_source(config).err().expect("startup refuses");
         let message = format!("{err:#}");
         let expected = if built_with {
@@ -172,6 +226,10 @@ fn startup_refuses_a_journal_built_with_the_other_setting() {
         assert!(message.contains(expected), "{message}");
         assert!(
             message.contains(&journal_path.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&ord_data_dir.display().to_string()),
             "{message}"
         );
         assert!(journal_path.exists());

@@ -78,8 +78,9 @@ const META_GATE_LIMIT: &[u8] = b"gate_limit";
 const META_CHAIN: &[u8] = b"chain";
 const META_SCHEMA: &[u8] = b"schema";
 /// Whether the journal keeps rune records: one byte, 1 or 0, written when the
-/// journal is created. A journal without the row keeps them when it has a
-/// rune table.
+/// journal is created. A journal without the row and with finalized blocks
+/// keeps them when it has a rune table; one without finalized blocks takes
+/// the setting it is opened with.
 const META_RUNES: &[u8] = b"runes";
 const SCHEMA_VERSION: u32 = 1;
 const ZSTD_LEVEL: i32 = 3;

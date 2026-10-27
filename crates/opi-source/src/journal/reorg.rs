@@ -20,9 +20,9 @@ use {
 /// above the highest agreeing height, the info rows of inscriptions created
 /// and the first-transfer entries of transfers recorded above it, rolls the
 /// rune tables of a journal that keeps them back to that height, sets
-/// `final_tip` to that height and
-/// returns it, all in one write transaction. Returns `None` when the tip
-/// agrees or nothing is finalized, and fails when no finalized height agrees.
+/// `final_tip` to that height and returns it, all in one write transaction.
+/// Returns `None` when the tip agrees or nothing is finalized, and fails when
+/// no finalized height agrees.
 pub fn reorg_check(journal: &Journal, index: &Index) -> Result<Option<u32>> {
     let Some(tip) = journal.final_tip()? else {
         return Ok(None);

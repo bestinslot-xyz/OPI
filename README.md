@@ -62,15 +62,19 @@ journal has no rune tables, so both ord's index and the journal need less disk.
 The choice is fixed per ord data dir and journal: ord records it in its index
 when it creates the index, and the journal records it in its `runes` meta row.
 A start whose `OPI_MODULES` disagrees with either is refused with a message
-naming the journal or ord data dir to rebuild, for example:
+naming the dirs to rebuild. The journal is checked first, for example:
 
 ```text
-ord's index was built with rune indexing, but runes is disabled; start with runes enabled again, or delete ord's data dir /data/ord and the journal and index again
+opening the journal of ord's data dir /data/ord: journal at /data/journal/journal.redb was built with rune indexing, but runes is disabled; start with runes enabled again, or delete the journal and ord's data dir and index again
 ```
 
 To switch, either put `OPI_MODULES` back as it was, or delete `OPI_ORD_DATA_DIR`
 and `OPI_JOURNAL_DIR` and index from the start with the new list. Adding runes
 to an index built without them always takes a rebuild.
+
+Every ord data dir and journal built by earlier versions has rune indexing. To
+keep one, add `runes` to `OPI_MODULES` (this also starts the runes module and
+needs `RUNES_DB_DATABASE`), or delete both dirs to run without runes.
 
 ### Prerequisites
 

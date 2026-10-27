@@ -145,7 +145,12 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     std::fs::create_dir_all(&cfg.journal_dir)
         .with_context(|| format!("creating {}", cfg.journal_dir.display()))?;
     let journal_path = cfg.journal_path();
-    let journal = Journal::open(&journal_path, cfg.chain, cfg.runes)?;
+    let journal = Journal::open(&journal_path, cfg.chain, cfg.runes).with_context(|| {
+        format!(
+            "opening the journal of ord's data dir {}",
+            cfg.ord_data_dir.display()
+        )
+    })?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
