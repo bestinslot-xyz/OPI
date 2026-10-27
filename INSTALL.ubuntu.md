@@ -117,12 +117,6 @@ rustup update stable
 git clone https://github.com/bestinslot-xyz/OPI.git && cd OPI
 ```
 
-> [!WARNING]
-> If running on Signet with BRC2.0, clone the experimental signet branch by using:
-> ```
-> git clone -b experimental-signet-brc20-prog https://github.com/bestinslot-xyz/OPI.git && cd OPI
-> ```
-
 All next shell script groups assumes that you are in OPI folder cloned by above command.
 
 ## Installing node modules
@@ -165,10 +159,12 @@ Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 
 **Main Meta-Protocol Indexer (BRC-20, Bitmap, SNS and Runes)**
 
-> [!WARNING]
-> Set up and run the brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running opi-indexer with the `brc20` module.
-> 
-> BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`. These are brc20-prog's own environment variables; the root `.env` names the password `BITCOIN_RPC_PASSWD`.
+> [!NOTE]
+> With the `brc20` module, the BRC2.0 engine (brc20-prog) runs inside `opi-indexer`; there is no separate server to install. Set `BRC20_PROG_DB_PATH` in `.env` to a writable directory. `opi-indexer run` serves the engine's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL` (default `127.0.0.1:18545`).
+>
+> The engine reaches bitcoind through the Bitcoin RPC proxy when `BITCOIN_RPC_PROXY_SERVER_ENABLED=true`; otherwise it uses `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`. The network follows `NETWORK_TYPE`.
+>
+> A node that ran the standalone brc20-prog server stops it and points `BRC20_PROG_DB_PATH` at its database.
 
 ```bash
 ./target/release/opi-indexer run;

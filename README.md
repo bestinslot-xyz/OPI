@@ -107,7 +107,33 @@ backoff of 5 seconds, doubling to 5 minutes; the other modules and the source
 keep running. Log verbosity follows `RUST_LOG`. Logs go to stderr for every
 command.
 
-Run brc20-prog first, using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage), when `brc20` is enabled.
+#### BRC2.0 engine
+
+When `brc20` is enabled, the brc20-prog engine (`Brc20Prog`, brc20-prog 0.16)
+runs inside the `opi-indexer` process. There
+is no separate brc20-prog server.
+
+| Variable | Meaning |
+| --- | --- |
+| `BRC20_PROG_DB_PATH` | directory of the engine's database; required |
+| `BRC20_PROG_RPC_SERVER_URL` | address of the public JSON-RPC server, default `127.0.0.1:18545` |
+| `BRC20_PROG_RPC_SERVER_ENABLED` | `false` turns the public JSON-RPC server off; any other value, or unset, leaves it on |
+| `EVM_RECORD_TRACES` | records transaction traces for `debug_traceTransaction` |
+
+`run` serves brc20-prog's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL`.
+Blockscout, the swap sequencer and other clients connect there. It rejects the
+indexer methods (`brc20_mine` and the like). The engine reads its remaining
+settings from brc20-prog's own variables (HTTP basic auth, `EVM_CALL_GAS_LIMIT`,
+request limits; see brc20-prog's configuration docs). Its Bitcoin RPC endpoint is
+the Bitcoin RPC proxy (`BITCOIN_RPC_PROXY_SERVER_ADDR`) when
+`BITCOIN_RPC_PROXY_SERVER_ENABLED=true`; otherwise it is `BITCOIN_RPC_URL` with
+`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, which are then required. The
+network and chain id follow `NETWORK_TYPE`; brc20-prog's own `BITCOIN_RPC_URL`,
+`BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_NETWORK` have no
+effect.
+
+To move a node that ran the standalone brc20-prog server, stop that server and
+point `BRC20_PROG_DB_PATH` at its database; the on-disk format is the same.
 
 ### Subcommands
 
@@ -117,16 +143,15 @@ opi-indexer [run | validate | brc20 <COMMAND>]
 
 `opi-indexer brc20` holds the BRC-20 light client and maintenance commands. It
 reads only brc20's environment, so it runs on light-client hosts.
-`event-str`, `trace-str` and `report` run alongside `run`; stop `run` before
-`reset`, `reorg`, `recalculate-hashes` and `reindex-extras`, which rewrite
-brc20 state.
+`event-str` runs alongside `run`. Every other command opens brc20-prog's
+database, which `run` holds, so stop `run` first; they fail with "brc20-prog's
+database at <path> is in use; stop `opi-indexer run` first" otherwise.
 
 | Command | Does |
 | --- | --- |
 | `brc20 light` | runs the BRC-20 light client until stopped; needs `OPERATION_MODE=light` |
 | `brc20 reset [--yes]` | deletes all BRC-20 data and starts fresh |
 | `brc20 reorg [--yes] <HEIGHT>` | rolls the BRC-20 state back to a block height |
-| `brc20 report <HEIGHT>` | reports the BRC-20 data of a block height to the OPI network |
 | `brc20 recalculate-hashes <FROM>` | recomputes the cumulative event hashes from a height to the latest indexed block |
 | `brc20 reindex-extras [--yes]` | rebuilds the extra tables from the indexed data; may take a long time |
 | `brc20 event-str <HEIGHT>` | prints the block event string at a height |
@@ -416,7 +441,7 @@ Copy `.env_sample` to `.env` in the repository root and fill it in, as described
 
 **Main Meta-Protocol Indexer / BRC-20, Bitmap, SNS and Runes Indexers**
 
-Set up and run the brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running opi-indexer with the `brc20` module.
+With the `brc20` module, set `BRC20_PROG_DB_PATH`; the brc20-prog engine runs inside `opi-indexer` and needs no separate server.
 
 ```bash
 target/release/opi-indexer run
@@ -485,8 +510,8 @@ index again.
 Dependencies track their latest releases, except:
 
 - `brc20-prog` (in `crates/opi-brc20`) stays within
-  `BRC20_PROG_VERSION_REQUIREMENT` (`~0.16.0`), which must match the brc20-prog
-  server the node runs.
+  `BRC20_PROG_VERSION_REQUIREMENT` (`~0.16.0`); `opi-indexer` links
+  brc20-prog as a library (`crates/opi-indexer` pins the same release).
 - `redb` stays at `=3.1.3`, ord's locked version (see above), although redb 4
   is released.
 - `bitcoin` follows ord's lock (0.32.102) rather than a 0.33 pre-release.

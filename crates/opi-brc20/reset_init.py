@@ -32,9 +32,8 @@ if init_env:
   REPORT_URL = existing.get("REPORT_URL") or "https://api.opi.network/report_block"
   REPORT_RETRIES = existing.get("REPORT_RETRIES") or "10"
   REPORT_NAME = existing.get("REPORT_NAME") or "opi_brc20_index"
-  BRC20_PROG_RPC_URL = existing.get("BRC20_PROG_RPC_URL") or "http://localhost:18545"
-  BRC20_PROG_RPC_USER = existing.get("BRC20_PROG_RPC_USER") or "user"
-  BRC20_PROG_RPC_PASSWORD = existing.get("BRC20_PROG_RPC_PASSWORD") or "password"
+  BRC20_PROG_DB_PATH = existing.get("BRC20_PROG_DB_PATH") or ""
+  BRC20_PROG_RPC_SERVER_URL = existing.get("BRC20_PROG_RPC_SERVER_URL") or "127.0.0.1:18545"
 
   print("Initialising .env file")
   print("leave blank to use default values")
@@ -89,16 +88,18 @@ if init_env:
     res = input("Report name (Default: " + REPORT_NAME + "): ")
     if res != '':
       REPORT_NAME = res
-  print('If brc20_prog sets BRC20_PROG_ADMIN_RPC_SERVER_URL, use the admin listener URL here (e.g. http://localhost:18546).')
-  res = input("BRC20 programmable module RPC URL (Default: " + BRC20_PROG_RPC_URL + "): ")
+  while True:
+    res = input("BRC20 programmable module database directory (required" + (", Default: " + BRC20_PROG_DB_PATH if BRC20_PROG_DB_PATH else "") + "): ")
+    if res != '':
+      BRC20_PROG_DB_PATH = res
+      break
+    elif BRC20_PROG_DB_PATH != '':
+      break
+    else:
+      print('Database directory cannot be empty')
+  res = input("BRC20 programmable module public RPC address (Default: " + BRC20_PROG_RPC_SERVER_URL + "): ")
   if res != '':
-    BRC20_PROG_RPC_URL = res
-  res = input("BRC20 programmable module RPC username (Default: " + BRC20_PROG_RPC_USER + "): ")
-  if res != '':
-    BRC20_PROG_RPC_USER = res
-  res = stdiomask.getpass("BRC20 programmable module RPC password (blank keeps the current one): ")
-  if res != '':
-    BRC20_PROG_RPC_PASSWORD = res
+    BRC20_PROG_RPC_SERVER_URL = res
 
   if not os.path.isfile(ENV_PATH):
     open(ENV_PATH, 'a').close()
@@ -115,9 +116,8 @@ if init_env:
     "REPORT_URL": REPORT_URL,
     "REPORT_RETRIES": REPORT_RETRIES,
     "REPORT_NAME": REPORT_NAME,
-    "BRC20_PROG_RPC_URL": BRC20_PROG_RPC_URL,
-    "BRC20_PROG_RPC_USER": BRC20_PROG_RPC_USER,
-    "BRC20_PROG_RPC_PASSWORD": BRC20_PROG_RPC_PASSWORD,
+    "BRC20_PROG_DB_PATH": BRC20_PROG_DB_PATH,
+    "BRC20_PROG_RPC_SERVER_URL": BRC20_PROG_RPC_SERVER_URL,
   }
   for key, value in settings.items():
     set_key(ENV_PATH, key, value, quote_mode='always')
