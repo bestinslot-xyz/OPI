@@ -16,7 +16,10 @@ use {
         js::JsValue,
         router,
     },
-    sqlx::{PgPool, postgres::PgPoolOptions},
+    sqlx::{
+        PgPool,
+        postgres::{PgConnectOptions, PgPoolOptions},
+    },
     std::{collections::HashMap, net::SocketAddr},
     tower::ServiceExt,
 };
@@ -88,19 +91,21 @@ pub fn not_found_page(path: &str) -> String {
 }
 
 /// A pool on the database the environment variable `var` names, with the
-/// server's session set up as [`opi_api::db::start_session`] does, or
-/// `None` (the test is skipped) when it is unset. The live tests only read.
+/// server's startup option `plan_cache_mode`, or `None` (the test is
+/// skipped) when it is unset. The live tests only read.
 pub fn live_pool(var: &str, max_connections: u32) -> Option<PgPool> {
     let Ok(url) = std::env::var(var) else {
         eprintln!("{var} is unset; skipping");
         return None;
     };
+    let options = url
+        .parse::<PgConnectOptions>()
+        .unwrap()
+        .options([("plan_cache_mode", opi_api::db::PLAN_CACHE_MODE)]);
     Some(
         PgPoolOptions::new()
             .max_connections(max_connections)
-            .after_connect(|connection, _| Box::pin(opi_api::db::start_session(connection)))
-            .connect_lazy(&url)
-            .unwrap(),
+            .connect_lazy_with(options),
     )
 }
 

@@ -9,7 +9,10 @@ use {
         params,
         pg_json::{ToJs, oid, text},
     },
-    sqlx::{PgPool, Row, postgres::PgPoolOptions},
+    sqlx::{
+        PgPool, Row,
+        postgres::{PgConnectOptions, PgPoolOptions},
+    },
 };
 
 fn pool(var: &str) -> Option<PgPool> {
@@ -151,6 +154,23 @@ async fn int_rules_answer_as_the_servers_own_int4in() {
             (server, ours) => panic!("{input:?}: server {server:?}, ours {:?}", ours.ok()),
         }
     }
+}
+
+#[tokio::test]
+async fn plan_cache_mode_reads_the_startup_option() {
+    let Ok(url) = std::env::var("OPI_API_TEST_DATABASE_URL") else {
+        eprintln!("OPI_API_TEST_DATABASE_URL is unset; skipping");
+        return;
+    };
+    let options: PgConnectOptions = url.parse().unwrap();
+    let with_option = options
+        .clone()
+        .options([("plan_cache_mode", opi_api::db::PLAN_CACHE_MODE)]);
+    let db = Db::from_pool(PgPoolOptions::new().connect_lazy_with(with_option));
+    assert_eq!(db.plan_cache_mode().await.unwrap(), "force_custom_plan");
+    // a connection that lost the option reports the server's own mode
+    let db = Db::from_pool(PgPoolOptions::new().connect_lazy_with(options));
+    assert_ne!(db.plan_cache_mode().await.unwrap(), "force_custom_plan");
 }
 
 #[tokio::test]

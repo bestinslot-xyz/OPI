@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select set_config('plan_cache_mode', 'force_custom_plan', false) as \"plan_cache_mode!\"",
+  "query": "SHOW plan_cache_mode",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "plan_cache_mode!",
+        "name": "plan_cache_mode",
         "type_info": "Text",
         "origin": "Expression"
       }
@@ -17,5 +17,5 @@
       null
     ]
   },
-  "hash": "b8fd64ca1efd9aed954313029409f13e3688dd8132e76426d93300dd5c896e09"
+  "hash": "70e9e66c09d5892759c566d4a290db47ba6435da968d3a2afaa013a9248ef3c7"
 }

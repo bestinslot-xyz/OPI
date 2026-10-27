@@ -421,6 +421,14 @@ request headers within 60 seconds. On SIGINT or SIGTERM it stops accepting
 connections, lets requests in flight finish for at most 10 seconds and exits.
 Responses carry no `X-Powered-By` and no `ETag`.
 
+The API needs Postgres 12 or newer: every connection starts with the startup
+option `plan_cache_mode=force_custom_plan`, which keeps the row order of
+queries without a full `ORDER BY`. A pooler that drops startup options (some
+PgBouncer setups) loses it; the API logs a warning at startup when a database
+runs another mode. `<MODULE>_SSL=true` encrypts the database connection
+without verifying the server certificate. An idle keep-alive connection closes
+at the same 60 second header-read timeout.
+
 The API only reads from the module databases, so give it a read-only database
 role (see `OPI_ENV_FILE` below for pointing it at its own env file).
 

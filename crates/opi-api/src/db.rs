@@ -8,6 +8,17 @@
 //! Postgres's input rules. Each result column maps to its node-pg JSON form
 //! through [`pg_json`](crate::pg_json).
 //!
+//! Every connection starts with the startup option
+//! `plan_cache_mode=force_custom_plan`, which needs Postgres 12 or newer.
+//! node-pg sends every query as an unnamed statement, which Postgres plans
+//! at each execution with that execution's parameter values. sqlx caches a
+//! named statement per connection, which Postgres may switch to a generic
+//! plan from its sixth execution on, and a query without a full ORDER BY
+//! (a GROUP BY, say) then lists its rows in another order. Custom plans keep
+//! node-pg's planning for every statement. A pooler that drops startup
+//! options loses this; [`Db::plan_cache_mode`] reads the effective value so
+//! the server can warn about it.
+//!
 //! sqlx sets the session `TimeZone` to UTC when it connects, where node-pg
 //! keeps the server's default. A timestamptz still reaches the client as
 //! the same instant: binary values carry no zone, and a timestamptz cast to
@@ -20,7 +31,7 @@ use {
     crate::{config::DbConfig, config::Module, js::JsValue, params::IntRules, pg_json::ToJs},
     anyhow::{Result, anyhow},
     sqlx::{
-        PgConnection, PgPool,
+        PgPool,
         postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
     },
     std::{sync::Arc, time::Duration},
@@ -32,22 +43,8 @@ mod tests;
 
 type FakeHeights = dyn Fn(Module) -> Result<JsValue> + Send + Sync;
 
-/// Sets up a new pooled connection's session to plan as node-pg's do.
-///
-/// node-pg sends every query as an unnamed statement, which Postgres plans
-/// at each execution with that execution's parameter values. sqlx caches a
-/// named statement per connection, which Postgres may switch to a generic
-/// plan from its sixth execution on, and a query without a full ORDER BY
-/// (a GROUP BY, say) then lists its rows in another order. Forcing custom
-/// plans keeps node-pg's planning for every statement.
-pub async fn start_session(connection: &mut PgConnection) -> sqlx::Result<()> {
-    sqlx::query_scalar!(
-        r#"select set_config('plan_cache_mode', 'force_custom_plan', false) as "plan_cache_mode!""#
-    )
-    .fetch_one(connection)
-    .await?;
-    Ok(())
-}
+/// The `plan_cache_mode` every connection starts with.
+pub const PLAN_CACHE_MODE: &str = "force_custom_plan";
 
 /// A module's database: a Postgres pool, or a test double that answers
 /// only [`Db::latest_block_height`].
@@ -74,8 +71,8 @@ impl Db {
             .host(&config.host)
             .username(&config.user)
             .database(&config.database)
-            // ssl: true is TLS without certificate checks, as the Node API
-            // ran with NODE_TLS_REJECT_UNAUTHORIZED=0
+            // ssl: true encrypts without verifying the server certificate,
+            // which matches node-pg with NODE_TLS_REJECT_UNAUTHORIZED=0
             .ssl_mode(if config.ssl {
                 PgSslMode::Require
             } else {
@@ -83,7 +80,8 @@ impl Db {
             })
             // node-pg leaves extra_float_digits at the server's setting,
             // which shapes the float text of a `::text` cast
-            .extra_float_digits(None);
+            .extra_float_digits(None)
+            .options([("plan_cache_mode", PLAN_CACHE_MODE)]);
         if let Some(port) = config.pg_port()? {
             options = options.port(port);
         }
@@ -94,7 +92,6 @@ impl Db {
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections()?)
             .acquire_timeout(Duration::from_millis(config.connection_timeout_ms))
-            .after_connect(|connection, _| Box::pin(start_session(connection)))
             .connect_lazy_with(options);
         Ok(Db::from_pool(pool))
     }
@@ -129,6 +126,20 @@ impl Db {
             })
             .await?;
         Ok(*rules)
+    }
+
+    /// The `plan_cache_mode` a pooled connection runs with (`SHOW
+    /// plan_cache_mode`). A test double answers the mode every connection
+    /// is meant to start with.
+    pub async fn plan_cache_mode(&self) -> Result<String> {
+        let pool = match &*self.inner {
+            Inner::Fake(_) => return Ok(PLAN_CACHE_MODE.to_string()),
+            Inner::Pg { pool, .. } => pool,
+        };
+        let mode = sqlx::query_scalar!("SHOW plan_cache_mode")
+            .fetch_one(pool)
+            .await?;
+        mode.ok_or_else(|| anyhow!("SHOW plan_cache_mode returned null"))
     }
 
     /// A test double: `heights(module)` answers

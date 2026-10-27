@@ -87,6 +87,17 @@ pub async fn serve(
                 Ok(rules) => tracing::info!("{} database: {rules:?} integer input", module.name()),
                 Err(err) => tracing::warn!("{} database: {err:#}", module.name()),
             }
+            // a pooler in front of Postgres may drop the startup option
+            // that forces custom plans
+            match db.plan_cache_mode().await {
+                Ok(mode) if mode == db::PLAN_CACHE_MODE => {}
+                Ok(mode) => tracing::warn!(
+                    "{} database: plan_cache_mode is {mode:?}, not {:?}; rows of queries without a full ORDER BY may list in another order than node-pg's",
+                    module.name(),
+                    db::PLAN_CACHE_MODE
+                ),
+                Err(err) => tracing::warn!("{} database: {err:#}", module.name()),
+            }
         });
     }
     let app = router(&config, dbs);
