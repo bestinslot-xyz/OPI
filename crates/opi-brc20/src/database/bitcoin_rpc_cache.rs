@@ -20,6 +20,27 @@ pub struct BitcoinRpcResultRecord {
 /// never held across an await, so neither side can block the other.
 pub type BitcoinRpcBuffer = Arc<Mutex<HashMap<serde_json::Value, BitcoinRpcResultRecord>>>;
 
+/// A copy of the buffered results, for a commit to write.
+pub(crate) fn snapshot_buffer(
+    buffer: &BitcoinRpcBuffer,
+) -> Vec<(serde_json::Value, BitcoinRpcResultRecord)> {
+    buffer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(|(request, record)| (request.clone(), record.clone()))
+        .collect()
+}
+
+/// Drops the results a commit wrote. A result buffered after the snapshot
+/// stays for the next commit.
+pub(crate) fn remove_committed(buffer: &BitcoinRpcBuffer, requests: &[serde_json::Value]) {
+    let mut buffered = buffer.lock().unwrap_or_else(PoisonError::into_inner);
+    for request in requests {
+        buffered.remove(request);
+    }
+}
+
 /// The Bitcoin RPC result cache: a buffer of uncommitted results in front of
 /// the `brc20_bitcoin_rpc_result_cache` table.
 ///
@@ -212,4 +233,42 @@ async fn select_cached_response(
     .fetch_optional(pool)
     .await?
     .map(|row| row.response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(method: &str) -> BitcoinRpcResultRecord {
+        BitcoinRpcResultRecord {
+            method: method.to_string(),
+            response: serde_json::json!({ "result": 1 }),
+            block_height: 7,
+        }
+    }
+
+    #[test]
+    fn committed_results_leave_the_buffer_and_later_ones_stay() {
+        let buffer = BitcoinRpcBuffer::default();
+        let first = serde_json::json!({ "method": "getblockcount" });
+        let later = serde_json::json!({ "method": "getbestblockhash" });
+        buffer.lock().unwrap().insert(first.clone(), record("a"));
+
+        let snapshot = snapshot_buffer(&buffer);
+        let written: Vec<_> = snapshot
+            .iter()
+            .map(|(request, _)| request.clone())
+            .collect();
+        assert_eq!(written, vec![first.clone()]);
+
+        // Until the commit succeeds the result stays visible to the proxy.
+        assert!(buffer.lock().unwrap().contains_key(&first));
+
+        // A result buffered while the commit ran survives it.
+        buffer.lock().unwrap().insert(later.clone(), record("b"));
+        remove_committed(&buffer, &written);
+        let buffered = buffer.lock().unwrap();
+        assert!(!buffered.contains_key(&first));
+        assert!(buffered.contains_key(&later));
+    }
 }

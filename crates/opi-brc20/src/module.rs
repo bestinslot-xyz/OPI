@@ -262,8 +262,8 @@ type Job = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
 ///
 /// The indexer's futures hold `Box<dyn Error>` values across awaits, so they
 /// are not `Send` and run as local tasks on a current-thread runtime. One
-/// thread serves every instance, so brc20's database pool and the Bitcoin RPC
-/// proxy always live on the runtime that created them.
+/// thread serves every instance, so brc20's database pool always lives on the
+/// runtime that created it.
 fn spawn_on_brc20_thread(job: Job) {
     static JOBS: OnceLock<mpsc::UnboundedSender<Job>> = OnceLock::new();
     JOBS.get_or_init(|| {

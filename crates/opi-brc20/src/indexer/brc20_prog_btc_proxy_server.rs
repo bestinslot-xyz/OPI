@@ -7,7 +7,6 @@ use axum::{
 };
 use reqwest::Client;
 use std::net::SocketAddr;
-use std::sync::LazyLock;
 
 use crate::{
     config::Brc20IndexerConfig,
@@ -29,6 +28,12 @@ pub async fn run_bitcoin_proxy_server(config: Brc20IndexerConfig, buffer: Bitcoi
         config.bitcoin_rpc_cache_enabled,
         config.first_inscription_height,
     );
+    // Built here so its pooled connections belong to this runtime, which a
+    // module restart replaces.
+    let upstream = Upstream {
+        cache,
+        client: Client::new(),
+    };
     let app = Router::new().route(
         "/",
         any(move |method, uri, req| {
@@ -39,7 +44,7 @@ pub async fn run_bitcoin_proxy_server(config: Brc20IndexerConfig, buffer: Bitcoi
                 bitcoin_rpc_url.clone(),
                 light_client_mode,
                 network_type.clone(),
-                cache.clone(),
+                upstream.clone(),
             )
         }),
     );
@@ -57,6 +62,14 @@ pub async fn run_bitcoin_proxy_server(config: Brc20IndexerConfig, buffer: Bitcoi
         .unwrap();
 }
 
+/// What a request reads and forwards through. Both belong to the runtime that
+/// serves the proxy: their pooled connections cannot outlive it.
+#[derive(Clone)]
+struct Upstream {
+    cache: BitcoinRpcCache,
+    client: Client,
+}
+
 async fn proxy(
     method: Method,
     OriginalUri(uri): OriginalUri,
@@ -64,9 +77,9 @@ async fn proxy(
     bitcoin_rpc_url: String,
     light_client_mode: bool,
     network_type: String,
-    cache: BitcoinRpcCache,
+    upstream: Upstream,
 ) -> Response {
-    static CLIENT: LazyLock<Client> = LazyLock::new(Client::new);
+    let Upstream { cache, client } = upstream;
     if method != Method::POST {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
@@ -114,7 +127,7 @@ async fn proxy(
         uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("")
     );
 
-    let forwarded = CLIENT
+    let forwarded = client
         .post(&target_uri)
         .body(body.clone())
         .headers(headers)
@@ -127,9 +140,7 @@ async fn proxy(
             let headers = resp.headers().clone();
             let response_bytes = resp.bytes().await.unwrap();
 
-            #[allow(clippy::redundant_pattern_matching)]
-            // keeps the database guard's drop order unchanged
-            if let Err(_) = cache.cache(&body, &response_bytes).await {
+            if cache.cache(&body, &response_bytes).await.is_err() {
                 tracing::error!("Failed to cache Bitcoin RPC request");
                 return StatusCode::BAD_GATEWAY.into_response();
             }

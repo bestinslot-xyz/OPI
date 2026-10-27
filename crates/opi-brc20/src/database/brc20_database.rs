@@ -18,7 +18,9 @@ use serde_json::json;
 use sqlx::{AssertSqlSafe, Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
 use tokio::sync::Mutex;
 
-use super::bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache};
+use super::bitcoin_rpc_cache::{
+    BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer,
+};
 use crate::{
     config::{
         Brc20IndexerConfig, EVENT_HASH_VERSION, EVENT_SEPARATOR, INDEXER_VERSION,
@@ -1717,16 +1719,11 @@ impl Brc20Database {
         let mut all_requests = Vec::new();
         let mut all_responses = Vec::new();
         let mut all_block_heights = Vec::new();
-        {
-            let inserts = bitcoin_rpc_buffer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (request, result) in inserts.iter() {
-                all_requests.push(request.clone());
-                all_methods.push(result.method.clone());
-                all_responses.push(result.response.clone());
-                all_block_heights.push(result.block_height);
-            }
+        for (request, result) in snapshot_buffer(&bitcoin_rpc_buffer) {
+            all_requests.push(request);
+            all_methods.push(result.method);
+            all_responses.push(result.response);
+            all_block_heights.push(result.block_height);
         }
         if !all_requests.is_empty() {
             sqlx::query!(
@@ -1739,13 +1736,6 @@ impl Brc20Database {
             )
             .execute(&mut *tx)
             .await?;
-
-            let mut inserts = bitcoin_rpc_buffer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for request in &all_requests {
-                inserts.remove(request);
-            }
         }
 
         if !self.balance_updates.is_empty() {
@@ -1784,6 +1774,9 @@ impl Brc20Database {
         }
 
         tx.commit().await?;
+        // The buffered results stay visible to the proxy until their rows are
+        // committed.
+        remove_committed(&bitcoin_rpc_buffer, &all_requests);
         Ok(())
     }
 
