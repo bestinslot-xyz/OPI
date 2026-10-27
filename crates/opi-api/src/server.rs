@@ -15,6 +15,11 @@ use {
     tower::ServiceExt,
 };
 
+/// The largest request head (request line and headers) a request may send.
+const MAX_HEADER_SIZE: usize = 16 * 1024;
+/// The most headers a request may send.
+const MAX_HEADERS: usize = 2000;
+
 pub struct ServeOptions {
     /// How long a client has to send a request's headers, from the moment
     /// the server starts waiting for them (on a new connection, as it is
@@ -47,7 +52,11 @@ pub async fn serve_listener(
     let mut builder = http1::Builder::new();
     builder
         .timer(TokioTimer::new())
-        .header_read_timeout(options.header_read_timeout);
+        .header_read_timeout(options.header_read_timeout)
+        // node's request head cap: a larger head answers 431 and closes
+        .max_header_size(MAX_HEADER_SIZE)
+        // node accepts up to 2000 headers
+        .max_headers(MAX_HEADERS);
     let graceful = GracefulShutdown::new();
     tokio::pin!(shutdown);
     loop {

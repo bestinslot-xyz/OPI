@@ -221,6 +221,56 @@ async fn shutdown_gives_up_on_a_stuck_request_after_the_grace_period() {
     assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
 }
 
+fn request_with(extra_headers: &str) -> Vec<u8> {
+    format!("GET /fast HTTP/1.1\r\nhost: x\r\nconnection: close\r\n{extra_headers}\r\n")
+        .into_bytes()
+}
+
+#[tokio::test]
+async fn a_request_head_over_16_kb_answers_431_and_one_under_it_is_served() {
+    let mut server = start(ServeOptions::default()).await;
+    let big = format!("x-big: {}\r\n", "a".repeat(17 * 1024));
+    let (_, text) = closed_after(server.addr, &request_with(&big)).await;
+    assert!(text.starts_with("HTTP/1.1 431"), "{text}");
+    let ok = format!("x-big: {}\r\n", "a".repeat(15 * 1024));
+    let (_, text) = closed_after(server.addr, &request_with(&ok)).await;
+    assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+    server.stop.take().unwrap().send(()).unwrap();
+    server.done.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_request_with_1500_headers_is_served() {
+    let mut server = start(ServeOptions::default()).await;
+    let many: String = (0..1500).map(|i| format!("h{i}:1\r\n")).collect();
+    let (_, text) = closed_after(server.addr, &request_with(&many)).await;
+    assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+    server.stop.take().unwrap().send(()).unwrap();
+    server.done.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn an_idle_keep_alive_connection_is_closed_after_the_header_read_timeout() {
+    let mut server = start(ServeOptions {
+        header_read_timeout: Duration::from_millis(400),
+        ..ServeOptions::default()
+    })
+    .await;
+    let mut stream = send_request(server.addr, "/fast").await;
+    let answer = read_all(&mut stream).await;
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let answered = Instant::now();
+    let mut buf = [0; 64];
+    let closed = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("the server closes the idle connection");
+    assert!(matches!(closed, Ok(0) | Err(_)), "{closed:?}");
+    let idle = answered.elapsed();
+    assert!(idle >= Duration::from_millis(300), "{idle:?}");
+    server.stop.take().unwrap().send(()).unwrap();
+    server.done.await.unwrap().unwrap();
+}
+
 #[test]
 fn the_defaults_are_60_s_and_10_s() {
     let options = ServeOptions::default();

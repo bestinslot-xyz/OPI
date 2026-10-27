@@ -8,7 +8,7 @@ anyhow = "1"
 axum = "0.8.9"
 dotenvy = "0.15"
 futures = "0.3"
-hyper = { version = "1", features = ["http1", "server"] }
+hyper = { version = "1.12", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server-graceful", "tokio"] }
 jiff = "0.2"
 sha2 = "0.10"
