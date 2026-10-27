@@ -77,14 +77,14 @@ directory, so run `opi-indexer` from there) or export the variables.
 | `RUST_LOG` | log filter, default `info` |
 
 `opi-indexer` reads one `.env`, from its working directory. brc20's own
-variables (`DB_*`, `OPERATION_MODE`, `BRC20_PROG_*`, `BITCOIN_RPC_PROXY_*`, ...)
+variables (`DB_*`, `OPERATION_MODE`, `BRC20_PROG_*`, `BITCOIN_RPC_CACHE_ENABLED`, ...)
 live in that same file; `.env_sample` lists them. Set `DB_DATABASE` to brc20's
 own database, not `postgres`. brc20 runs in full mode (`OPERATION_MODE=full`).
 All enabled modules' settings are read and checked before the source starts, so
 a missing or invalid one fails the start.
 
-`BITCOIN_RPC_URL` is one variable shared by the source and brc20's Bitcoin RPC
-proxy; set it once.
+`BITCOIN_RPC_URL` and the bitcoind credentials are shared by the source and
+brc20's engine lookups; set them once.
 
 ### Build
 
@@ -131,16 +131,27 @@ makes the engine fail to open. The engine reads its remaining settings from
 brc20-prog's own variables (`EVM_CALL_GAS_LIMIT`, request limits; see
 brc20-prog's configuration docs).
 
-The engine's Bitcoin RPC endpoint is the Bitcoin RPC proxy
-(`BITCOIN_RPC_PROXY_SERVER_ADDR`) when `BITCOIN_RPC_PROXY_SERVER_ENABLED=true`
-(the code default is `false`; `.env_sample` sets `true`). The proxy
-authenticates to bitcoind at `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and
-`BITCOIN_RPC_PASSWD`, or with `BITCOIN_RPC_COOKIE`, which it re-reads on every
-request. With the proxy off the engine calls `BITCOIN_RPC_URL` itself and needs
-`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`. Light mode needs the proxy on.
+The engine gets its Bitcoin data in process, through the indexer, with no
+Bitcoin RPC proxy and no extra port. A lookup reads the Bitcoin RPC cache first
+when `BITCOIN_RPC_CACHE_ENABLED=true` (an in-memory buffer, then the Postgres
+table; the code default is `false`, `.env_sample` sets `true`). In full mode a
+miss goes to bitcoind at `BITCOIN_RPC_URL`, authenticated with
+`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or with `BITCOIN_RPC_COOKIE`, which
+is re-read on every request. Full mode requires one of the two credentials; the
+config check fails otherwise. Light mode needs no bitcoind and no Bitcoin
+credentials: it answers from the cache alone, and the network comes from
+`NETWORK_TYPE`.
 
-The network and chain id follow `NETWORK_TYPE`. brc20-prog's own
-`BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_NETWORK` have no effect.
+The cache stores successful answers and `getrawtransaction` "not found" (-5)
+answers. Only the indexer's own lookups write it; public `eth_call`s read it. A
+lookup gives up after 60 seconds, and the engine retries a failed lookup 5 times
+before it panics, which stops the process (see below).
+
+The network and chain id follow `NETWORK_TYPE`. brc20-prog's own Bitcoin
+variables (`BITCOIN_RPC_URL`, `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD` and
+`BITCOIN_RPC_NETWORK` as brc20-prog reads them) are not used for Bitcoin data.
+An `.env` that still sets `BITCOIN_RPC_PROXY_SERVER_ENABLED` or
+`BITCOIN_RPC_PROXY_SERVER_ADDR` has them ignored; remove them.
 
 A panic on the brc20 thread or in the engine's public JSON-RPC server stops the
 whole process, since the engine may be left mid-write. Run `opi-indexer` under a
@@ -159,7 +170,10 @@ opi-indexer [run | validate | brc20 <COMMAND>]
 reads only brc20's environment, so it runs on light-client hosts.
 `event-str` runs alongside `run`. Every other command opens brc20-prog's
 database, which `run` holds, so stop `run` first; they fail with "brc20-prog's
-database at <path> is in use; stop `opi-indexer run` first" otherwise.
+database at <path> is in use; stop `opi-indexer run` first" otherwise. In full
+mode these commands read Bitcoin data like `run` does, so the `.env` carries the
+same bitcoind credentials (`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or
+`BITCOIN_RPC_COOKIE`).
 
 | Command | Does |
 | --- | --- |
