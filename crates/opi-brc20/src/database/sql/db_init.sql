@@ -2,6 +2,7 @@ CREATE TABLE public.brc20_block_hashes (
 	id bigserial NOT NULL,
 	block_height int4 NOT NULL,
 	block_hash text NOT NULL,
+	block_time int8,
 	CONSTRAINT brc20_block_hashes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_block_hashes_block_height_idx ON public.brc20_block_hashes USING btree (block_height);

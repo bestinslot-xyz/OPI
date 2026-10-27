@@ -103,6 +103,19 @@ impl Brc20Indexer {
         self.install_bitcoin_rpc_buffer().await;
         get_brc20_database().lock().await.init().await?;
 
+        // Rows indexed before block times were stored get theirs from the
+        // journal's headers, before indexing resumes.
+        if let Some(journal) = &self.journal {
+            let filled = get_brc20_database()
+                .lock()
+                .await
+                .fill_block_times(journal.as_ref(), crate::database::block_time::FILL_BATCH)
+                .await?;
+            if filled > 0 {
+                tracing::info!("Filled block_time of {filled} block(s) from the journal");
+            }
+        }
+
         tracing::info!(
             "OPI Block Height: {}",
             get_brc20_database()
@@ -526,7 +539,12 @@ impl Brc20Indexer {
             get_brc20_database()
                 .lock()
                 .await
-                .set_block_hashes(next_block, &block_hash, block_traces_hash.as_str())
+                .set_block_hashes(
+                    next_block,
+                    &block_hash,
+                    block_traces_hash.as_str(),
+                    (block_time != 0).then_some(block_time),
+                )
                 .await?;
             stop_timer(&set_block_hashes_timer).await;
 
@@ -707,7 +725,12 @@ impl Brc20Indexer {
         get_brc20_database()
             .lock()
             .await
-            .set_block_hashes(next_block, block_hash, block_traces_hash.as_str())
+            .set_block_hashes(
+                next_block,
+                block_hash,
+                block_traces_hash.as_str(),
+                (block_time != 0).then_some(block_time),
+            )
             .await?;
         stop_timer(&set_block_hashes_timer).await;
 

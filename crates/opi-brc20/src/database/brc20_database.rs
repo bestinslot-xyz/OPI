@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 
 use super::{
     bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer},
-    evm_addresses,
+    block_time, evm_addresses,
 };
 use crate::{
     config::{
@@ -296,6 +296,8 @@ impl Brc20Database {
                 .await?;
         }
 
+        block_time::add_column_if_missing(&self.client).await?;
+
         evm_addresses::create_and_fill_if_missing(
             &self.client,
             self.network,
@@ -565,6 +567,7 @@ impl Brc20Database {
         block_height: i32,
         block_hash: &str,
         block_traces_hash: &str,
+        block_time: Option<i64>,
     ) -> Result<(), Box<dyn Error>> {
         let mut tx = self.client.begin().await?;
 
@@ -574,11 +577,12 @@ impl Brc20Database {
             block_hash
         );
 
-        // Set block hash for the given block height
+        // Set block hash and time for the given block height
         sqlx::query!(
-            "INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES ($1, $2)",
+            "INSERT INTO brc20_block_hashes (block_height, block_hash, block_time) VALUES ($1, $2, $3)",
             block_height,
-            block_hash
+            block_hash,
+            block_time
         )
         .execute(&mut *tx)
         .await?;
