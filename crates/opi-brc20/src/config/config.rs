@@ -1,4 +1,5 @@
 use bitcoin::network::Network;
+use brc20_prog::Brc20ProgConfig;
 use std::collections::HashMap;
 
 lazy_static::lazy_static! {
@@ -258,6 +259,66 @@ fn get_bitcoin_network_type(network_type: &str) -> Network {
     }
 }
 
+pub const BRC20_PROG_DB_PATH_KEY: &str = "BRC20_PROG_DB_PATH";
+pub const BRC20_PROG_RPC_SERVER_ENABLED_KEY: &str = "BRC20_PROG_RPC_SERVER_ENABLED";
+pub const BITCOIN_RPC_USER_KEY: &str = "BITCOIN_RPC_USER";
+pub const BITCOIN_RPC_PASSWD_KEY: &str = "BITCOIN_RPC_PASSWD";
+
+/// Chain id brc20-prog uses on mainnet ("BRC20" in hex).
+const BRC20_PROG_CHAIN_ID_MAINNET: u64 = 0x4252433230;
+/// Chain id brc20-prog uses on every other network ("BRC20s" in hex).
+const BRC20_PROG_CHAIN_ID_TESTNETS: u64 = 0x425243323073;
+
+/// Whether the embedded engine serves its public JSON-RPC. On unless set to `false`.
+fn parse_rpc_server_enabled(value: Option<&str>) -> bool {
+    value != Some("false")
+}
+
+/// Applies the settings opi-indexer owns to the engine config `base`
+/// (normally `Brc20ProgConfig::from_env()`):
+///
+/// - `db_path` comes from the required `BRC20_PROG_DB_PATH`.
+/// - `bitcoin_rpc_network` and `chain_id` follow `network_type` (the `NETWORK_TYPE`
+///   value): `mainnet` maps to `bitcoin` and the mainnet chain id, every other
+///   network keeps its name and takes the testnets chain id.
+/// - `bitcoin_rpc_url` is the Bitcoin RPC proxy when `proxy_addr` is set (no
+///   credentials), otherwise `bitcoin_rpc_url` with `BITCOIN_RPC_USER` and
+///   `BITCOIN_RPC_PASSWD`.
+fn apply_engine_settings(
+    mut base: Brc20ProgConfig,
+    get: impl Fn(&str) -> Option<String>,
+    network_type: &str,
+    proxy_addr: Option<&str>,
+    bitcoin_rpc_url: &str,
+) -> anyhow::Result<Brc20ProgConfig> {
+    base.db_path = get(BRC20_PROG_DB_PATH_KEY)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{BRC20_PROG_DB_PATH_KEY} is not set"))?;
+
+    if network_type == "mainnet" {
+        base.bitcoin_rpc_network = "bitcoin".to_string();
+        base.chain_id = BRC20_PROG_CHAIN_ID_MAINNET;
+    } else {
+        base.bitcoin_rpc_network = network_type.to_string();
+        base.chain_id = BRC20_PROG_CHAIN_ID_TESTNETS;
+    }
+
+    match proxy_addr {
+        Some(addr) => {
+            base.bitcoin_rpc_url = format!("http://{addr}");
+            base.bitcoin_rpc_user = String::new();
+            base.bitcoin_rpc_password = String::new();
+        }
+        None => {
+            base.bitcoin_rpc_url = bitcoin_rpc_url.to_string();
+            base.bitcoin_rpc_user = get(BITCOIN_RPC_USER_KEY).unwrap_or_default();
+            base.bitcoin_rpc_password = get(BITCOIN_RPC_PASSWD_KEY).unwrap_or_default();
+        }
+    }
+
+    Ok(base)
+}
+
 pub struct Brc20IndexerConfig {
     pub light_client_mode: bool,
     pub save_logs: bool,
@@ -302,11 +363,31 @@ pub struct Brc20IndexerConfig {
 
     pub brc20_prog_bitcoin_rpc_proxy_server_enabled: bool,
     pub brc20_prog_bitcoin_rpc_proxy_server_addr: String,
+    /// Whether the embedded engine serves its public JSON-RPC (`BRC20_PROG_RPC_SERVER_ENABLED`).
+    pub brc20_prog_rpc_server_enabled: bool,
 
     pub bitcoin_rpc_cache_enabled: bool,
     pub bitcoin_rpc_url: String,
 
     pub height_limit: i32,
+}
+
+impl Brc20IndexerConfig {
+    /// Builds the embedded engine's config from brc20-prog's own environment
+    /// variables plus the settings opi-indexer owns (see `apply_engine_settings`).
+    /// Errors when `BRC20_PROG_DB_PATH` is not set.
+    pub fn brc20_prog_config(&self) -> anyhow::Result<Brc20ProgConfig> {
+        let proxy_addr = self
+            .brc20_prog_bitcoin_rpc_proxy_server_enabled
+            .then_some(self.brc20_prog_bitcoin_rpc_proxy_server_addr.as_str());
+        apply_engine_settings(
+            Brc20ProgConfig::from_env(),
+            |key| std::env::var(key).ok(),
+            &self.network_type_string,
+            proxy_addr,
+            &self.bitcoin_rpc_url,
+        )
+    }
 }
 
 impl Default for Brc20IndexerConfig {
@@ -402,6 +483,11 @@ impl Default for Brc20IndexerConfig {
                 BITCOIN_RPC_PROXY_SERVER_ADDR_KEY,
             )
             .unwrap_or_else(|_| BITCOIN_RPC_PROXY_SERVER_ADDR_DEFAULT.to_string()),
+            brc20_prog_rpc_server_enabled: parse_rpc_server_enabled(
+                std::env::var(BRC20_PROG_RPC_SERVER_ENABLED_KEY)
+                    .ok()
+                    .as_deref(),
+            ),
 
             bitcoin_rpc_url: std::env::var(BITCOIN_RPC_URL_KEY)
                 .unwrap_or_else(|_| BITCOIN_RPC_URL_DEFAULT.to_string()),
@@ -414,5 +500,105 @@ impl Default for Brc20IndexerConfig {
                 .parse::<i32>()
                 .unwrap_or(HEIGHT_LIMIT_DEFAULT),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |key| map.get(key).cloned()
+    }
+
+    fn engine(
+        pairs: &[(&str, &str)],
+        network: &str,
+        proxy_addr: Option<&str>,
+    ) -> anyhow::Result<Brc20ProgConfig> {
+        apply_engine_settings(
+            Brc20ProgConfig::default(),
+            vars(pairs),
+            network,
+            proxy_addr,
+            "http://btc:8332",
+        )
+    }
+
+    const DB: (&str, &str) = (BRC20_PROG_DB_PATH_KEY, "/data/prog");
+
+    #[test]
+    fn mainnet_maps_to_bitcoin_and_mainnet_chain_id() {
+        let config = engine(&[DB], "mainnet", None).unwrap();
+        assert_eq!(config.bitcoin_rpc_network, "bitcoin");
+        assert_eq!(config.chain_id, 0x4252433230);
+    }
+
+    #[test]
+    fn other_networks_keep_name_and_use_testnets_chain_id() {
+        for network in ["signet", "testnet", "testnet4", "regtest"] {
+            let config = engine(&[DB], network, None).unwrap();
+            assert_eq!(config.bitcoin_rpc_network, network);
+            assert_eq!(config.chain_id, 0x425243323073, "{network}");
+        }
+    }
+
+    #[test]
+    fn proxy_enabled_points_at_proxy_without_credentials() {
+        let config = engine(
+            &[
+                DB,
+                (BITCOIN_RPC_USER_KEY, "u"),
+                (BITCOIN_RPC_PASSWD_KEY, "p"),
+            ],
+            "signet",
+            Some("127.0.0.1:18547"),
+        )
+        .unwrap();
+        assert_eq!(config.bitcoin_rpc_url, "http://127.0.0.1:18547");
+        assert_eq!(config.bitcoin_rpc_user, "");
+        assert_eq!(config.bitcoin_rpc_password, "");
+    }
+
+    #[test]
+    fn proxy_disabled_uses_bitcoin_rpc_url_and_credentials() {
+        let config = engine(
+            &[
+                DB,
+                (BITCOIN_RPC_USER_KEY, "u"),
+                (BITCOIN_RPC_PASSWD_KEY, "p"),
+            ],
+            "signet",
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.bitcoin_rpc_url, "http://btc:8332");
+        assert_eq!(config.bitcoin_rpc_user, "u");
+        assert_eq!(config.bitcoin_rpc_password, "p");
+    }
+
+    #[test]
+    fn db_path_is_taken_from_env() {
+        let config = engine(&[DB], "signet", None).unwrap();
+        assert_eq!(config.db_path, "/data/prog");
+    }
+
+    #[test]
+    fn missing_or_empty_db_path_errors() {
+        let err = engine(&[], "signet", None).unwrap_err();
+        assert!(err.to_string().contains("BRC20_PROG_DB_PATH"));
+        assert!(engine(&[(BRC20_PROG_DB_PATH_KEY, "")], "signet", None).is_err());
+    }
+
+    #[test]
+    fn rpc_server_enabled_defaults_to_true() {
+        assert!(parse_rpc_server_enabled(None));
+        assert!(parse_rpc_server_enabled(Some("true")));
+        assert!(parse_rpc_server_enabled(Some("")));
+        assert!(!parse_rpc_server_enabled(Some("false")));
     }
 }

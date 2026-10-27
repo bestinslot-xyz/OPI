@@ -10,7 +10,7 @@ axum = "0.8.9"
 axum-server = "0.8.0"
 base64 = "0.23.1"
 bitcoin = "0.32.102"
-brc20-prog = { version = "0.16.3", default-features = false }
+brc20-prog = "0.16.5"
 hex = "0.4.3"
 jsonrpsee = { version = "0.26.1", features = ["client", "http-client", "tokio"] }
 lazy_static = "1.5.1"
