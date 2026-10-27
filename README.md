@@ -476,6 +476,8 @@ python3 tools/parity/api_compare.py --brc20 http://127.0.0.1:8000 --bitmap http:
   --sns http://127.0.0.1:8002 --runes http://127.0.0.1:8003 --new http://127.0.0.1:8010
 ```
 
+`tools/parity/brc20_hash_compare.py --a <postgres url> --b <postgres url>` compares the event hash, cumulative event hash, trace hash and cumulative trace hash of two brc20 databases at every common height (exit 0 equal, 1 difference, 2 usage or database error).
+
 # Update
 
 - Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
