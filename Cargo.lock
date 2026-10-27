@@ -5065,6 +5065,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "futures",
+ "jsonrpsee",
  "opi-bitmap",
  "opi-brc20",
  "opi-core",

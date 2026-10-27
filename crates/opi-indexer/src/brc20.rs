@@ -3,9 +3,9 @@
 //! These commands read only brc20's own environment
 //! (`Brc20IndexerConfig::default()`). They never load the shared `Config`
 //! or open the journal, so they run on a light-client host with no `OPI_*`
-//! settings. `event-str`, `trace-str` and `report` run alongside a running
-//! `opi-indexer run`; `run` must be stopped before `reset`, `reorg`,
-//! `recalculate-hashes` and `reindex-extras`, which rewrite brc20 state.
+//! settings. `event-str` and `report` read only Postgres and run alongside a
+//! running `opi-indexer run`. Every other command opens brc20-prog's database,
+//! which one process holds at a time, so `run` must be stopped first.
 
 use {
     anyhow::{Result, anyhow, bail},
@@ -13,7 +13,7 @@ use {
     opi_brc20::{
         config::Brc20IndexerConfig,
         database::{Brc20Database, get_brc20_database, set_brc20_database},
-        indexer::Brc20Indexer,
+        indexer::{Brc20Indexer, report_block_from_journal},
     },
     std::{
         io::{self, BufRead, Write},
@@ -39,6 +39,7 @@ pub struct Confirm {
 #[derive(Subcommand)]
 pub enum Command {
     /// Run the BRC-20 light client until stopped. Requires OPERATION_MODE=light.
+    /// Stop `run` first.
     Light,
     /// Delete all BRC-20 data and start fresh. Stop `run` first.
     Reset(Confirm),
@@ -49,7 +50,8 @@ pub enum Command {
         #[command(flatten)]
         confirm: Confirm,
     },
-    /// Report the BRC-20 data of a block height to the OPI network.
+    /// Report the BRC-20 data of a block height to the OPI network. Runs
+    /// alongside `run`.
     Report {
         /// Block height to report.
         height: i32,
@@ -63,12 +65,12 @@ pub enum Command {
     /// Rebuild the extra tables from the indexed data. May take a long time.
     /// Stop `run` first.
     ReindexExtras(Confirm),
-    /// Print the block event string at a height.
+    /// Print the block event string at a height. Runs alongside `run`.
     EventStr {
         /// Block height.
         height: i32,
     },
-    /// Print the block trace string at a height.
+    /// Print the block trace string at a height. Stop `run` first.
     TraceStr {
         /// Block height.
         height: i32,
@@ -119,9 +121,42 @@ pub fn run(args: Args) -> Result<()> {
 // keeps the message.
 async fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
+    // `event-str` and `report` read Postgres only, so they leave the engine's
+    // database to a running `opi-indexer run`.
+    match command {
+        Command::EventStr { height } => {
+            let database = get_brc20_database();
+            let mut database = database.lock().await;
+            database.init().await.map_err(|e| anyhow!("{e}"))?;
+            match database
+                .get_block_events_str(height)
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+            {
+                Some(text) => println!("Block Event String at height {height}:\n{text}"),
+                None => println!("No events found at height {height}"),
+            }
+            Ok(())
+        }
+        Command::Report { height } => {
+            tracing::info!("Reporting block at height {height}");
+            report_block_from_journal(&config, None, height)
+                .await
+                .map_err(|e| anyhow!("{e}"))
+        }
+        command => execute_with_engine(command, config).await,
+    }
+}
+
+/// Runs a command that needs the engine, which opens its database for
+/// the command's whole run.
+async fn execute_with_engine(command: Command, config: Brc20IndexerConfig) -> Result<()> {
     let brc20_prog = crate::open_brc20_prog(&config)?;
     let mut indexer = Brc20Indexer::new(config, brc20_prog, None);
     match command {
+        Command::EventStr { .. } | Command::Report { .. } => {
+            unreachable!("these commands run without the engine")
+        }
         Command::Light => indexer.run().await.map_err(|e| anyhow!("{e}"))?,
         Command::Reset(Confirm { yes }) => {
             if !confirm(
@@ -147,13 +182,6 @@ async fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
             }
             indexer.reorg(height).await.map_err(|e| anyhow!("{e}"))?;
             tracing::info!("Reorg to height {height} completed successfully.");
-        }
-        Command::Report { height } => {
-            tracing::info!("Reporting block at height {height}");
-            indexer
-                .report_block(height)
-                .await
-                .map_err(|e| anyhow!("{e}"))?;
         }
         Command::RecalculateHashes { from } => {
             tracing::info!(
@@ -182,16 +210,6 @@ async fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
                 .await
                 .map_err(|e| anyhow!("{e}"))?;
             tracing::info!("Reindexing of extra data completed successfully.");
-        }
-        Command::EventStr { height } => {
-            match indexer
-                .get_block_event_string(height)
-                .await
-                .map_err(|e| anyhow!("{e}"))?
-            {
-                Some(text) => println!("Block Event String at height {height}:\n{text}"),
-                None => println!("No events found at height {height}"),
-            }
         }
         Command::TraceStr { height } => {
             match indexer

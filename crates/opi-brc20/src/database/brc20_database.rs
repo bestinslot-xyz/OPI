@@ -1190,6 +1190,20 @@ impl Brc20Database {
         .await?.map(|r| r.cumulative_trace_hash))
     }
 
+    /// The block's trace hash as indexed; empty before BRC2.0 activates.
+    pub async fn get_block_traces_hash(
+        &self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        let row = sqlx::query(
+            "SELECT block_trace_hash FROM brc20_cumulative_event_hashes WHERE block_height = $1",
+        )
+        .bind(block_height)
+        .fetch_optional(&self.client)
+        .await?;
+        Ok(row.map(|row| Row::get::<String, _>(&row, "block_trace_hash")))
+    }
+
     pub async fn get_block_events_hash(
         &self,
         block_height: i32,

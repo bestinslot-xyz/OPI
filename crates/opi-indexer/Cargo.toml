@@ -10,6 +10,7 @@ brc20-prog = "0.16.5"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 futures = "0.3"
+jsonrpsee = { version = "0.26", features = ["server"] }
 opi-bitmap = { path = "../opi-bitmap" }
 opi-brc20 = { path = "../opi-brc20" }
 opi-core = { path = "../opi-core" }

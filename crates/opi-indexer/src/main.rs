@@ -4,12 +4,13 @@ mod validate;
 
 use {
     anyhow::{Result, anyhow, bail},
-    brc20_prog::Brc20Prog,
+    brc20_prog::{Brc20Prog, Brc20ProgConfig},
     clap::{Parser, Subcommand},
     config::{Config, ModuleConfigs},
     futures::future::BoxFuture,
+    jsonrpsee::server::ServerHandle,
     opi_bitmap::{BitmapConfig, BitmapModule},
-    opi_brc20::{config::Brc20IndexerConfig, module::Brc20Module},
+    opi_brc20::{config::Brc20IndexerConfig, module::Brc20Module, service_runtime::ServiceRuntime},
     opi_core::{BlockSource, Module},
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime},
@@ -42,9 +43,9 @@ enum Command {
     /// either side.
     Validate(validate::Args),
     /// BRC-20 light client and maintenance commands. Reads only brc20's
-    /// environment, so it runs on light-client hosts. `event-str`, `trace-str`
-    /// and `report` run alongside `run`; stop `run` before `reset`, `reorg`,
-    /// `recalculate-hashes` and `reindex-extras`.
+    /// environment, so it runs on light-client hosts. `event-str` and `report`
+    /// run alongside `run`; every other command needs `run` stopped, since
+    /// it opens brc20-prog's database.
     Brc20(brc20::Args),
 }
 
@@ -98,9 +99,25 @@ fn run() -> Result<()> {
         .map(open_brc20_prog)
         .transpose()?;
 
+    // Serves for the whole process, so brc20 module restarts keep it.
+    let public_rpc = match (&brc20_prog, &module_configs.brc20) {
+        (Some(brc20_prog), Some(brc20)) if brc20.brc20_prog_rpc_server_enabled => {
+            Some(PublicRpc::start(brc20_prog)?)
+        }
+        _ => None,
+    };
+
     // The source blocks on its own runtime, so it starts and stops outside
     // the runtime below.
-    let handle = spawn_source(config.source.clone())?;
+    let handle = match spawn_source(config.source.clone()) {
+        Ok(handle) => handle,
+        Err(err) => {
+            if let Some(public_rpc) = public_rpc {
+                public_rpc.stop();
+            }
+            return Err(err);
+        }
+    };
 
     let exit = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -108,6 +125,10 @@ fn run() -> Result<()> {
         .map_err(anyhow::Error::from)
         .and_then(|runtime| runtime.block_on(supervise(&handle, module_configs, brc20_prog)));
 
+    // The modules have stopped; the public RPC server stops before the source.
+    if let Some(public_rpc) = public_rpc {
+        public_rpc.stop();
+    }
     handle.shutdown();
     let joined = handle.join();
     match exit {
@@ -179,8 +200,59 @@ async fn supervise(
 
 /// Opens the BRC2.0 engine from brc20's environment and brc20-prog's own.
 pub(crate) fn open_brc20_prog(config: &Brc20IndexerConfig) -> Result<Brc20Prog> {
-    let engine_config = config.brc20_prog_config()?;
-    Brc20Prog::open(engine_config).map_err(|e| anyhow!("failed to open the brc20-prog engine: {e}"))
+    open_engine(config.brc20_prog_config()?)
+}
+
+/// Opens the engine at `engine_config.db_path`. RocksDB admits one process
+/// per database, so a lock failure means another `opi-indexer` holds it.
+fn open_engine(engine_config: Brc20ProgConfig) -> Result<Brc20Prog> {
+    let db_path = engine_config.db_path.clone();
+    Brc20Prog::open(engine_config).map_err(|e| {
+        let message = e.to_string();
+        if is_lock_error(&message) {
+            anyhow!("brc20-prog's database at {db_path} is in use; stop `opi-indexer run` first")
+        } else {
+            anyhow!("failed to open the brc20-prog engine: {message}")
+        }
+    })
+}
+
+/// Whether a RocksDB open failure reports a held database lock: another
+/// process holds the `LOCK` file, or this process already has the database
+/// open.
+fn is_lock_error(message: &str) -> bool {
+    ["While lock file", "lock hold by current process"]
+        .iter()
+        .any(|marker| message.contains(marker))
+        || message.contains("LOCK") && message.contains("Resource temporarily unavailable")
+}
+
+/// The engine's public JSON-RPC server and the runtime it runs on. The
+/// runtime has threads of its own, since the engine blocks the thread that
+/// calls it.
+struct PublicRpc {
+    server: ServerHandle,
+    runtime: ServiceRuntime,
+}
+
+impl PublicRpc {
+    /// Starts the server on `brc20_prog_rpc_server_url`.
+    fn start(brc20_prog: &Brc20Prog) -> Result<Self> {
+        let runtime = ServiceRuntime::new("opi-rpc")?;
+        let server = runtime
+            .handle()
+            .block_on(brc20_prog.start_public_rpc_server())
+            .map_err(|e| anyhow!("failed to start the brc20-prog RPC server: {e}"))?;
+        Ok(PublicRpc { server, runtime })
+    }
+
+    /// Stops the server, waits for it to finish, then stops the runtime.
+    fn stop(self) {
+        let PublicRpc { server, runtime } = self;
+        server.stop().ok();
+        runtime.handle().block_on(server.stopped());
+        drop(runtime);
+    }
 }
 
 /// Builds a brc20 module on a fresh database for every start and restart.
@@ -241,9 +313,142 @@ async fn source_finished(handle: &SourceHandle) {
 #[cfg(test)]
 mod tests {
     use {
-        super::{Cli, Command, brc20},
+        super::{Cli, Command, PublicRpc, brc20, is_lock_error, open_engine},
+        brc20_prog::{Brc20Prog, Brc20ProgConfig},
         clap::Parser,
+        std::{
+            io::{Read, Write},
+            net::{TcpListener, TcpStream},
+            path::PathBuf,
+            sync::{Mutex, MutexGuard},
+        },
     };
+
+    /// Serialises the tests that open an engine, since `Brc20Prog::open` sets
+    /// process-wide configuration.
+    static ENGINE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// An engine config on a fresh temp directory, removed on drop.
+    struct EngineDir {
+        config: Brc20ProgConfig,
+        dir: PathBuf,
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl EngineDir {
+        fn new() -> Self {
+            let guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!(
+                "opi-indexer-engine-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let mut config = Brc20ProgConfig::from_env();
+            config.db_path = dir.to_string_lossy().into_owned();
+            config.bitcoin_rpc_url = "http://127.0.0.1:1".to_string();
+            config.bitcoin_rpc_network = "regtest".to_string();
+            config.bitcoin_rpc_user = String::new();
+            config.bitcoin_rpc_password = String::new();
+            config.brc20_prog_rpc_server_url = free_address();
+            EngineDir {
+                config,
+                dir,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for EngineDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.dir).ok();
+        }
+    }
+
+    fn free_address() -> String {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The body of the HTTP response to a JSON-RPC call of `method`.
+    fn rpc_call(address: &str, method: &str, params: &str) -> String {
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
+        let mut stream = TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "POST / HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn a_second_open_of_the_same_database_asks_to_stop_run() {
+        let dir = EngineDir::new();
+        let _first = open_engine(dir.config.clone()).expect("the first open succeeds");
+        let err = open_engine(dir.config.clone())
+            .err()
+            .expect("the second open fails");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "brc20-prog's database at {} is in use; stop `opi-indexer run` first",
+                dir.config.db_path
+            )
+        );
+    }
+
+    #[test]
+    fn other_open_errors_keep_their_message() {
+        let dir = EngineDir::new();
+        let mut config = dir.config.clone();
+        config.db_path = String::new();
+        let err = open_engine(config).err().expect("an empty path fails");
+        assert!(
+            err.to_string()
+                .starts_with("failed to open the brc20-prog engine: "),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn lock_errors_are_recognised_by_rocksdb_text() {
+        assert!(is_lock_error(
+            "IO error: While lock file: /db/LOCK: Resource temporarily unavailable"
+        ));
+        assert!(is_lock_error(
+            "IO error: lock hold by current process, acquire time 1 acquiring thread 2: /db/LOCK: No locks available"
+        ));
+        assert!(!is_lock_error("Invalid block number"));
+        assert!(!is_lock_error("failed to read block 5"));
+    }
+
+    #[test]
+    fn the_public_rpc_server_answers_on_its_own_runtime_and_rejects_indexer_methods() {
+        let dir = EngineDir::new();
+        let prog: Brc20Prog = open_engine(dir.config.clone()).unwrap();
+        // No async runtime drives this thread; only the service runtime can answer.
+        let rpc = PublicRpc::start(&prog).expect("the server starts");
+        let address = &dir.config.brc20_prog_rpc_server_url;
+
+        let height = rpc_call(address, "eth_blockNumber", "[]");
+        assert!(height.contains(r#""result":"0x"#), "{height}");
+
+        let mined = rpc_call(address, "brc20_mine", "[1,0]");
+        assert!(mined.contains(r#""error""#), "{mined}");
+        assert!(!mined.contains(r#""result""#), "{mined}");
+
+        rpc.stop();
+        assert!(TcpStream::connect(address).is_err());
+    }
 
     fn brc20_command(args: &[&str]) -> brc20::Command {
         let argv = ["opi-indexer", "brc20"]

@@ -931,64 +931,13 @@ impl Brc20Indexer {
     }
 
     pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
-        if self.config.light_client_mode {
-            return Err("Reporting is not supported in light client mode".into());
-        }
-
-        let (block_hash, block_time) = self.journal_block_hash_and_time(block_height)?;
-
-        let Some(block_events_hash) = get_brc20_database()
-            .lock()
-            .await
-            .get_block_events_hash(block_height)
-            .await?
-        else {
-            return Err(format!("Block events hash not found for block {}", block_height).into());
-        };
-
-        let Some(cumulative_events_hash) = get_brc20_database()
-            .lock()
-            .await
-            .get_cumulative_events_hash(block_height)
-            .await?
-        else {
-            return Err(format!(
-                "Cumulative events hash not found for block {}",
-                block_height
-            )
-            .into());
-        };
-
-        let cumulative_traces_hash = get_brc20_database()
-            .lock()
-            .await
-            .get_cumulative_traces_hash(block_height)
-            .await?
-            .unwrap_or_default();
-
-        let block_traces_hash = if block_height >= self.config.first_brc20_prog_phase_one_height {
-            retrieve_brc20_prog_traces_hash(&self.brc20_prog, block_height).await?
-        } else {
-            String::new()
-        };
-
-        self.brc20_reporter
-            .report(
-                block_height,
-                block_hash.to_string(),
-                if block_time == 0 {
-                    None
-                } else {
-                    Some(block_time)
-                },
-                block_events_hash,
-                cumulative_events_hash,
-                block_traces_hash,
-                cumulative_traces_hash,
-            )
-            .await?;
-
-        Ok(())
+        report_indexed_block(
+            &self.config,
+            &self.brc20_reporter,
+            self.journal.as_ref(),
+            block_height,
+        )
+        .await
     }
 
     pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
@@ -2265,20 +2214,16 @@ impl Brc20Indexer {
     }
 
     fn journal(&self) -> Result<&Arc<dyn BlockSource>, Box<dyn Error>> {
-        self.journal
-            .as_ref()
-            .ok_or("full mode reads blocks from the journal inside opi-indexer".into())
+        require_journal(self.journal.as_ref())
     }
 
     /// The journal's hash and time of `block_height`.
+    #[cfg(test)]
     fn journal_block_hash_and_time(
         &self,
         block_height: i32,
     ) -> Result<(String, i64), Box<dyn Error>> {
-        self.journal()?
-            .block_info(block_height as u32)?
-            .map(|info| (info.hash, info.time as i64))
-            .ok_or("Block hash and time not found".into())
+        journal_block_hash_and_time(self.journal.as_ref(), block_height)
     }
 
     /// Fails when brc20 and brc20-prog disagree on their last block, by the
@@ -2533,6 +2478,87 @@ fn brc20_prog_height_mismatch(
 /// has indexed a BRC-20 block at or above phase one.
 fn compares_brc20_prog_hash(last_brc20: i32, first_brc20_height: i32, phase_one: i32) -> bool {
     last_brc20 >= first_brc20_height && last_brc20 >= phase_one
+}
+
+fn require_journal(
+    journal: Option<&Arc<dyn BlockSource>>,
+) -> Result<&Arc<dyn BlockSource>, Box<dyn Error>> {
+    journal.ok_or("full mode reads blocks from the journal inside opi-indexer".into())
+}
+
+fn journal_block_hash_and_time(
+    journal: Option<&Arc<dyn BlockSource>>,
+    block_height: i32,
+) -> Result<(String, i64), Box<dyn Error>> {
+    require_journal(journal)?
+        .block_info(block_height as u32)?
+        .map(|info| (info.hash, info.time as i64))
+        .ok_or("Block hash and time not found".into())
+}
+
+/// Reports an indexed block to the OPI network from the stored hashes and the
+/// journal's block hash and time. Reads only Postgres and the journal, so it
+/// runs without the BRC2.0 engine.
+pub async fn report_block_from_journal(
+    config: &Brc20IndexerConfig,
+    journal: Option<&Arc<dyn BlockSource>>,
+    block_height: i32,
+) -> Result<(), Box<dyn Error>> {
+    report_indexed_block(config, &Brc20Reporter::new(config), journal, block_height).await
+}
+
+async fn report_indexed_block(
+    config: &Brc20IndexerConfig,
+    reporter: &Brc20Reporter,
+    journal: Option<&Arc<dyn BlockSource>>,
+    block_height: i32,
+) -> Result<(), Box<dyn Error>> {
+    if config.light_client_mode {
+        return Err("Reporting is not supported in light client mode".into());
+    }
+
+    let (block_hash, block_time) = journal_block_hash_and_time(journal, block_height)?;
+
+    let database = get_brc20_database();
+    let database = database.lock().await;
+    let Some(block_events_hash) = database.get_block_events_hash(block_height).await? else {
+        return Err(format!("Block events hash not found for block {}", block_height).into());
+    };
+    let Some(cumulative_events_hash) = database.get_cumulative_events_hash(block_height).await?
+    else {
+        return Err(format!(
+            "Cumulative events hash not found for block {}",
+            block_height
+        )
+        .into());
+    };
+    let cumulative_traces_hash = database
+        .get_cumulative_traces_hash(block_height)
+        .await?
+        .unwrap_or_default();
+    let block_traces_hash = database
+        .get_block_traces_hash(block_height)
+        .await?
+        .unwrap_or_default();
+    drop(database);
+
+    reporter
+        .report(
+            block_height,
+            block_hash,
+            if block_time == 0 {
+                None
+            } else {
+                Some(block_time)
+            },
+            block_events_hash,
+            cumulative_events_hash,
+            block_traces_hash,
+            cumulative_traces_hash,
+        )
+        .await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
