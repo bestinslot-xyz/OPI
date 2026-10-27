@@ -3,10 +3,20 @@
 //!
 //! They answer `{"error":null,"result":...}`. Amounts are raw integers as
 //! strings: every BRC-20 and BRC2.0 amount carries 18 fractional digits
-//! (1 token is `1000000000000000000`), and `decimals` is the ticker's deploy
-//! precision, the most fractional digits an amount of it may have. A missing
-//! or invalid parameter answers `400 {"error":"<reason>","result":null}` and
-//! an unknown ticker `404 {"error":"ticker not found","result":null}`.
+//! (1 token is `1000000000000000000`), so `decimals` is always
+//! [`AMOUNT_DECIMALS`], the divisor's exponent, and `ticker_decimals` is the
+//! ticker's deploy precision, the most fractional digits an amount of it may
+//! have (null for a BRC2.0 balance of a ticker brc20 does not list). A
+//! missing or invalid parameter answers
+//! `400 {"error":"<reason>","result":null}` and an unknown ticker
+//! `404 {"error":"ticker not found","result":null}`.
+//!
+//! `holders` counts the pkScripts with a positive BRC-20 balance, without
+//! the BRC2.0 module's pkScript ([`BRC20_PROG_MODULE_PKSCRIPT`]), whose
+//! balance is listed per EVM address on the BRC2.0 side. `prog_holders`
+//! counts the EVM wallets with a positive BRC2.0 balance. A Bitcoin address
+//! holding both kinds counts in both, and `sort=holders` ranks by the BRC-20
+//! count.
 //!
 //! Tickers are matched as stored: brc20 keeps the lowercase form of each
 //! ticker, and the BRC2.0 engine names its token contract after that same
@@ -18,7 +28,8 @@
 //! BRC2.0 balance of its EVM address (mapped through `evm_addresses`) form
 //! one row. A BRC-20 balance whose pkScript has no address is listed by its
 //! pkScript, and an EVM address with no Bitcoin address (a contract, say) by
-//! its EVM address.
+//! its EVM address. The BRC2.0 module's pkScript is left out of holders and
+//! wallet balances, as it is of `holders`.
 //!
 //! Lists page with `offset` (default 0) and `limit` (default 100, at most
 //! 500) in a fixed order that ends in a unique key, and report `has_more`.
@@ -46,6 +57,16 @@ pub const MAX_LIMIT: i64 = 500;
 
 /// The largest offset a request may ask for.
 pub const MAX_OFFSET: i64 = 1_000_000_000;
+
+/// The fractional digits of every stored amount: an amount divided by
+/// 10^18 is in tokens.
+pub const AMOUNT_DECIMALS: i32 = 18;
+
+/// The pkScript (`OP_RETURN "BRC20PROG"`) that holds the BRC-20 side of
+/// every token deposited into BRC2.0, opi-brc20's
+/// `BRC20_PROG_OP_RETURN_PKSCRIPT`. Its balance is the sum the BRC2.0
+/// balances list per EVM address, so the BRC-20 side leaves it out.
+pub const BRC20_PROG_MODULE_PKSCRIPT: &str = "6a09425243323050524f47";
 
 /// A parameter the route refuses, with the reason it answers in its 400.
 #[derive(Debug, PartialEq, Eq)]
@@ -222,7 +243,7 @@ impl TickersRequest {
 struct TickerRow {
     tick: String,
     original_tick: String,
-    decimals: i32,
+    ticker_decimals: i32,
     max_supply: String,
     minted_supply: String,
     remaining_supply: String,
@@ -240,7 +261,8 @@ impl TickerRow {
         js_object! {
             "tick" => self.tick,
             "original_tick" => self.original_tick,
-            "decimals" => self.decimals,
+            "decimals" => AMOUNT_DECIMALS,
+            "ticker_decimals" => self.ticker_decimals,
             "max_supply" => self.max_supply,
             "minted_supply" => self.minted_supply,
             "remaining_supply" => self.remaining_supply,
@@ -290,7 +312,7 @@ pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
     let mut result = TickerRow {
         tick: row.tick,
         original_tick: row.original_tick,
-        decimals: row.decimals,
+        ticker_decimals: row.decimals,
         max_supply: row.max_supply,
         minted_supply: row.minted_supply,
         remaining_supply: row.remaining_supply,
@@ -371,7 +393,7 @@ pub async fn tickers(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
             TickerRow {
                 tick: row.tick,
                 original_tick: row.original_tick,
-                decimals: row.decimals,
+                ticker_decimals: row.decimals,
                 max_supply: row.max_supply,
                 minted_supply: row.minted_supply,
                 remaining_supply: row.remaining_supply,
@@ -400,7 +422,8 @@ pub async fn tickers(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
     }))
 }
 
-/// The decimals of a ticker, or `None` when brc20 has no such ticker.
+/// The deploy precision of a ticker, or `None` when brc20 has no such
+/// ticker.
 async fn ticker_decimals(db: &Db, tick: &str) -> Result<Option<i32>, ApiError> {
     Ok(
         sqlx::query_scalar!("select decimals from brc20_tickers where tick = $1;", tick)
@@ -419,7 +442,7 @@ pub async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
             Err(bad) => return Ok(bad.reply()),
         };
     let current_block_height = block_height_of_db(&db).await;
-    let Some(decimals) = ticker_decimals(&db, &tick).await? else {
+    let Some(deploy_decimals) = ticker_decimals(&db, &tick).await? else {
         return Ok(Reply::error(404, "ticker not found"));
     };
     // Each side reads the ticker's positive balances through its partial
@@ -430,7 +453,7 @@ pub async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
         r#"with b as (
                 select pkscript, nullif(wallet, '') as wallet, overall_balance, available_balance
                 from brc20_current_balances
-                where tick = $1 and overall_balance > 0
+                where tick = $1 and overall_balance > 0 and pkscript <> $2
             ), p as (
                 select c.wallet as evm_address, e.btc_address, c.amount
                 from brc20_prog_current_balances c
@@ -454,8 +477,9 @@ pub async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
                      coalesce(address, pkscript, evm_address) asc,
                      pkscript asc nulls first,
                      evm_address asc nulls first
-            limit $2 offset $3;"#,
+            limit $3 offset $4;"#,
         tick,
+        BRC20_PROG_MODULE_PKSCRIPT,
         page.fetch(),
         page.offset,
     )
@@ -479,7 +503,8 @@ pub async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
         .collect();
     let mut result = js_object! {
         "ticker" => tick,
-        "decimals" => decimals,
+        "decimals" => AMOUNT_DECIMALS,
+        "ticker_decimals" => deploy_decimals,
         "holders" => holders,
     };
     page.fields(&mut result, has_more);
@@ -536,7 +561,7 @@ pub async fn wallet_balances(
         r#"with b as (
                 select tick, overall_balance, available_balance
                 from brc20_current_balances
-                where wallet = $1 and overall_balance > 0
+                where wallet = $1 and overall_balance > 0 and pkscript <> $5
             ), p as (
                 select ticker as tick, amount
                 from brc20_prog_current_balances
@@ -556,6 +581,7 @@ pub async fn wallet_balances(
         evm_address,
         page.fetch(),
         page.offset,
+        BRC20_PROG_MODULE_PKSCRIPT,
     )
     .fetch_all(pool)
     .await?;
@@ -565,7 +591,8 @@ pub async fn wallet_balances(
         .map(|row| {
             js_object! {
                 "tick" => row.tick,
-                "decimals" => row.decimals,
+                "decimals" => AMOUNT_DECIMALS,
+                "ticker_decimals" => row.decimals,
                 "balance" => row.balance,
                 "available_balance" => row.available_balance,
                 "prog_balance" => row.prog_balance,

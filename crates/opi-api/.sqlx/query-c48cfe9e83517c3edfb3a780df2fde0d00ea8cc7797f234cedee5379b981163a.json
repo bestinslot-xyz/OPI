@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "with b as (\n                select tick, overall_balance, available_balance\n                from brc20_current_balances\n                where wallet = $1 and overall_balance > 0\n            ), p as (\n                select ticker as tick, amount\n                from brc20_prog_current_balances\n                where wallet = $2 and amount > 0\n            )\n            select coalesce(b.tick, p.tick) as \"tick!\",\n                   t.decimals as \"decimals?\",\n                   coalesce(b.overall_balance, 0)::text as \"balance!\",\n                   coalesce(b.available_balance, 0)::text as \"available_balance!\",\n                   coalesce(p.amount, 0)::text as \"prog_balance!\",\n                   (coalesce(b.overall_balance, 0) + coalesce(p.amount, 0))::text as \"total_balance!\"\n            from b full join p on b.tick = p.tick\n            left join brc20_tickers t on t.tick = coalesce(b.tick, p.tick)\n            order by 1 asc\n            limit $3 offset $4;",
+  "query": "with b as (\n                select tick, overall_balance, available_balance\n                from brc20_current_balances\n                where wallet = $1 and overall_balance > 0 and pkscript <> $5\n            ), p as (\n                select ticker as tick, amount\n                from brc20_prog_current_balances\n                where wallet = $2 and amount > 0\n            )\n            select coalesce(b.tick, p.tick) as \"tick!\",\n                   t.decimals as \"decimals?\",\n                   coalesce(b.overall_balance, 0)::text as \"balance!\",\n                   coalesce(b.available_balance, 0)::text as \"available_balance!\",\n                   coalesce(p.amount, 0)::text as \"prog_balance!\",\n                   (coalesce(b.overall_balance, 0) + coalesce(p.amount, 0))::text as \"total_balance!\"\n            from b full join p on b.tick = p.tick\n            left join brc20_tickers t on t.tick = coalesce(b.tick, p.tick)\n            order by 1 asc\n            limit $3 offset $4;",
   "describe": {
     "columns": [
       {
@@ -50,7 +50,8 @@
         "Text",
         "Text",
         "Int8",
-        "Int8"
+        "Int8",
+        "Text"
       ]
     },
     "nullable": [
@@ -62,5 +63,5 @@
       null
     ]
   },
-  "hash": "b47640cbfb14a1258431a2f1ed60562c887b735555e5a7700984c5ad88d484a3"
+  "hash": "c48cfe9e83517c3edfb3a780df2fde0d00ea8cc7797f234cedee5379b981163a"
 }

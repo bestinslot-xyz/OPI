@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_ticker_holders (tick, holders, prog_holders)\n         SELECT s.tick, sum(s.holders)::int8, sum(s.prog_holders)::int8\n         FROM (\n             SELECT tick, count(*) AS holders, 0::int8 AS prog_holders\n             FROM brc20_current_balances\n             WHERE overall_balance > 0 AND pkscript <> '6a09425243323050524f47'\n             GROUP BY tick\n             UNION ALL\n             SELECT ticker, 0::int8, count(*)\n             FROM brc20_prog_current_balances WHERE amount > 0 GROUP BY ticker\n         ) s\n         GROUP BY s.tick",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "74e6ac77eceb9032781522d9caa605eabcb8492b8b7a192d74d8774bae9ca49f"
+}

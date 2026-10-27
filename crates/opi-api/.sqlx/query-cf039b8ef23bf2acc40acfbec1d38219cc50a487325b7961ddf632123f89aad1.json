@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with b as (\n                select pkscript, nullif(wallet, '') as wallet, overall_balance, available_balance\n                from brc20_current_balances\n                where tick = $1 and overall_balance > 0 and pkscript <> $2\n            ), p as (\n                select c.wallet as evm_address, e.btc_address, c.amount\n                from brc20_prog_current_balances c\n                left join evm_addresses e on e.evm_address = c.wallet\n                where c.ticker = $1 and c.amount > 0\n            ), m as (\n                select coalesce(b.wallet, p.btc_address) as address,\n                       b.pkscript, p.evm_address,\n                       coalesce(b.overall_balance, 0) as balance,\n                       coalesce(b.available_balance, 0) as available_balance,\n                       coalesce(p.amount, 0) as prog_balance\n                from b full join p on b.wallet = p.btc_address\n            )\n            select address as \"address?\", pkscript as \"pkscript?\", evm_address as \"evm_address?\",\n                   balance::text as \"balance!\",\n                   available_balance::text as \"available_balance!\",\n                   prog_balance::text as \"prog_balance!\",\n                   (balance + prog_balance)::text as \"total_balance!\"\n            from m\n            order by balance + prog_balance desc,\n                     coalesce(address, pkscript, evm_address) asc,\n                     pkscript asc nulls first,\n                     evm_address asc nulls first\n            limit $3 offset $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "pkscript?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_current_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "evm_address?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_prog_current_balances",
+            "name": "wallet"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "available_balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "prog_balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "total_balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "cf039b8ef23bf2acc40acfbec1d38219cc50a487325b7961ddf632123f89aad1"
+}

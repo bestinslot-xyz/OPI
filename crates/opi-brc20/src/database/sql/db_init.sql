@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS public.brc20_ticker_holders (
 	prog_holders int8 NOT NULL DEFAULT 0,
 	CONSTRAINT brc20_ticker_holders_pk PRIMARY KEY (tick)
 );
-CREATE INDEX IF NOT EXISTS brc20_current_balances_tick_positive_idx ON public.brc20_current_balances USING btree (tick, overall_balance DESC) WHERE overall_balance > 0;
+CREATE INDEX IF NOT EXISTS brc20_current_balances_tick_holder_idx ON public.brc20_current_balances USING btree (tick, overall_balance DESC) WHERE overall_balance > 0 AND pkscript <> '6a09425243323050524f47';
 CREATE INDEX IF NOT EXISTS brc20_prog_current_balances_ticker_positive_idx ON public.brc20_prog_current_balances USING btree (ticker, amount DESC) WHERE amount > 0;
 CREATE INDEX IF NOT EXISTS brc20_tickers_tick_pattern_idx ON public.brc20_tickers USING btree (tick text_pattern_ops);
 

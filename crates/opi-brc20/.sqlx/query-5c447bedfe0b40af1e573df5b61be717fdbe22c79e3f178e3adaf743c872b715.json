@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_ticker_holders (tick, holders)\n             SELECT m.tick,\n                    (SELECT count(*) FROM brc20_current_balances b\n                     WHERE b.tick = m.tick AND b.overall_balance > 0\n                       AND b.pkscript <> '6a09425243323050524f47')\n             FROM brc20_current_balances m\n             WHERE m.pkscript = '6a09425243323050524f47' AND m.overall_balance > 0\n             ON CONFLICT (tick) DO UPDATE SET holders = excluded.holders",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "5c447bedfe0b40af1e573df5b61be717fdbe22c79e3f178e3adaf743c872b715"
+}

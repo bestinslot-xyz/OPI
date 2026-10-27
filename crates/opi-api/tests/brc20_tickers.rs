@@ -81,13 +81,19 @@ const ALICE_EVM: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CAROL_EVM: &str = "0xcccccccccccccccccccccccccccccccccccccccc";
 const CONTRACT_EVM: &str = "0xdddddddddddddddddddddddddddddddddddddddd";
 
+/// The BRC2.0 module's pkScript, which holds the BRC-20 side of deposits.
+const MODULE: &str = "6a09425243323050524f47";
+/// An EVM wallet holding only a ticker brc20 does not list.
+const GHOST_EVM: &str = "0xffffffffffffffffffffffffffffffffffffffff";
+
 /// One token in raw units.
 const E18: &str = "000000000000000000";
 
 /// The fixture: tickers `ordi` (partly minted), `pepe` (fully minted) and
 /// `o_rd` (max supply 0); BRC-20 holders Alice and Bob, a pkScript without an
-/// address and a zero balance; BRC2.0 holders Alice's EVM address, Carol's
-/// (who has no BRC-20 balance), an unmapped contract and a zero balance.
+/// address, a zero balance and the BRC2.0 module's pkScript (never listed);
+/// BRC2.0 holders Alice's EVM address, Carol's (who has no BRC-20 balance),
+/// an unmapped contract, a zero balance and a wallet of an unlisted ticker.
 fn fixture() -> String {
     format!(
         "INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (300, 'h300');
@@ -103,6 +109,7 @@ fn fixture() -> String {
                 ('0014b2', 'tb1qbob', 'ordi', 300, 300, 120),
                 ('6a01ff', '', 'ordi', 300, 300, 120),
                 ('0014e5', 'tb1qempty', 'ordi', 0, 0, 120),
+                ('{MODULE}', '', 'ordi', 550, 550, 260),
                 ('0014a1', '{ALICE}', 'pepe', 10, 10, 220);
          INSERT INTO evm_addresses (evm_address, btc_address)
          VALUES ('{ALICE_EVM}', '{ALICE}'),
@@ -113,7 +120,8 @@ fn fixture() -> String {
          VALUES ('{ALICE_EVM}', 'ordi', 200, 260),
                 ('{CAROL_EVM}', 'ordi', 50, 260),
                 ('{CONTRACT_EVM}', 'ordi', 300, 260),
-                ('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'ordi', 0, 260);
+                ('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'ordi', 0, 260),
+                ('{GHOST_EVM}', 'ghost', 9, 260);
          INSERT INTO brc20_ticker_holders (tick, holders, prog_holders)
          VALUES ('ordi', 3, 3), ('pepe', 1, 0);"
     )
@@ -180,7 +188,7 @@ fn ok(result: &str) -> String {
     format!(r#"{{"error":null,"result":{result}}}"#)
 }
 
-const ORDI: &str = r#"{"tick":"ordi","original_tick":"ORDI","decimals":18,"max_supply":"21000000000000000000000000","minted_supply":"20999000000000000000000000","remaining_supply":"1000000000000000000000","burned_supply":"0","limit_per_mint":"1000000000000000000000","is_self_mint":false,"deploy_inscription_id":"ordii0","deploy_block_height":100,"holders":3,"prog_holders":3"#;
+const ORDI: &str = r#"{"tick":"ordi","original_tick":"ORDI","decimals":18,"ticker_decimals":18,"max_supply":"21000000000000000000000000","minted_supply":"20999000000000000000000000","remaining_supply":"1000000000000000000000","burned_supply":"0","limit_per_mint":"1000000000000000000000","is_self_mint":false,"deploy_inscription_id":"ordii0","deploy_block_height":100,"holders":3,"prog_holders":3"#;
 
 #[tokio::test]
 async fn seeded_ticker_answers_its_supply_counts_and_contract() {
@@ -196,7 +204,7 @@ async fn seeded_ticker_answers_its_supply_counts_and_contract() {
             "/v1/brc20/ticker?ticker=o_rd",
             200,
             JSON,
-            &ok(r#"{"tick":"o_rd","original_tick":"o_rd","decimals":0,"max_supply":"0","minted_supply":"0","remaining_supply":"0","burned_supply":"0","limit_per_mint":"0","is_self_mint":true,"deploy_inscription_id":"o_rdi0","deploy_block_height":150,"holders":0,"prog_holders":0,"prog_contract_address":null,"block_height":300}"#),
+            &ok(r#"{"tick":"o_rd","original_tick":"o_rd","decimals":18,"ticker_decimals":0,"max_supply":"0","minted_supply":"0","remaining_supply":"0","burned_supply":"0","limit_per_mint":"0","is_self_mint":true,"deploy_inscription_id":"o_rdi0","deploy_block_height":150,"holders":0,"prog_holders":0,"prog_contract_address":null,"block_height":300}"#),
         )
         .await;
         expect(
@@ -295,9 +303,11 @@ async fn seeded_holders_merge_brc20_and_brc20_prog_per_address() {
         );
         let page = |holders: &str, offset: u32, limit: u32, has_more: bool| {
             ok(&format!(
-                r#"{{"ticker":"ordi","decimals":18,"holders":[{holders}],"offset":{offset},"limit":{limit},"has_more":{has_more},"block_height":300}}"#
+                r#"{{"ticker":"ordi","decimals":18,"ticker_decimals":18,"holders":[{holders}],"offset":{offset},"limit":{limit},"has_more":{has_more},"block_height":300}}"#
             ))
         };
+        // The module's pkScript (550, the largest BRC-20 balance) is not
+        // listed.
         expect(
             &app,
             "/v1/brc20/ticker/holders?ticker=ORDI",
@@ -340,7 +350,7 @@ async fn seeded_holders_merge_brc20_and_brc20_prog_per_address() {
             "/v1/brc20/ticker/holders?ticker=o_rd",
             200,
             JSON,
-            &ok(r#"{"ticker":"o_rd","decimals":0,"holders":[],"offset":0,"limit":100,"has_more":false,"block_height":300}"#),
+            &ok(r#"{"ticker":"o_rd","decimals":18,"ticker_decimals":0,"holders":[],"offset":0,"limit":100,"has_more":false,"block_height":300}"#),
         )
         .await;
         expect(
@@ -363,8 +373,8 @@ async fn seeded_wallet_balances_list_both_kinds_by_ticker() {
                 r#"{{"address":"{ALICE}","evm_address":"{ALICE_EVM}","balances":[{balances}],"offset":{offset},"limit":{limit},"has_more":{has_more},"block_height":300}}"#
             ))
         };
-        let ordi = r#"{"tick":"ordi","decimals":18,"balance":"500","available_balance":"400","prog_balance":"200","total_balance":"700"}"#;
-        let pepe = r#"{"tick":"pepe","decimals":8,"balance":"10","available_balance":"10","prog_balance":"0","total_balance":"10"}"#;
+        let ordi = r#"{"tick":"ordi","decimals":18,"ticker_decimals":18,"balance":"500","available_balance":"400","prog_balance":"200","total_balance":"700"}"#;
+        let pepe = r#"{"tick":"pepe","decimals":18,"ticker_decimals":8,"balance":"10","available_balance":"10","prog_balance":"0","total_balance":"10"}"#;
         let both = format!("{ordi},{pepe}");
         expect(
             &app,
@@ -409,7 +419,7 @@ async fn seeded_wallet_balances_list_both_kinds_by_ticker() {
             200,
             JSON,
             &ok(&format!(
-                r#"{{"address":null,"evm_address":"{CONTRACT_EVM}","balances":[{{"tick":"ordi","decimals":18,"balance":"0","available_balance":"0","prog_balance":"300","total_balance":"300"}}],"offset":0,"limit":100,"has_more":false,"block_height":300}}"#
+                r#"{{"address":null,"evm_address":"{CONTRACT_EVM}","balances":[{{"tick":"ordi","decimals":18,"ticker_decimals":18,"balance":"0","available_balance":"0","prog_balance":"300","total_balance":"300"}}],"offset":0,"limit":100,"has_more":false,"block_height":300}}"#
             )),
         )
         .await;
@@ -420,7 +430,18 @@ async fn seeded_wallet_balances_list_both_kinds_by_ticker() {
             200,
             JSON,
             &ok(&format!(
-                r#"{{"address":"tb1qcarol","evm_address":"{CAROL_EVM}","balances":[{{"tick":"ordi","decimals":18,"balance":"0","available_balance":"0","prog_balance":"50","total_balance":"50"}}],"offset":0,"limit":100,"has_more":false,"block_height":300}}"#
+                r#"{{"address":"tb1qcarol","evm_address":"{CAROL_EVM}","balances":[{{"tick":"ordi","decimals":18,"ticker_decimals":18,"balance":"0","available_balance":"0","prog_balance":"50","total_balance":"50"}}],"offset":0,"limit":100,"has_more":false,"block_height":300}}"#
+            )),
+        )
+        .await;
+        // A ticker brc20 does not list has no deploy precision.
+        expect(
+            &app,
+            &format!("/v1/brc20/wallet/balances?address={GHOST_EVM}"),
+            200,
+            JSON,
+            &ok(&format!(
+                r#"{{"address":null,"evm_address":"{GHOST_EVM}","balances":[{{"tick":"ghost","decimals":18,"ticker_decimals":null,"balance":"0","available_balance":"0","prog_balance":"9","total_balance":"9"}}],"offset":0,"limit":100,"has_more":false,"block_height":300}}"#
             )),
         )
         .await;

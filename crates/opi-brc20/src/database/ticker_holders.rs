@@ -1,8 +1,10 @@
 //! Holder counts per ticker, for the API's ticker routes.
 //!
 //! `brc20_ticker_holders` holds, per ticker, `holders`: the pkScripts with a
-//! positive BRC-20 balance in `brc20_current_balances`, and `prog_holders`:
-//! the EVM wallets with a positive BRC2.0 balance in
+//! positive BRC-20 balance in `brc20_current_balances` other than the BRC2.0
+//! module's pkScript (`BRC20_PROG_OP_RETURN_PKSCRIPT`, whose balance the
+//! BRC2.0 balances list per EVM address), and `prog_holders`: the EVM
+//! wallets with a positive BRC2.0 balance in
 //! `brc20_prog_current_balances`. The two counts are kept apart: a Bitcoin
 //! address holding both kinds counts once in each, and a merged count of
 //! unique Bitcoin addresses would need a join over every holder of the ticker
@@ -19,7 +21,8 @@
 //!
 //! The table and the API's indexes are created at start when missing, and a
 //! new table is filled from the current balances in the transaction that
-//! creates it.
+//! creates it. The SQL names the module's pkScript as a literal, so the
+//! partial index's predicate matches every count's.
 
 use std::collections::BTreeSet;
 
@@ -35,7 +38,7 @@ pub const SCHEMA_SQL: &str = "CREATE TABLE IF NOT EXISTS public.brc20_ticker_hol
 	prog_holders int8 NOT NULL DEFAULT 0,
 	CONSTRAINT brc20_ticker_holders_pk PRIMARY KEY (tick)
 );
-CREATE INDEX IF NOT EXISTS brc20_current_balances_tick_positive_idx ON public.brc20_current_balances USING btree (tick, overall_balance DESC) WHERE overall_balance > 0;
+CREATE INDEX IF NOT EXISTS brc20_current_balances_tick_holder_idx ON public.brc20_current_balances USING btree (tick, overall_balance DESC) WHERE overall_balance > 0 AND pkscript <> '6a09425243323050524f47';
 CREATE INDEX IF NOT EXISTS brc20_prog_current_balances_ticker_positive_idx ON public.brc20_prog_current_balances USING btree (ticker, amount DESC) WHERE amount > 0;
 CREATE INDEX IF NOT EXISTS brc20_tickers_tick_pattern_idx ON public.brc20_tickers USING btree (tick text_pattern_ops);
 ";
@@ -43,8 +46,8 @@ CREATE INDEX IF NOT EXISTS brc20_tickers_tick_pattern_idx ON public.brc20_ticker
 /// The API's indexes by name, each created at start when missing.
 pub const INDEXES: [(&str, &str); 3] = [
     (
-        "brc20_current_balances_tick_positive_idx",
-        "CREATE INDEX IF NOT EXISTS brc20_current_balances_tick_positive_idx ON public.brc20_current_balances USING btree (tick, overall_balance DESC) WHERE overall_balance > 0",
+        "brc20_current_balances_tick_holder_idx",
+        "CREATE INDEX IF NOT EXISTS brc20_current_balances_tick_holder_idx ON public.brc20_current_balances USING btree (tick, overall_balance DESC) WHERE overall_balance > 0 AND pkscript <> '6a09425243323050524f47'",
     ),
     (
         "brc20_prog_current_balances_ticker_positive_idx",
@@ -68,11 +71,12 @@ pub async fn create_if_missing(
     for (name, sql) in INDEXES {
         // The lookup comes first, so a start that finds the index never
         // waits on the table lock.
-        let exists = sqlx::query("SELECT 1 FROM pg_indexes WHERE indexname = $1")
-            .bind(name)
-            .fetch_optional(pool)
-            .await?
-            .is_some();
+        let exists =
+            sqlx::query("SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1")
+                .bind(name)
+                .fetch_optional(pool)
+                .await?
+                .is_some();
         if !exists {
             tracing::info!("Creating index {name}");
             sqlx::query(sql).execute(pool).await?;
@@ -91,6 +95,21 @@ pub async fn create_if_missing(
             .execute(pool)
             .await?;
         }
+        // A table counted with the module's pkScript among the holders is
+        // recounted for the tickers that pkScript holds; with nothing to
+        // correct this changes no row.
+        sqlx::query!(
+            "INSERT INTO brc20_ticker_holders (tick, holders)
+             SELECT m.tick,
+                    (SELECT count(*) FROM brc20_current_balances b
+                     WHERE b.tick = m.tick AND b.overall_balance > 0
+                       AND b.pkscript <> '6a09425243323050524f47')
+             FROM brc20_current_balances m
+             WHERE m.pkscript = '6a09425243323050524f47' AND m.overall_balance > 0
+             ON CONFLICT (tick) DO UPDATE SET holders = excluded.holders"
+        )
+        .execute(pool)
+        .await?;
         return Ok(false);
     }
     let mut tx = pool.begin().await?;
@@ -100,7 +119,9 @@ pub async fn create_if_missing(
          SELECT s.tick, sum(s.holders)::int8, sum(s.prog_holders)::int8
          FROM (
              SELECT tick, count(*) AS holders, 0::int8 AS prog_holders
-             FROM brc20_current_balances WHERE overall_balance > 0 GROUP BY tick
+             FROM brc20_current_balances
+             WHERE overall_balance > 0 AND pkscript <> '6a09425243323050524f47'
+             GROUP BY tick
              UNION ALL
              SELECT ticker, 0::int8, count(*)
              FROM brc20_prog_current_balances WHERE amount > 0 GROUP BY ticker
@@ -136,7 +157,8 @@ pub async fn recount_brc20<'a>(
         "INSERT INTO brc20_ticker_holders (tick, holders)
          SELECT t.tick,
                 (SELECT count(*) FROM brc20_current_balances b
-                 WHERE b.tick = t.tick AND b.overall_balance > 0)
+                 WHERE b.tick = t.tick AND b.overall_balance > 0
+                   AND b.pkscript <> '6a09425243323050524f47')
          FROM UNNEST($1::text[]) AS t(tick)
          ON CONFLICT (tick) DO UPDATE SET holders = excluded.holders",
         &ticks
@@ -179,7 +201,8 @@ pub async fn recount_all_brc20(conn: &mut PgConnection) -> Result<(), sqlx::Erro
     sqlx::query!(
         "INSERT INTO brc20_ticker_holders (tick, holders)
          SELECT tick, count(*) FROM brc20_current_balances
-         WHERE overall_balance > 0 GROUP BY tick
+         WHERE overall_balance > 0 AND pkscript <> '6a09425243323050524f47'
+         GROUP BY tick
          ON CONFLICT (tick) DO UPDATE SET holders = excluded.holders"
     )
     .execute(&mut *conn)
@@ -202,6 +225,16 @@ mod tests {
         let reset =
             crate::database::brc20_database::SqlFiles::get_sql_file("db_reset.sql").unwrap();
         assert!(reset.contains(&format!("drop table if exists {TABLE};")));
+    }
+
+    #[test]
+    fn the_sql_names_the_module_pkscript() {
+        let literal = format!("'{}'", crate::config::BRC20_PROG_OP_RETURN_PKSCRIPT);
+        assert!(INDEXES[0].1.contains(&format!("pkscript <> {literal}")));
+        let source = include_str!("ticker_holders.rs");
+        // the index, the start-up correction (twice), the fill and both
+        // recounts
+        assert!(source.matches(&literal).count() >= 6);
     }
 
     #[test]
@@ -233,6 +266,7 @@ mod db_tests {
     const BOB: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const TOKEN: &str = "0x1111111111111111111111111111111111111111";
     const OTHER_TOKEN: &str = "0x2222222222222222222222222222222222222222";
+    const MODULE: &str = crate::config::BRC20_PROG_OP_RETURN_PKSCRIPT;
 
     /// Runs `body` against a throwaway database, dropped even when `body`
     /// panics.
@@ -359,12 +393,14 @@ mod db_tests {
     async fn blocks_and_reorgs_keep_both_counts() {
         with_database("blocks", |name| async move {
             let mut database = database(&name).await;
-            // Block 10: three BRC-20 holders of ordi, one of pepe; ordi on
-            // BRC2.0 with two holders.
+            // Block 10: three BRC-20 holders of ordi, one of pepe, and the
+            // BRC2.0 module's pkScript, which does not count; ordi on BRC2.0
+            // with two holders.
             historic(&database, 1, "a1", "ordi", 5, 10).await;
             historic(&database, 2, "b2", "ordi", 3, 10).await;
             historic(&database, 3, "c3", "ordi", 1, 10).await;
             historic(&database, 4, "c3", "pepe", 9, 10).await;
+            historic(&database, 6, MODULE, "ordi", 1_000, 10).await;
             index_block(
                 &mut database,
                 10,
@@ -411,6 +447,7 @@ mod db_tests {
             let mut database = database(&name).await;
             historic(&database, 1, "a1", "ordi", 5, 10).await;
             historic(&database, 2, "b2", "ordi", 3, 10).await;
+            historic(&database, 3, MODULE, "ordi", 7, 10).await;
             index_block(&mut database, 10, &[]).await;
             sqlx::raw_sql(
                 "UPDATE brc20_ticker_holders SET holders = 99;
@@ -432,6 +469,7 @@ mod db_tests {
             historic(&first, 1, "a1", "ordi", 5, 10).await;
             historic(&first, 2, "b2", "ordi", 0, 10).await;
             historic(&first, 3, "b2", "pepe", 2, 10).await;
+            historic(&first, 4, MODULE, "ordi", 1_000, 10).await;
             index_block(
                 &mut first,
                 10,
@@ -446,7 +484,7 @@ mod db_tests {
 
             sqlx::raw_sql(
                 "DROP TABLE brc20_ticker_holders;
-                 DROP INDEX brc20_current_balances_tick_positive_idx;
+                 DROP INDEX brc20_current_balances_tick_holder_idx;
                  DROP INDEX brc20_prog_current_balances_ticker_positive_idx;
                  DROP INDEX brc20_tickers_tick_pattern_idx;",
             )
@@ -466,6 +504,16 @@ mod db_tests {
                 assert_eq!(found.as_deref(), Some(index));
             }
             assert!(!create_if_missing(&restarted.client, false).await.unwrap());
+            assert_eq!(counts(&restarted).await, indexed);
+
+            // A table that counted the module's pkScript is corrected at
+            // start.
+            sqlx::raw_sql("UPDATE brc20_ticker_holders SET holders = 2 WHERE tick = 'ordi'")
+                .execute(&restarted.client)
+                .await
+                .unwrap();
+            let corrected = database(&name).await;
+            assert_eq!(counts(&corrected).await, indexed);
 
             // BRC2.0 tables created again start their counts from zero; the
             // fill counts them as it writes.
