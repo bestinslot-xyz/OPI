@@ -5003,6 +5003,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "opi-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "dotenvy",
+ "futures",
+ "http-body-util",
+ "jiff",
+ "sqlx",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "opi-bitmap"
 version = "0.1.0"
 dependencies = [
@@ -5066,6 +5082,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "jsonrpsee",
+ "opi-api",
  "opi-bitmap",
  "opi-brc20",
  "opi-core",

@@ -53,6 +53,10 @@ enum Command {
     /// alongside `run`; every other command needs `run` stopped, since it
     /// opens brc20-prog's database.
     Brc20(brc20::Args),
+    /// Serve the OPI HTTP API for the modules OPI_MODULES enables, on
+    /// API_HOST:API_PORT, until SIGINT or SIGTERM. Runs alongside `run`.
+    /// Reads the env file OPI_ENV_FILE names, or `.env`.
+    Api,
 }
 
 /// Why the modules stopped.
@@ -62,17 +66,22 @@ enum Exit {
 }
 
 fn main() -> ExitCode {
-    dotenvy::dotenv().ok();
+    let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Api)) {
+        opi_api::config::load_env();
+    } else {
+        dotenvy::dotenv().ok();
+    }
     tracing_subscriber::fmt()
         .with_target(false)
         .with_writer(std::io::stderr)
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let cli = Cli::parse();
     let result = match cli.command.unwrap_or(Command::Run) {
         Command::Run => run().map(|()| true),
         Command::Brc20(args) => brc20::run(args).map(|()| true),
+        Command::Api => api().map(|()| true),
         Command::Validate(args) => {
             return match validate::run(args) {
                 Ok(true) => ExitCode::SUCCESS,
@@ -161,6 +170,25 @@ fn run() -> Result<()> {
             Err(err)
         }
     }
+}
+
+/// Serves the HTTP API until SIGINT or SIGTERM. It runs no engine, so it
+/// keeps the default panic hook.
+fn api() -> Result<()> {
+    let config = opi_api::config::load_config(|key| std::env::var(key).ok())?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
+            let shutdown = async move {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => tracing::info!("SIGINT received, shutting down"),
+                    _ = sigterm.recv() => tracing::info!("SIGTERM received, shutting down"),
+                }
+            };
+            opi_api::serve(config, shutdown).await
+        })
 }
 
 /// Runs the enabled modules over the journal until a signal arrives or the
