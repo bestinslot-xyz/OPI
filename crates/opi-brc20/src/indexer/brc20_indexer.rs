@@ -2,7 +2,6 @@ use std::{cmp::min, error::Error, sync::Arc};
 
 use brc20_prog::{Brc20Prog, Brc20ProgApiServer};
 use opi_core::BlockSource;
-use tokio::task::JoinHandle;
 use versions::{Requirement, Versioning};
 
 use crate::{
@@ -32,6 +31,7 @@ use crate::{
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
     no_default,
+    service_runtime::ServiceRuntime,
     types::{
         Brc20Tx,
         events::{
@@ -57,15 +57,9 @@ pub struct Brc20Indexer {
     config: Brc20IndexerConfig,
     brc20_prog: Brc20Prog,
     brc20_reporter: Brc20Reporter,
-    bitcoin_proxy_server_handle: Option<JoinHandle<()>>,
-}
-
-impl Drop for Brc20Indexer {
-    fn drop(&mut self) {
-        if let Some(handle) = self.bitcoin_proxy_server_handle.take() {
-            handle.abort();
-        }
-    }
+    /// Hosts the Bitcoin RPC proxy on its own threads, since the engine calls
+    /// the proxy with blocking requests. Dropping it stops the proxy.
+    services: Option<ServiceRuntime>,
 }
 
 impl Brc20Indexer {
@@ -86,7 +80,7 @@ impl Brc20Indexer {
             brc20_prog,
             brc20_reporter,
             event_provider_client,
-            bitcoin_proxy_server_handle: None,
+            services: None,
         }
     }
 
@@ -114,15 +108,14 @@ impl Brc20Indexer {
             let bitcoin_rpc_url_clone = self.config.bitcoin_rpc_url.clone();
             let light_client_mode = self.config.light_client_mode;
             let network_type_clone = self.config.network_type_string.clone();
-            self.bitcoin_proxy_server_handle = Some(tokio::spawn(async move {
-                run_bitcoin_proxy_server(
-                    bitcoin_rpc_url_clone,
-                    light_client_mode,
-                    network_type_clone,
-                    bitcoin_rpc_proxy_addr_clone,
-                )
-                .await
-            }));
+            let services = ServiceRuntime::new("brc20-services")?;
+            services.handle().spawn(run_bitcoin_proxy_server(
+                bitcoin_rpc_url_clone,
+                light_client_mode,
+                network_type_clone,
+                bitcoin_rpc_proxy_addr_clone,
+            ));
+            self.services = Some(services);
 
             let wait_seconds = get_startup_wait_secs();
             tracing::info!(

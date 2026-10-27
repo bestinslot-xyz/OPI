@@ -94,8 +94,8 @@ fn run() -> Result<()> {
     // The engine opens once, before anything starts; module restarts reuse it.
     let brc20_prog = module_configs
         .brc20
-        .is_some()
-        .then(open_brc20_prog)
+        .as_ref()
+        .map(open_brc20_prog)
         .transpose()?;
 
     // The source blocks on its own runtime, so it starts and stops outside
@@ -178,8 +178,8 @@ async fn supervise(
 }
 
 /// Opens the BRC2.0 engine from brc20's environment and brc20-prog's own.
-pub(crate) fn open_brc20_prog() -> Result<Brc20Prog> {
-    let engine_config = Brc20IndexerConfig::default().brc20_prog_config()?;
+pub(crate) fn open_brc20_prog(config: &Brc20IndexerConfig) -> Result<Brc20Prog> {
+    let engine_config = config.brc20_prog_config()?;
     Brc20Prog::open(engine_config).map_err(|e| anyhow!("failed to open the brc20-prog engine: {e}"))
 }
 

@@ -32,7 +32,7 @@ pub(crate) mod test_engine {
 
     /// Answers every Bitcoin RPC call with a regtest `getblockchaininfo`,
     /// which is all `brc20_initialise` asks of bitcoind. Returns the URL.
-    fn spawn_bitcoin_rpc_stub() -> String {
+    pub(crate) fn spawn_bitcoin_rpc_stub() -> String {
         fn answer(stream: TcpStream) -> std::io::Result<()> {
             let mut reader = BufReader::new(stream.try_clone()?);
             let mut content_length = 0usize;
@@ -121,7 +121,15 @@ pub(crate) mod test_engine {
     }
 
     impl TestEngine {
+        /// Opens an engine that talks to a stub bitcoind.
         pub(crate) fn open() -> Self {
+            Self::open_with(spawn_bitcoin_rpc_stub)
+        }
+
+        /// Opens an engine whose Bitcoin RPC URL `bitcoin_rpc_url` returns.
+        /// The engine config is set under the lock, so the closure may start
+        /// services that only the engine's calls reach.
+        pub(crate) fn open_with(bitcoin_rpc_url: impl FnOnce() -> String) -> Self {
             let guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let dir = std::env::temp_dir().join(format!(
                 "opi-brc20-engine-{}-{}",
@@ -133,7 +141,7 @@ pub(crate) mod test_engine {
             ));
             let mut config = Brc20ProgConfig::from_env();
             config.db_path = dir.to_string_lossy().into_owned();
-            config.bitcoin_rpc_url = spawn_bitcoin_rpc_stub();
+            config.bitcoin_rpc_url = bitcoin_rpc_url();
             config.bitcoin_rpc_network = "regtest".to_string();
             config.bitcoin_rpc_user = String::new();
             config.bitcoin_rpc_password = String::new();
@@ -155,7 +163,47 @@ pub(crate) mod test_engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{test_engine::TestEngine, *};
+    use super::{
+        test_engine::{TestEngine, spawn_bitcoin_rpc_stub},
+        *,
+    };
+
+    /// The engine calls the Bitcoin RPC proxy with blocking requests from the
+    /// brc20 runtime, so the proxy must run on threads of its own. Hosted on
+    /// this current-thread runtime, as `tokio::spawn` would, it never answers
+    /// and `brc20_initialise` fails with "Bitcoin RPC unreachable".
+    #[tokio::test]
+    async fn engine_initialises_through_a_proxy_on_the_service_runtime() {
+        use crate::{
+            config::Brc20IndexerConfig,
+            database::{Brc20Database, replace_brc20_database},
+            indexer::brc20_prog_btc_proxy_server::run_bitcoin_proxy_server,
+            service_runtime::ServiceRuntime,
+        };
+
+        replace_brc20_database(Brc20Database::new(&Brc20IndexerConfig::default())).await;
+        let services = ServiceRuntime::new("brc20-test-services").unwrap();
+        let stub_url = spawn_bitcoin_rpc_stub();
+        let proxy_addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().to_string()
+        };
+
+        let engine = TestEngine::open_with(|| format!("http://{proxy_addr}"));
+        services.handle().spawn(run_bitcoin_proxy_server(
+            stub_url,
+            false,
+            "regtest".to_string(),
+            proxy_addr,
+        ));
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        engine
+            .prog
+            .brc20_initialise("0".repeat(64).as_str().try_into().unwrap(), 0, 0)
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn in_process_engine_mines_commits_and_traces() {

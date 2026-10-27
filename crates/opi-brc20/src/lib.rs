@@ -3,4 +3,5 @@ pub mod config;
 pub mod database;
 pub mod indexer;
 pub mod module;
+pub mod service_runtime;
 pub mod types;
