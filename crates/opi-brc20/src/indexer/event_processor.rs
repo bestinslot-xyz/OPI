@@ -88,7 +88,7 @@ impl EventProcessor {
                 string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
             )
             .await
-            .expect("Failed to deploy smart contract, please check your brc20_prog node");
+            .expect("Failed to deploy smart contract, the embedded brc20-prog engine failed");
 
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::one())
@@ -149,7 +149,7 @@ impl EventProcessor {
                 string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
             )
             .await
-            .expect("Failed to call smart contract, please check your brc20_prog node");
+            .expect("Failed to call smart contract, the embedded brc20-prog engine failed");
 
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::one())
@@ -198,7 +198,7 @@ impl EventProcessor {
                 string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
             )
             .await
-            .expect("Failed to run transact, please check your brc20_prog node");
+            .expect("Failed to run transact, the embedded brc20-prog engine failed");
 
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::count(transact_result.len() as u64))
@@ -262,7 +262,7 @@ impl EventProcessor {
                 inscription_id.to_string(),
             )
             .await
-            .expect("Failed to run withdraw, please check your brc20_prog node");
+            .expect("Failed to run withdraw, the embedded brc20-prog engine failed");
 
         if !withdraw_result.status.is_zero() {
             let mut brc20_prog_balance = get_brc20_database()
