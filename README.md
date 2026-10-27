@@ -110,14 +110,13 @@ command.
 #### BRC2.0 engine
 
 When `brc20` is enabled, the brc20-prog engine (`Brc20Prog`, brc20-prog 0.16)
-runs inside the `opi-indexer` process. There
-is no separate brc20-prog server.
+runs inside the `opi-indexer` process. There is no separate brc20-prog server.
 
 | Variable | Meaning |
 | --- | --- |
 | `BRC20_PROG_DB_PATH` | directory of the engine's database; required |
 | `BRC20_PROG_RPC_SERVER_URL` | address of the public JSON-RPC server, default `127.0.0.1:18545` |
-| `BRC20_PROG_RPC_SERVER_ENABLED` | `false` turns the public JSON-RPC server off; any other value, or unset, leaves it on |
+| `BRC20_PROG_RPC_SERVER_ENABLED` | the public JSON-RPC server runs when this is unset or exactly `true`; any other value turns it off |
 | `EVM_RECORD_TRACES` | records transaction traces for `debug_traceTransaction` |
 
 `run` serves brc20-prog's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL`.
@@ -126,8 +125,10 @@ indexer methods (`brc20_mine` and the like). The engine reads its remaining
 settings from brc20-prog's own variables (HTTP basic auth, `EVM_CALL_GAS_LIMIT`,
 request limits; see brc20-prog's configuration docs). Its Bitcoin RPC endpoint is
 the Bitcoin RPC proxy (`BITCOIN_RPC_PROXY_SERVER_ADDR`) when
-`BITCOIN_RPC_PROXY_SERVER_ENABLED=true`; otherwise it is `BITCOIN_RPC_URL` with
-`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, which are then required. The
+`BITCOIN_RPC_PROXY_SERVER_ENABLED=true` (the code default is `false`; `.env_sample`
+sets `true`). With the proxy off it is `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER`
+and `BITCOIN_RPC_PASSWD`, which are then required; `BITCOIN_RPC_COOKIE` is not
+used for it. The
 network and chain id follow `NETWORK_TYPE`; brc20-prog's own `BITCOIN_RPC_URL`,
 `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_NETWORK` have no
 effect.

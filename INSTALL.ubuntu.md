@@ -162,7 +162,7 @@ Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 > [!NOTE]
 > With the `brc20` module, the BRC2.0 engine (brc20-prog) runs inside `opi-indexer`; there is no separate server to install. Set `BRC20_PROG_DB_PATH` in `.env` to a writable directory. `opi-indexer run` serves the engine's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL` (default `127.0.0.1:18545`).
 >
-> The engine reaches bitcoind through the Bitcoin RPC proxy when `BITCOIN_RPC_PROXY_SERVER_ENABLED=true`; otherwise it uses `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`. The network follows `NETWORK_TYPE`.
+> The engine reaches bitcoind through the Bitcoin RPC proxy when `BITCOIN_RPC_PROXY_SERVER_ENABLED=true` (the code default is `false`; `.env_sample` sets `true`). With the proxy off it uses `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, which are then required; `BITCOIN_RPC_COOKIE` is not used for it. The network follows `NETWORK_TYPE`.
 >
 > A node that ran the standalone brc20-prog server stops it and points `BRC20_PROG_DB_PATH` at its database.
 
