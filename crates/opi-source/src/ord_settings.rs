@@ -1,7 +1,7 @@
 use {
     anyhow::{Result, ensure},
     clap::Parser,
-    ord::{Chain, Options, settings::Settings},
+    ord::{Chain, Index, Options, settings::Settings},
     std::path::Path,
 };
 
@@ -9,19 +9,26 @@ use {
 /// barrier or when `update()` returns.
 pub const COMMIT_INTERVAL: usize = u32::MAX as usize;
 
-/// Builds the ord settings the indexer runs with: rune indexing on and a commit
-/// interval of [`COMMIT_INTERVAL`]. The index file is `index` when given, else
-/// ord's default path under `data_dir`.
+/// Builds the ord settings the indexer runs with: rune indexing when `runes`
+/// is set and a commit interval of [`COMMIT_INTERVAL`]. The index file is
+/// `index` when given, else ord's default path under `data_dir`.
 pub fn ord_settings(
     chain: Chain,
     data_dir: &Path,
     rpc_url: &str,
     index: Option<&Path>,
+    runes: bool,
 ) -> Result<Settings> {
-    Settings::load(options(chain, data_dir, rpc_url, index)?)
+    Settings::load(options(chain, data_dir, rpc_url, index, runes)?)
 }
 
-fn options(chain: Chain, data_dir: &Path, rpc_url: &str, index: Option<&Path>) -> Result<Options> {
+fn options(
+    chain: Chain,
+    data_dir: &Path,
+    rpc_url: &str,
+    index: Option<&Path>,
+    runes: bool,
+) -> Result<Options> {
     let mut args = vec![
         "ord".to_string(),
         "--chain".into(),
@@ -34,10 +41,12 @@ fn options(chain: Chain, data_dir: &Path, rpc_url: &str, index: Option<&Path>) -
         "opi".into(),
         "--bitcoin-rpc-password".into(),
         "opi".into(),
-        "--index-runes".into(),
         "--commit-interval".into(),
         COMMIT_INTERVAL.to_string(),
     ];
+    if runes {
+        args.push("--index-runes".into());
+    }
     if let Some(index) = index {
         args.push("--index".into());
         args.push(index.to_string_lossy().into_owned());
@@ -48,9 +57,11 @@ fn options(chain: Chain, data_dir: &Path, rpc_url: &str, index: Option<&Path>) -
 /// Refuses ord settings that break the commit barrier: ord commits a block
 /// only at a savepoint barrier, which `integration_test` switches off, or at
 /// the end of `update()`, which any commit interval below [`COMMIT_INTERVAL`]
-/// pre-empts. `ORD_INTEGRATION_TEST` and an `ord.yaml` in the data dir both
-/// reach these settings.
-pub fn check_ord_settings(settings: &Settings) -> Result<()> {
+/// pre-empts. Also refuses rune indexing that differs from `runes`: the
+/// journal's rune records follow the same switch. `ORD_INTEGRATION_TEST`,
+/// `ORD_INDEX_RUNES` and an `ord.yaml` in the data dir all reach these
+/// settings.
+pub fn check_ord_settings(settings: &Settings, runes: bool) -> Result<()> {
     ensure!(
         !settings.integration_test(),
         "ord's integration_test setting is on (ORD_INTEGRATION_TEST or ord.yaml); it disables \
@@ -62,7 +73,37 @@ pub fn check_ord_settings(settings: &Settings) -> Result<()> {
          committing only at savepoint barriers and the end of update()",
         settings.commit_interval()
     );
+    ensure!(
+        settings.index_runes_raw() == runes,
+        "ord's index_runes setting is on (ORD_INDEX_RUNES or ord.yaml), but runes is disabled; \
+         rune indexing follows the enabled modules"
+    );
     Ok(())
+}
+
+/// Refuses an ord index whose rune indexing differs from `runes`. ord records
+/// the setting when it creates the index and keeps it on every later open,
+/// so switching needs a new ord data dir and journal.
+pub fn check_ord_index(index: &Index, data_dir: &Path, runes: bool) -> Result<()> {
+    let built = index.has_rune_index();
+    ensure!(
+        built == runes,
+        "ord's index was built {} rune indexing, but runes is {}; start with runes {} again, \
+         or delete ord's data dir {} and the journal and index again",
+        with_or_without(built),
+        enabled_or_disabled(runes),
+        enabled_or_disabled(built),
+        data_dir.display()
+    );
+    Ok(())
+}
+
+pub(crate) fn with_or_without(runes: bool) -> &'static str {
+    if runes { "with" } else { "without" }
+}
+
+pub(crate) fn enabled_or_disabled(runes: bool) -> &'static str {
+    if runes { "enabled" } else { "disabled" }
 }
 
 #[cfg(test)]
@@ -79,21 +120,43 @@ mod tests {
         Settings::merge(options, env).unwrap()
     }
 
-    fn indexer_options(dir: &Path) -> Options {
-        options(Chain::Regtest, dir, "http://127.0.0.1:1", None).unwrap()
+    fn indexer_options(dir: &Path, runes: bool) -> Options {
+        options(Chain::Regtest, dir, "http://127.0.0.1:1", None, runes).unwrap()
     }
 
     #[test]
     fn accepts_the_indexer_settings() {
         let dir = tempfile::tempdir().unwrap();
-        check_ord_settings(&merged(indexer_options(dir.path()), &[])).unwrap();
+        for runes in [true, false] {
+            check_ord_settings(&merged(indexer_options(dir.path(), runes), &[]), runes).unwrap();
+        }
+    }
+
+    #[test]
+    fn rune_indexing_follows_the_runes_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        for runes in [true, false] {
+            let settings = merged(indexer_options(dir.path(), runes), &[]);
+            assert_eq!(settings.index_runes_raw(), runes);
+        }
+    }
+
+    #[test]
+    fn refuses_rune_indexing_switched_on_outside_the_indexer() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = merged(indexer_options(dir.path(), false), &[("INDEX_RUNES", "1")]);
+        let err = check_ord_settings(&settings, false).unwrap_err();
+        assert!(err.to_string().contains("ORD_INDEX_RUNES"), "{err:#}");
     }
 
     #[test]
     fn refuses_integration_test() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = merged(indexer_options(dir.path()), &[("INTEGRATION_TEST", "1")]);
-        let err = check_ord_settings(&settings).unwrap_err();
+        let settings = merged(
+            indexer_options(dir.path(), true),
+            &[("INTEGRATION_TEST", "1")],
+        );
+        let err = check_ord_settings(&settings, true).unwrap_err();
         assert!(err.to_string().contains("integration_test"), "{err:#}");
     }
 
@@ -111,7 +174,7 @@ mod tests {
             "5000",
         ])
         .unwrap();
-        let err = check_ord_settings(&merged(options, &[])).unwrap_err();
+        let err = check_ord_settings(&merged(options, &[]), false).unwrap_err();
         assert!(err.to_string().contains("commit interval"), "{err:#}");
     }
 }

@@ -19,7 +19,8 @@ use {
 /// block hashes. On a mismatch it deletes every transfer record and header
 /// above the highest agreeing height, the info rows of inscriptions created
 /// and the first-transfer entries of transfers recorded above it, rolls the
-/// rune tables back to that height, sets `final_tip` to that height and
+/// rune tables of a journal that keeps them back to that height, sets
+/// `final_tip` to that height and
 /// returns it, all in one write transaction. Returns `None` when the tip
 /// agrees or nothing is finalized, and fails when no finalized height agrees.
 pub fn reorg_check(journal: &Journal, index: &Index) -> Result<Option<u32>> {
@@ -72,7 +73,9 @@ pub fn reorg_check(journal: &Journal, index: &Index) -> Result<Option<u32>> {
         let first = (agreed + 1).to_be_bytes();
         headers.retain_in::<&[u8], _>(first.as_slice().., |_, _| false)?;
     }
-    undo_runes(&tx, agreed)?;
+    if journal.runes() {
+        undo_runes(&tx, agreed)?;
+    }
     set_final_tip(&tx, Some(agreed))?;
     tx.commit()?;
     Ok(Some(agreed))

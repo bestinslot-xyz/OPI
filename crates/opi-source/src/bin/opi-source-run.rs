@@ -34,6 +34,11 @@ fn config() -> Result<SourceConfig> {
                 .conflicts_with("rpc-user"),
         )
         .arg(Arg::new("chunk").long("chunk"))
+        .arg(
+            Arg::new("no-runes")
+                .long("no-runes")
+                .action(clap::ArgAction::SetTrue),
+        )
         .get_matches();
 
     let get = |name: &str| matches.get_one::<String>(name).cloned();
@@ -55,6 +60,7 @@ fn config() -> Result<SourceConfig> {
             Some(chunk) => chunk.parse().context("invalid --chunk")?,
             None => DEFAULT_CHUNK,
         },
+        runes: !matches.get_flag("no-runes"),
     })
 }
 

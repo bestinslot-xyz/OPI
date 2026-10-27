@@ -155,12 +155,12 @@ fn journal_open_recovers_from_interrupted_init() {
     let init = tmp.path().join("journal.redb.init");
     std::fs::write(&init, b"torn garbage").unwrap();
 
-    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert!(journal.created());
     drop(journal);
     assert!(!init.exists());
 
-    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert!(!journal.created());
 }
 

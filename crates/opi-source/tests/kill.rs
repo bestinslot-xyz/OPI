@@ -2,7 +2,10 @@ mod support;
 
 use {
     bitcoin::{OutPoint, Txid},
-    opi_source::driver::spawn_source,
+    opi_source::{
+        driver::{SourceConfig, spawn_source},
+        journal::cf,
+    },
     ord::InscriptionId,
     ordinals::{Edict, Etching, RuneId, Runestone, Terms},
     rand::{RngExt, SeedableRng, rngs::StdRng},
@@ -14,7 +17,7 @@ use {
         thread,
         time::{Duration, Instant},
     },
-    support::{Harness, RUNE_TABLES, dump, envelope, source_config, wait_for_tip},
+    support::{Harness, RUNE_TABLES, dump_with, envelope, source_config, wait_for_tip},
 };
 
 const TIP: u32 = 60;
@@ -184,9 +187,13 @@ struct SourceProcess {
 }
 
 impl SourceProcess {
-    fn spawn(harness: &Harness, dir: &Path, name: &str) -> SourceProcess {
+    fn spawn(harness: &Harness, dir: &Path, name: &str, runes: bool) -> SourceProcess {
         let stderr = dir.join(format!("{name}.stderr"));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_opi-source-run"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_opi-source-run"));
+        if !runes {
+            command.arg("--no-runes");
+        }
+        let mut child = command
             .args(["--chain", "regtest", "--chunk", &CHUNK.to_string()])
             .arg("--ord-data-dir")
             .arg(dir.join("ord"))
@@ -296,41 +303,67 @@ fn seed() -> u64 {
 
 #[test]
 fn random_kills_converge_to_uninterrupted_journal() {
+    random_kills_converge(true);
+}
+
+#[test]
+fn random_kills_converge_to_uninterrupted_journal_without_runes() {
+    random_kills_converge(false);
+}
+
+fn random_kills_converge(runes: bool) {
     let seed = seed();
     println!("OPI_KILL_SEED={seed}");
     let mut rng = StdRng::seed_from_u64(seed);
     let harness = scenario();
 
     let reference = tempfile::tempdir().unwrap();
-    let config = source_config(reference.path(), harness.core.url(), CHUNK);
+    let config = SourceConfig {
+        runes,
+        ..source_config(reference.path(), harness.core.url(), CHUNK)
+    };
     let reference_journal = config.journal_path();
     let source = spawn_source(config).unwrap();
     wait_for_tip(&source.reader(), TIP);
     source.shutdown();
     source.join().unwrap();
-    let expected = dump(&reference_journal);
-    for table in RUNE_TABLES {
+    let expected = dump_with(&reference_journal, runes);
+    let filled = if runes {
+        RUNE_TABLES.as_slice()
+    } else {
+        [cf::TRANSFERS, cf::INFO, cf::HEADERS, cf::FIRST_TRANSFER].as_slice()
+    };
+    for table in filled {
         assert!(
-            expected.iter().any(|(name, _, _)| *name == table),
+            expected.iter().any(|(name, _, _)| name == table),
             "the workload leaves {table} empty"
+        );
+    }
+    if !runes {
+        assert!(
+            !expected
+                .iter()
+                .any(|(name, _, _)| RUNE_TABLES.contains(name)),
+            "a journal without runes holds rune rows"
         );
     }
 
     let killed = tempfile::tempdir().unwrap();
     for iteration in 0..ITERATIONS {
         let context = format!("seed {seed}, iteration {iteration}");
-        let mut child = SourceProcess::spawn(&harness, killed.path(), &format!("kill-{iteration}"));
+        let mut child =
+            SourceProcess::spawn(&harness, killed.path(), &format!("kill-{iteration}"), runes);
         thread::sleep(Duration::from_millis(rng.random_range(50..=500)));
         child.assert_running(&context);
         child.kill(&context);
     }
 
     let context = format!("seed {seed}, final run");
-    let mut last = SourceProcess::spawn(&harness, killed.path(), "final");
+    let mut last = SourceProcess::spawn(&harness, killed.path(), "final", runes);
     last.wait_for_tip(TIP, &context);
     last.terminate(&context);
 
-    let actual = dump(&killed.path().join("journal").join("journal.redb"));
+    let actual = dump_with(&killed.path().join("journal").join("journal.redb"), runes);
     if let Some(at) =
         (0..expected.len().max(actual.len())).find(|&i| expected.get(i) != actual.get(i))
     {

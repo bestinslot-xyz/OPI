@@ -67,6 +67,7 @@ impl Config {
                 bitcoin_rpc_url: required("BITCOIN_RPC_URL")?,
                 bitcoin_auth,
                 chunk,
+                runes: modules.contains(&ModuleKind::Runes),
             },
             modules,
         })
@@ -275,6 +276,28 @@ mod tests {
         assert!(load(&vars).is_err());
         vars.insert("OPI_MODULES", "");
         assert!(load(&vars).is_err());
+    }
+
+    #[test]
+    fn rune_indexing_follows_the_module_list() {
+        let cases = [
+            (None, false),
+            (Some("brc20"), false),
+            (Some("bitmap"), false),
+            (Some("sns"), false),
+            (Some("brc20,bitmap,sns"), false),
+            (Some("runes"), true),
+            (Some("brc20,runes"), true),
+            (Some("sns, runes ,bitmap"), true),
+            (Some("brc20,bitmap,sns,runes"), true),
+        ];
+        for (modules, runes) in cases {
+            let mut vars = base();
+            if let Some(modules) = modules {
+                vars.insert("OPI_MODULES", modules);
+            }
+            assert_eq!(load(&vars).unwrap().source.runes, runes, "{modules:?}");
+        }
     }
 
     #[test]

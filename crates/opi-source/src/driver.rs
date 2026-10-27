@@ -3,7 +3,7 @@
 
 use {
     crate::{
-        check_ord_settings,
+        check_ord_index, check_ord_settings,
         journal::{
             ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalReader, RuneModelError,
             finalize_range, init_path, remove_if_exists, reorg_check, sync_parent,
@@ -46,6 +46,9 @@ pub struct SourceConfig {
     pub bitcoin_auth: UpstreamAuth,
     /// Blocks per `update()`; [`DEFAULT_CHUNK`] unless testing.
     pub chunk: u32,
+    /// Whether ord indexes runes and the journal keeps rune records. Fixed
+    /// for the life of an ord data dir and journal.
+    pub runes: bool,
 }
 
 impl SourceConfig {
@@ -130,10 +133,10 @@ impl Drop for SourceHandle {
 /// against ord, and spawns the driver thread.
 ///
 /// Fails when ord's settings break the commit barrier (see
-/// [`check_ord_settings`]), when the journal belongs to another chain, or when
-/// ord's index holds
-/// committed blocks the raw event log never logged (a new, older or foreign
-/// journal).
+/// [`check_ord_settings`]), when the journal belongs to another chain, when
+/// the journal or ord's index was built with the other rune indexing setting
+/// (see [`check_ord_index`]), or when ord's index holds committed blocks the
+/// raw event log never logged (a new, older or foreign journal).
 ///
 /// It blocks on the source's own runtime, so call it from a non-async
 /// context; async callers use `tokio::task::spawn_blocking`.
@@ -142,7 +145,7 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     std::fs::create_dir_all(&cfg.journal_dir)
         .with_context(|| format!("creating {}", cfg.journal_dir.display()))?;
     let journal_path = cfg.journal_path();
-    let journal = Journal::open(&journal_path, cfg.chain)?;
+    let journal = Journal::open(&journal_path, cfg.chain, cfg.runes)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -174,11 +177,12 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     let stager_task = runtime.spawn(stager.run());
 
     let started = (|| {
-        let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, &proxy.url(), None)?;
-        check_ord_settings(&settings)?;
+        let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, &proxy.url(), None, cfg.runes)?;
+        check_ord_settings(&settings, cfg.runes)?;
         init_ord_index(&cfg, &proxy.url(), settings.index())?;
         let index = Arc::new(Index::open_with_event_sender(&settings, Some(events))?);
         opened.set(Arc::downgrade(&index)).ok();
+        check_ord_index(&index, &cfg.ord_data_dir, cfg.runes)?;
         check_startup(&journal, &index, &settings)?;
         Ok::<_, anyhow::Error>(index)
     })();
@@ -235,7 +239,13 @@ fn init_ord_index(cfg: &SourceConfig, rpc_url: &str, index: &Path) -> Result<()>
     if index.exists() {
         return Ok(());
     }
-    let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, rpc_url, Some(&init))?;
+    let settings = ord_settings(
+        cfg.chain,
+        &cfg.ord_data_dir,
+        rpc_url,
+        Some(&init),
+        cfg.runes,
+    )?;
     drop(Index::open_with_event_sender(&settings, None)?);
     std::fs::rename(&init, index)
         .with_context(|| format!("renaming {} into place", init.display()))?;

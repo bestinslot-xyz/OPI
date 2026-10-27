@@ -10,7 +10,7 @@ use {
         table, transfer_key,
     },
     ord::Chain,
-    redb::ReadableDatabase,
+    redb::{ReadableDatabase, TableHandle},
 };
 
 const TXID_A: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -311,7 +311,7 @@ fn rune_keys_sort_numerically() {
 #[test]
 fn open_creates_rune_tables() {
     let dir = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&dir.path().join("journal"), Chain::Regtest).unwrap();
+    let journal = Journal::open(&dir.path().join("journal"), Chain::Regtest, true).unwrap();
     let tx = journal.db().begin_read().unwrap();
     for name in [
         cf::RUNE_EVENTS,
@@ -344,7 +344,7 @@ fn get_meta(journal: &Journal, key: &[u8]) -> Option<Vec<u8>> {
 fn open_creates_tables_and_meta() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
-    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert_eq!(journal.final_tip().unwrap(), None);
     assert_eq!(get_meta(&journal, b"chain").unwrap(), b"regtest");
     assert_eq!(get_meta(&journal, b"schema").unwrap(), 1u32.to_be_bytes());
@@ -365,9 +365,9 @@ fn open_creates_tables_and_meta() {
 fn reopen_rejects_chain_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
-    drop(Journal::open(&path, Chain::Regtest).unwrap());
-    drop(Journal::open(&path, Chain::Regtest).unwrap());
-    let err = Journal::open(&path, Chain::Signet).err().unwrap();
+    drop(Journal::open(&path, Chain::Regtest, true).unwrap());
+    drop(Journal::open(&path, Chain::Regtest, true).unwrap());
+    let err = Journal::open(&path, Chain::Signet, true).err().unwrap();
     assert!(err.to_string().contains("chain"), "{err}");
 }
 
@@ -376,10 +376,10 @@ fn reopen_rejects_schema_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     {
-        let journal = Journal::open(&path, Chain::Regtest).unwrap();
+        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
         put_meta(&journal, b"schema", &2u32.to_be_bytes());
     }
-    let err = Journal::open(&path, Chain::Regtest).err().unwrap();
+    let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
     assert!(err.to_string().contains("schema"), "{err}");
 }
 
@@ -390,10 +390,10 @@ fn reopen_rejects_finalized_journal_without_rune_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     {
-        let journal = Journal::open(&path, Chain::Regtest).unwrap();
+        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
         put_meta(&journal, b"final_tip", &10u32.to_be_bytes());
     }
-    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert_eq!(journal.final_tip().unwrap(), Some(10));
     {
         let mut tx = journal.db().begin_write().unwrap();
@@ -404,7 +404,7 @@ fn reopen_rejects_finalized_journal_without_rune_tables() {
         tx.commit().unwrap();
     }
     drop(journal);
-    let err = Journal::open(&path, Chain::Regtest).err().unwrap();
+    let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
     assert!(err.to_string().contains("predates rune indexing"), "{err}");
 }
 
@@ -414,22 +414,143 @@ fn reopen_adds_rune_tables_before_any_finalize() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     {
-        let journal = Journal::open(&path, Chain::Regtest).unwrap();
+        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
         let mut tx = journal.db().begin_write().unwrap();
         tx.set_durability(redb::Durability::Immediate).unwrap();
         assert!(tx.delete_table(table(cf::RUNE_BALANCES)).unwrap());
         tx.commit().unwrap();
     }
-    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     let tx = journal.db().begin_read().unwrap();
     tx.open_table(table(cf::RUNE_BALANCES)).unwrap();
+}
+
+fn table_names(journal: &Journal) -> Vec<String> {
+    journal
+        .db()
+        .begin_read()
+        .unwrap()
+        .list_tables()
+        .unwrap()
+        .map(|handle| handle.name().to_string())
+        .collect()
+}
+
+fn remove_meta(journal: &Journal, key: &[u8]) {
+    let mut tx = journal.db().begin_write().unwrap();
+    tx.set_durability(redb::Durability::Immediate).unwrap();
+    tx.open_table(table(cf::META)).unwrap().remove(key).unwrap();
+    tx.commit().unwrap();
+}
+
+/// A journal created without runes records the setting and has no rune
+/// tables; one created with runes records it and has them.
+#[test]
+fn open_records_the_runes_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let without = Journal::open(&dir.path().join("without"), Chain::Regtest, false).unwrap();
+    assert!(!without.runes());
+    assert_eq!(get_meta(&without, b"runes").unwrap(), [0]);
+    let names = table_names(&without);
+    for name in [
+        cf::RUNE_EVENTS,
+        cf::RUNE_ETCHINGS,
+        cf::RUNE_COUNTERS,
+        cf::RUNE_COUNTER_LOG,
+        cf::RUNE_BALANCES,
+    ] {
+        assert!(!names.iter().any(|have| have == name), "{name}");
+    }
+    for name in [cf::TRANSFERS, cf::INFO, cf::HEADERS, cf::RAW_EVENTS] {
+        assert!(names.iter().any(|have| have == name), "{name}");
+    }
+
+    let with = Journal::open(&dir.path().join("with"), Chain::Regtest, true).unwrap();
+    assert!(with.runes());
+    assert_eq!(get_meta(&with, b"runes").unwrap(), [1]);
+}
+
+#[test]
+fn reopen_without_runes_keeps_the_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    drop(Journal::open(&path, Chain::Regtest, false).unwrap());
+    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+    assert!(!journal.runes());
+    assert!(!journal.created());
+}
+
+#[test]
+fn reopen_with_runes_refuses_a_journal_built_without() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    drop(Journal::open(&path, Chain::Regtest, false).unwrap());
+    let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
+    let message = format!("{err:#}");
+    assert!(message.contains("built without rune indexing"), "{message}");
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    assert!(message.contains("ord's data dir"), "{message}");
+    // The refused open changes nothing.
+    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+    assert!(
+        !table_names(&journal)
+            .iter()
+            .any(|have| have == cf::RUNE_EVENTS)
+    );
+}
+
+#[test]
+fn reopen_without_runes_refuses_a_journal_built_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    drop(Journal::open(&path, Chain::Regtest, true).unwrap());
+    let err = Journal::open(&path, Chain::Regtest, false).err().unwrap();
+    let message = format!("{err:#}");
+    assert!(message.contains("built with rune indexing"), "{message}");
+    assert!(message.contains(&path.display().to_string()), "{message}");
+}
+
+/// A finalized journal without the runes meta row counts as built with runes
+/// when it has the rune tables, and gains the row on a runes open.
+#[test]
+fn journal_without_the_runes_row_follows_its_rune_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    {
+        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
+        put_meta(&journal, b"final_tip", &10u32.to_be_bytes());
+        remove_meta(&journal, b"runes");
+    }
+    let err = Journal::open(&path, Chain::Regtest, false).err().unwrap();
+    assert!(
+        format!("{err:#}").contains("built with rune indexing"),
+        "{err:#}"
+    );
+    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
+    assert!(journal.runes());
+    assert_eq!(get_meta(&journal, b"runes").unwrap(), [1]);
+}
+
+/// A journal without the runes meta row and without finalized blocks takes
+/// the setting it is opened with.
+#[test]
+fn unfinalized_journal_without_the_runes_row_takes_the_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    {
+        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
+        remove_meta(&journal, b"runes");
+    }
+    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+    assert!(!journal.runes());
+    assert_eq!(get_meta(&journal, b"runes").unwrap(), [0]);
 }
 
 #[test]
 fn final_tip_reads_meta() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
-    let journal = Journal::open(&path, Chain::Regtest).unwrap();
+    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     put_meta(&journal, b"final_tip", &840_000u32.to_be_bytes());
     assert_eq!(journal.final_tip().unwrap(), Some(840_000));
 }

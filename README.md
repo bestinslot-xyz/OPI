@@ -46,6 +46,32 @@ transaction's input and burn events canonically.
 `NETWORK_TYPE` and `REPORT_TO_INDEXER`, `REPORT_URL`, `REPORT_NAME`,
 `REPORT_RETRIES` are shared by all modules.
 
+#### Running without runes
+
+Rune indexing follows `OPI_MODULES`: ord runs with `--index-runes` and the
+journal keeps rune records only when `runes` is in the list. A box that serves
+BRC-20, Bitmap and SNS sets, for example:
+
+```bash
+OPI_MODULES=brc20,bitmap,sns
+```
+
+ord then builds no rune tables and does no rune work per block, and the
+journal has no rune tables, so both ord's index and the journal need less disk.
+
+The choice is fixed per ord data dir and journal: ord records it in its index
+when it creates the index, and the journal records it in its `runes` meta row.
+A start whose `OPI_MODULES` disagrees with either is refused with a message
+naming the journal or ord data dir to rebuild, for example:
+
+```text
+ord's index was built with rune indexing, but runes is disabled; start with runes enabled again, or delete ord's data dir /data/ord and the journal and index again
+```
+
+To switch, either put `OPI_MODULES` back as it was, or delete `OPI_ORD_DATA_DIR`
+and `OPI_JOURNAL_DIR` and index from the start with the new list. Adding runes
+to an index built without them always takes a rebuild.
+
 ### Prerequisites
 
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
@@ -69,7 +95,7 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
-| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`), default `brc20` |
+| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) |
 | `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE` and `RUNES_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
@@ -662,12 +688,16 @@ the fork carries one.
 
 **A4: durable, non-test settings.** ord opens its index with
 `Durability::Immediate` outside its own unit tests, and `integration_test`
-defaults to false. `ord_settings` passes `--index-runes` and
-`--commit-interval 4294967295` and never sets `--integration-test`. `ORD_*`
-environment variables and an `ord.yaml` in the data dir are merged by
-`Settings::load`, so `spawn_source` checks the merged settings
-(`check_ord_settings` in `opi-source/src/ord_settings.rs`) and refuses to start
-when `integration_test` is on or the commit interval differs.
+defaults to false. `ord_settings` passes `--commit-interval 4294967295`,
+passes `--index-runes` when runes is enabled, and never sets
+`--integration-test`. `ORD_*` environment variables and an `ord.yaml` in the
+data dir are merged by `Settings::load`, so `spawn_source` checks the merged
+settings (`check_ord_settings` in `opi-source/src/ord_settings.rs`) and refuses
+to start when `integration_test` is on, the commit interval differs, or rune
+indexing differs from the runes switch. ord stores its rune setting in the
+index's statistics when it creates the index and reads it back on every open,
+ignoring the flag, so `check_ord_index` compares `Index::has_rune_index` with
+the switch after the open.
 
 **Inscription rules.** The journal reproduces the fork's numbering and transfer
 rules, which are built on ord 0.23.2. Between 0.23.2 and 0.29.1 ord changes no

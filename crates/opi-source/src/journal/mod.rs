@@ -14,6 +14,7 @@ pub use {
 };
 
 use {
+    crate::ord_settings::{enabled_or_disabled, with_or_without},
     anyhow::{Context, Result, anyhow, bail},
     ord::Chain,
     redb::{
@@ -76,6 +77,10 @@ const META_FINAL_TIP: &[u8] = b"final_tip";
 const META_GATE_LIMIT: &[u8] = b"gate_limit";
 const META_CHAIN: &[u8] = b"chain";
 const META_SCHEMA: &[u8] = b"schema";
+/// Whether the journal keeps rune records: one byte, 1 or 0, written when the
+/// journal is created. A journal without the row keeps them when it has a
+/// rune table.
+const META_RUNES: &[u8] = b"runes";
 const SCHEMA_VERSION: u32 = 1;
 const ZSTD_LEVEL: i32 = 3;
 
@@ -85,6 +90,14 @@ const ZSTD_LEVEL: i32 = 3;
 pub struct Journal {
     db: Arc<Database>,
     created: bool,
+    runes: bool,
+}
+
+/// The tables of a journal that keeps rune records when `runes` is set.
+fn tables(runes: bool) -> impl Iterator<Item = &'static str> {
+    ALL_TABLES
+        .into_iter()
+        .filter(move |name| runes || !RUNE_TABLES.contains(name))
 }
 
 /// The scratch path a file is built at before being renamed to `path`.
@@ -120,23 +133,25 @@ pub fn table(name: &'static str) -> TableDefinition<'static, &'static [u8], &'st
 }
 
 impl Journal {
-    /// Opens the journal at `path`, creating it for `chain` when absent.
-    /// Fails when an existing journal belongs to another chain or schema, or
-    /// has finalized blocks without the rune tables.
+    /// Opens the journal at `path`, creating it for `chain` when absent, with
+    /// rune records when `runes` is set. Fails when an existing journal
+    /// belongs to another chain or schema, was built with the other `runes`
+    /// setting, or keeps rune records and has finalized blocks without the
+    /// rune tables. A refused open leaves the journal unchanged.
     ///
     /// redb holds an exclusive file lock while the database is open, so a
     /// second `open` of the same path from another process fails.
     ///
     /// A new journal is built at `<path>.init` and renamed into place once
     /// complete, so a crash during creation leaves no half-made journal.
-    pub fn open(path: &Path, chain: Chain) -> Result<Journal> {
+    pub fn open(path: &Path, chain: Chain, runes: bool) -> Result<Journal> {
         let init = init_path(path);
         let created = if path.exists() {
             remove_if_exists(&init)?;
             false
         } else {
             remove_if_exists(&init)?;
-            Self::initialize(&init, chain)?;
+            Self::initialize(&init, chain, runes)?;
             std::fs::rename(&init, path)
                 .with_context(|| format!("renaming {} into place", init.display()))?;
             sync_parent(path)?;
@@ -149,16 +164,18 @@ impl Journal {
         let mut journal = Journal {
             db: Arc::new(db),
             created,
+            runes,
         };
-        if !created {
-            journal.check_rune_tables(path)?;
-        }
+        journal.check_runes(path)?;
         let tx = journal.begin_write()?;
         {
-            for name in ALL_TABLES {
+            for name in tables(runes) {
                 tx.open_table(table(name))?;
             }
             let mut meta = tx.open_table(table(cf::META))?;
+            if meta.get(META_RUNES)?.is_none() {
+                meta.insert(META_RUNES, [u8::from(runes)].as_slice())?;
+            }
             let existing_chain = meta.get(META_CHAIN)?.map(|v| v.value().to_vec());
             let existing_schema = meta.get(META_SCHEMA)?.map(|v| v.value().to_vec());
             match (existing_chain, existing_schema) {
@@ -186,19 +203,42 @@ impl Journal {
         Ok(journal)
     }
 
-    /// Fails when the journal has finalized blocks but lacks a rune table:
-    /// its finalized heights carry no rune state, so the journal and ord's
-    /// data dir are rebuilt together.
-    fn check_rune_tables(&self, path: &Path) -> Result<()> {
+    /// Fails when the journal was built with the other setting than
+    /// `self.runes`, or keeps rune records and has finalized blocks but lacks
+    /// a rune table: its finalized heights then carry no rune state, so the
+    /// journal and ord's data dir are rebuilt together. A journal without the
+    /// runes meta row and without finalized blocks takes `self.runes`.
+    fn check_runes(&self, path: &Path) -> Result<()> {
         let tx = self.db.begin_read()?;
         let names: Vec<String> = tx
             .list_tables()?
             .map(|handle| handle.name().to_string())
             .collect();
-        let missing = RUNE_TABLES
-            .iter()
-            .any(|name| !names.iter().any(|have| have == name));
-        if missing && names.iter().any(|have| have == cf::META) && final_tip_in(&tx)?.is_some() {
+        let has = |name: &str| names.iter().any(|have| have == name);
+        if !has(cf::META) {
+            return Ok(());
+        }
+        let tip = final_tip_in(&tx)?;
+        let built = match tx.open_table(table(cf::META))?.get(META_RUNES)? {
+            Some(raw) => match raw.value() {
+                [0] => false,
+                [1] => true,
+                other => bail!("journal runes setting is {other:?}, expected [0] or [1]"),
+            },
+            None if tip.is_none() => self.runes,
+            None => RUNE_TABLES.iter().any(|name| has(name)),
+        };
+        if built != self.runes {
+            bail!(
+                "journal at {} was built {} rune indexing, but runes is {}; start with runes {} \
+                 again, or delete the journal and ord's data dir and index again",
+                path.display(),
+                with_or_without(built),
+                enabled_or_disabled(self.runes),
+                enabled_or_disabled(built),
+            );
+        }
+        if self.runes && tip.is_some() && !RUNE_TABLES.iter().all(|name| has(name)) {
             bail!(
                 "journal at {} predates rune indexing; delete it and ord's data dir and \
                  index again",
@@ -208,19 +248,20 @@ impl Journal {
         Ok(())
     }
 
-    /// Creates the journal file at `path` with every table and the meta rows
+    /// Creates the journal file at `path` with its tables and the meta rows
     /// in one durable transaction.
-    fn initialize(path: &Path, chain: Chain) -> Result<()> {
+    fn initialize(path: &Path, chain: Chain, runes: bool) -> Result<()> {
         let db = Database::create(path)
             .with_context(|| format!("creating journal at {}", path.display()))?;
         let tx = db.begin_write()?;
         {
-            for name in ALL_TABLES {
+            for name in tables(runes) {
                 tx.open_table(table(name))?;
             }
             let mut meta = tx.open_table(table(cf::META))?;
             meta.insert(META_CHAIN, chain.to_string().as_bytes())?;
             meta.insert(META_SCHEMA, SCHEMA_VERSION.to_be_bytes().as_slice())?;
+            meta.insert(META_RUNES, [u8::from(runes)].as_slice())?;
         }
         tx.commit()?;
         Ok(())
@@ -274,6 +315,11 @@ impl Journal {
     /// data before it.
     pub fn created(&self) -> bool {
         self.created
+    }
+
+    /// Whether the journal keeps rune records.
+    pub fn runes(&self) -> bool {
+        self.runes
     }
 
     pub fn db(&self) -> &Arc<Database> {

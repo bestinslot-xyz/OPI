@@ -75,7 +75,7 @@ async fn setup(blocks: u64, event_capacity: usize) -> Setup {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&tmp.path().join("journal.redb"), Chain::Regtest).unwrap();
+    let journal = Journal::open(&tmp.path().join("journal.redb"), Chain::Regtest, true).unwrap();
     let db = journal.db().clone();
     let (events, events_rx) = mpsc::channel(event_capacity);
     let (barriers, barriers_rx) = mpsc::channel(1);
@@ -302,7 +302,7 @@ async fn discard_pending_drops_partial_block_before_retry() {
 #[tokio::test]
 async fn truncate_raw_above_removes_rows_and_heights() {
     let tmp = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&tmp.path().join("journal.redb"), Chain::Regtest).unwrap();
+    let journal = Journal::open(&tmp.path().join("journal.redb"), Chain::Regtest, true).unwrap();
     let tx = journal.begin_write().unwrap();
     {
         let mut events = tx.open_table(table(cf::RAW_EVENTS)).unwrap();

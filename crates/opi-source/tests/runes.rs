@@ -34,8 +34,14 @@ fn stop(source: SourceHandle) {
 
 /// ord's index of a stopped source under `dir`.
 fn ord_index(harness: &Harness, dir: &Path) -> Index {
-    let settings =
-        ord_settings(Chain::Regtest, &dir.join("ord"), &harness.core.url(), None).unwrap();
+    let settings = ord_settings(
+        Chain::Regtest,
+        &dir.join("ord"),
+        &harness.core.url(),
+        None,
+        true,
+    )
+    .unwrap();
     Index::open(&settings).unwrap()
 }
 

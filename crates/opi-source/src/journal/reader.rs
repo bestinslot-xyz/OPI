@@ -157,7 +157,11 @@ impl BlockSource for JournalReader {
             hash: block.hash,
             time: block.time,
             inscriptions: InscriptionFeed { records, infos },
-            runes: rune_feed_in(&tx, height)?,
+            runes: if self.journal.runes() {
+                rune_feed_in(&tx, height)?
+            } else {
+                RuneFeed::default()
+            },
         }))
     }
 }

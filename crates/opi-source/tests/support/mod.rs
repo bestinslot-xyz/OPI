@@ -323,6 +323,7 @@ pub fn source_config(dir: &Path, url: String, chunk: u32) -> SourceConfig {
         bitcoin_rpc_url: url,
         bitcoin_auth: UpstreamAuth::UserPass("user".into(), "pass".into()),
         chunk,
+        runes: true,
     }
 }
 
@@ -370,10 +371,19 @@ pub const FINALIZED_TABLES: [&str; 9] = [
     cf::RUNE_BALANCES,
 ];
 
-/// Every finalized row of the journal at `path`.
+/// Every finalized row of the journal at `path`, which keeps rune records.
 pub fn dump(path: &Path) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
-    let journal = Journal::open(path, Chain::Regtest).unwrap();
-    dump_tables(journal.db(), &FINALIZED_TABLES)
+    dump_with(path, true)
+}
+
+/// Every finalized row of the journal at `path`, built with `runes`.
+pub fn dump_with(path: &Path, runes: bool) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
+    let journal = Journal::open(path, Chain::Regtest, runes).unwrap();
+    let tables = FINALIZED_TABLES
+        .into_iter()
+        .filter(|name| runes || !RUNE_TABLES.contains(name))
+        .collect::<Vec<_>>();
+    dump_tables(journal.db(), &tables)
 }
 
 /// Every row of the `tables` of the journal database `db`, table by table.
