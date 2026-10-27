@@ -58,7 +58,7 @@ transaction's input and burn events canonically.
 ### Configuration
 
 Copy `.env_sample` to `.env` in the repository root (loaded from the working
-directory, so run `opi-indexer` from there) or export the variables.
+directory or an ancestor, so run `opi-indexer` from inside the repository) or export the variables.
 
 | Variable | Meaning |
 | --- | --- |
@@ -75,7 +75,7 @@ directory, so run `opi-indexer` from there) or export the variables.
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
 | `RUST_LOG` | log filter, default `info` |
 
-`opi-indexer` reads one `.env`, from its working directory. brc20's own
+`opi-indexer` reads one `.env`, from its working directory or an ancestor. brc20's own
 variables (`DB_*`, `OPERATION_MODE`, `BRC20_PROG_*`, `BITCOIN_RPC_CACHE_ENABLED`, ...)
 live in that same file; `.env_sample` lists them. Set `DB_DATABASE` to brc20's
 own database, not `postgres`. brc20 runs in full mode (`OPERATION_MODE=full`).
@@ -402,7 +402,7 @@ another indexer is refused.
 ## API
 
 `opi-indexer api` serves every module in `OPI_MODULES` on one port, from its own
-process. It reads the same `.env` as `run` and needs no Node.js.
+process. It reads the same `.env` as `run`.
 
 - **BRC-20** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances.
 - **Bitmap** exposes block hash and cumulative hash at a given block, hash of all bitmaps and inscription_id of a given bitmap.
@@ -423,6 +423,11 @@ Responses carry no `X-Powered-By` and no `ETag`.
 
 The API only reads from the module databases, so give it a read-only database
 role (see `OPI_ENV_FILE` below for pointing it at its own env file).
+
+The brc20 explorer routes and the unused-transaction routes read the tables
+`evm_addresses`, `brc20_unused_tx_inscrs` and `brc20_extras_block_hashes`,
+which neither the indexer nor `brc20 reindex-extras` creates; they answer the
+500 body until those tables exist in the brc20 database.
 
 ### API configuration
 
@@ -448,10 +453,9 @@ The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*` and `RUNES_DB_*` variables are the same
 ones `opi-indexer run` reads (`USER` and `HOST` default to `postgres` and
 `localhost`, `PORT` to `5432`, `SSL` is on only when exactly `true`).
 
-Operators upgrading from the Node API or the four per-module API processes
-(ports 8000-8003): run `opi-indexer api` in their place and point reverse
-proxies at `API_PORT`. Route paths are unchanged, and Node.js is no longer
-needed.
+Run `opi-indexer api` in place of the Node API or the four per-module API
+processes (ports 8000-8003) and point reverse proxies at `API_PORT`. Route
+paths are unchanged.
 
 ## Setup
 

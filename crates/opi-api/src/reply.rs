@@ -1,13 +1,12 @@
-//! Responses as Express sends them.
+//! Response bodies and content types, in Express's form.
 //!
 //! - `response.send(string)` sets `text/html; charset=utf-8`.
 //! - `response.send(object)` is `response.json(object)`: `JSON.stringify`
 //!   with no spacing, as `application/json; charset=utf-8`.
-//! - The app's error middleware answers any handler failure with
-//!   `500 {"error":"internal error","result":null}`.
-//! - finalhandler answers a request no route takes with its 404 page.
+//! - Any handler failure answers `500 {"error":"internal error","result":null}`.
+//! - A request no route takes gets the plain `Cannot METHOD /path` 404 page.
 //!
-//! Express's `X-Powered-By` and `ETag` headers are not sent.
+//! No `X-Powered-By` or `ETag` header is sent.
 
 use {
     crate::js::{JsValue, json_stringify},
@@ -24,7 +23,7 @@ mod tests;
 pub const HTML: &str = "text/html; charset=utf-8";
 pub const JSON: &str = "application/json; charset=utf-8";
 
-/// A route's answer: a status and an Express `send` body.
+/// A route's answer: a status and a body sent as a string (`text/html`) or as JSON.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reply {
     status: u16,

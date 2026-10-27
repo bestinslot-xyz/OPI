@@ -1,6 +1,7 @@
-//! The API's settings, read from the environment with the Node
-//! API's rules: values go through `parseInt`, an empty variable takes the
-//! default as `||` does, and only enabled modules need their database.
+//! The API's settings, read from the environment. Numeric
+//! values are read as `parseInt` reads them, an empty variable takes its
+//! default (as JavaScript's `||` does), and only enabled modules need their
+//! database.
 
 use {
     crate::js::{js_trim, parse_int_str},

@@ -1,8 +1,7 @@
-//! The middleware in front of every route, in the app's order: CORS
-//! (`origin: '*'`, a preflight answers 200 with no body), then the rate
-//! limiter keyed by `request.ip`, then routing as Express matches paths
-//! (case-insensitive, one optional trailing slash), with any panic in a
-//! handler answered like a thrown error.
+//! The middleware in front of every route, in order: CORS
+//! (any origin; a preflight answers 200 with no body), then the rate
+//! limiter keyed by the client IP, then routing (case-insensitive, one
+//! optional trailing slash). A panic in a handler answers the 500 body.
 
 use {
     crate::{

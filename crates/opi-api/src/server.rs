@@ -1,4 +1,4 @@
-//! The HTTP server: HTTP/1 only, as the Express app serves, with a
+//! The HTTP server: HTTP/1 only, with a
 //! header-read timeout on every connection, so a client that connects and
 //! sends nothing, or never finishes a request's headers, is dropped; and a
 //! graceful shutdown bounded in time.

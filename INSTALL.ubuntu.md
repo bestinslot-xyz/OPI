@@ -104,7 +104,7 @@ All next shell script groups assumes that you are in OPI folder cloned by above 
 
 ## Build opi-indexer:
 
-opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process, and `opi-indexer api` serves the HTTP API. Neither needs Node.js or Python. See the [README](README.md#configuration) for its configuration.
+opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process, and `opi-indexer api` serves the HTTP API. See the [README](README.md#configuration) for its configuration.
 
 ```bash
 sudo apt install build-essential libssl-dev pkg-config clang -y;
@@ -113,7 +113,7 @@ cargo build --release --locked -p opi-indexer;
 
 ## Initialise .env configuration and databases
 
-Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start.
+Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). Create each module's database first (for example `sudo -u postgres createdb opi_brc20`); its schema is created on first start.
 
 `opi-indexer run` and `opi-indexer api` read this one `.env` (the API settings are listed in the README's [API configuration](README.md#api-configuration)).
 

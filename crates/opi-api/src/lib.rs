@@ -1,5 +1,6 @@
-//! The OPI HTTP API (`opi-indexer api`): the routes of the Node (Express) API it
-//! replaces, answering with the same statuses, bodies and content types.
+//! The OPI HTTP API (`opi-indexer api`): the `/v1/...` routes of every
+//! enabled module, in Express-compatible form (statuses, bodies, content
+//! types and routing rules).
 //!
 //! A route module adds its routes to an axum [`Router`]; handlers read the
 //! request through [`extract`], query their module's [`db::Db`], work on
