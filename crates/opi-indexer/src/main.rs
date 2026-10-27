@@ -1,3 +1,4 @@
+mod brc20;
 mod config;
 mod validate;
 
@@ -39,6 +40,9 @@ enum Command {
     /// 1 at the first mismatch, 2 on an error such as a height missing on
     /// either side.
     Validate(validate::Args),
+    /// BRC-20 light client and maintenance commands. Reads only brc20's
+    /// environment, so it runs alongside `run` and on light-client hosts.
+    Brc20(brc20::Args),
 }
 
 /// Why the modules stopped.
@@ -57,6 +61,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command.unwrap_or(Command::Run) {
         Command::Run => run().map(|()| true),
+        Command::Brc20(args) => brc20::run(args).map(|()| true),
         Command::Validate(args) => {
             return match validate::run(args) {
                 Ok(true) => ExitCode::SUCCESS,
@@ -212,6 +217,129 @@ async fn source_finished(handle: &SourceHandle) {
 
 #[cfg(test)]
 mod tests {
+    use {
+        super::{Cli, Command, brc20},
+        clap::Parser,
+    };
+
+    fn brc20_command(args: &[&str]) -> brc20::Command {
+        let argv = ["opi-indexer", "brc20"]
+            .into_iter()
+            .chain(args.iter().copied());
+        match Cli::try_parse_from(argv).unwrap().command {
+            Some(Command::Brc20(args)) => args.command,
+            _ => panic!("not a brc20 command"),
+        }
+    }
+
+    fn brc20_fails(args: &[&str]) -> bool {
+        let argv = ["opi-indexer", "brc20"]
+            .into_iter()
+            .chain(args.iter().copied());
+        Cli::try_parse_from(argv).is_err()
+    }
+
+    #[test]
+    fn brc20_subcommands_parse() {
+        assert!(matches!(brc20_command(&["light"]), brc20::Command::Light));
+        assert!(matches!(
+            brc20_command(&["reset"]),
+            brc20::Command::Reset(brc20::Confirm { yes: false })
+        ));
+        assert!(matches!(
+            brc20_command(&["reset", "--yes"]),
+            brc20::Command::Reset(brc20::Confirm { yes: true })
+        ));
+        assert!(matches!(
+            brc20_command(&["reorg", "840000"]),
+            brc20::Command::Reorg {
+                height: 840000,
+                confirm: brc20::Confirm { yes: false }
+            }
+        ));
+        assert!(matches!(
+            brc20_command(&["reorg", "840000", "--yes"]),
+            brc20::Command::Reorg {
+                height: 840000,
+                confirm: brc20::Confirm { yes: true }
+            }
+        ));
+        assert!(matches!(
+            brc20_command(&["report", "7"]),
+            brc20::Command::Report { height: 7 }
+        ));
+        assert!(matches!(
+            brc20_command(&["recalculate-hashes", "5"]),
+            brc20::Command::RecalculateHashes { from: 5 }
+        ));
+        assert!(matches!(
+            brc20_command(&["reindex-extras", "--yes"]),
+            brc20::Command::ReindexExtras(brc20::Confirm { yes: true })
+        ));
+        assert!(matches!(
+            brc20_command(&["reindex-extras"]),
+            brc20::Command::ReindexExtras(brc20::Confirm { yes: false })
+        ));
+        assert!(matches!(
+            brc20_command(&["event-str", "9"]),
+            brc20::Command::EventStr { height: 9 }
+        ));
+        assert!(matches!(
+            brc20_command(&["trace-str", "9"]),
+            brc20::Command::TraceStr { height: 9 }
+        ));
+    }
+
+    #[test]
+    fn brc20_rejects_bad_input_and_removed_flags() {
+        assert!(brc20_fails(&[]));
+        assert!(brc20_fails(&["reorg"]));
+        assert!(brc20_fails(&["reorg", "abc"]));
+        assert!(brc20_fails(&["report", "1.5"]));
+        assert!(brc20_fails(&["event-str", "x"]));
+        assert!(brc20_fails(&["light", "--yes"]));
+        assert!(brc20_fails(&["report", "1", "--yes"]));
+        for removed in [
+            "--setup",
+            "--reset",
+            "--validate",
+            "--log-level",
+            "--report",
+        ] {
+            assert!(brc20_fails(&[removed]), "{removed}");
+        }
+    }
+
+    #[test]
+    fn confirm_yes_flag_skips_the_prompt() {
+        let mut input: &[u8] = b"";
+        let mut output = Vec::new();
+        assert!(brc20::confirm_with("sure?", true, &mut input, &mut output));
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn confirm_accepts_only_yes_answers() {
+        for (answer, expected) in [
+            ("y\n", true),
+            ("YES\n", true),
+            (" yes \n", true),
+            ("n\n", false),
+            ("\n", false),
+            ("", false),
+            ("yep\n", false),
+        ] {
+            let mut input = answer.as_bytes();
+            let mut output = Vec::new();
+            assert_eq!(
+                brc20::confirm_with("sure?", false, &mut input, &mut output),
+                expected,
+                "{answer:?}"
+            );
+            assert_eq!(output, b"sure? [y/N]: ");
+        }
+    }
+
     /// This binary links opi-brc20, which turns on serde_json's
     /// `arbitrary_precision`; the first assertion pins that the test runs
     /// under that feature set.

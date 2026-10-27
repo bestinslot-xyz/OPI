@@ -4689,7 +4689,6 @@ dependencies = [
  "base64 0.23.1",
  "bitcoin",
  "brc20-prog",
- "dotenvy",
  "hex",
  "jsonrpsee",
  "lazy_static",
@@ -4706,7 +4705,6 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "versions",
 ]
 
