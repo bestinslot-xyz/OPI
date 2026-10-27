@@ -157,3 +157,203 @@ def test_args_override_defaults_and_exit_code_follows_diffs(monkeypatch, capsys)
     answers[args.new] = resp(200, '{"changed": true}')
     assert ac.run(args) == 1
     assert "DIFF" in capsys.readouterr().out
+
+
+def full(status, raw, content_type="application/json; charset=utf-8", **headers):
+    return ac.parse_response(status, raw, content_type, headers)
+
+
+def test_content_type_is_compared_in_both_modes():
+    msg = ac.diff_responses(full(200, "x", "text/html"), full(200, "x", "application/json"))
+    assert msg.startswith("content-type")
+    verdict, detail = ac.classify_pair(request("/v1/brc20/ip"), full(200, "x", "text/html"), full(200, "x", "application/json"))
+    assert verdict == "DIFF" and detail.startswith("content-type")
+
+
+def test_pair_compares_raw_bodies_so_key_order_counts():
+    req = request("/v1/brc20/holders")
+    assert ac.classify_pair(req, full(200, '{"a":1,"b":2}'), full(200, '{"b":2,"a":1}'))[0] == "DIFF"
+    rows_a = full(200, '{"r":[{"a":1,"b":2}]}')
+    rows_b = full(200, '{"r":[{"b":2,"a":1}]}')
+    assert ac.classify_pair(req, rows_a, rows_b)[0] == "DIFF"
+    assert ac.classify_pair(req, full(200, '{"a":1}'), full(200, '{"a":1}'))[0] == "PASS"
+
+
+def test_pair_compares_headers_except_the_volatile_ones():
+    req = request("/v1/brc20/ip")
+    same = ac.classify_pair(req, full(200, "x", date="a", connection="close"), full(200, "x", date="b"))
+    assert same[0] == "PASS"
+    other = ac.classify_pair(req, full(200, "x", vary="a"), full(200, "x"))
+    assert other[0] == "DIFF" and "vary" in other[1]
+
+
+def test_pair_has_no_allowed_entries():
+    for path in ("/v1/bitmap/block_height", "/v1/sns/get_registered_namespaces", "/v1/brc20/ip"):
+        assert ac.classify_pair(request(path), full(200, "{}"), full(200, "328112"))[0] == "DIFF"
+        assert ac.classify_pair(request(path), ac.Response(0, "x", "x"), full(200, "{}"))[0] == "DIFF"
+
+
+def test_status_modules_compare_without_key_order():
+    req = request("/v1/status")
+    a = full(200, '{"ok":true,"modules":{"brc20":1,"sns":2}}')
+    b = full(200, '{"ok":true,"modules":{"sns":2,"brc20":1}}')
+    assert ac.classify_pair(req, a, b)[0] == "PASS"
+    c = full(200, '{"ok":true,"modules":{"sns":3,"brc20":1}}')
+    assert ac.classify_pair(req, a, c)[0] == "DIFF"
+    d = full(200, '{"modules":{"sns":2,"brc20":1},"ok":true}')
+    assert ac.classify_pair(req, a, d)[0] == "DIFF"
+    assert ac.classify_pair(request("/v1/brc20/activity_on_block"), a, b)[0] == "DIFF"
+
+
+def test_status_modules_nested_in_result_compare_without_key_order():
+    req = request("/v1/status")
+    a = full(200, '{"error":null,"result":{"modules":{"brc20":{"h":1},"sns":{"h":2}}}}')
+    b = full(200, '{"error":null,"result":{"modules":{"sns":{"h":2},"brc20":{"h":1}}}}')
+    assert ac.classify_pair(req, a, b)[0] == "PASS"
+    c = full(200, '{"error":null,"result":{"modules":{"sns":{"h":3},"brc20":{"h":1}}}}')
+    assert ac.classify_pair(req, a, c)[0] == "DIFF"
+    d = full(200, '{"result":{"modules":{"sns":{"h":2},"brc20":{"h":1}}},"error":null}')
+    assert ac.classify_pair(req, a, d)[0] == "DIFF"
+
+
+def test_row_order_on_an_unordered_route_is_order_not_diff():
+    req = request("/v1/runes/holders")
+    a = full(200, '{"error":null,"result":[{"w":"a","n":1},{"w":"b","n":2}]}')
+    b = full(200, '{"error":null,"result":[{"w":"b","n":2},{"w":"a","n":1}]}')
+    assert ac.classify_pair(req, a, b)[0] == "ORDER"
+    other = full(200, '{"error":null,"result":[{"w":"b","n":2},{"w":"a","n":9}]}')
+    assert ac.classify_pair(req, a, other)[0] == "DIFF"
+    short = full(200, '{"error":null,"result":[{"w":"a","n":1}]}')
+    assert ac.classify_pair(req, a, short)[0] == "DIFF"
+
+
+def test_row_order_on_an_ordered_route_is_a_diff():
+    a = full(200, '{"result":[{"w":"a"},{"w":"b"}]}')
+    b = full(200, '{"result":[{"w":"b"},{"w":"a"}]}')
+    assert ac.classify_pair(request("/v1/brc20/activity_on_block"), a, b)[0] == "DIFF"
+
+
+def test_scalar_lists_keep_their_order_even_on_unordered_routes():
+    req = request("/v1/runes/get_unspent_rune_outpoints_of_wallet")
+    a = full(200, '{"result":[{"rune_ids":["a","b"],"balances":[1,2]}]}')
+    b = full(200, '{"result":[{"rune_ids":["b","a"],"balances":[2,1]}]}')
+    assert ac.classify_pair(req, a, b)[0] == "DIFF"
+
+
+def test_unordered_routes_are_the_documented_ones():
+    assert ac.UNORDERED_ROUTES == {
+        "/v1/sns/get_inscriptions_of_domain",
+        "/v1/sns/get_registered_namespaces",
+        "/v1/runes/balance_on_block",
+        "/v1/runes/get_current_balance_of_wallet",
+        "/v1/runes/get_unspent_rune_outpoints_of_wallet",
+        "/v1/runes/holders",
+        "/v1/brc20/get_valid_tx_notes_of_wallet",
+        "/v1/brc20/get_valid_tx_notes_of_ticker",
+        "/v1/brc20/holders",
+        "/v1/brc20/explorer/balances",
+    }
+
+
+def test_route_ignores_case_and_a_trailing_slash():
+    assert request("/V1/RUNES/Holders/").route == "/v1/runes/holders"
+    assert request("/v1/BRC20/explorer/Balances/0xAB").route == "/v1/brc20/explorer/balances"
+
+
+def test_raw_query_is_sent_as_is():
+    assert request("/v1/x", raw_query="a=1&a=2&b[]=%zz").target() == "/v1/x?a=1&a=2&b[]=%zz"
+    assert request("/v1/x", raw_query="").target() == "/v1/x?"
+
+
+def quirk_requests():
+    return [r for r in ac.build_requests(defaults()) if r.kind == "quirk"]
+
+
+def test_quirk_cases_cover_every_documented_quirk():
+    targets = [r.target() for r in quirk_requests()]
+
+    def has(*needles):
+        return any(all(n in t for n in needles) for t in targets)
+
+    assert has("block_height=1&block_height=2")  # repeated
+    assert has("block_height[]=1")  # array
+    assert has("block_height[a]=1")  # object
+    assert has("block_height[toString]=x")  # own toString
+    assert has("block_height=NaN") and has("block_height=Infinity")
+    assert has("block_height=0x10") and has("block_height=1_0")
+    assert has("block_height=%00") and has("block_height=%zz")
+    assert has("block_height=" + "9" * 5000)  # very long
+    assert has("ticker[]=1") and has("ticker[a]=1") and has("ticker=1&ticker=2")
+    assert has("address[]=") and has("rune_id[]=")
+    assert has("items_count=1e21") and has("items_count=-0")
+    assert has("order=ASC") and has("order[]=1") and has("order=asc&order=desc")
+    assert has("/explorer/balances/%zz") and has("/explorer/btc_address/%00")
+    assert has("%C4%B0")  # toLowerCase changes the length
+    assert has("/v1/status/x")
+
+
+def test_quirk_cases_include_other_methods_and_preflights():
+    methods = {r.method for r in quirk_requests()}
+    assert {"HEAD", "POST", "OPTIONS", "PUT", "PATCH", "DELETE"} <= methods
+    assert any(r.headers and "Access-Control-Request-Headers" in r.headers for r in quirk_requests())
+
+
+def test_old_new_mode_skips_quirk_and_app_requests(monkeypatch, capsys):
+    seen = []
+
+    def fake_fetch(base, request, timeout):
+        seen.append(request)
+        return resp(200, "{}")
+
+    monkeypatch.setattr(ac, "fetch", fake_fetch)
+    assert ac.run(ac.parse_args([])) == 0
+    assert seen and all(r.kind != "quirk" and r.module != ac.APP for r in seen)
+
+
+def test_js_rust_mode_runs_everything_against_two_servers(monkeypatch, capsys):
+    bases = []
+
+    def fake_fetch(base, request, timeout):
+        bases.append(base)
+        return full(200, "{}")
+
+    monkeypatch.setattr(ac, "fetch", fake_fetch)
+    args = ac.parse_args(["--pair", "js-rust", "--js", "http://js", "--rust", "http://rust"])
+    assert ac.run(args) == 0
+    assert set(bases) == {"http://js", "http://rust"}
+    out = capsys.readouterr().out
+    assert "requests per module: brc20" in out and "0 DIFF" in out
+
+
+def test_js_rust_mode_fails_on_any_difference(monkeypatch, capsys):
+    def fake_fetch(base, request, timeout):
+        return full(200, "{}" if base == "http://js" else "[]")
+
+    monkeypatch.setattr(ac, "fetch", fake_fetch)
+    args = ac.parse_args(["--pair", "js-rust", "--js", "http://js", "--rust", "http://rust", "--only", "bitmap"])
+    assert ac.run(args) == 1
+
+
+def test_rate_limit_reset_may_differ_by_one_second_only():
+    a = full(429, "x", **{"ratelimit-reset": "10", "ratelimit-limit": "3"})
+    assert ac.rate_limit_headers_match(a, full(429, "x", **{"ratelimit-reset": "9", "ratelimit-limit": "3"}))
+    assert not ac.rate_limit_headers_match(a, full(429, "x", **{"ratelimit-reset": "8", "ratelimit-limit": "3"}))
+    assert not ac.rate_limit_headers_match(a, full(429, "x", **{"ratelimit-reset": "10", "ratelimit-limit": "4"}))
+
+
+def test_rate_limit_run_compares_position_by_position(monkeypatch, capsys):
+    def fake_fetch(base, request, timeout):
+        return full(200, "ok", **{"ratelimit-limit": "3"})
+
+    monkeypatch.setattr(ac, "fetch", fake_fetch)
+    args = ac.parse_args(["--pair", "js-rust", "--rate-limit"])
+    assert ac.run(args) == 0
+
+    calls = {"n": 0}
+
+    def drifting(base, request, timeout):
+        calls["n"] += 1
+        return full(200 if base == args.js else 429, "ok")
+
+    monkeypatch.setattr(ac, "fetch", drifting)
+    assert ac.run(args) == 1
