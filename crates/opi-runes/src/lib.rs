@@ -1,5 +1,5 @@
 //! The runes metaprotocol as an opi module. It writes the journal's rune feed
-//! into the schema in `db_init.sql`, which `runes_api` reads, and reports the
+//! into the schema in `db_init.sql`, which the runes API (`api/`) reads, and reports the
 //! cumulative event hashes to the OPI network.
 
 mod db;

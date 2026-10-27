@@ -127,11 +127,8 @@ All next shell script groups assumes that you are in OPI folder cloned by above 
 
 ## Installing node modules
 ```bash
-cd modules/brc20_api; npm install;
-cd ../bitmap_api; npm install;
-cd ../sns_api; npm install;
-cd ../runes_api; npm install;
-cd ../..;
+cd api; npm install;
+cd ..;
 ```
 
 ## Installing python libraries
@@ -139,30 +136,27 @@ cd ../..;
 **Create a virtual environment and install python libraries**
 ```bash
 sudo apt install python3.12-venv -y;
-cd modules;
 python3 -m venv .venv;
 source .venv/bin/activate;
 pip3 install -r requirements.txt;
-cd ..;
 ```
 
 ## Build opi-indexer:
 
-opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process. See the [opi-indexer README](opi-indexer/README.md) for its configuration.
+opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process. See the [README](README.md#configuration) for its configuration.
 
 ```bash
 sudo apt install build-essential libssl-dev pkg-config clang -y;
-cd opi-indexer; cargo build --release --locked -p opi-indexer;
-cd ..;
+cargo build --release --locked -p opi-indexer;
 ```
 
 ## Initialise .env configuration and databases
 
-Copy `opi-indexer/.env_sample` to `opi-indexer/.env` and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start.
+Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). The BRC-20, Bitmap, SNS and Runes databases are created from the schema on first start.
 
-Run `reset_init.py` in `modules/brc20_index` and in each API folder to initialise .env file and databases for BRC-20 and the APIs.
+`opi-indexer` and the API read this one `.env`. `python3 api/reset_init.py` asks for the API settings and writes them into it. `crates/opi-brc20/reset_init.py` is an optional helper that writes brc20's settings to `crates/opi-brc20/.env` and initialises the brc20 database; copy its values into the root `.env`.
 
-`opi-indexer` reads one `.env`, from its working directory. BRC-20's variables (`DB_*`, `BRC20_PROG_*`, `NETWORK_TYPE`, ...), the `.env` that `reset_init.py` writes in `modules/brc20_index`, go into `opi-indexer/.env`. Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
+Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
 
 # Run
 
@@ -177,49 +171,21 @@ Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 > BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`.
 
 ```bash
-cd opi-indexer;
 ./target/release/opi-indexer run;
 ```
 
-**BRC-20 API**
+**API**
 
-This is an optional API and doesn't need to be run.
-
-```bash
-cd modules/brc20_api;
-node api.js;
-```
-
-**Bitmap API**
-
-This is an optional API and doesn't need to be run.
+This is an optional API and doesn't need to be run. One process serves every module in `OPI_MODULES` on `API_PORT` (default 8000).
 
 ```bash
-cd modules/bitmap_api;
-node api.js;
-```
-
-**SNS API**
-
-This is an optional API and doesn't need to be run.
-
-```bash
-cd modules/sns_api;
-node api.js;
-```
-
-**Runes API**
-
-This is an optional API and doesn't need to be run. The Runes indexer runs inside opi-indexer when `OPI_MODULES` includes `runes`.
-
-```bash
-cd modules/runes_api;
-node api.js;
+cd api;
+node server.js;
 ```
 
 # Update
 
-- Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
+- Stop the indexer and the api (preferably starting from main indexer but actually the order shouldn't matter)
 - Update the repo (`git pull`)
-- Recompile opi-indexer (`cd opi-indexer; cargo build --release --locked -p opi-indexer;`)
-- Re-run all indexers and apis
+- Recompile opi-indexer (`cargo build --release --locked -p opi-indexer;`)
+- Re-run the indexer and the api

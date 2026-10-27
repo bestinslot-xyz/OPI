@@ -1,5 +1,5 @@
 """Prints the SNS spec vectors as JSON: an independent implementation of the
-SNS indexing rules (README.indexer.md, "SNS indexing rules") applied to a
+SNS indexing rules (README.md,"SNS indexing rules") applied to a
 corpus of inscription contents.
 
 The rules come from the SNS spec
