@@ -91,7 +91,8 @@ async fn params_bind_as_the_type_postgres_infers() {
     let Some(pool) = pool("OPI_API_TEST_DATABASE_URL") else {
         return;
     };
-    let height = params::int4(&" 4 ".into()).unwrap();
+    let rules = Db::from_pool(pool.clone()).int_rules().await.unwrap();
+    let height = params::int4(rules, &" 4 ".into()).unwrap();
     let rows = sqlx::query("select 1 as one where 10 > $1")
         .bind(height)
         .fetch_all(&pool)
@@ -100,11 +101,56 @@ async fn params_bind_as_the_type_postgres_infers() {
     assert_eq!(rows.len(), 1);
     // a missing param binds NULL, which compares to nothing
     let rows = sqlx::query("select 1 as one where 10 > $1")
-        .bind(params::int4(&JsValue::Undefined).unwrap())
+        .bind(params::int4(rules, &JsValue::Undefined).unwrap())
         .fetch_all(&pool)
         .await
         .unwrap();
     assert!(rows.is_empty());
+}
+
+#[tokio::test]
+async fn int_rules_answer_as_the_servers_own_int4in() {
+    let Some(pool) = pool("OPI_API_TEST_DATABASE_URL") else {
+        return;
+    };
+    let rules = Db::from_pool(pool.clone()).int_rules().await.unwrap();
+    let version: String = sqlx::query_scalar("show server_version_num")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        rules,
+        params::IntRules::for_server_version(version.parse().unwrap())
+    );
+    for input in [
+        "5",
+        " +5 ",
+        "-2147483648",
+        "2147483648",
+        "1.5",
+        "",
+        "0x10",
+        "0o17",
+        "0b101",
+        "1_000",
+        "_1",
+        "1_",
+        "0x_1f",
+        "0x",
+        "+_1",
+        "007",
+    ] {
+        let server: Result<i32, _> = sqlx::query_scalar("select $1::text::int4")
+            .bind(input)
+            .fetch_one(&pool)
+            .await;
+        let ours = params::int4(rules, &input.into());
+        match (server, ours) {
+            (Ok(a), Ok(Some(b))) => assert_eq!(a, b, "{input:?}"),
+            (Err(_), Err(_)) => {}
+            (server, ours) => panic!("{input:?}: server {server:?}, ours {:?}", ours.ok()),
+        }
+    }
 }
 
 #[tokio::test]

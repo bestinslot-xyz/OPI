@@ -75,7 +75,20 @@ pub async fn serve(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     config.validate()?;
-    let app = router(&config, connect(&config)?);
+    let dbs = connect(&config)?;
+    // Read each server's integer input rules now. A database that is down
+    // at startup does not hold the server back: its rules are read on the
+    // first request that needs them.
+    for (module, db) in &dbs {
+        let (module, db) = (*module, db.clone());
+        tokio::spawn(async move {
+            match db.int_rules().await {
+                Ok(rules) => tracing::info!("{} database: {rules:?} integer input", module.name()),
+                Err(err) => tracing::warn!("{} database: {err:#}", module.name()),
+            }
+        });
+    }
+    let app = router(&config, dbs);
     let port = config.listen_port()?;
     let listener = tokio::net::TcpListener::bind((config.api.host.as_str(), port))
         .await

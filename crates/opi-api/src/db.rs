@@ -17,13 +17,14 @@
 //! answer differently, so no route may use it.
 
 use {
-    crate::{config::DbConfig, config::Module, js::JsValue, pg_json::ToJs},
+    crate::{config::DbConfig, config::Module, js::JsValue, params::IntRules, pg_json::ToJs},
     anyhow::{Result, anyhow},
     sqlx::{
         PgPool,
         postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
     },
     std::{sync::Arc, time::Duration},
+    tokio::sync::OnceCell,
 };
 
 #[cfg(test)]
@@ -39,7 +40,11 @@ pub struct Db {
 }
 
 enum Inner {
-    Pg(PgPool),
+    Pg {
+        pool: PgPool,
+        /// The integer input rules of the server, read once.
+        int_rules: OnceCell<IntRules>,
+    },
     Fake(Box<FakeHeights>),
 }
 
@@ -78,8 +83,33 @@ impl Db {
 
     pub fn from_pool(pool: PgPool) -> Db {
         Db {
-            inner: Arc::new(Inner::Pg(pool)),
+            inner: Arc::new(Inner::Pg {
+                pool,
+                int_rules: OnceCell::new(),
+            }),
         }
+    }
+
+    /// The integer input rules of the server behind the pool, from the
+    /// `server_version_num` it reports when a connection starts. The first
+    /// call reads it (the server reports it to every connection, so no
+    /// query runs) and later calls reuse it; a failed read is retried on
+    /// the next call. A test double answers the Postgres 14 rules.
+    pub async fn int_rules(&self) -> Result<IntRules> {
+        let (pool, int_rules) = match &*self.inner {
+            Inner::Fake(_) => return Ok(IntRules::Pg14),
+            Inner::Pg { pool, int_rules } => (pool, int_rules),
+        };
+        let rules = int_rules
+            .get_or_try_init(|| async {
+                let connection = pool.acquire().await?;
+                let version = connection
+                    .server_version_num()
+                    .ok_or_else(|| anyhow!("the server reported no server_version_num"))?;
+                anyhow::Ok(IntRules::for_server_version(version))
+            })
+            .await?;
+        Ok(*rules)
     }
 
     /// A test double: `heights(module)` answers
@@ -95,7 +125,7 @@ impl Db {
     /// that queries it fails with the 500 answer.
     pub fn pool(&self) -> Result<&PgPool> {
         match &*self.inner {
-            Inner::Pg(pool) => Ok(pool),
+            Inner::Pg { pool, .. } => Ok(pool),
             Inner::Fake(_) => Err(anyhow!("a test database runs no queries")),
         }
     }
@@ -106,7 +136,7 @@ impl Db {
     pub async fn latest_block_height(&self, module: Module) -> Result<JsValue> {
         let pool = match &*self.inner {
             Inner::Fake(heights) => return heights(module),
-            Inner::Pg(pool) => pool,
+            Inner::Pg { pool, .. } => pool,
         };
         let height: Option<i32> = match module {
             Module::Brc20 => {
