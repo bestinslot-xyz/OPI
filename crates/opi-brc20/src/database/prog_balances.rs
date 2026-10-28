@@ -1010,8 +1010,10 @@ mod db_tests {
     use super::*;
     use crate::{
         config::Brc20IndexerConfig,
-        database::{Brc20Database, evm_addresses::evm_address},
-        indexer::brc20_prog_client::test_engine::TestEngine,
+        database::{
+            Brc20Database, evm_addresses::evm_address, get_brc20_database, replace_brc20_database,
+        },
+        indexer::{Brc20Indexer, brc20_prog_client::test_engine::TestEngine},
     };
 
     sol! {
@@ -1025,11 +1027,12 @@ mod db_tests {
     const OTHER_TOKEN: &str = "0x2222222222222222222222222222222222222222";
 
     /// Runs `body` against a throwaway database, dropped even when `body`
-    /// panics.
+    /// panics. `body` runs on a local task, since an indexer's start is not
+    /// `Send`.
     async fn with_database<F, Fut>(tag: &str, body: F)
     where
         F: FnOnce(String) -> Fut,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
+        Fut: std::future::Future<Output = ()> + 'static,
     {
         if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
             eprintln!("OPI_TEST_PG is not 1; skipping");
@@ -1050,7 +1053,10 @@ mod db_tests {
             .execute(&mut root)
             .await
             .unwrap();
-        let result = tokio::spawn(body(name.clone())).await;
+        let body = body(name.clone());
+        let result = tokio::task::LocalSet::new()
+            .run_until(async { tokio::task::spawn_local(body).await })
+            .await;
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "DROP DATABASE {name} WITH (FORCE)"
         )))
@@ -1507,6 +1513,250 @@ mod db_tests {
             tx.commit().await.unwrap();
             assert!(fill(&interrupted.client, &prog, 0, 3, 6, FILL_BLOCKS).await.unwrap());
             assert_eq!(snapshot(&interrupted).await, indexed);
+        })
+        .await;
+    }
+
+    /// The BRC2.0 activation height the start-up tests run with.
+    const PHASE_ONE: i32 = 2;
+
+    /// A full-mode indexer on database `name` and `engine`, with BRC-20 from
+    /// block 1 and BRC2.0 from `PHASE_ONE`.
+    fn indexer(name: &str, engine: &TestEngine) -> Brc20Indexer {
+        let config = Brc20IndexerConfig {
+            db_host: "127.0.0.1".into(),
+            db_port: "5432".into(),
+            db_user: "alper".into(),
+            db_password: String::new(),
+            db_database: name.into(),
+            db_ssl: false,
+            network_type: Network::Signet,
+            light_client_mode: false,
+            first_inscription_height: 1,
+            first_brc20_height: 1,
+            first_brc20_prog_phase_one_height: PHASE_ONE,
+            ..Default::default()
+        };
+        Brc20Indexer::new(
+            config,
+            engine.prog.clone(),
+            engine.bitcoin_rpc_buffer.clone(),
+            None,
+        )
+    }
+
+    /// The engine's block hash at `height`, as brc20 stores it.
+    async fn engine_hash(prog: &Brc20Prog, height: i32) -> String {
+        prog.eth_get_block_by_number(height.to_string(), Some(false))
+            .await
+            .unwrap()
+            .hash
+            .bytes
+            .to_string()
+            .trim_start_matches("0x")
+            .to_string()
+    }
+
+    async fn engine_height(prog: &Brc20Prog) -> i64 {
+        i64::from_str_radix(
+            prog.eth_block_number()
+                .await
+                .unwrap()
+                .trim_start_matches("0x"),
+            16,
+        )
+        .unwrap()
+    }
+
+    /// Indexes blocks 1 to 3 from the engine's three blocks, then two more
+    /// blocks the engine never saw, as brc20 ahead of a lagging engine data
+    /// dir. Returns the BRC2.0 tables as they stood at block 3.
+    async fn brc20_ahead_of_the_engine(
+        database: &mut Brc20Database,
+        prog: &Brc20Prog,
+    ) -> Vec<String> {
+        let mut token = None;
+        for height in 1..=3 {
+            let events: Vec<BalanceEvent> = balance_events(prog, height, height)
+                .await
+                .unwrap()
+                .into_iter()
+                .flat_map(|(_, events)| events)
+                .collect();
+            for event in &events {
+                if let BalanceEvent::Created {
+                    contract_address, ..
+                } = event
+                {
+                    token.get_or_insert(contract_address.clone());
+                }
+            }
+            let hash = engine_hash(prog, height).await;
+            database
+                .set_block_hashes(height, &hash, "", None, &events)
+                .await
+                .unwrap();
+        }
+        let at_three = snapshot(database).await;
+        let alice = evm_address(&hex::decode(ALICE_PKSCRIPT).unwrap());
+        let bob = evm_address(&hex::decode(BOB_PKSCRIPT).unwrap());
+        database
+            .set_block_hashes(
+                4,
+                "h4",
+                "",
+                None,
+                &[transfer(&token.unwrap(), &alice, &bob, 1)],
+            )
+            .await
+            .unwrap();
+        database
+            .set_block_hashes(5, "h5", "", None, &[])
+            .await
+            .unwrap();
+        assert_ne!(snapshot(database).await, at_three);
+        at_three
+    }
+
+    /// An engine below brc20 at start rolls brc20 back to the engine's
+    /// height through the `brc20 reorg` path; the BRC2.0 tables return to
+    /// that block and the per-block check that precedes indexing passes.
+    #[tokio::test]
+    async fn a_lagging_engine_rolls_brc20_back_to_its_height() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        let engine = TestEngine::open();
+        let prog = engine.prog.clone();
+        with_database("lagging", move |name| async move {
+            mine_three_blocks(&prog).await;
+            prog.brc20_commit_to_database().await.unwrap();
+            let mut database = database(&name, false).await;
+            let at_three = brc20_ahead_of_the_engine(&mut database, &prog).await;
+            replace_brc20_database(database).await;
+
+            let mut indexer = indexer(&name, &engine);
+            indexer.init().await.unwrap();
+            {
+                let database = get_brc20_database();
+                let database = database.lock().await;
+                assert_eq!(database.get_current_block_height().await.unwrap(), 3);
+                assert_eq!(snapshot(&database).await, at_three);
+            }
+            assert_eq!(engine_height(&prog).await, 3);
+            indexer.check_brc20_prog_height().await.unwrap();
+            drop(engine);
+        })
+        .await;
+    }
+
+    /// A fresh engine data dir rolls brc20 back to the block before BRC2.0's
+    /// activation, which the engine then mines up to.
+    #[tokio::test]
+    async fn a_fresh_engine_rolls_brc20_back_to_before_activation() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        let engine = TestEngine::open();
+        let prog = engine.prog.clone();
+        with_database("fresh_engine", move |name| async move {
+            let mut database = database(&name, false).await;
+            database
+                .set_block_hashes(
+                    1,
+                    "h1",
+                    "",
+                    None,
+                    &[
+                        created("ordi", TOKEN),
+                        transfer(TOKEN, ZERO_ADDRESS, ALICE, 1_000),
+                    ],
+                )
+                .await
+                .unwrap();
+            let at_one = snapshot(&database).await;
+            database
+                .set_block_hashes(2, "h2", "", None, &[transfer(TOKEN, ALICE, BOB, 100)])
+                .await
+                .unwrap();
+            database
+                .set_block_hashes(
+                    3,
+                    "h3",
+                    "",
+                    None,
+                    &[
+                        created("pepe", OTHER_TOKEN),
+                        transfer(OTHER_TOKEN, ZERO_ADDRESS, BOB, 7),
+                    ],
+                )
+                .await
+                .unwrap();
+            replace_brc20_database(database).await;
+            assert_eq!(engine_height(&prog).await, 0);
+
+            let mut indexer = indexer(&name, &engine);
+            indexer.init().await.unwrap();
+            {
+                let database = get_brc20_database();
+                let database = database.lock().await;
+                assert_eq!(
+                    database.get_current_block_height().await.unwrap(),
+                    PHASE_ONE - 1
+                );
+                assert_eq!(snapshot(&database).await, at_one);
+            }
+            assert_eq!(engine_height(&prog).await, i64::from(PHASE_ONE - 1));
+            indexer.check_brc20_prog_height().await.unwrap();
+            drop(engine);
+        })
+        .await;
+    }
+
+    /// The indexer's start repairs an incomplete current-balances table once
+    /// and records the marker.
+    #[tokio::test]
+    async fn the_start_repairs_an_incomplete_current_balances_table() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        let engine = TestEngine::open();
+        with_database("extras_start", move |name| async move {
+            let mut database = database(&name, false).await;
+            sqlx::raw_sql(
+                "INSERT INTO brc20_historic_balances
+                     (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
+                 VALUES ('a1', 'wa1', 'ordi', 5, 5, 1, 1), ('b2', 'wb2', 'ordi', 3, 2, 1, 2);",
+            )
+            .execute(&database.client)
+            .await
+            .unwrap();
+            database.index_extra_tables(1).await.unwrap();
+            database.set_block_hashes(1, "h1", "", None, &[]).await.unwrap();
+            sqlx::raw_sql(
+                "DELETE FROM brc20_current_balances WHERE pkscript = 'b2';
+                 DROP TABLE brc20_extras_verified;",
+            )
+            .execute(&database.client)
+            .await
+            .unwrap();
+            assert_eq!(
+                crate::database::extras_verified::compare(&database.client)
+                    .await
+                    .unwrap(),
+                (1, 0)
+            );
+            replace_brc20_database(database).await;
+
+            indexer(&name, &engine).init().await.unwrap();
+            let database = get_brc20_database();
+            let database = database.lock().await;
+            assert_eq!(
+                crate::database::extras_verified::compare(&database.client)
+                    .await
+                    .unwrap(),
+                (0, 0)
+            );
+            assert!(
+                crate::database::extras_verified::is_verified(&database.client)
+                    .await
+                    .unwrap()
+            );
+            drop(engine);
         })
         .await;
     }

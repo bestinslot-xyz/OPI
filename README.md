@@ -150,8 +150,11 @@ runs inside the `opi-indexer` process. There is no separate brc20-prog server.
 | `BRC20_PROG_RPC_SERVER_ENABLED` | the public JSON-RPC server runs when this is unset or exactly `true`; any other value turns it off |
 | `EVM_RECORD_TRACES` | the engine records transaction traces when this is unset or exactly `true`; any other value turns it off. The block trace hash that OPI nodes compare is built from these traces, so with traces off every block's trace hash is the hash of the empty string and differs from the network's. Traces also serve `debug_traceTransaction`. The engine fixes the setting in its database when it creates it, so changing it takes a fresh `BRC20_PROG_DB_PATH` and a brc20 reindex |
 
-`run` serves brc20-prog's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL`.
-Blockscout, the swap sequencer and other clients connect there. It rejects the
+`run` and `brc20 light` serve brc20-prog's public JSON-RPC on
+`BRC20_PROG_RPC_SERVER_URL`, under the same settings. Blockscout, the swap
+sequencer and other clients connect there. Each serves it from before its
+start-up until brc20 has finished its last block: `run` on SIGINT or SIGTERM,
+`brc20 light` when the light client ends. It rejects the
 indexer methods (`brc20_mine` and the like) and takes no credentials, so bind
 it to loopback or firewall it. brc20-prog's `BRC20_PROG_RPC_SERVER_ENABLE_AUTH`,
 `BRC20_PROG_RPC_SERVER_USER` and `BRC20_PROG_RPC_SERVER_PASSWORD` do not apply
@@ -177,7 +180,8 @@ credentials: it answers from the cache alone, so it requires
 network comes from `NETWORK_TYPE`.
 
 The cache stores successful answers and `getrawtransaction` "not found" (-5)
-answers. Only the indexer's own lookups write it; public `eth_call`s read it. A
+answers. Only the indexer's own lookups write it; public `eth_call`s read it,
+in light mode too. A
 lookup gives up after 20 seconds (a request to bitcoind after 15, a wait for a
 Postgres connection after 5), and the engine retries a failed lookup 5 times
 before it panics, which stops the process (see below).
@@ -194,6 +198,20 @@ supervisor such as systemd that restarts it.
 
 To move a node that ran the standalone brc20-prog server, stop that server and
 point `BRC20_PROG_DB_PATH` at its database; the on-disk format is the same.
+
+When the engine's height is below brc20's at start, as with a fresh or lagging
+`BRC20_PROG_DB_PATH`, brc20 rolls back to the engine's height (or to the block
+before BRC2.0's activation, 229999 on signet, when the engine is below it) the
+way `brc20 reorg` does, logs a warning naming the engine dir and both heights,
+and replays the BRC2.0 blocks from there.
+
+Once per database, before indexing resumes, brc20 checks
+`brc20_current_balances` against the newest `brc20_historic_balances` row per
+pkScript and ticker, and rebuilds the extra tables as `brc20 reindex-extras`
+does when they differ. Databases indexed by older light clients can carry an
+incomplete current-balances table. On mainnet the check scans both tables
+once. `brc20_extras_verified` records that it passed; a database created by
+this version carries the record from the start.
 
 ### Docker
 
@@ -318,7 +336,7 @@ same bitcoind credentials (`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or
 
 | Command | Does |
 | --- | --- |
-| `brc20 light` | runs the BRC-20 light client until stopped; needs `OPERATION_MODE=light` |
+| `brc20 light` | runs the BRC-20 light client until stopped, serving the engine's public JSON-RPC as `run` does; needs `OPERATION_MODE=light` |
 | `brc20 reset [--yes]` | deletes all BRC-20 data and starts fresh |
 | `brc20 reorg [--yes] <HEIGHT>` | rolls the BRC-20 state back to a block height |
 | `brc20 recalculate-hashes <FROM>` | recomputes the cumulative event hashes from a height to the latest indexed block |

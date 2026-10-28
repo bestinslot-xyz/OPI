@@ -122,9 +122,7 @@ fn run() -> Result<()> {
 
     // Serves for the whole process, so brc20 module restarts keep it.
     let public_rpc = match (&brc20_engine, &module_configs.brc20) {
-        (Some(engine), Some(brc20)) if brc20.brc20_prog_rpc_server_enabled => {
-            Some(PublicRpc::start(&engine.prog)?)
-        }
+        (Some(engine), Some(brc20)) => start_public_rpc(engine, brc20)?,
         _ => None,
     };
 
@@ -141,28 +139,32 @@ fn run() -> Result<()> {
     };
 
     let brc20_enabled = brc20_engine.is_some();
-    let exit = tokio::runtime::Builder::new_multi_thread()
+    let exit = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(anyhow::Error::from)
-        .and_then(|runtime| {
+    {
+        Ok(runtime) => {
             opi_core::metrics::global().set_phase(Phase::Running);
             let exit = runtime.block_on(supervise(&handle, module_configs, brc20_engine));
             // Every exit, an error one included, reports shutting down while
             // brc20 goes idle and the RPC server and source stop.
-            opi_core::metrics::global().set_phase(Phase::ShuttingDown);
-            // The brc20 module may still be finishing its last block, such
-            // as an engine commit, which the public RPC must outlive.
             if brc20_enabled {
-                runtime.block_on(wait_for_brc20_idle());
+                shut_down_brc20(&runtime, public_rpc);
+            } else {
+                opi_core::metrics::global().set_phase(Phase::ShuttingDown);
             }
             exit
-        });
+        }
+        Err(err) => {
+            if let Some(public_rpc) = public_rpc {
+                public_rpc.stop();
+            }
+            Err(err.into())
+        }
+    };
 
-    // The modules have stopped; the public RPC server stops before the source.
-    if let Some(public_rpc) = public_rpc {
-        public_rpc.stop();
-    }
+    // The modules and the public RPC server have stopped; the source stops
+    // last.
     handle.shutdown();
     let joined = handle.join();
     if let Some(metrics) = metrics {
@@ -336,13 +338,38 @@ async fn wait_for_brc20_idle() {
     }
 }
 
+/// Starts the engine's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL` for
+/// `run` and `brc20 light`, when `BRC20_PROG_RPC_SERVER_ENABLED` turns it on.
+/// Call it outside an async runtime, since it waits for the server's own.
+pub(crate) fn start_public_rpc(
+    engine: &Brc20Engine,
+    config: &Brc20IndexerConfig,
+) -> Result<Option<PublicRpc>> {
+    if !config.brc20_prog_rpc_server_enabled {
+        return Ok(None);
+    }
+    PublicRpc::start(&engine.prog).map(Some)
+}
+
+/// Ends the brc20 side of `run` and `brc20 light`: readiness answers
+/// shutting down, brc20 gets up to `BRC20_IDLE_TIMEOUT` on `runtime` to
+/// finish its last request, such as an engine commit, which the public RPC
+/// must outlive, and then the public RPC stops.
+pub(crate) fn shut_down_brc20(runtime: &tokio::runtime::Runtime, public_rpc: Option<PublicRpc>) {
+    opi_core::metrics::global().set_phase(Phase::ShuttingDown);
+    runtime.block_on(wait_for_brc20_idle());
+    if let Some(public_rpc) = public_rpc {
+        public_rpc.stop();
+    }
+}
+
 /// How long `PublicRpc::stop` waits for in-flight public calls to finish.
 const RPC_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The engine's public JSON-RPC server and the runtime it runs on. The
 /// runtime has threads of its own, since the engine blocks the thread that
 /// calls it.
-struct PublicRpc {
+pub(crate) struct PublicRpc {
     server: ServerHandle,
     runtime: ServiceRuntime,
 }
@@ -436,10 +463,14 @@ async fn source_finished(handle: &SourceHandle) {
 #[cfg(test)]
 mod tests {
     use {
-        super::{Cli, Command, PublicRpc, brc20, is_lock_error, open_engine},
+        super::{
+            Brc20Engine, Cli, Command, PublicRpc, brc20, is_lock_error, open_engine,
+            shut_down_brc20,
+        },
         bitcoin::{BlockHash, Network, Transaction, Txid},
         brc20_prog::{BitcoinRpc, BitcoinRpcError, Brc20Prog, Brc20ProgConfig},
         clap::Parser,
+        opi_brc20::{config::Brc20IndexerConfig, indexer::CachedBitcoinRpc},
         std::{
             io::{Read, Write},
             net::{TcpListener, TcpStream},
@@ -620,6 +651,61 @@ mod tests {
 
         rpc.stop();
         assert!(TcpStream::connect(address).is_err());
+    }
+
+    /// `brc20 light` serves the public JSON-RPC under `run`'s rule, on a
+    /// light engine that reads Bitcoin data from the cache only, and stops it
+    /// as `run` does; the maintenance commands run none.
+    #[test]
+    fn brc20_light_serves_the_public_rpc_under_runs_rule() {
+        let dir = EngineDir::new();
+        let mut config = Brc20IndexerConfig {
+            light_client_mode: true,
+            bitcoin_rpc_cache_enabled: true,
+            network_type: Network::Regtest,
+            network_type_string: "regtest".to_string(),
+            brc20_prog_rpc_server_enabled: true,
+            ..Default::default()
+        };
+        let source = CachedBitcoinRpc::new(&config).expect("the source starts");
+        let engine = Brc20Engine {
+            bitcoin_rpc_buffer: source.buffer_slot().clone(),
+            prog: open_engine(dir.config.clone(), Arc::new(source)).unwrap(),
+        };
+        let address = &dir.config.brc20_prog_rpc_server_url;
+
+        for maintenance in [
+            brc20_command(&["reorg", "5", "--yes"]),
+            brc20_command(&["reindex-extras", "--yes"]),
+            brc20_command(&["trace-str", "9"]),
+        ] {
+            assert!(
+                brc20::public_rpc(&maintenance, &engine, &config)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(TcpStream::connect(address).is_err());
+
+        let rpc = brc20::public_rpc(&brc20::Command::Light, &engine, &config)
+            .unwrap()
+            .expect("light serves the public RPC");
+        let height = rpc_call(address, "eth_blockNumber", "[]");
+        assert!(height.contains(r#""result":"0x"#), "{height}");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        shut_down_brc20(&runtime, Some(rpc));
+        assert!(TcpStream::connect(address).is_err());
+
+        config.brc20_prog_rpc_server_enabled = false;
+        assert!(
+            brc20::public_rpc(&brc20::Command::Light, &engine, &config)
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn brc20_command(args: &[&str]) -> brc20::Command {

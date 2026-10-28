@@ -222,3 +222,11 @@ CREATE INDEX IF NOT EXISTS brc20_events_parties_idx ON public.brc20_events USING
 CREATE INDEX IF NOT EXISTS brc20_light_events_ticker_id_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)), id);
 CREATE INDEX IF NOT EXISTS brc20_light_events_parties_idx ON public.brc20_light_events USING gin ((array_remove(ARRAY[nullif(("event" ->> 'deployer_pkScript'), ''), nullif(("event" ->> 'minted_pkScript'), ''), nullif(("event" ->> 'source_pkScript'), ''), nullif(("event" ->> 'spent_pkScript'), ''), nullif(("event" ->> 'predeployer_pkScript'), ''), nullif(("event" ->> 'deployer_wallet'), ''), nullif(("event" ->> 'minted_wallet'), ''), nullif(("event" ->> 'source_wallet'), ''), nullif(("event" ->> 'spent_wallet'), ''), nullif(("event" ->> 'predeployer_wallet'), '')], NULL)));
 
+CREATE TABLE IF NOT EXISTS public.brc20_extras_verified (
+	id int4 NOT NULL DEFAULT 1,
+	verified_at timestamptz NOT NULL DEFAULT now(),
+	CONSTRAINT brc20_extras_verified_pk PRIMARY KEY (id),
+	CONSTRAINT brc20_extras_verified_one_row CHECK (id = 1)
+);
+INSERT INTO public.brc20_extras_verified (id) VALUES (1) ON CONFLICT DO NOTHING;
+

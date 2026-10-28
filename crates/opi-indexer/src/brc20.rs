@@ -7,7 +7,8 @@
 //! running `opi-indexer run`. Every other command opens brc20-prog's database,
 //! which one process holds at a time, so `run` must be stopped first.
 //! `light` serves the metrics listener on METRICS_ADDR, with the OPI
-//! network's best verified block as the chain tip.
+//! network's best verified block as the chain tip, and the engine's public
+//! JSON-RPC under the same settings as `run`.
 
 use {
     anyhow::{Result, anyhow, bail},
@@ -119,26 +120,56 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         None
     };
-    let result = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(execute(args.command, config));
+    let result = execute(args.command, config);
     if let Some(metrics) = metrics {
         metrics.stop();
     }
     result
 }
 
-// The library reports `Box<dyn Error>`, which is not `Send`; `anyhow!`
-// keeps the message.
-async fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
-    set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
+/// Runs `command` on a runtime of its own. Every command but `event-str`
+/// opens the engine first; `light` also serves the engine's public JSON-RPC
+/// as `run` does, from before its start-up until it has stopped.
+fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     // `event-str` reads Postgres only, so it leaves the engine's database to
     // a running `opi-indexer run`.
-    match command {
-        Command::EventStr { height } => event_str(height).await,
-        command => execute_with_engine(command, config).await,
+    if let Command::EventStr { height } = command {
+        return runtime.block_on(async {
+            set_database(&config);
+            event_str(height).await
+        });
     }
+    let light = matches!(command, Command::Light);
+    let engine = crate::open_brc20_prog(&config)?;
+    let public_rpc = public_rpc(&command, &engine, &config)?;
+    let result = runtime.block_on(async {
+        set_database(&config);
+        execute_with_engine(command, config, engine).await
+    });
+    if light {
+        crate::shut_down_brc20(&runtime, public_rpc);
+    }
+    result
+}
+
+/// The engine's public JSON-RPC for `command`: `light` starts it under
+/// `run`'s rule, and the maintenance commands run none.
+pub(crate) fn public_rpc(
+    command: &Command,
+    engine: &crate::Brc20Engine,
+    config: &Brc20IndexerConfig,
+) -> Result<Option<crate::PublicRpc>> {
+    match command {
+        Command::Light => crate::start_public_rpc(engine, config),
+        _ => Ok(None),
+    }
+}
+
+fn set_database(config: &Brc20IndexerConfig) {
+    set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(config))));
 }
 
 async fn event_str(height: i32) -> Result<()> {
@@ -156,10 +187,13 @@ async fn event_str(height: i32) -> Result<()> {
     Ok(())
 }
 
-/// Runs a command that needs the engine, which opens its database and its
-/// own Bitcoin RPC source for the command's whole run.
-async fn execute_with_engine(command: Command, config: Brc20IndexerConfig) -> Result<()> {
-    let engine = crate::open_brc20_prog(&config)?;
+/// Runs a command that needs `engine`, which holds its database and its own
+/// Bitcoin RPC source for the command's whole run.
+async fn execute_with_engine(
+    command: Command,
+    config: Brc20IndexerConfig,
+    engine: crate::Brc20Engine,
+) -> Result<()> {
     let mut indexer = Brc20Indexer::new(config, engine.prog, engine.bitcoin_rpc_buffer, None);
     match command {
         Command::EventStr { .. } => unreachable!("event-str runs without the engine"),

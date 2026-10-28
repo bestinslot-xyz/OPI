@@ -1259,6 +1259,34 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
     }
 
+    /// A light client's public JSON-RPC lookups, which come from other
+    /// threads, read the cache and never write it: a stored row answers, and
+    /// a miss is an error that reaches neither bitcoind nor the buffer.
+    #[tokio::test]
+    async fn light_mode_public_lookups_read_the_cache_and_never_write_it() {
+        let (url, seen) = confirmed_bitcoind();
+        let worker = worker(&url, true);
+        let request = raw_transaction_request(&txid(TX_INFO), true);
+        let rows = FakeRows::with_stored(signet_response(&request));
+        let answer = worker
+            .answer_with(Some(&rows), &request, false)
+            .await
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&answer).unwrap();
+        assert_eq!(answer["result"]["blockhash"], json!(TX_INFO_BLOCK));
+
+        let empty = FakeRows::default();
+        assert!(
+            worker
+                .answer_with(Some(&empty), &request, false)
+                .await
+                .is_err()
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(rows.buffered_count(), 0);
+        assert_eq!(empty.buffered_count(), 0);
+    }
+
     #[test]
     fn other_threads_never_buffer() {
         let tx = raw_transaction_request(&txid(TX), false);

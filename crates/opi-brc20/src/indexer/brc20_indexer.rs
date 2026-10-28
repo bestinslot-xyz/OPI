@@ -19,7 +19,7 @@ use crate::{
         TICKER_KEY,
     },
     database::{
-        get_brc20_database, prog_balances,
+        extras_verified, get_brc20_database, prog_balances,
         timer::{start_timer, stop_timer},
     },
     indexer::{
@@ -203,6 +203,9 @@ impl Brc20Indexer {
             )
             .into());
         }
+
+        // Once per database, after every start-up reorg.
+        extras_verified::verify_once(&*get_brc20_database().lock().await).await?;
 
         self.fill_prog_balances().await?;
 
@@ -2483,6 +2486,29 @@ impl Brc20Indexer {
             last_brc20_prog_block_height
         );
 
+        if let Some(target) = engine_catch_up_height(
+            last_brc20_block_height,
+            last_brc20_prog_block_height,
+            self.config.first_brc20_prog_phase_one_height,
+        ) {
+            tracing::warn!(
+                "The BRC2.0 engine at {} is at height {}, below brc20's height {}; rolling brc20 back to {}, and the BRC2.0 blocks above {} replay now",
+                std::env::var(crate::config::BRC20_PROG_DB_PATH_KEY).unwrap_or_default(),
+                last_brc20_prog_block_height,
+                last_brc20_block_height,
+                target,
+                target
+            );
+            self.reorg(target).await?;
+            if target < self.config.first_brc20_height {
+                return Ok(());
+            }
+            last_brc20_block_height = target;
+            if target < self.config.first_brc20_prog_phase_one_height {
+                last_brc20_prog_block_height = self.config.first_brc20_prog_phase_one_height - 1;
+            }
+        }
+
         if last_brc20_prog_block_height >= self.config.first_brc20_prog_phase_one_height {
             if last_brc20_block_height == last_brc20_prog_block_height {
                 // BRC20 and BRC20 Prog are already synced, no need to reorg
@@ -2490,7 +2516,7 @@ impl Brc20Indexer {
                     "BRC20 and BRC20 Prog are synced at height: {}",
                     last_brc20_block_height
                 );
-            } else if last_brc20_block_height < last_brc20_prog_block_height {
+            } else {
                 tracing::info!(
                     "BRC20 Prog is ahead of BRC20, reorging BRC20 prog to current BRC20 height: {}",
                     last_brc20_block_height
@@ -2500,18 +2526,6 @@ impl Brc20Indexer {
                     .await?;
 
                 last_brc20_prog_block_height = last_brc20_block_height;
-            } else {
-                tracing::info!(
-                    "BRC20 is ahead of BRC20 Prog, reorging BRC20 to current BRC20 prog height: {}",
-                    last_brc20_prog_block_height
-                );
-                get_brc20_database()
-                    .lock()
-                    .await
-                    .reorg(last_brc20_prog_block_height as i32)
-                    .await?;
-
-                last_brc20_block_height = last_brc20_prog_block_height;
             }
         }
 
@@ -2650,6 +2664,16 @@ fn brc20_prog_height_mismatch(
         .then(|| format!("brc20 is at {last_brc20} but brc20-prog is at {last_prog}"))
 }
 
+/// The height brc20 rolls back to when the engine at `last_prog` is below
+/// brc20 at `last_brc20`, such as a fresh or lagging engine data dir:
+/// `last_prog`, or `phase_one - 1` when the engine is below that, so the
+/// BRC2.0 blocks above it replay through the engine. `None` when brc20 is
+/// below phase one, where the engine holds no BRC2.0 block, or when the
+/// engine is not behind.
+fn engine_catch_up_height(last_brc20: i32, last_prog: i32, phase_one: i32) -> Option<i32> {
+    (last_brc20 >= phase_one && last_prog < last_brc20).then(|| last_prog.max(phase_one - 1))
+}
+
 /// Whether brc20's stored hash at `last_brc20` is compared with brc20-prog's:
 /// `reorg_to_last_synced_block_height` reads brc20-prog's hash only once brc20
 /// has indexed a BRC-20 block at or above phase one.
@@ -2726,6 +2750,22 @@ mod tests {
         assert!(prog_balance_fill_height(300_000, 299_990, PHASE_ONE).is_err());
         assert!(prog_balance_fill_height(300_000, 300_001, PHASE_ONE).is_err());
         assert!(prog_balance_fill_height(PHASE_ONE, PHASE_ONE - 1, PHASE_ONE).is_err());
+    }
+
+    #[test]
+    fn an_engine_below_brc20_rolls_brc20_back_to_the_engine_or_phase_one() {
+        let target = |brc20, prog| engine_catch_up_height(brc20, prog, PHASE_ONE);
+        // A lagging engine: brc20 rolls back to the engine's height.
+        assert_eq!(target(300_000, 299_000), Some(299_000));
+        assert_eq!(target(300_000, PHASE_ONE), Some(PHASE_ONE));
+        // A fresh or pre-BRC2.0 engine: brc20 rolls back to phase one - 1.
+        assert_eq!(target(300_000, 0), Some(PHASE_ONE - 1));
+        assert_eq!(target(300_000, PHASE_ONE - 1), Some(PHASE_ONE - 1));
+        assert_eq!(target(PHASE_ONE, 0), Some(PHASE_ONE - 1));
+        // An engine at or above brc20, or brc20 below phase one, needs none.
+        assert_eq!(target(300_000, 300_000), None);
+        assert_eq!(target(300_000, 300_001), None);
+        assert_eq!(target(PHASE_ONE - 1, 0), None);
     }
 
     #[test]
