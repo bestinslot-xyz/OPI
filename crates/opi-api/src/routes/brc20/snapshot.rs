@@ -19,8 +19,10 @@
 //! ONLY` transaction, so they come from one database snapshot. Rows stream
 //! from Postgres to the client through a bounded channel, in chunks of
 //! about [`CHUNK_BYTES`], so a snapshot holds a few chunks in memory
-//! whatever its size, and the body ends with an explicit [`Item::Done`]. A
-//! failure before the first chunk answers 500. A failure after it, the
+//! whatever its size, and the body ends with an explicit [`Item::Done`].
+//! Opening the transaction and reading the tip and ticker past the time
+//! limit answers 503 `snapshot timed out`. A failure before the first chunk
+//! answers 500. A failure after it, the
 //! snapshot's time limit (API_SNAPSHOT_TIMEOUT_MS) passing, or a stream that
 //! stops without `Done` ends the body with an error, so the client sees an
 //! aborted transfer; the cause is logged. A snapshot holds a pool
@@ -210,12 +212,22 @@ pub async fn snapshot(
         return Ok(Reply::error(503, "too many snapshots running, retry later").into_response());
     };
     let deadline = Instant::now() + snapshots.timeout;
-    let mut read = ReadSnapshot::begin(snapshots.db.pool()?).await?;
-    let plan = match check(&mut read, request).await? {
+    let timed_out = || Ok(Reply::error(503, "snapshot timed out").into_response());
+    let pool = snapshots.db.pool()?;
+    // A future dropped at the deadline drops its ReadSnapshot, which closes
+    // the connection.
+    let Ok(read) = timeout_at(deadline, ReadSnapshot::begin(pool)).await else {
+        return timed_out();
+    };
+    let mut read = read?;
+    let Ok(checked) = timeout_at(deadline, check(&mut read, request)).await else {
+        return timed_out();
+    };
+    let plan = match checked? {
         Ok(plan) => plan,
         Err(refusal) => {
             // a failed COMMIT closes the connection
-            let _ = read.end().await;
+            let _ = timeout_at(deadline, read.end()).await;
             return Ok(refusal.into_response());
         }
     };
@@ -397,7 +409,8 @@ async fn send(sender: &mpsc::Sender<Item>, deadline: Instant, item: Item) -> Res
 /// Runs the snapshot query in `read`'s transaction and sends its rows to
 /// `sender` in chunks, then [`Item::Done`]. It holds `permit` and the
 /// connection until it returns: at the end, when the client is gone, on a
-/// failure, or at `deadline`.
+/// failure, or at `deadline`. The connection is closed or returned before
+/// the slot frees.
 async fn stream_rows(
     read: ReadSnapshot,
     plan: Plan,
@@ -405,7 +418,11 @@ async fn stream_rows(
     permit: OwnedSemaphorePermit,
     deadline: Instant,
 ) {
-    let stopped = match write_rows(read, &plan, &sender, permit, deadline).await {
+    let mut permit = Some(permit);
+    // `write_rows` owns `read`, so its connection is gone when it returns.
+    let result = write_rows(read, &plan, &sender, &mut permit, deadline).await;
+    drop(permit);
+    let stopped = match result {
         Ok(()) => return,
         Err(stop) => stop,
     };
@@ -431,7 +448,7 @@ async fn write_rows(
     mut read: ReadSnapshot,
     plan: &Plan,
     sender: &mpsc::Sender<Item>,
-    permit: OwnedSemaphorePermit,
+    permit: &mut Option<OwnedSemaphorePermit>,
     deadline: Instant,
 ) -> Result<(), Stop> {
     let mut out = String::with_capacity(CHUNK_BYTES * 2);
@@ -547,7 +564,8 @@ async fn write_rows(
         out.push_str("]}}");
     }
     send(sender, deadline, Item::Chunk(Bytes::from(out))).await?;
-    // The slot frees before the client can read the end of the answer.
-    drop(permit);
+    // The slot frees before the client can read the end of the answer; the
+    // connection went back to the pool at the commit.
+    drop(permit.take());
     send(sender, deadline, Item::Done).await
 }

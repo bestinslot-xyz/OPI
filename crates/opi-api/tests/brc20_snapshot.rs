@@ -175,7 +175,12 @@ fn in_use(pool: &PgPool) -> usize {
 
 /// Waits up to 10 s until no pool connection is in use.
 async fn until_idle(pool: &PgPool) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    until_idle_within(pool, std::time::Duration::from_secs(10)).await;
+}
+
+/// Waits up to `wait` until no pool connection is in use.
+async fn until_idle_within(pool: &PgPool, wait: std::time::Duration) {
+    let deadline = tokio::time::Instant::now() + wait;
     while in_use(pool) > 0 {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -488,27 +493,70 @@ async fn a_failure_after_the_first_chunk_ends_the_body_early() {
 #[tokio::test]
 async fn a_snapshot_stops_at_its_time_limit() {
     // A pool of 2 caps snapshots at 1.
-    with_history_pool("timeout", 2, |_, pool| async move {
+    with_history_pool("timeout", 2, |unlimited, pool| async move {
+        let uri = format!("{ROUTE}?ticker=huge");
+        // The first chunk waits for the whole sort. The limit is 5 s or ten
+        // times this machine's time to the first chunk, whichever is
+        // longer, so a loaded machine still sees the first chunk in time.
+        let started = std::time::Instant::now();
+        let probe = send(&unlimited, &uri).await;
+        let first_chunk = started.elapsed();
+        assert_eq!(probe.status(), 200);
+        drop(probe);
+        until_idle(&pool).await;
+        let limit = (first_chunk * 10).max(std::time::Duration::from_secs(5));
         let app = common::app_with_env(
             BRC20,
             Db::from_pool(pool.clone()),
-            // long enough for the first chunk, which waits for the sort
-            &[("API_SNAPSHOT_TIMEOUT_MS", "2000")],
+            &[("API_SNAPSHOT_TIMEOUT_MS", &limit.as_millis().to_string())],
         );
-        let uri = format!("{ROUTE}?ticker=huge");
         // A client that never reads.
         let stalled = send(&app, &uri).await;
-        assert_eq!(stalled.status(), 200);
+        assert_eq!(
+            stalled.status(),
+            200,
+            "no first chunk within {limit:?} (the probe took {first_chunk:?})"
+        );
         let busy = bad("too many snapshots running, retry later");
         expect(&app, &uri, 503, JSON, &busy).await;
         assert_eq!(in_use(&pool), 1);
         // At the limit the connection closes and the slot frees.
-        until_idle(&pool).await;
+        until_idle_within(&pool, limit + std::time::Duration::from_secs(10)).await;
         let after = common::get(&app, &format!("{ROUTE}?ticker=ordi")).await;
         assert_eq!(after.status, 200, "{}", after.body);
         // The stalled body ends with an error, not a clean truncated end.
         let (failed, received) = read_to_end(stalled.into_body()).await;
         assert!(failed, "the body ended cleanly after {received} bytes");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_snapshot_whose_checks_pass_the_limit_answers_503() {
+    with_history_pool("checks", 4, |_, pool| async move {
+        let app = common::app_with_env(
+            BRC20,
+            Db::from_pool(pool.clone()),
+            &[("API_SNAPSHOT_TIMEOUT_MS", "300")],
+        );
+        // The tip query waits on this lock past the limit.
+        let mut lock = pool.begin().await.unwrap();
+        sqlx::query("LOCK TABLE brc20_block_hashes IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await
+            .unwrap();
+        expect(
+            &app,
+            &format!("{ROUTE}?ticker=ordi"),
+            503,
+            JSON,
+            &bad("snapshot timed out"),
+        )
+        .await;
+        lock.rollback().await.unwrap();
+        until_idle(&pool).await;
+        let after = common::get(&app, &format!("{ROUTE}?ticker=ordi")).await;
+        assert_eq!(after.status, 200, "{}", after.body);
     })
     .await;
 }

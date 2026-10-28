@@ -684,7 +684,8 @@ from one database snapshot (a `REPEATABLE READ READ ONLY` transaction). A
 `block_height` above the indexed tip or below the ticker's deploy height
 answers `400`. At most 4 snapshots, and at most half the pool
 (`DB_MAX_CONNECTIONS`), stream at once; another answers `503`. Each holds a
-pool connection while it streams, for at most `API_SNAPSHOT_TIMEOUT_MS`.
+pool connection while it streams, for at most `API_SNAPSHOT_TIMEOUT_MS`; one
+that cannot start within that limit answers `503` `"snapshot timed out"`.
 `format=json` (default) answers
 `{"error":null,"result":{"ticker","block_height","decimals",
 "ticker_decimals","holders":[...]}}` with the holders route's row objects
