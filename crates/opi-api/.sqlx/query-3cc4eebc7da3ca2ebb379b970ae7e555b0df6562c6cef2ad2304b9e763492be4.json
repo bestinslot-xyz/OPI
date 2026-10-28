@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select ticker, ticker_hash from brc20_prog_tickers where contract_address = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ticker",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_prog_tickers",
+            "name": "ticker"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ticker_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_prog_tickers",
+            "name": "ticker_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3cc4eebc7da3ca2ebb379b970ae7e555b0df6562c6cef2ad2304b9e763492be4"
+}

@@ -1,5 +1,6 @@
-//! The ticker routes: `/v1/brc20/ticker`, `/v1/brc20/tickers`,
-//! `/v1/brc20/ticker/holders` and `/v1/brc20/wallet/balances`.
+//! The ticker routes: `/v1/brc20/ticker`, `/v1/brc20/ticker/by_contract`,
+//! `/v1/brc20/tickers`, `/v1/brc20/ticker/holders` and
+//! `/v1/brc20/wallet/balances`.
 //!
 //! They answer `{"error":null,"result":...}`. Amounts are raw integers as
 //! strings: every BRC-20 and BRC2.0 amount carries 18 fractional digits
@@ -214,15 +215,10 @@ impl TickerRow {
     }
 }
 
-/// `/v1/brc20/ticker?ticker=`: a ticker's supply, mint progress, holder
-/// counts and BRC2.0 token contract (null before its first deposit).
-pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
-    let tick = match ticker(&query, "ticker") {
-        Ok(tick) => tick,
-        Err(bad) => return Ok(bad.reply()),
-    };
-    let current_block_height = block_height_of_db(&db).await;
-    let row = sqlx::query_as!(
+/// The brc20_tickers row of `tick` with its holder counts, or `None` when
+/// brc20 has no such ticker.
+async fn ticker_row(db: &Db, tick: &str) -> Result<Option<TickerRow>, ApiError> {
+    Ok(sqlx::query_as!(
         TickerRow,
         r#"select t.tick, t.original_tick, t.decimals as ticker_decimals,
                 t.max_supply::text as "max_supply!",
@@ -240,8 +236,18 @@ pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
         tick,
     )
     .fetch_optional(db.pool()?)
-    .await?;
-    let Some(row) = row else {
+    .await?)
+}
+
+/// `/v1/brc20/ticker?ticker=`: a ticker's supply, mint progress, holder
+/// counts and BRC2.0 token contract (null before its first deposit).
+pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
+    let tick = match ticker(&query, "ticker") {
+        Ok(tick) => tick,
+        Err(bad) => return Ok(bad.reply()),
+    };
+    let current_block_height = block_height_of_db(&db).await;
+    let Some(row) = ticker_row(&db, &tick).await? else {
         return Ok(Reply::error(404, "ticker not found"));
     };
     let prog_contract_address = sqlx::query_scalar!(
@@ -255,6 +261,52 @@ pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
     .await?;
     let mut result = row.into_object();
     result.set("prog_contract_address", prog_contract_address);
+    result.set("block_height", current_block_height);
+    Ok(Reply::send_json(js_object! {
+        "error" => JsValue::Null,
+        "result" => result,
+    }))
+}
+
+/// The lowercase EVM address of `key`, as the engine logs addresses.
+pub(super) fn evm_address(query: &JsObject, key: &str) -> Result<String, BadParam> {
+    let address = text(query, key, MAX_ADDRESS_LEN)?;
+    if !is_evm_address(address) {
+        return Err(BadParam(format!(
+            "{key} must be an EVM address: 0x and 40 hex digits"
+        )));
+    }
+    Ok(address.to_lowercase())
+}
+
+/// `/v1/brc20/ticker/by_contract?contract_address=`: the ticker a BRC2.0
+/// token contract carries, as `/v1/brc20/ticker` answers it, with
+/// `prog_contract_address` the queried contract and `prog_ticker_hash` the
+/// ticker hash its `BRC20Created` log registered.
+pub async fn ticker_by_contract(
+    State(db): State<Db>,
+    JsQuery(query): JsQuery,
+) -> Result<Reply, ApiError> {
+    let contract_address = match evm_address(&query, "contract_address") {
+        Ok(address) => address,
+        Err(bad) => return Ok(bad.reply()),
+    };
+    let current_block_height = block_height_of_db(&db).await;
+    let contract = sqlx::query!(
+        "select ticker, ticker_hash from brc20_prog_tickers where contract_address = $1;",
+        contract_address,
+    )
+    .fetch_optional(db.pool()?)
+    .await?;
+    let Some(contract) = contract else {
+        return Ok(Reply::error(404, "contract not found"));
+    };
+    let Some(row) = ticker_row(&db, &contract.ticker).await? else {
+        return Ok(Reply::error(404, "ticker not found"));
+    };
+    let mut result = row.into_object();
+    result.set("prog_contract_address", contract_address);
+    result.set("prog_ticker_hash", contract.ticker_hash);
     result.set("block_height", current_block_height);
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
