@@ -161,10 +161,9 @@ impl Module for Brc20Module {
     }
 
     fn pool_stats(&self) -> Option<opi_core::metrics::PoolStats> {
-        self.pool.as_ref().map(|pool| opi_core::metrics::PoolStats {
-            size: pool.size(),
-            idle: pool.num_idle() as u32,
-        })
+        self.pool
+            .as_ref()
+            .map(|pool| opi_core::metrics::PoolStats::new(pool.size(), pool.num_idle()))
     }
 }
 

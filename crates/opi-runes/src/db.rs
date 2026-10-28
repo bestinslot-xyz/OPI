@@ -55,10 +55,7 @@ impl Db {
 
     /// The pool's open and idle connections.
     pub fn pool_stats(&self) -> PoolStats {
-        PoolStats {
-            size: self.pool.size(),
-            idle: self.pool.num_idle() as u32,
-        }
+        PoolStats::new(self.pool.size(), self.pool.num_idle())
     }
 
     async fn ensure_schema(&self, network_type: &str) -> anyhow::Result<()> {

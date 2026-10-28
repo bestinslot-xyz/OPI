@@ -237,34 +237,48 @@ private network.
 | `METRICS_ADDR` | listen address of the metrics listener of `run` and `brc20 light`, for example `127.0.0.1:9100`; empty or unset runs none |
 | `API_METRICS_ADDR` | listen address of the metrics listener of `api`; empty or unset runs none |
 | `READY_MAX_LAG_BLOCKS` | the most blocks a module may be behind the chain tip while `run` or `brc20 light` is ready, default `2` |
+| `READY_MAX_TIP_AGE_SECS` | the most seconds since the last chain tip read while `run` or `brc20 light` is ready, default `600` |
 
-A start fails when its metrics address is taken. Each listener serves:
+A start fails when its metrics address is taken. `run` and `brc20 light`
+serve the listener from the start of the process, on a thread of their own, so
+liveness answers during start-up, such as while the engine opens or a fill
+runs. Each listener serves:
 
 | Route | Answers |
 | --- | --- |
-| `GET /metrics` | every metric below, in the OpenMetrics text format |
-| `GET /health/live` | 200 once the process serves |
+| `GET /health/live` | 200 while the listener serves |
 | `GET /health/ready` | 200 when ready, else 503 with the reason in the body |
+| `GET /metrics` | every metric below, in the OpenMetrics text format |
 
-`run` is ready when no start-up fill runs and every enabled module's indexed
-height is at most `READY_MAX_LAG_BLOCKS` below bitcoind's best block, which the
-source reads before each ord update. `brc20 light` compares brc20's height with
-the OPI network's best verified block instead. A module that has not read its
-height yet, or an unknown tip, is not ready. `api` is ready when every enabled
-module's database answers its latest block height within 5 seconds.
+`run` is ready when no start-up fill runs, bitcoind's best block was read
+within `READY_MAX_TIP_AGE_SECS` (the source reads it before each ord update),
+and every enabled module's indexed height is at most `READY_MAX_LAG_BLOCKS`
+below it. `brc20 light` compares brc20's height with the OPI network's best
+verified block instead, which it reads while it waits for a new block. A module
+that has not read its height yet, or whose run failed and waits to restart,
+and an unknown tip, are not ready. `api` is ready when every enabled module's
+database answers its latest block height; the databases are asked together and
+have 2 seconds, and the 503 body names the database that does not answer.
 
-Every metric name starts with `opi_`. Metrics a process does not record are
-left out: `api` records only the `api_*` metrics and its pools, `run` everything
-else, and `brc20 light` the brc20 module's.
+Before `run` or `brc20 light` has finished its start-up, ready answers 503
+`starting`. Once shutdown begins (SIGINT or SIGTERM for `run` and `api`, the
+end of the light client), ready answers 503 `shutting down`, and the listener
+stops after the process's work has stopped.
+
+Every metric name starts with `opi_`. Metrics a process does not record have
+no samples: `api` records only the `api_*` metrics and its pools, `run`
+everything else, and `brc20 light` the chain tip metrics and the brc20
+module's.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `opi_chain_tip_height` | gauge | | the chain tip the modules follow: bitcoind's best block, or the OPI network's best verified block in light mode |
-| `opi_indexed_height` | gauge | `module` | last block the module has applied |
+| `opi_chain_tip_age_seconds` | gauge | | seconds since that tip was last read |
+| `opi_indexed_height` | gauge | `module` | last block the module has applied; no sample while the module is down |
 | `opi_lag_blocks` | gauge | `module` | blocks the module is behind the chain tip, 0 when at or above it |
 | `opi_block_seconds` | histogram | `module` | seconds the module takes to apply one block |
-| `opi_engine_seconds` | histogram | `module` (`brc20`) | seconds of one brc20 block spent in the BRC2.0 engine |
-| `opi_fill_running` | gauge | `module`, `fill` | 1 while a start-up fill runs, 0 once it has finished; `fill` is `block_time`, `evm_addresses` or `prog_balances` |
+| `opi_engine_seconds` | histogram | `module` (`brc20`) | seconds of one brc20 block spent in the BRC2.0 engine; blocks that make no engine call, such as those below BRC2.0's first height, are not observed |
+| `opi_fill_running` | gauge | `module`, `fill` | runs of the start-up fill in progress, 0 once it has finished; `fill` is `block_time`, `evm_addresses` or `prog_balances` |
 | `opi_fill_progress` | gauge | `module`, `fill` | last block filled (`block_time`, `prog_balances`), or events read (`evm_addresses`) |
 | `opi_fill_target` | gauge | `module`, `fill` | the block the fill ends at (`prog_balances`) |
 | `opi_db_pool_connections` | gauge | `module` | open connections of the module's database pool |
@@ -276,8 +290,9 @@ else, and `brc20 light` the brc20 module's.
 `route` is the route pattern, such as `/v1/brc20/explorer/balances/{evm_address}`,
 never the requested path; a request no route matches has `route="unmatched"`.
 `module` of an API metric is the module whose `/v1/<module>` prefix the path is
-under, or `api` for other paths such as `/v1/status`. Rate-limited requests
-count only in `opi_api_rate_limited_total`. Block histograms have buckets from
+under, or `api` for other paths such as `/v1/status`. A request whose handler
+panics counts with `status="500"`. Rate-limited requests count only in
+`opi_api_rate_limited_total`. Block histograms have buckets from
 5 ms to 300 s, the request histogram from 1 ms to 10 s.
 
 ### Validation runbook

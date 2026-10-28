@@ -1,18 +1,21 @@
 //! The metrics listener and the API's request metrics.
 //!
 //! The listener serves `GET /metrics` (the process metrics of
-//! [`opi_core::metrics::global`]), `GET /health/live` (200 once the process
+//! [`opi_core::metrics::global`]), `GET /health/live` (200 while the listener
 //! serves) and `GET /health/ready` (200 when its [`Readiness`] check passes,
 //! else 503 with the reason). It runs on its own address, apart from the
-//! public API, for both `opi-indexer run` and `opi-indexer api`.
+//! public API, for `opi-indexer run`, `brc20 light` and `api`. Both readiness
+//! checks answer 503 "starting" before the process has started its work and
+//! "shutting down" once its shutdown has begun.
 //!
-//! [`track`] records each API request under its route pattern, never the
-//! raw path, and the module whose prefix the route is under.
+//! [`instrument`] records each API request under its route pattern, never
+//! the raw path, and the module whose prefix the route is under.
 
 use {
     crate::{
         config::{MODULES, Module},
         db::Db,
+        reply::internal_error,
         server::{ServeOptions, serve_listener},
     },
     anyhow::{Context, Result},
@@ -20,14 +23,14 @@ use {
         Router,
         extract::{MatchedPath, Request, State},
         http::{StatusCode, header},
-        middleware::Next,
+        middleware::{self, Next},
         response::{IntoResponse, Response},
         routing::get,
     },
-    futures::future::BoxFuture,
-    opi_core::metrics::{CONTENT_TYPE, PoolStats, global},
-    std::{future::Future, sync::Arc, time::Duration},
-    tokio::{net::TcpListener, time::Instant},
+    futures::{FutureExt, future::BoxFuture},
+    opi_core::metrics::{CONTENT_TYPE, Phase, PoolStats, ReadyLimits, global},
+    std::{future::Future, net::SocketAddr, panic::AssertUnwindSafe, sync::Arc, time::Duration},
+    tokio::{net::TcpListener, sync::oneshot, time::Instant},
 };
 
 /// The route label of a request no route matched.
@@ -36,8 +39,9 @@ pub const UNMATCHED: &str = "unmatched";
 /// The module label of a route outside every module's prefix.
 pub const NO_MODULE: &str = "api";
 
-/// How long one module's database has to answer the API's readiness check.
-const DB_READY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the module databases have, together, to answer the API's
+/// readiness check.
+const DB_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The check behind `/health/ready`: `Ok` when ready, else the reason.
 pub type Readiness = Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
@@ -55,6 +59,25 @@ pub fn module_label(path: &str) -> &'static str {
         .map_or(NO_MODULE, Module::name)
 }
 
+/// `router` with request metrics: [`track`] around a panic catcher, so a
+/// handler that panics answers the 500 body and counts as a 500.
+pub fn instrument(router: Router) -> Router {
+    router
+        .layer(middleware::from_fn(catch_panic))
+        .layer(middleware::from_fn(track))
+}
+
+/// Answers the 500 body when the handler panics.
+async fn catch_panic(request: Request, next: Next) -> Response {
+    match AssertUnwindSafe(next.run(request)).catch_unwind().await {
+        Ok(response) => response,
+        Err(_) => {
+            tracing::error!("a handler panicked");
+            internal_error()
+        }
+    }
+}
+
 /// Middleware that counts each request by route pattern and status and
 /// observes its latency.
 pub async fn track(matched: Option<MatchedPath>, request: Request, next: Next) -> Response {
@@ -70,36 +93,45 @@ pub async fn track(matched: Option<MatchedPath>, request: Request, next: Next) -
     response
 }
 
-/// The readiness of `opi-indexer run` and `brc20 light`: every module within
-/// `max_lag` blocks of the chain tip and no start-up fill running (see
+/// The process phase as a readiness answer.
+fn phase_readiness() -> Result<(), String> {
+    match global().phase() {
+        Phase::Starting => Err("starting".into()),
+        Phase::ShuttingDown => Err("shutting down".into()),
+        Phase::Running => Ok(()),
+    }
+}
+
+/// The readiness of `opi-indexer run` and `brc20 light` within `limits` (see
 /// [`opi_core::metrics::Metrics::indexer_readiness`]).
-pub fn indexer_readiness(max_lag: u64) -> Readiness {
-    Arc::new(move || Box::pin(async move { global().indexer_readiness(max_lag) }))
+pub fn indexer_readiness(limits: ReadyLimits) -> Readiness {
+    Arc::new(move || Box::pin(async move { global().indexer_readiness(limits) }))
 }
 
 /// The readiness of `opi-indexer api`: every module's database answers its
-/// latest height within 5 seconds.
+/// latest height, all asked at once, within 2 seconds. The answer names a
+/// database that does not answer; the cause goes to the log.
 pub fn api_readiness(dbs: Vec<(Module, Db)>) -> Readiness {
     let dbs = Arc::new(dbs);
     Arc::new(move || {
         let dbs = dbs.clone();
         Box::pin(async move {
-            for (module, db) in dbs.iter() {
-                match tokio::time::timeout(DB_READY_TIMEOUT, db.latest_block_height(*module)).await
-                {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(err)) => {
-                        return Err(format!("the {} database: {err:#}", module.name()));
-                    }
-                    Err(_) => {
-                        return Err(format!(
-                            "the {} database did not answer within {DB_READY_TIMEOUT:?}",
-                            module.name()
-                        ));
-                    }
-                }
-            }
-            Ok(())
+            phase_readiness()?;
+            let checks = dbs.iter().map(|(module, db)| async move {
+                let answer =
+                    tokio::time::timeout(DB_READY_TIMEOUT, db.latest_block_height(*module)).await;
+                let cause = match answer {
+                    Ok(Ok(_)) => return Ok(()),
+                    Ok(Err(err)) => format!("{err:#}"),
+                    Err(_) => format!("no answer within {DB_READY_TIMEOUT:?}"),
+                };
+                tracing::warn!("readiness: the {} database: {cause}", module.name());
+                Err(format!("the {} database is not answering", module.name()))
+            });
+            futures::future::join_all(checks)
+                .await
+                .into_iter()
+                .collect::<Result<(), String>>()
         })
     })
 }
@@ -109,9 +141,8 @@ pub fn report_pools(dbs: &[(Module, Db)]) {
     for (module, db) in dbs {
         if let Ok(pool) = db.pool() {
             let pool = pool.clone();
-            global().set_pool(module.name(), move || PoolStats {
-                size: pool.size(),
-                idle: pool.num_idle() as u32,
+            global().set_pool(module.name(), move || {
+                PoolStats::new(pool.size(), pool.num_idle())
             });
         }
     }
@@ -143,7 +174,8 @@ pub async fn bind(addr: &str) -> Result<TcpListener> {
         .with_context(|| format!("listening for metrics on {addr}"))
 }
 
-/// Serves the metrics listener on `listener` until `shutdown` completes.
+/// Serves the metrics listener on `listener` until `shutdown` completes,
+/// then lets open requests finish.
 pub async fn serve_metrics(
     listener: TcpListener,
     readiness: Readiness,
@@ -158,6 +190,79 @@ pub async fn serve_metrics(
     )
     .await
     .context("serving metrics")
+}
+
+/// A metrics listener on a thread of its own, with a current-thread tokio
+/// runtime, so it answers while the process's own start-up blocks.
+/// [`MetricsThread::stop`], or a drop, begins the process's shutdown and
+/// stops the listener gracefully.
+pub struct MetricsThread {
+    addr: SocketAddr,
+    stop: Option<oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MetricsThread {
+    /// Serves `listener` with `readiness` from now on.
+    pub fn start(listener: std::net::TcpListener, readiness: Readiness) -> Result<MetricsThread> {
+        let addr = listener.local_addr()?;
+        listener.set_nonblocking(true)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("building the metrics runtime")?;
+        let (stop, stopped) = oneshot::channel::<()>();
+        let thread = std::thread::Builder::new()
+            .name("opi-metrics".into())
+            .spawn(move || {
+                runtime.block_on(async move {
+                    let served = match TcpListener::from_std(listener) {
+                        Ok(listener) => {
+                            serve_metrics(listener, readiness, async {
+                                stopped.await.ok();
+                            })
+                            .await
+                        }
+                        Err(err) => Err(err.into()),
+                    };
+                    if let Err(err) = served {
+                        tracing::error!("{err:#}");
+                    }
+                });
+            })
+            .context("spawning the metrics thread")?;
+        Ok(MetricsThread {
+            addr,
+            stop: Some(stop),
+            thread: Some(thread),
+        })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Begins the process's shutdown, so readiness answers 503, then stops
+    /// the listener and waits for it.
+    pub fn stop(mut self) {
+        self.finish();
+    }
+
+    fn finish(&mut self) {
+        global().set_phase(Phase::ShuttingDown);
+        if let Some(stop) = self.stop.take() {
+            stop.send(()).ok();
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().ok();
+        }
+    }
+}
+
+impl Drop for MetricsThread {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 #[cfg(test)]

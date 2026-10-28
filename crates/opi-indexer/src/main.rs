@@ -9,6 +9,7 @@ use {
     config::{Config, MetricsConfig, ModuleConfigs},
     futures::future::BoxFuture,
     jsonrpsee::server::ServerHandle,
+    opi_api::metrics::MetricsThread,
     opi_bitmap::{BitmapConfig, BitmapModule},
     opi_brc20::{
         config::Brc20IndexerConfig,
@@ -17,7 +18,7 @@ use {
         module::Brc20Module,
         service_runtime::ServiceRuntime,
     },
-    opi_core::{BlockSource, Module},
+    opi_core::{BlockSource, Module, metrics::Phase},
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime},
     opi_sns::{SnsConfig, SnsModule},
@@ -107,7 +108,9 @@ fn run() -> Result<()> {
     opi_brc20::fail_stop::install_panic_hook();
     let config = Config::from_env()?;
     let module_configs = ModuleConfigs::load(&config)?;
-    let metrics = MetricsListener::bind(MetricsConfig::from_env()?)?;
+    // Serves from here on, answering "starting" until the modules run, and
+    // stops when `run` returns.
+    let metrics = start_metrics(MetricsConfig::from_env()?)?;
 
     // The engine and its Bitcoin RPC source open once, before anything
     // starts; module restarts reuse them.
@@ -143,16 +146,8 @@ fn run() -> Result<()> {
         .build()
         .map_err(anyhow::Error::from)
         .and_then(|runtime| {
-            // The metrics listener serves while the modules run.
-            let metrics =
-                runtime.block_on(async { metrics.map(MetricsListener::spawn).transpose() });
-            let exit = metrics.and_then(|metrics| {
-                let exit = runtime.block_on(supervise(&handle, module_configs, brc20_engine));
-                if let Some(metrics) = metrics {
-                    metrics.abort();
-                }
-                exit
-            });
+            opi_core::metrics::global().set_phase(Phase::Running);
+            let exit = runtime.block_on(supervise(&handle, module_configs, brc20_engine));
             // The brc20 module may still be finishing its last block, such
             // as an engine commit, which the public RPC must outlive.
             if brc20_enabled {
@@ -167,6 +162,9 @@ fn run() -> Result<()> {
     }
     handle.shutdown();
     let joined = handle.join();
+    if let Some(metrics) = metrics {
+        metrics.stop();
+    }
     match exit {
         Ok(Exit::Signal) => joined,
         Ok(Exit::SourceEnded) => {
@@ -182,42 +180,19 @@ fn run() -> Result<()> {
     }
 }
 
-/// The metrics listener of `run` and `brc20 light` on METRICS_ADDR, bound
-/// before the process starts its work so that a taken address fails the
-/// start. Readiness follows READY_MAX_LAG_BLOCKS.
-pub(crate) struct MetricsListener {
-    listener: std::net::TcpListener,
-    ready_max_lag_blocks: u64,
-}
-
-impl MetricsListener {
-    /// The listener `config` asks for; `None` when METRICS_ADDR is unset.
-    pub(crate) fn bind(config: MetricsConfig) -> Result<Option<MetricsListener>> {
-        let Some(addr) = config.addr else {
-            return Ok(None);
-        };
-        let listener = std::net::TcpListener::bind(&addr)
-            .with_context(|| format!("listening for metrics on {addr}"))?;
-        listener.set_nonblocking(true)?;
-        Ok(Some(MetricsListener {
-            listener,
-            ready_max_lag_blocks: config.ready_max_lag_blocks,
-        }))
-    }
-
-    /// Serves the listener on the current tokio runtime until the returned
-    /// task is aborted.
-    pub(crate) fn spawn(self) -> Result<tokio::task::JoinHandle<()>> {
-        let listener = tokio::net::TcpListener::from_std(self.listener)?;
-        let readiness = opi_api::metrics::indexer_readiness(self.ready_max_lag_blocks);
-        Ok(tokio::spawn(async move {
-            if let Err(err) =
-                opi_api::metrics::serve_metrics(listener, readiness, std::future::pending()).await
-            {
-                tracing::error!("{err:#}");
-            }
-        }))
-    }
+/// Starts the metrics listener of `run` and `brc20 light` on METRICS_ADDR,
+/// on a thread of its own, before the process starts its work: it answers
+/// liveness during start-up, and a taken address fails the start. Readiness
+/// follows READY_MAX_LAG_BLOCKS and READY_MAX_TIP_AGE_SECS. `None` when
+/// METRICS_ADDR is unset.
+pub(crate) fn start_metrics(config: MetricsConfig) -> Result<Option<MetricsThread>> {
+    let Some(addr) = &config.addr else {
+        return Ok(None);
+    };
+    let listener = std::net::TcpListener::bind(addr)
+        .with_context(|| format!("listening for metrics on {addr}"))?;
+    let readiness = opi_api::metrics::indexer_readiness(config.ready_limits());
+    MetricsThread::start(listener, readiness).map(Some)
 }
 
 /// Serves the HTTP API until SIGINT or SIGTERM. It runs no engine, so it
@@ -286,6 +261,8 @@ async fn supervise(
             Exit::SourceEnded
         }
     };
+    // Readiness answers 503 from here on.
+    opi_core::metrics::global().set_phase(Phase::ShuttingDown);
     stop.send(()).ok();
     modules.await?;
     Ok(exit)

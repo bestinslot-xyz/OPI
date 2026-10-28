@@ -112,23 +112,21 @@ pub fn run(args: Args) -> Result<()> {
             "`brc20 light` runs the light client; set OPERATION_MODE=light. Full mode indexes inside `opi-indexer run` with OPI_MODULES including brc20."
         );
     }
-    // The light client serves the metrics listener, as `run` does.
+    // The light client serves the metrics listener, as `run` does, from
+    // here until it returns; it reports running once its start-up is done.
     let metrics = if light {
-        crate::MetricsListener::bind(crate::config::MetricsConfig::from_env()?)?
+        crate::start_metrics(crate::config::MetricsConfig::from_env()?)?
     } else {
         None
     };
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async {
-            let metrics = metrics.map(crate::MetricsListener::spawn).transpose()?;
-            let result = execute(args.command, config).await;
-            if let Some(metrics) = metrics {
-                metrics.abort();
-            }
-            result
-        })
+        .block_on(execute(args.command, config));
+    if let Some(metrics) = metrics {
+        metrics.stop();
+    }
+    result
 }
 
 // The library reports `Box<dyn Error>`, which is not `Send`; `anyhow!`

@@ -195,7 +195,8 @@ pub async fn create_and_fill_if_missing(
             i32::MIN,
             network,
             batch,
-            (&fill, read),
+            &fill,
+            read,
         )
         .await?;
     }
@@ -244,7 +245,8 @@ async fn catch_up_from_sidecar(
             sidecar_height,
             network,
             batch,
-            (&fill, read),
+            &fill,
+            read,
         )
         .await?;
     }
@@ -272,9 +274,10 @@ fn pkscript_sql() -> String {
 
 /// Inserts into `target` the rows of the events of `events_table` in blocks
 /// above `above_height`, committing each batch, and returns the events read.
-/// Logs the events read per source table. `progress` is the fill's metrics
-/// and the events its earlier tables read; each batch sets the fill's
-/// progress to the events read in all.
+/// Logs the events read per source table. Each batch sets `fill`'s progress
+/// to the events read in all, counting the `read_before` events its earlier
+/// tables read.
+#[allow(clippy::too_many_arguments)]
 async fn fill_from(
     pool: &Pool<Postgres>,
     events_table: &str,
@@ -282,7 +285,8 @@ async fn fill_from(
     above_height: i32,
     network: Network,
     batch: i64,
-    progress: (&opi_core::metrics::FillGuard, usize),
+    fill: &opi_core::metrics::FillGuard,
+    read_before: usize,
 ) -> Result<usize, Box<dyn Error>> {
     let query = format!(
         "SELECT id, {} AS pkscript FROM {events_table}
@@ -314,8 +318,7 @@ async fn fill_from(
         let mut conn = pool.acquire().await?;
         insert_rows(&mut conn, target, &rows).await?;
         read += events.len();
-        let (fill, before) = progress;
-        fill.progress(i64::try_from(before + read).unwrap_or(i64::MAX));
+        fill.progress(i64::try_from(read_before + read).unwrap_or(i64::MAX));
         if read % 1_000_000 < events.len() {
             tracing::info!("evm_addresses: read {read} events from {events_table}");
         }

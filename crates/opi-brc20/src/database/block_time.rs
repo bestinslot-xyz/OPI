@@ -338,6 +338,53 @@ mod tests {
         .await;
     }
 
+    /// A journal that records, on each header read, whether the process
+    /// metrics show the block_time fill running.
+    struct WatchingJournal {
+        seen_running: std::sync::Mutex<Vec<bool>>,
+    }
+
+    impl BlockSource for WatchingJournal {
+        fn tip(&self) -> anyhow::Result<Option<u32>> {
+            Journal { tip: 4 }.tip()
+        }
+
+        fn block_info(&self, height: u32) -> anyhow::Result<Option<BlockInfo>> {
+            let running = opi_core::metrics::global()
+                .running_fills()
+                .contains(&("brc20", "block_time"));
+            self.seen_running.lock().unwrap().push(running);
+            Journal { tip: 4 }.block_info(height)
+        }
+
+        fn inscription_records(&self, height: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
+            Journal { tip: 4 }.inscription_records(height)
+        }
+
+        fn inscription_info(&self, id: &str) -> anyhow::Result<Option<InscriptionInfo>> {
+            Journal { tip: 4 }.inscription_info(id)
+        }
+
+        fn block_view(&self, height: u32) -> anyhow::Result<Option<BlockView>> {
+            Journal { tip: 4 }.block_view(height)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fill_shows_running_while_it_runs() {
+        with_database("running", |name| async move {
+            let database = database(&name, false).await;
+            insert_block(&database, 1, None).await;
+            insert_block(&database, 2, None).await;
+            let journal = WatchingJournal {
+                seen_running: Default::default(),
+            };
+            assert_eq!(database.fill_block_times(&journal, 1).await.unwrap(), 2);
+            assert_eq!(*journal.seen_running.lock().unwrap(), [true, true]);
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn light_mode_without_a_time_leaves_null() {
         with_database("light", |name| async move {

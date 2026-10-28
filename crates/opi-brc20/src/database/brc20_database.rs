@@ -237,10 +237,7 @@ pub fn connect_pool(
 impl Brc20Database {
     /// The pool's open and idle connections.
     pub fn pool_stats(&self) -> opi_core::metrics::PoolStats {
-        opi_core::metrics::PoolStats {
-            size: self.client.size(),
-            idle: self.client.num_idle() as u32,
-        }
+        opi_core::metrics::PoolStats::new(self.client.size(), self.client.num_idle())
     }
 
     pub fn new(config: &Brc20IndexerConfig) -> Self {

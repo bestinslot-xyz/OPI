@@ -20,14 +20,16 @@ use {
 struct Api {
     api: SocketAddr,
     metrics: SocketAddr,
-    stop: Option<oneshot::Sender<()>>,
+    /// Held so the server's shutdown future stays pending.
+    _stop: oneshot::Sender<()>,
     done: JoinHandle<anyhow::Result<()>>,
 }
 
 impl Api {
-    async fn stop(mut self) {
-        self.stop.take().unwrap().send(()).unwrap();
-        self.done.await.unwrap().unwrap();
+    /// Stops the server without a shutdown, which would mark the whole
+    /// test process shutting down; tests/metrics_shutdown.rs covers that.
+    async fn stop(self) {
+        self.done.abort();
     }
 }
 
@@ -57,13 +59,16 @@ async fn start_with(db: Db, extra: &[(&'static str, &'static str)]) -> Api {
         listener,
         Some(metrics_listener),
         async {
-            stopped.await.ok();
+            // Only a sent stop shuts down; a dropped sender does not.
+            if stopped.await.is_err() {
+                std::future::pending::<()>().await;
+            }
         },
     ));
     Api {
         api,
         metrics,
-        stop: Some(stop),
+        _stop: stop,
         done,
     }
 }
@@ -153,7 +158,64 @@ async fn the_api_is_not_ready_while_a_database_fails() {
     assert_eq!(get(api.metrics, "/health/live").await.0, "HTTP/1.1 200 OK");
     let (status, body) = get(api.metrics, "/health/ready").await;
     assert_eq!(status, "HTTP/1.1 503 Service Unavailable");
-    assert!(body.contains("brc20 database"), "{body}");
-    assert!(body.contains("connection refused"), "{body}");
+    assert_eq!(body, "the brc20 database is not answering\n");
     api.stop().await;
+}
+
+#[tokio::test]
+async fn unknown_paths_share_one_unmatched_series() {
+    let api = start(Db::fake(|_| Ok(JsValue::Number(1.0)))).await;
+    assert!(get(api.api, "/nope/first").await.0.contains("404"));
+    assert!(get(api.api, "/elsewhere/second/x").await.0.contains("404"));
+    let (_, body) = get(api.metrics, "/metrics").await;
+    let unmatched: Vec<&str> = body
+        .lines()
+        .filter(|line| line.starts_with("opi_api_requests_total") && line.contains("unmatched"))
+        .collect();
+    assert_eq!(unmatched.len(), 1, "{body}");
+    assert!(
+        unmatched[0]
+            .starts_with(r#"opi_api_requests_total{module="api",route="unmatched",status="404"} "#),
+        "{body}"
+    );
+    assert!(
+        !body.contains("nope") && !body.contains("elsewhere"),
+        "{body}"
+    );
+    api.stop().await;
+}
+
+#[tokio::test]
+async fn a_panicking_handler_counts_as_a_500() {
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::Request,
+        routing::get as route_get,
+    };
+    use tower::ServiceExt;
+
+    async fn boom() -> &'static str {
+        panic!("boom")
+    }
+    let app = opi_api::metrics::instrument(Router::new().route("/v1/sns/boom", route_get(boom)));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/sns/boom")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 500);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(&body[..], br#"{"error":"internal error","result":null}"#);
+    let text = opi_core::metrics::global().encode();
+    assert!(
+        text.contains(
+            r#"opi_api_requests_total{module="sns",route="/v1/sns/boom",status="500"} 1"#
+        ),
+        "{text}"
+    );
 }

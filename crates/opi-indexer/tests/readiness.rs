@@ -1,10 +1,12 @@
 //! `run`'s readiness: a module the runtime holds behind the chain tip makes
-//! `/health/ready` answer 503 until it catches up.
+//! `/health/ready` answer 503 until it catches up, and shutdown makes it
+//! answer 503 again.
 
 use {
     opi_core::{
         BlockInfo, BlockRef, BlockSource, BlockView, InscriptionFeed, InscriptionInfo,
         InscriptionRecord, Module, RuneFeed,
+        metrics::{Phase, ReadyLimits},
     },
     opi_runtime::{ModuleFactory, Runtime, RuntimeOptions},
     std::{
@@ -15,7 +17,7 @@ use {
     },
     tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, TcpStream},
+        net::TcpStream,
         sync::{Semaphore, oneshot},
     },
 };
@@ -163,13 +165,13 @@ async fn a_module_held_behind_the_tip_is_not_ready_until_it_catches_up() {
         stopped.await.ok();
     }));
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let metrics = tokio::spawn(opi_api::metrics::serve_metrics(
-        listener,
-        opi_api::metrics::indexer_readiness(2),
-        std::future::pending(),
-    ));
+    let metrics = opi_api::metrics::MetricsThread::start(
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        opi_api::metrics::indexer_readiness(ReadyLimits::default()),
+    )
+    .unwrap();
+    let addr = metrics.local_addr();
+    opi_core::metrics::global().set_phase(Phase::Running);
 
     let (status, body) = ready_until(addr, |_, body| body.contains("behind")).await;
     assert_eq!(status, "HTTP/1.1 503 Service Unavailable");
@@ -202,7 +204,14 @@ async fn a_module_held_behind_the_tip_is_not_ready_until_it_catches_up() {
         "{text}"
     );
 
+    // Once shutdown begins, as `run` begins it on a signal, readiness
+    // answers 503 while the listener still serves; it then stops.
+    opi_core::metrics::global().set_phase(Phase::ShuttingDown);
+    let (status, body) = get(addr, "/health/ready").await;
+    assert_eq!(status, "HTTP/1.1 503 Service Unavailable");
+    assert_eq!(body, "shutting down\n");
     stop.send(()).unwrap();
     modules.await.unwrap().unwrap();
-    metrics.abort();
+    metrics.stop();
+    assert!(TcpStream::connect(addr).await.is_err());
 }

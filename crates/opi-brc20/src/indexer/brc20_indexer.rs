@@ -426,9 +426,9 @@ impl Brc20Indexer {
     /// Runs a light client until the height limit. A full-mode indexer runs as
     /// a module inside `opi-indexer` and indexes through `index_block`.
     ///
-    /// The process metrics follow it: the OPI network's best verified block
-    /// is the chain tip, and each block records brc20's height, block time
-    /// and engine time.
+    /// The process metrics follow it: the process runs once `init` is done,
+    /// each read of the OPI network's best verified block is the chain tip,
+    /// and each block records brc20's height, block time and engine time.
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         if !self.config.light_client_mode {
             return Err("full mode runs inside opi-indexer".into());
@@ -436,6 +436,10 @@ impl Brc20Indexer {
         let metrics = opi_core::metrics::global();
         let module_metrics = metrics.module("brc20");
         self.init().await?;
+        // `init` read the network's best verified block, and start-up is done.
+        publish_opi_tip(metrics, self.last_opi_block);
+        metrics.set_phase(opi_core::metrics::Phase::Running);
+        let pool = get_brc20_database().lock().await.client.clone();
         loop {
             let next_block = get_brc20_database()
                 .lock()
@@ -443,10 +447,10 @@ impl Brc20Indexer {
                 .get_next_block_height()
                 .await?;
             module_metrics.set_height(u32::try_from(next_block - 1).ok());
-            if let Ok(tip) = u32::try_from(self.last_opi_block) {
-                metrics.set_chain_tip(tip);
-            }
-            module_metrics.set_pool(get_brc20_database().lock().await.pool_stats());
+            module_metrics.set_pool(opi_core::metrics::PoolStats::new(
+                pool.size(),
+                pool.num_idle(),
+            ));
 
             if next_block >= self.config.height_limit {
                 // Check height limit
@@ -485,7 +489,10 @@ impl Brc20Indexer {
             let last_opi_block = self.last_opi_block;
             if next_block > last_opi_block {
                 tracing::info!("Waiting for new blocks...");
-                self.last_opi_block = self.get_opi_block_height().await.unwrap_or(last_opi_block);
+                if let Ok(height) = self.get_opi_block_height().await {
+                    self.last_opi_block = height;
+                    publish_opi_tip(metrics, height);
+                }
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 continue;
             }
@@ -2617,6 +2624,14 @@ fn parse_hex_number(eth_number: &str) -> Result<i32, Box<dyn Error>> {
     i32::from_str_radix(eth_number.trim_start_matches("0x"), 16).map_err(|e| e.into())
 }
 
+/// Records a read of the OPI network's best verified block as the light
+/// client's chain tip.
+fn publish_opi_tip(metrics: &opi_core::metrics::Metrics, height: i32) {
+    if let Ok(height) = u32::try_from(height) {
+        metrics.set_chain_tip(height);
+    }
+}
+
 /// Why brc20 at `last_brc20` and brc20-prog at `last_prog` disagree, by the
 /// conditions under which `reorg_to_last_synced_block_height` reorgs one of
 /// them. `last_prog` is `phase_one - 1` while brc20 is below `phase_one`.
@@ -2658,6 +2673,32 @@ fn prog_balance_fill_height(brc20: i32, prog: i32, phase_one: i32) -> Result<i32
 mod tests {
     use super::*;
     use crate::indexer::brc20_prog_client::test_engine::TestEngine;
+
+    /// In light mode brc20's height is compared with the OPI network's best
+    /// verified block.
+    #[test]
+    fn light_mode_readiness_follows_the_opi_tip() {
+        use opi_core::metrics::{Metrics, Phase, ReadyLimits};
+        let metrics = Metrics::new();
+        metrics.set_phase(Phase::Running);
+        let brc20 = metrics.module("brc20");
+        brc20.set_height(Some(900));
+        publish_opi_tip(&metrics, -1);
+        assert_eq!(
+            metrics.indexer_readiness(ReadyLimits::default()),
+            Err("the chain tip is not known yet".into())
+        );
+        publish_opi_tip(&metrics, 905);
+        let err = metrics
+            .indexer_readiness(ReadyLimits::default())
+            .unwrap_err();
+        assert!(
+            err.contains("brc20 is 5 blocks behind the tip 905"),
+            "{err}"
+        );
+        publish_opi_tip(&metrics, 902);
+        assert_eq!(metrics.indexer_readiness(ReadyLimits::default()), Ok(()));
+    }
     use opi_core::{BlockInfo, BlockView, InscriptionInfo, InscriptionRecord};
 
     const FIRST: i32 = 112_402;

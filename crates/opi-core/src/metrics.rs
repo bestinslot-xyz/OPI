@@ -19,9 +19,9 @@ use {
     std::{
         sync::{
             Arc, Mutex, OnceLock,
-            atomic::{AtomicI64, AtomicU64, Ordering},
+            atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering},
         },
-        time::Duration,
+        time::{Duration, Instant},
     },
 };
 
@@ -41,10 +41,33 @@ pub const REQUEST_BUCKETS: &[f64] = &[
 /// The default of `READY_MAX_LAG_BLOCKS`.
 pub const DEFAULT_READY_MAX_LAG_BLOCKS: u64 = 2;
 
+/// The default of `READY_MAX_TIP_AGE_SECS`.
+pub const DEFAULT_READY_MAX_TIP_AGE_SECS: u64 = 600;
+
 /// The metrics of the process.
 pub fn global() -> &'static Metrics {
     static METRICS: OnceLock<Metrics> = OnceLock::new();
     METRICS.get_or_init(Metrics::new)
+}
+
+/// Where the process is in its life, for readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// The process has not started its work yet.
+    Starting,
+    Running,
+    /// Shutdown has begun.
+    ShuttingDown,
+}
+
+impl Phase {
+    fn from_u8(value: u8) -> Phase {
+        match value {
+            0 => Phase::Starting,
+            1 => Phase::Running,
+            _ => Phase::ShuttingDown,
+        }
+    }
 }
 
 /// A histogram of durations whose buckets, count and sum are atomics.
@@ -87,7 +110,8 @@ impl AtomicHistogram {
     }
 
     /// Observations so far.
-    pub fn count(&self) -> u64 {
+    #[cfg(test)]
+    fn count(&self) -> u64 {
         self.inner
             .counts
             .iter()
@@ -162,18 +186,49 @@ pub struct PoolStats {
     pub idle: u32,
 }
 
+impl PoolStats {
+    /// The stats of a pool with `size` open connections, `idle` of them idle
+    /// (sqlx's `size()` and `num_idle()`).
+    pub fn new(size: u32, idle: usize) -> PoolStats {
+        PoolStats {
+            size,
+            idle: u32::try_from(idle).unwrap_or(u32::MAX),
+        }
+    }
+}
+
 type PoolProbe = Arc<dyn Fn() -> PoolStats + Send + Sync>;
 
 /// An unknown height or tip.
 const UNKNOWN: i64 = -1;
 
-#[derive(Default)]
+/// The time of no tip read, in [`State::tip_read_nanos`].
+const NEVER: u64 = u64::MAX;
+
 struct State {
-    chain_tip: AtomicI64Unknown,
+    phase: AtomicU8,
+    chain_tip: AtomicI64,
+    /// When the chain tip was last read, in nanoseconds since `created`.
+    tip_read_nanos: AtomicU64,
+    created: Instant,
     modules: Mutex<Vec<(&'static str, Arc<ModuleState>)>>,
     fills: Mutex<Vec<(&'static str, &'static str, Arc<FillState>)>>,
     /// Pools read on each scrape, such as the API's.
     pools: Mutex<Vec<(&'static str, PoolProbe)>>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            phase: AtomicU8::new(0),
+            chain_tip: AtomicI64::new(UNKNOWN),
+            tip_read_nanos: AtomicU64::new(NEVER),
+            created: Instant::now(),
+            modules: Mutex::default(),
+            fills: Mutex::default(),
+            pools: Mutex::default(),
+        }
+    }
 }
 
 impl std::fmt::Debug for State {
@@ -182,12 +237,18 @@ impl std::fmt::Debug for State {
     }
 }
 
-/// An `AtomicI64` that starts at [`UNKNOWN`].
-struct AtomicI64Unknown(AtomicI64);
-
-impl Default for AtomicI64Unknown {
-    fn default() -> Self {
-        AtomicI64Unknown(AtomicI64::new(UNKNOWN))
+impl State {
+    fn chain_tip(&self) -> Option<ChainTip> {
+        let height = known(self.chain_tip.load(Ordering::Relaxed))?;
+        let read = self.tip_read_nanos.load(Ordering::Relaxed);
+        if read == NEVER {
+            return None;
+        }
+        let age = self
+            .created
+            .elapsed()
+            .saturating_sub(Duration::from_nanos(read));
+        Some(ChainTip { height, age })
     }
 }
 
@@ -197,9 +258,35 @@ fn known(value: i64) -> Option<u64> {
 
 #[derive(Debug)]
 struct FillState {
+    /// How many guards of the fill are alive.
     running: AtomicI64,
     progress: AtomicI64,
     target: AtomicI64,
+}
+
+/// The chain tip the modules follow, and how long ago it was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainTip {
+    pub height: u64,
+    pub age: Duration,
+}
+
+/// The bounds of [`indexer_readiness`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadyLimits {
+    /// The most blocks a module may be behind the tip.
+    pub max_lag_blocks: u64,
+    /// The oldest a tip read may be.
+    pub max_tip_age: Duration,
+}
+
+impl Default for ReadyLimits {
+    fn default() -> Self {
+        ReadyLimits {
+            max_lag_blocks: DEFAULT_READY_MAX_LAG_BLOCKS,
+            max_tip_age: Duration::from_secs(DEFAULT_READY_MAX_TIP_AGE_SECS),
+        }
+    }
 }
 
 /// The metrics of one process.
@@ -220,7 +307,8 @@ impl Default for Metrics {
 }
 
 impl Metrics {
-    /// An empty set of metrics; a process uses [`global`].
+    /// An empty set of metrics in [`Phase::Starting`]; a process uses
+    /// [`global`].
     pub fn new() -> Metrics {
         let state = Arc::new(State::default());
         let block_seconds = HistogramFamily::new_with_constructor(block_histogram as fn() -> _);
@@ -238,7 +326,7 @@ impl Metrics {
         );
         registry.register(
             "engine_seconds",
-            "Seconds of one block spent in the BRC2.0 engine",
+            "Seconds of one block spent in the BRC2.0 engine, for blocks that call it",
             engine_seconds.clone(),
         );
         registry.register(
@@ -276,6 +364,21 @@ impl Metrics {
         text
     }
 
+    pub fn phase(&self) -> Phase {
+        Phase::from_u8(self.state.phase.load(Ordering::SeqCst))
+    }
+
+    /// Moves the process to `phase`. Once shutdown has begun the phase
+    /// stays [`Phase::ShuttingDown`].
+    pub fn set_phase(&self, phase: Phase) {
+        let value = match phase {
+            Phase::Starting => 0,
+            Phase::Running => 1,
+            Phase::ShuttingDown => 2,
+        };
+        self.state.phase.fetch_max(value, Ordering::SeqCst);
+    }
+
     /// The handle of module `name`, registering the module on first use. A
     /// registered module counts towards [`Metrics::indexer_readiness`].
     pub fn module(&self, name: &'static str) -> ModuleMetrics {
@@ -306,17 +409,19 @@ impl Metrics {
             .clone()
     }
 
-    /// Records the height of the chain tip the modules follow: bitcoind's
-    /// best block, or the OPI network's best verified block in light mode.
+    /// Records a successful read of the chain tip the modules follow:
+    /// bitcoind's best block, or the OPI network's best verified block in
+    /// light mode.
     pub fn set_chain_tip(&self, height: u32) {
-        self.state
-            .chain_tip
-            .0
-            .store(i64::from(height), Ordering::Relaxed);
+        let state = &self.state;
+        let now = u64::try_from(state.created.elapsed().as_nanos()).unwrap_or(NEVER - 1);
+        state.chain_tip.store(i64::from(height), Ordering::Relaxed);
+        state.tip_read_nanos.store(now, Ordering::Relaxed);
     }
 
-    pub fn chain_tip(&self) -> Option<u64> {
-        known(self.state.chain_tip.0.load(Ordering::Relaxed))
+    /// The last chain tip read, `None` before the first.
+    pub fn chain_tip(&self) -> Option<ChainTip> {
+        self.state.chain_tip()
     }
 
     /// Marks fill `fill` of `module` running until the guard drops.
@@ -336,7 +441,7 @@ impl Metrics {
                 }
             }
         };
-        state.running.store(1, Ordering::Relaxed);
+        state.running.fetch_add(1, Ordering::SeqCst);
         state.progress.store(UNKNOWN, Ordering::Relaxed);
         state.target.store(UNKNOWN, Ordering::Relaxed);
         FillGuard { state }
@@ -349,7 +454,7 @@ impl Metrics {
             .lock()
             .expect("the metrics lock")
             .iter()
-            .filter(|(_, _, state)| state.running.load(Ordering::Relaxed) == 1)
+            .filter(|(_, _, state)| state.running.load(Ordering::SeqCst) > 0)
             .map(|(module, fill, _)| (*module, *fill))
             .collect()
     }
@@ -406,34 +511,49 @@ impl Metrics {
 
     /// Whether `opi-indexer run` (or `brc20 light`) is ready to serve, with
     /// the reason it is not (see [`indexer_readiness`]).
-    pub fn indexer_readiness(&self, max_lag: u64) -> Result<(), String> {
+    pub fn indexer_readiness(&self, limits: ReadyLimits) -> Result<(), String> {
         indexer_readiness(
+            self.phase(),
             self.chain_tip(),
             &self.module_heights(),
             &self.running_fills(),
-            max_lag,
+            limits,
         )
     }
 }
 
-/// Ready when no fill runs, the chain tip is known, at least one module is
-/// registered, and every module has a height within `max_lag` blocks of the
-/// tip. A module above the tip counts as caught up.
+/// Ready while the process runs, no fill runs, the chain tip was read within
+/// `limits.max_tip_age`, at least one module is registered, and every module
+/// has a height within `limits.max_lag_blocks` of the tip. A module above the
+/// tip counts as caught up.
 pub fn indexer_readiness(
-    tip: Option<u64>,
+    phase: Phase,
+    tip: Option<ChainTip>,
     modules: &[(&str, Option<u64>)],
     running_fills: &[(&str, &str)],
-    max_lag: u64,
+    limits: ReadyLimits,
 ) -> Result<(), String> {
+    match phase {
+        Phase::Starting => return Err("starting".into()),
+        Phase::ShuttingDown => return Err("shutting down".into()),
+        Phase::Running => {}
+    }
     if let Some((module, fill)) = running_fills.first() {
         return Err(format!("{module} is running its {fill} fill"));
     }
-    let Some(tip) = tip else {
+    let Some(ChainTip { height: tip, age }) = tip else {
         return Err("the chain tip is not known yet".into());
     };
+    if age > limits.max_tip_age {
+        return Err(format!(
+            "the chain tip was last read {} s ago",
+            age.as_secs()
+        ));
+    }
     if modules.is_empty() {
         return Err("no module is running".into());
     }
+    let max_lag = limits.max_lag_blocks;
     for (module, height) in modules {
         let Some(height) = height else {
             return Err(format!("{module} has not reported a height yet"));
@@ -475,7 +595,7 @@ impl Default for ModuleState {
 
 impl ModuleMetrics {
     /// Records the last block the module has applied; `None` before the
-    /// first.
+    /// first, or while the module is down.
     pub fn set_height(&self, height: Option<u32>) {
         let value = height.map_or(UNKNOWN, i64::from);
         self.state.height.store(value, Ordering::Relaxed);
@@ -497,7 +617,7 @@ impl ModuleMetrics {
     }
 }
 
-/// A running fill; dropping it marks the fill finished.
+/// A running fill. The fill runs while any of its guards is alive.
 #[derive(Debug)]
 pub struct FillGuard {
     state: Arc<FillState>,
@@ -517,8 +637,23 @@ impl FillGuard {
 
 impl Drop for FillGuard {
     fn drop(&mut self) {
-        self.state.running.store(0, Ordering::Relaxed);
+        self.state.running.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// The recorded values of `field` of each labelled state, leaving out
+/// [`UNKNOWN`] ones.
+fn known_samples<L: Clone, T>(
+    states: &[(L, Arc<T>)],
+    field: fn(&T) -> &AtomicI64,
+) -> Vec<(L, i64)> {
+    states
+        .iter()
+        .filter_map(|(labels, state)| {
+            let value = field(state).load(Ordering::Relaxed);
+            (value != UNKNOWN).then(|| (labels.clone(), value))
+        })
+        .collect()
 }
 
 /// Encodes the gauges read from [`State`] on each scrape.
@@ -543,15 +678,22 @@ impl StateCollector {
 impl Collector for StateCollector {
     fn encode(&self, mut encoder: DescriptorEncoder) -> Result<(), std::fmt::Error> {
         let state = &self.0;
-        let tip = state.chain_tip.0.load(Ordering::Relaxed);
-        if let Some(tip) = known(tip) {
+        let tip = state.chain_tip();
+        if let Some(tip) = tip {
             let mut metric = encoder.encode_descriptor(
                 "chain_tip_height",
                 "Height of the chain tip the modules follow",
                 None,
                 MetricType::Gauge,
             )?;
-            metric.encode_gauge(&(tip as i64))?;
+            metric.encode_gauge(&(tip.height as i64))?;
+            let mut metric = encoder.encode_descriptor(
+                "chain_tip_age_seconds",
+                "Seconds since the chain tip was last read",
+                None,
+                MetricType::Gauge,
+            )?;
+            metric.encode_gauge(&tip.age.as_secs_f64())?;
         }
 
         let module_states: Vec<(ModuleLabels, Arc<ModuleState>)> = state
@@ -568,26 +710,22 @@ impl Collector for StateCollector {
                 )
             })
             .collect();
-        let read_modules = |field: fn(&ModuleState) -> &AtomicI64| -> Vec<(ModuleLabels, i64)> {
-            module_states
-                .iter()
-                .filter_map(|(labels, state)| {
-                    let value = field(state).load(Ordering::Relaxed);
-                    (value != UNKNOWN).then(|| (labels.clone(), value))
-                })
-                .collect()
-        };
-        let modules = read_modules(|state| &state.height);
+        let modules = known_samples(&module_states, |state| &state.height);
         Self::gauge(
             &mut encoder,
             "indexed_height",
             "Last block a module has applied",
             &modules,
         )?;
-        if let Some(tip) = known(tip) {
+        if let Some(tip) = tip {
             let lags: Vec<(ModuleLabels, i64)> = modules
                 .iter()
-                .map(|(labels, height)| (labels.clone(), tip.saturating_sub(*height as u64) as i64))
+                .map(|(labels, height)| {
+                    (
+                        labels.clone(),
+                        tip.height.saturating_sub(*height as u64) as i64,
+                    )
+                })
                 .collect();
             Self::gauge(
                 &mut encoder,
@@ -612,32 +750,23 @@ impl Collector for StateCollector {
                 )
             })
             .collect();
-        let read = |field: fn(&FillState) -> &AtomicI64| -> Vec<(FillLabels, i64)> {
-            fills
-                .iter()
-                .filter_map(|(labels, state)| {
-                    let value = field(state).load(Ordering::Relaxed);
-                    (value != UNKNOWN).then(|| (labels.clone(), value))
-                })
-                .collect()
-        };
         Self::gauge(
             &mut encoder,
             "fill_running",
-            "1 while a start-up fill runs, else 0",
-            &read(|state| &state.running),
+            "How many runs of a start-up fill are in progress; 0 once it has finished",
+            &known_samples(&fills, |state| &state.running),
         )?;
         Self::gauge(
             &mut encoder,
             "fill_progress",
             "How far a start-up fill has come: the last block filled, or for evm_addresses the events read",
-            &read(|state| &state.progress),
+            &known_samples(&fills, |state| &state.progress),
         )?;
         Self::gauge(
             &mut encoder,
             "fill_target",
             "The block a start-up fill ends at, when it is known",
-            &read(|state| &state.target),
+            &known_samples(&fills, |state| &state.target),
         )?;
 
         let pools: Vec<(ModuleLabels, PoolStats)> = state
@@ -654,13 +783,13 @@ impl Collector for StateCollector {
                 )
             })
             .collect();
-        let mut sizes = read_modules(|state| &state.pool_size);
+        let mut sizes = known_samples(&module_states, |state| &state.pool_size);
         sizes.extend(
             pools
                 .iter()
                 .map(|(labels, stats)| (labels.clone(), i64::from(stats.size))),
         );
-        let mut idle = read_modules(|state| &state.pool_idle);
+        let mut idle = known_samples(&module_states, |state| &state.pool_idle);
         idle.extend(
             pools
                 .iter()
@@ -686,40 +815,50 @@ impl Collector for StateCollector {
 mod tests {
     use super::*;
 
+    fn tip(height: u64) -> Option<ChainTip> {
+        Some(ChainTip {
+            height,
+            age: Duration::from_secs(1),
+        })
+    }
+
+    fn limits(max_lag_blocks: u64) -> ReadyLimits {
+        ReadyLimits {
+            max_lag_blocks,
+            ..ReadyLimits::default()
+        }
+    }
+
     fn ready(
-        tip: Option<u64>,
+        tip: Option<ChainTip>,
         modules: &[(&str, Option<u64>)],
         fills: &[(&str, &str)],
     ) -> Result<(), String> {
-        indexer_readiness(tip, modules, fills, 2)
+        indexer_readiness(Phase::Running, tip, modules, fills, limits(2))
     }
 
     #[test]
     fn modules_within_the_lag_are_ready() {
         assert_eq!(
-            ready(
-                Some(100),
-                &[("brc20", Some(100)), ("bitmap", Some(98))],
-                &[]
-            ),
+            ready(tip(100), &[("brc20", Some(100)), ("bitmap", Some(98))], &[]),
             Ok(())
         );
     }
 
     #[test]
     fn a_module_ahead_of_the_tip_is_ready() {
-        assert_eq!(ready(Some(100), &[("brc20", Some(101))], &[]), Ok(()));
+        assert_eq!(ready(tip(100), &[("brc20", Some(101))], &[]), Ok(()));
     }
 
     #[test]
     fn a_module_beyond_the_lag_is_not_ready() {
-        let err = ready(Some(100), &[("brc20", Some(100)), ("sns", Some(97))], &[]).unwrap_err();
+        let err = ready(tip(100), &[("brc20", Some(100)), ("sns", Some(97))], &[]).unwrap_err();
         assert!(err.contains("sns is 3 blocks behind"), "{err}");
     }
 
     #[test]
     fn a_module_without_a_height_is_not_ready() {
-        let err = ready(Some(100), &[("runes", None)], &[]).unwrap_err();
+        let err = ready(tip(100), &[("runes", None)], &[]).unwrap_err();
         assert!(err.contains("runes has not reported"), "{err}");
     }
 
@@ -730,9 +869,30 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_tip_is_not_ready() {
+        let stale = |secs| {
+            indexer_readiness(
+                Phase::Running,
+                Some(ChainTip {
+                    height: 100,
+                    age: Duration::from_secs(secs),
+                }),
+                &[("brc20", Some(100))],
+                &[],
+                ReadyLimits::default(),
+            )
+        };
+        assert_eq!(stale(600), Ok(()));
+        assert_eq!(
+            stale(601),
+            Err("the chain tip was last read 601 s ago".to_string())
+        );
+    }
+
+    #[test]
     fn a_running_fill_is_not_ready() {
         let err = ready(
-            Some(100),
+            tip(100),
             &[("brc20", Some(100))],
             &[("brc20", "prog_balances")],
         )
@@ -742,31 +902,77 @@ mod tests {
 
     #[test]
     fn no_module_is_not_ready() {
-        assert!(ready(Some(100), &[], &[]).is_err());
+        assert!(ready(tip(100), &[], &[]).is_err());
+    }
+
+    #[test]
+    fn starting_and_shutting_down_are_not_ready() {
+        let modules = [("brc20", Some(100))];
+        let check = |phase| indexer_readiness(phase, tip(100), &modules, &[], limits(2));
+        assert_eq!(check(Phase::Starting), Err("starting".to_string()));
+        assert_eq!(check(Phase::ShuttingDown), Err("shutting down".to_string()));
+        assert_eq!(check(Phase::Running), Ok(()));
+    }
+
+    #[test]
+    fn shutting_down_is_final() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.phase(), Phase::Starting);
+        metrics.set_phase(Phase::Running);
+        metrics.set_phase(Phase::ShuttingDown);
+        metrics.set_phase(Phase::Running);
+        assert_eq!(metrics.phase(), Phase::ShuttingDown);
     }
 
     #[test]
     fn the_lag_threshold_is_inclusive() {
-        assert!(indexer_readiness(Some(100), &[("brc20", Some(95))], &[], 5).is_ok());
-        assert!(indexer_readiness(Some(100), &[("brc20", Some(94))], &[], 5).is_err());
-        assert!(indexer_readiness(Some(100), &[("brc20", Some(99))], &[], 0).is_err());
+        let check = |height, max_lag| {
+            indexer_readiness(
+                Phase::Running,
+                tip(100),
+                &[("brc20", Some(height))],
+                &[],
+                limits(max_lag),
+            )
+        };
+        assert!(check(95, 5).is_ok());
+        assert!(check(94, 5).is_err());
+        assert!(check(99, 0).is_err());
     }
 
     #[test]
     fn readiness_follows_the_recorded_state() {
         let metrics = Metrics::new();
+        let limits = limits(2);
         let brc20 = metrics.module("brc20");
-        assert!(metrics.indexer_readiness(2).is_err());
         metrics.set_chain_tip(100);
-        assert!(metrics.indexer_readiness(2).is_err());
-        brc20.set_height(Some(90));
-        assert!(metrics.indexer_readiness(2).is_err());
         brc20.set_height(Some(99));
-        assert_eq!(metrics.indexer_readiness(2), Ok(()));
+        assert_eq!(metrics.indexer_readiness(limits), Err("starting".into()));
+        metrics.set_phase(Phase::Running);
+        assert_eq!(metrics.indexer_readiness(limits), Ok(()));
+        brc20.set_height(Some(90));
+        assert!(metrics.indexer_readiness(limits).is_err());
+        brc20.set_height(Some(99));
         let fill = metrics.fill("brc20", "block_time");
-        assert!(metrics.indexer_readiness(2).is_err());
+        let second = metrics.fill("brc20", "block_time");
         drop(fill);
-        assert_eq!(metrics.indexer_readiness(2), Ok(()));
+        assert!(metrics.indexer_readiness(limits).is_err());
+        drop(second);
+        assert_eq!(metrics.indexer_readiness(limits), Ok(()));
+        // A tip read long ago is stale.
+        metrics.state.tip_read_nanos.store(0, Ordering::Relaxed);
+        let old = ReadyLimits {
+            max_tip_age: Duration::ZERO,
+            ..limits
+        };
+        std::thread::sleep(Duration::from_millis(5));
+        let err = metrics.indexer_readiness(old).unwrap_err();
+        assert!(err.starts_with("the chain tip was last read"), "{err}");
+        metrics.set_phase(Phase::ShuttingDown);
+        assert_eq!(
+            metrics.indexer_readiness(limits),
+            Err("shutting down".into())
+        );
     }
 
     #[test]
@@ -782,7 +988,7 @@ mod tests {
         let fill = metrics.fill("brc20", "prog_balances");
         fill.progress(50);
         fill.target(80);
-        module.set_pool(PoolStats { size: 2, idle: 1 });
+        module.set_pool(PoolStats::new(2, 1));
         metrics.api_request(
             "brc20",
             "/v1/brc20/ticker_info/{ticker}",
@@ -794,6 +1000,7 @@ mod tests {
         let text = metrics.encode();
         for line in [
             "opi_chain_tip_height 105",
+            "opi_chain_tip_age_seconds ",
             r#"opi_indexed_height{module="bitmap"} 100"#,
             r#"opi_lag_blocks{module="bitmap"} 5"#,
             r#"opi_block_seconds_count{module="bitmap"} 1"#,
@@ -821,8 +1028,8 @@ mod tests {
     #[test]
     fn a_new_pool_probe_replaces_the_module_s_old_one() {
         let metrics = Metrics::new();
-        metrics.set_pool("sns", || PoolStats { size: 1, idle: 1 });
-        metrics.set_pool("sns", || PoolStats { size: 4, idle: 0 });
+        metrics.set_pool("sns", || PoolStats::new(1, 1));
+        metrics.set_pool("sns", || PoolStats::new(4, 0));
         let text = metrics.encode();
         assert!(
             text.contains(r#"opi_db_pool_connections{module="sns"} 4"#),

@@ -1,6 +1,6 @@
 use {
     anyhow::{Context, Result, bail},
-    opi_core::{BlockSource, BlockView, Module},
+    opi_core::{BlockSource, BlockView, Module, metrics::ModuleMetrics},
     std::{convert::Infallible, sync::Arc, time::Duration},
     tokio::time::Instant,
 };
@@ -28,13 +28,16 @@ pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 ///
 /// Each cursor read records the module's indexed height and database pool in
 /// the process metrics, and each applied block its height and apply time.
+/// When `follow` ends, by an error, a panic or cancellation, the module's
+/// height becomes unknown, so the process is not ready while it is down.
 pub(crate) async fn follow(
     name: &'static str,
     module: &mut dyn Module,
     source: &Arc<dyn BlockSource>,
     poll: Duration,
 ) -> Result<Infallible> {
-    let metrics = opi_core::metrics::global().module(name);
+    let metrics = ClearHeightOnExit(opi_core::metrics::global().module(name));
+    let metrics = &metrics.0;
     loop {
         let cursor = module.cursor().await.context("reading the cursor")?;
         metrics.set_height(cursor.as_ref().map(|cursor| cursor.height));
@@ -102,6 +105,15 @@ pub(crate) async fn follow(
             }
             None => tokio::time::sleep(poll).await,
         }
+    }
+}
+
+/// A module's metrics handle that marks its height unknown when dropped.
+struct ClearHeightOnExit(ModuleMetrics);
+
+impl Drop for ClearHeightOnExit {
+    fn drop(&mut self) {
+        self.0.set_height(None);
     }
 }
 

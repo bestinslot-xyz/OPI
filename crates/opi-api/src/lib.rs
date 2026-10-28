@@ -29,6 +29,7 @@ use {
     axum::Router,
     config::{Config, Module},
     db::Db,
+    opi_core::metrics::Phase,
     rate_limit::RateLimiter,
     std::{future::Future, sync::Arc},
 };
@@ -49,10 +50,10 @@ impl FrontDoor {
 
 /// The whole app for `config`, each enabled module reading from its entry
 /// in `dbs` (createApp). Every routed request counts in the process metrics
-/// (see [`metrics::track`]).
+/// (see [`metrics::instrument`]).
 pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
     front_door(
-        routes::routes(&config.modules, dbs).layer(axum::middleware::from_fn(metrics::track)),
+        metrics::instrument(routes::routes(&config.modules, dbs)),
         FrontDoor::from_config(config),
     )
 }
@@ -93,7 +94,8 @@ pub async fn serve(
 
 /// Serves the API for `config` on `listener`, each module reading from its
 /// entry in `dbs`, and the metrics listener on `metrics_listener`, until
-/// `shutdown` completes.
+/// `shutdown` completes. The process phase is running from the start and
+/// shutting down from `shutdown` on.
 pub async fn serve_listeners(
     config: Config,
     dbs: Vec<(Module, Db)>,
@@ -125,17 +127,26 @@ pub async fn serve_listeners(
         });
     }
     metrics::report_pools(&dbs);
-    // The metrics listener stops with the API.
+    // The metrics listener stops gracefully once the API has stopped.
     let metrics_server = metrics_listener.map(|metrics_listener| {
         let readiness = metrics::api_readiness(dbs.clone());
-        tokio::spawn(async move {
-            if let Err(err) =
-                metrics::serve_metrics(metrics_listener, readiness, std::future::pending()).await
-            {
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let stopped = async {
+                stopped.await.ok();
+            };
+            if let Err(err) = metrics::serve_metrics(metrics_listener, readiness, stopped).await {
                 tracing::error!("{err:#}");
             }
-        })
+        });
+        (stop, task)
     });
+    opi_core::metrics::global().set_phase(Phase::Running);
+    // Readiness answers 503 from the shutdown signal on.
+    let shutdown = async move {
+        shutdown.await;
+        opi_core::metrics::global().set_phase(Phase::ShuttingDown);
+    };
     let app = router(&config, dbs);
     let names: Vec<&str> = config.modules.iter().map(|m| m.name()).collect();
     tracing::info!(
@@ -146,8 +157,9 @@ pub async fn serve_listeners(
     let served = server::serve_listener(listener, app, server::ServeOptions::default(), shutdown)
         .await
         .context("serving the API");
-    if let Some(metrics_server) = metrics_server {
-        metrics_server.abort();
+    if let Some((stop, task)) = metrics_server {
+        stop.send(()).ok();
+        task.await.ok();
     }
     served
 }
