@@ -24,7 +24,7 @@ use {
         routing::{any, get},
     },
     futures::{StreamExt, stream::FuturesUnordered},
-    std::sync::Arc,
+    std::{sync::Arc, time::Duration},
 };
 
 /// `TypeError: Cannot read properties of undefined (reading '<field>')`,
@@ -35,9 +35,24 @@ fn no_row(field: &str) -> JsError {
     ))
 }
 
+/// The API settings routes run with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteSettings {
+    /// How long a holders snapshot may stream (API_SNAPSHOT_TIMEOUT_MS).
+    pub snapshot_timeout: Duration,
+}
+
+impl Default for RouteSettings {
+    fn default() -> Self {
+        RouteSettings {
+            snapshot_timeout: Duration::from_millis(600_000),
+        }
+    }
+}
+
 /// A module's route registration: adds the module's routes, which read
 /// from `db`, to `router`.
-pub type RouteModule = fn(router: Router, db: Db) -> Router;
+pub type RouteModule = fn(router: Router, db: Db, settings: &RouteSettings) -> Router;
 
 /// The registration function of `module`.
 pub fn module_routes(module: Module) -> RouteModule {
@@ -52,7 +67,7 @@ pub fn module_routes(module: Module) -> RouteModule {
 /// The routes for the `enabled` modules, each reading from its entry in
 /// `dbs`. An enabled module without an entry gets a database whose every
 /// query fails, as a missing pool makes every query throw in the app.
-pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>) -> Router {
+pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>, settings: &RouteSettings) -> Router {
     let db_of = |module: Module| {
         dbs.iter()
             .find(|(m, _)| *m == module)
@@ -66,7 +81,7 @@ pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>) -> Router {
         Router::new().route("/v1/status", get(status).with_state(Arc::new(status_dbs)));
     for module in MODULES {
         if enabled.contains(&module) {
-            router = module_routes(module)(router, db_of(module));
+            router = module_routes(module)(router, db_of(module), settings);
         } else {
             let prefix = format!("/v1/{}", module.name());
             let disabled = move || async move {

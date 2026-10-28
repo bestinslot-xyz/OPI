@@ -6,7 +6,7 @@
 use {
     crate::js::{js_trim, parse_int_str},
     anyhow::{Result, bail},
-    std::path::Path,
+    std::{path::Path, time::Duration},
 };
 
 #[cfg(test)]
@@ -105,6 +105,8 @@ pub struct ApiSettings {
     pub host: String,
     pub port: f64,
     pub trusted_proxies: f64,
+    /// API_SNAPSHOT_TIMEOUT_MS: how long a holders snapshot may stream.
+    pub snapshot_timeout_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,11 +156,21 @@ impl Config {
         }
     }
 
+    /// How long a holders snapshot may stream, at least 1 ms.
+    pub fn snapshot_timeout(&self) -> Result<Duration> {
+        let ms = self.api.snapshot_timeout_ms;
+        if ms.is_nan() || ms < 1.0 {
+            bail!("API_SNAPSHOT_TIMEOUT_MS must be a positive number of milliseconds, got {ms}");
+        }
+        Ok(Duration::from_millis(ms.min(u64::MAX as f64) as u64))
+    }
+
     /// Checks the settings that cannot run as they are, before the server
-    /// starts: the listen port, each database's port and pool size, and a
-    /// NaN rate limit window.
+    /// starts: the listen port, each database's port and pool size, a NaN
+    /// rate limit window and the snapshot timeout.
     pub fn validate(&self) -> Result<()> {
         self.listen_port()?;
+        self.snapshot_timeout()?;
         for (_, db) in &self.dbs {
             db.pg_port()?;
             db.max_connections()?;
@@ -238,6 +250,7 @@ pub fn load_config(get: impl Fn(&str) -> Option<String>) -> Result<Config> {
             host: or("API_HOST", "127.0.0.1"),
             port: parse_int_str(&or("API_PORT", "8000")),
             trusted_proxies: parse_int_str(&or("API_TRUSTED_PROXY_CNT", "0")),
+            snapshot_timeout_ms: parse_int_str(&or("API_SNAPSHOT_TIMEOUT_MS", "600000")),
         },
         rate_limit: RateLimitSettings {
             enabled: or("RATE_LIMIT_ENABLE", "false") == "true",

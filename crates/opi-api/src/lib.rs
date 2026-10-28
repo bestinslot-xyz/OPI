@@ -53,7 +53,16 @@ impl FrontDoor {
 /// (see [`metrics::instrument`]).
 pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
     front_door(
-        metrics::instrument(routes::routes(&config.modules, dbs)),
+        metrics::instrument(routes::routes(
+            &config.modules,
+            dbs,
+            &routes::RouteSettings {
+                // `serve` refuses an invalid timeout before building the app
+                snapshot_timeout: config
+                    .snapshot_timeout()
+                    .unwrap_or(routes::RouteSettings::default().snapshot_timeout),
+            },
+        )),
         FrontDoor::from_config(config),
     )
 }

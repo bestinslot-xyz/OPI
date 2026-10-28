@@ -345,6 +345,34 @@ pub(super) async fn ticker_decimals(db: &Db, tick: &str) -> Result<Option<i32>, 
     )
 }
 
+/// A holder of a ticker: a Bitcoin address with its BRC-20 balance and the
+/// BRC2.0 balance of its EVM address, a pkScript without an address, or an
+/// EVM address without a Bitcoin address. `/v1/brc20/ticker/holders` and
+/// its snapshot list these rows.
+pub(super) struct HolderRow {
+    pub address: Option<String>,
+    pub pkscript: Option<String>,
+    pub evm_address: Option<String>,
+    pub balance: String,
+    pub available_balance: String,
+    pub prog_balance: String,
+    pub total_balance: String,
+}
+
+impl HolderRow {
+    pub fn into_object(self) -> JsObject {
+        js_object! {
+            "address" => self.address,
+            "pkscript" => self.pkscript,
+            "evm_address" => self.evm_address,
+            "balance" => self.balance,
+            "available_balance" => self.available_balance,
+            "prog_balance" => self.prog_balance,
+            "total_balance" => self.total_balance,
+        }
+    }
+}
+
 /// `/v1/brc20/ticker/holders?ticker=&offset=&limit=`: the holders of a
 /// ticker by their BRC-20 balance plus their BRC2.0 balance, largest first,
 /// then by holder.
@@ -361,8 +389,10 @@ pub async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
     // Each side reads the ticker's positive balances through its partial
     // index; a BRC-20 wallet and an evm_addresses Bitcoin address are each
     // unique, so the full join pairs each holder's two balances at most
-    // once, and (holder, pkscript, evm_address) is a unique key.
-    let rows = sqlx::query!(
+    // once, and (holder, pkscript, evm_address) is a unique key. The
+    // snapshot route merges and orders with the same `m` and select.
+    let rows = sqlx::query_as!(
+        HolderRow,
         r#"with b as (
                 select pkscript, nullif(wallet, '') as wallet, overall_balance, available_balance
                 from brc20_current_balances
@@ -401,18 +431,7 @@ pub async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
     let (rows, has_more) = page.split(rows);
     let holders: Vec<JsValue> = rows
         .into_iter()
-        .map(|row| {
-            js_object! {
-                "address" => row.address,
-                "pkscript" => row.pkscript,
-                "evm_address" => row.evm_address,
-                "balance" => row.balance,
-                "available_balance" => row.available_balance,
-                "prog_balance" => row.prog_balance,
-                "total_balance" => row.total_balance,
-            }
-            .into()
-        })
+        .map(|row| row.into_object().into())
         .collect();
     let mut result = js_object! {
         "ticker" => tick,

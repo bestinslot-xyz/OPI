@@ -222,6 +222,35 @@ fn numbers_go_through_parse_int_and_empty_values_take_the_default() {
 }
 
 #[test]
+fn the_snapshot_timeout_defaults_to_ten_minutes_and_must_be_positive() {
+    let config = load_config(env(&[("DB_DATABASE", "b")])).unwrap();
+    assert_eq!(
+        config.snapshot_timeout().unwrap(),
+        std::time::Duration::from_secs(600)
+    );
+    let config = load_config(env(&[
+        ("DB_DATABASE", "b"),
+        ("API_SNAPSHOT_TIMEOUT_MS", "250"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        config.snapshot_timeout().unwrap(),
+        std::time::Duration::from_millis(250)
+    );
+    for bad in ["0", "-5", "x"] {
+        let config = load_config(env(&[
+            ("DB_DATABASE", "b"),
+            ("API_SNAPSHOT_TIMEOUT_MS", bad),
+        ]))
+        .unwrap();
+        assert!(
+            err(config.validate()).contains("API_SNAPSHOT_TIMEOUT_MS"),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn the_listen_port_must_be_a_port() {
     // node's listen() throws ERR_SOCKET_BAD_PORT for these
     for bad in ["x", "65536", "-1"] {

@@ -61,7 +61,7 @@ const EVENT_SEPARATOR: &str = "|";
 /// namespace or cursor matches nothing and is refused.
 pub const MAX_NAME_LEN: usize = 2048;
 
-pub fn routes(router: Router, db: Db) -> Router {
+pub fn routes(router: Router, db: Db, _settings: &super::RouteSettings) -> Router {
     router.merge(
         Router::new()
             .route("/v1/sns/ip", get(ip))
