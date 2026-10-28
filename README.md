@@ -152,14 +152,15 @@ runs inside the `opi-indexer` process. There is no separate brc20-prog server.
 
 `run` and `brc20 light` serve brc20-prog's public JSON-RPC on
 `BRC20_PROG_RPC_SERVER_URL`, under the same settings. Blockscout, the swap
-sequencer and other clients connect there. Each serves it from before its
-start-up: `run` serves it until brc20 finishes its last block after SIGINT or
-SIGTERM; `brc20 light` until the light client stops. `brc20 light` stops on
-SIGINT or SIGTERM after its current block, or between its start-up steps,
-with the engine's blocks committed; a second signal exits at once with status
-130. It rejects the
-indexer methods (`brc20_mine` and the like) and takes no credentials, so bind
-it to loopback or firewall it. brc20-prog's `BRC20_PROG_RPC_SERVER_ENABLE_AUTH`,
+sequencer and other clients connect there. Both start serving it before their
+start-up work. `run` serves it until brc20 finishes its last block after
+SIGINT or SIGTERM; `brc20 light` serves it until the light client stops.
+`brc20 light` stops on SIGINT or SIGTERM after its current block, or between
+its start-up steps and BRC2.0 balance fill batches, with the engine's blocks
+committed; a second signal exits (status 130) once the engine's current
+commit has finished, or after 30 seconds. It rejects the indexer methods
+(`brc20_mine` and the like) and takes no credentials, so bind it to loopback
+or firewall it. brc20-prog's `BRC20_PROG_RPC_SERVER_ENABLE_AUTH`,
 `BRC20_PROG_RPC_SERVER_USER` and `BRC20_PROG_RPC_SERVER_PASSWORD` do not apply
 to it; `BRC20_PROG_RPC_SERVER_ENABLE_AUTH=true` without a user and password
 makes the engine fail to open. The engine reads its remaining settings from
@@ -185,10 +186,13 @@ network comes from `NETWORK_TYPE`.
 The cache stores successful answers and `getrawtransaction` "not found" (-5)
 answers. Only the indexer's own lookups write it; public `eth_call`s read it,
 in light mode too. In light mode, a public call that needs a Bitcoin
-transaction the cache does not hold fails (reverts). A
-lookup gives up after 20 seconds (a request to bitcoind after 15, a wait for a
-Postgres connection after 5), and the engine retries a failed lookup 5 times
-before it panics, which stops the process (see below).
+transaction the cache does not hold fails (reverts). Each process that serves
+engine lookups (`run` with brc20, and `brc20 light`) holds 2 Postgres
+connections for the indexer's cache reads and 2 for public calls, outside
+`DB_MAX_CONNECTIONS`. A lookup gives up after 20 seconds (a request to
+bitcoind after 15, a wait for a Postgres connection after 5), and the engine
+retries a failed lookup 5 times before it panics, which stops the process
+(see below).
 
 The network and chain id follow `NETWORK_TYPE`. brc20-prog's own
 `BITCOIN_RPC_PASSWORD` and `BITCOIN_RPC_NETWORK` have no effect;
