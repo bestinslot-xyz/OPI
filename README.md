@@ -195,6 +195,101 @@ supervisor such as systemd that restarts it.
 To move a node that ran the standalone brc20-prog server, stop that server and
 point `BRC20_PROG_DB_PATH` at its database; the on-disk format is the same.
 
+### Docker
+
+One image holds the `opi-indexer` binary. It runs as uid 10001, its entrypoint
+is `opi-indexer` and its default command is `run`. State lives under `/data`
+(`journal`, `ord` and `brc20-prog`), which the image's `OPI_JOURNAL_DIR`,
+`OPI_ORD_DATA_DIR` and `BRC20_PROG_DB_PATH` defaults point at.
+
+```bash
+docker build -t opi-indexer .
+docker run --rm opi-indexer --help
+```
+
+`docker/compose.yml` runs three services from that image, plus an optional
+fourth:
+
+| Service | Runs |
+| --- | --- |
+| `postgres` | Postgres 16; creates one database per module from `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE` and `RUNES_DB_DATABASE` when its volume is empty |
+| `indexer` | `opi-indexer run` |
+| `api` | `opi-indexer api`, published on port 8000 |
+| `bitcoind` | optional, under the `bitcoind` profile |
+
+Compose reads `.env` from the repository root and overrides the settings that
+differ in the compose network: `DB_HOST` and the other module hosts point at
+`postgres`, `DB_SSL` is `false`, and the data dirs point at `/data`. `postgres`
+takes its user and password from `DB_USER` and `DB_PASSWD`.
+
+#### Signet
+
+```bash
+cp .env_sample .env
+# set BITCOIN_RPC_URL and the bitcoind credentials, and DB_PASSWD
+docker compose -f docker/compose.yml up -d --build
+curl http://127.0.0.1:8000/v1/status
+```
+
+`.env_sample` already names signet (`OPI_CHAIN` and `NETWORK_TYPE`).
+
+#### Mainnet
+
+Set `OPI_CHAIN="mainnet"` and `NETWORK_TYPE="mainnet"` in `.env`, then run the
+same commands. The journal, the ord dir and the brc20-prog database grow with
+the chain, so size the Docker volume for mainnet.
+
+#### bitcoind
+
+bitcoind is external by default: `BITCOIN_RPC_URL` points at a node with
+`-txindex` that is not pruned, and the credentials are either
+`BITCOIN_RPC_USER` with `BITCOIN_RPC_PASSWD`, or `BITCOIN_RPC_COOKIE`. A cookie
+file has to be readable inside the container, so mount it into `indexer`
+through a `docker/compose.override.yml` and set `BITCOIN_RPC_COOKIE` to the
+mounted path.
+
+`docker compose -f docker/compose.yml --profile bitcoind up -d` also starts a
+bitcoind (image `BITCOIND_IMAGE`, default `bitcoin/bitcoin:29.0`) with
+`-txindex` on the chain named by `OPI_CHAIN`, authenticated with
+`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`. Set `BITCOIN_RPC_URL` to
+`http://bitcoind:<rpc port>` (8332 mainnet, 38332 signet).
+
+#### Volumes
+
+| Volume | Holds | Must persist |
+| --- | --- | --- |
+| `opi-data` (`/data`) | the journal, ord's index and the brc20-prog database | yes; losing it forces a full reindex |
+| `postgres-data` | the module databases | yes |
+| `bitcoind-data` | bitcoind's chain data (`bitcoind` profile) | yes |
+
+The `opi-indexer brc20` maintenance commands open brc20-prog's database, so
+stop `indexer` before them:
+`docker compose -f docker/compose.yml run --rm indexer brc20 reorg <HEIGHT>`.
+
+#### Restarting
+
+`api` only reads the module databases and holds no state of its own, so
+`docker compose -f docker/compose.yml restart api` leaves `indexer` running,
+and the reverse. `indexer` gets a three-minute stop grace period to finish the
+block in flight.
+
+#### Light client
+
+`docker/compose.light.yml` runs `postgres`, `light` (`opi-indexer brc20 light`)
+and `api`. It has no bitcoind, journal or ord dir; it sets
+`OPERATION_MODE=light` and `BITCOIN_RPC_CACHE_ENABLED=true`, and uses its own
+`opi-light` project name and volumes.
+
+```bash
+docker compose -f docker/compose.light.yml up -d --build
+```
+
+#### CI
+
+`.github/workflows/docker.yml` builds the image on pushes to `main` and
+`opi-monolith` and on pull requests, and checks that both compose files
+resolve. It does not publish the image.
+
 ### Subcommands
 
 ```
