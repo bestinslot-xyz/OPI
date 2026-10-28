@@ -72,6 +72,22 @@ async fn invalid_parameters_answer_400_before_any_query() {
         ("/v1/brc20/ticker/holders?ticker=ordi&limit=1000", limit),
         ("/v1/brc20/wallet/balances", "address is required"),
         ("/v1/brc20/wallet/balances?address=x&limit=-1", limit),
+        (
+            "/v1/brc20/ticker/by_contract",
+            "contract_address is required",
+        ),
+        (
+            "/v1/brc20/ticker/by_contract?contract_address=0x11",
+            "contract_address must be an EVM address: 0x and 40 hex digits",
+        ),
+        (
+            "/v1/brc20/ticker/by_contract?contract_address=0xg111111111111111111111111111111111111111",
+            "contract_address must be an EVM address: 0x and 40 hex digits",
+        ),
+        (
+            "/v1/brc20/ticker/by_contract?contract_address=a&contract_address=b",
+            "contract_address must be a single value",
+        ),
     ] {
         expect(&app, uri, 400, JSON, &bad(reason)).await;
     }
@@ -87,6 +103,7 @@ async fn valid_requests_answer_500_when_the_query_fails() {
         "/v1/brc20/ticker/holders?ticker=ordi",
         "/v1/brc20/wallet/balances?address=bc1qxyz",
         "/v1/brc20/wallet/balances?address=0xAbCdEf0123456789aBcDeF0123456789AbCdEf01",
+        "/v1/brc20/ticker/by_contract?contract_address=0x1111111111111111111111111111111111111111",
     ] {
         expect(&app, uri, 500, JSON, INTERNAL_ERROR).await;
     }
@@ -229,6 +246,41 @@ async fn seeded_ticker_answers_its_supply_counts_and_contract() {
             404,
             JSON,
             &bad("ticker not found"),
+        )
+        .await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn seeded_ticker_by_contract_answers_the_wrapped_ticker() {
+    with_seeded("by_contract", |app| async move {
+        let body = ok(&format!(
+            r#"{ORDI},"prog_contract_address":"0x1111111111111111111111111111111111111111","prog_ticker_hash":"hash","block_height":300}}"#
+        ));
+        expect(
+            &app,
+            "/v1/brc20/ticker/by_contract?contract_address=0x1111111111111111111111111111111111111111",
+            200,
+            JSON,
+            &body,
+        )
+        .await;
+        // The address matches in lowercase, as the engine logs it.
+        expect(
+            &app,
+            "/v1/brc20/ticker/by_contract?contract_address=0X1111111111111111111111111111111111111111",
+            200,
+            JSON,
+            &body,
+        )
+        .await;
+        expect(
+            &app,
+            &format!("/v1/brc20/ticker/by_contract?contract_address={CONTRACT_EVM}"),
+            404,
+            JSON,
+            &bad("contract not found"),
         )
         .await;
     })
