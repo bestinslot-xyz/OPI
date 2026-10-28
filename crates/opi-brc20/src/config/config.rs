@@ -240,6 +240,7 @@ fn get_bitcoin_network_type(network_type: &str) -> Network {
 
 pub const BRC20_PROG_DB_PATH_KEY: &str = "BRC20_PROG_DB_PATH";
 pub const BRC20_PROG_RPC_SERVER_ENABLED_KEY: &str = "BRC20_PROG_RPC_SERVER_ENABLED";
+pub const EVM_RECORD_TRACES_KEY: &str = "EVM_RECORD_TRACES";
 pub const BITCOIN_RPC_USER_KEY: &str = "BITCOIN_RPC_USER";
 pub const BITCOIN_RPC_PASSWD_KEY: &str = "BITCOIN_RPC_PASSWD";
 pub const BITCOIN_RPC_COOKIE_KEY: &str = "BITCOIN_RPC_COOKIE";
@@ -337,6 +338,10 @@ fn parse_rpc_server_enabled(value: Option<&str>) -> bool {
 /// (normally `Brc20ProgConfig::from_env()`):
 ///
 /// - `db_path` comes from the required `BRC20_PROG_DB_PATH`.
+/// - `evm_record_traces` is on when `EVM_RECORD_TRACES` is unset or exactly
+///   `true`. The engine hashes each block's recorded traces into the block
+///   trace hash that OPI nodes compare, so with traces off every block hashes
+///   the empty string.
 /// - `bitcoin_rpc_network` and `chain_id` follow `network_type` (the `NETWORK_TYPE`
 ///   value): `mainnet` maps to `bitcoin` and the mainnet chain id, every other
 ///   network keeps its name and takes the testnets chain id.
@@ -351,6 +356,7 @@ fn apply_engine_settings(
     base.db_path = get(BRC20_PROG_DB_PATH_KEY)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow::anyhow!("{BRC20_PROG_DB_PATH_KEY} is not set"))?;
+    base.evm_record_traces = get(EVM_RECORD_TRACES_KEY).as_deref().unwrap_or("true") == "true";
 
     if network_type == "mainnet" {
         base.bitcoin_rpc_network = "bitcoin".to_string();
@@ -746,6 +752,24 @@ mod tests {
     fn bitcoin_rpc_auth_debug_hides_the_password() {
         let auth = BitcoinRpcAuth::UserPass("u".into(), "secret".into());
         assert!(!format!("{auth:?}").contains("secret"));
+    }
+
+    #[test]
+    fn traces_are_recorded_when_unset() {
+        let mut base = base();
+        base.evm_record_traces = false;
+        let config = apply_engine_settings(base, vars(&[DB]), "signet").unwrap();
+        assert!(config.evm_record_traces);
+    }
+
+    #[test]
+    fn traces_are_recorded_only_when_unset_or_true() {
+        let on = engine(&[DB, (EVM_RECORD_TRACES_KEY, "true")], "signet").unwrap();
+        assert!(on.evm_record_traces);
+        for off in ["false", "0", "False", "no", ""] {
+            let config = engine(&[DB, (EVM_RECORD_TRACES_KEY, off)], "signet").unwrap();
+            assert!(!config.evm_record_traces, "{off:?}");
+        }
     }
 
     #[test]

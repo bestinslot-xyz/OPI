@@ -1,0 +1,8 @@
+target/
+.git
+.claude
+.superpowers
+scratch
+.env
+.env.*
+.DS_Store
