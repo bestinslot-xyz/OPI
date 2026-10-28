@@ -148,7 +148,7 @@ runs inside the `opi-indexer` process. There is no separate brc20-prog server.
 | `BRC20_PROG_DB_PATH` | directory of the engine's database; required |
 | `BRC20_PROG_RPC_SERVER_URL` | address of the public JSON-RPC server, default `127.0.0.1:18545` |
 | `BRC20_PROG_RPC_SERVER_ENABLED` | the public JSON-RPC server runs when this is unset or exactly `true`; any other value turns it off |
-| `EVM_RECORD_TRACES` | records transaction traces for `debug_traceTransaction` |
+| `EVM_RECORD_TRACES` | the engine records transaction traces when this is unset or exactly `true`; any other value turns it off. The block trace hash that OPI nodes compare is built from these traces, so with traces off every block's trace hash is the hash of the empty string and differs from the network's. Traces also serve `debug_traceTransaction`. The engine fixes the setting in its database when it creates it, so changing it takes a fresh `BRC20_PROG_DB_PATH` and a brc20 reindex |
 
 `run` serves brc20-prog's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL`.
 Blockscout, the swap sequencer and other clients connect there. It rejects the
