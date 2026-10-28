@@ -55,7 +55,12 @@ services:
   indexer:
     <<: *opi-service
     command: ["run"]
-    environment: *opi-env
+    environment:
+      <<: *opi-env
+      # The engine's public JSON-RPC, published on the host's loopback below.
+      BRC20_PROG_RPC_SERVER_URL: 0.0.0.0:18545
+    ports:
+      - "127.0.0.1:18545:18545"
     # Reaches a bitcoind on the host as http://host.docker.internal:<port>.
     extra_hosts:
       - "host.docker.internal:host-gateway"

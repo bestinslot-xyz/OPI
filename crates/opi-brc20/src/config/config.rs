@@ -433,6 +433,9 @@ pub struct Brc20IndexerConfig {
 
     /// Whether the embedded engine serves its public JSON-RPC (`BRC20_PROG_RPC_SERVER_ENABLED`).
     pub brc20_prog_rpc_server_enabled: bool,
+    /// The engine's data dir (`BRC20_PROG_DB_PATH`), named in the indexer's
+    /// logs; the engine opens from `brc20_prog_config`.
+    pub brc20_prog_db_path: String,
 
     pub bitcoin_rpc_cache_enabled: bool,
     pub bitcoin_rpc_url: String,
@@ -542,6 +545,7 @@ impl Default for Brc20IndexerConfig {
                     .ok()
                     .as_deref(),
             ),
+            brc20_prog_db_path: std::env::var(BRC20_PROG_DB_PATH_KEY).unwrap_or_default(),
 
             bitcoin_rpc_url: std::env::var(BITCOIN_RPC_URL_KEY)
                 .unwrap_or_else(|_| BITCOIN_RPC_URL_DEFAULT.to_string()),

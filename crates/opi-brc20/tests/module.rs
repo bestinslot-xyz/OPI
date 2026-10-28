@@ -230,6 +230,7 @@ fn config_has_no_prog_toggle() {
         brc20_swap_refund_address: _,
         brc20_swap_module_pkscript: _,
         brc20_prog_rpc_server_enabled: _,
+        brc20_prog_db_path: _,
         bitcoin_rpc_cache_enabled: _,
         bitcoin_rpc_url: _,
         bitcoin_rpc_auth: _,

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)\n             SELECT DISTINCT ON (pkscript, tick)\n                    pkscript, tick, overall_balance, available_balance, wallet, block_height\n             FROM brc20_historic_balances\n             ORDER BY pkscript, tick, block_height DESC, id DESC",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "3466de0ecbcd893f49bc4443d075f2d2fd39c255307501d1a633b0432b56111b"
+}

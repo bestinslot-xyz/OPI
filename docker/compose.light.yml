@@ -47,11 +47,19 @@ services:
   light:
     <<: *opi-service
     command: ["brc20", "light"]
+    environment:
+      <<: *opi-env
+      # The engine's public JSON-RPC, published on the host's loopback below.
+      BRC20_PROG_RPC_SERVER_URL: 0.0.0.0:18545
+    ports:
+      - "127.0.0.1:18545:18545"
     volumes:
       - opi-data:/data
     depends_on:
       postgres:
         condition: service_healthy
+    # The light client finishes its current block on SIGTERM.
+    stop_grace_period: 3m
 
   api:
     <<: *opi-service

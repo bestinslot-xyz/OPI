@@ -15,7 +15,9 @@ use once_cell::sync::OnceCell;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{AssertSqlSafe, Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal};
+use sqlx::{
+    AssertSqlSafe, PgConnection, Pool, Postgres, Row, postgres::PgPoolOptions, types::BigDecimal,
+};
 use tokio::sync::Mutex;
 
 use super::{
@@ -232,6 +234,113 @@ pub fn connect_pool(
             ssl_mode
         ))
         .expect("Failed to connect to the database")
+}
+
+/// Whether the extra tables (`brc20_current_balances`, `brc20_unused_txes`)
+/// are built: either holds a row. They stay empty until indexing nears the
+/// tip, where `should_index_extras` builds them whole.
+pub(crate) async fn extras_built<'c, E>(executor: E) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'c, Database = Postgres>,
+{
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM brc20_current_balances)
+             OR EXISTS (SELECT 1 FROM brc20_unused_txes)",
+    )
+    .fetch_one(executor)
+    .await
+}
+
+/// Rolls the built extra tables back to `block_height` inside a reorg's
+/// transaction: the current balances changed above it are read again from
+/// the history (newest row by block height, then id), their tickers'
+/// holders recounted, and `brc20_unused_txes` rebuilt from `events_table`.
+async fn reorg_extra_tables(
+    tx: &mut PgConnection,
+    events_table: &str,
+    block_height: i32,
+) -> Result<(), Box<dyn Error>> {
+    tracing::info!("Starting reorg on extra tables");
+
+    let to_replace_balances = sqlx::query(
+        "delete from brc20_current_balances where block_height > $1 RETURNING pkscript, tick;",
+    )
+    .bind(block_height)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    for (index, row) in to_replace_balances.iter().enumerate() {
+        if index % 1000 == 0 {
+            tracing::info!(
+                "Replacing current balances: {}/{}",
+                index,
+                to_replace_balances.len()
+            );
+        }
+
+        let pkscript: String = row.get("pkscript");
+        let tick: String = row.get("tick");
+
+        sqlx::query!(
+            "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)
+                SELECT pkscript, tick, overall_balance, available_balance, wallet, block_height
+                FROM brc20_historic_balances
+                WHERE pkscript = $1 AND tick = $2
+                ORDER BY block_height DESC, id DESC LIMIT 1",
+            pkscript,
+            tick
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    ticker_holders::recount_brc20(
+        &mut *tx,
+        to_replace_balances
+            .iter()
+            .map(|row| row.get::<&str, _>("tick")),
+    )
+    .await?;
+
+    tracing::info!("Resetting brc20_unused_txes");
+
+    sqlx::query("truncate table brc20_unused_txes restart identity;")
+        .execute(&mut *tx)
+        .await?;
+
+    tracing::info!("Inserting unused txes");
+
+    // Rebuild brc20_unused_txes entirely inside Postgres: select every
+    // transfer-inscribe event with no matching transfer-transfer event
+    // (the "unused" transfers) and insert them in a single statement.
+    // A single large statement can outrun a server-side statement_timeout,
+    // so SET LOCAL lifts it for this transaction only.
+    sqlx::query("SET LOCAL statement_timeout = 0")
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(AssertSqlSafe(format!(
+        "insert into brc20_unused_txes
+                (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+             select t.inscription_id,
+                    t.event->>'tick',
+                    (t.event->>'amount')::numeric,
+                    t.event->>'source_pkScript',
+                    t.event->>'source_wallet',
+                    t.id,
+                    t.block_height
+             from {events_table} t
+             where t.event_type = $1
+               and not exists (
+                   select 1 from {events_table} t2
+                   where t2.event_type = $2
+                     and t2.inscription_id = t.inscription_id
+               );"
+    )))
+    .bind(crate::types::events::TransferInscribeEvent::event_id())
+    .bind(crate::types::events::TransferTransferEvent::event_id())
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 impl Brc20Database {
@@ -805,13 +914,9 @@ impl Brc20Database {
         // Rebuild brc20_unused_txes entirely inside Postgres: select every
         // transfer-inscribe event with no matching transfer-transfer event
         // (the "unused" transfers) and insert them in a single statement.
-        // This avoids pulling ~1M rows into the app and inserting them one by
-        // one, which turned this step into a multi-hour operation.
-        //
-        // The old per-row loop survived any server-side statement_timeout
-        // because each tiny insert reset the clock; this single large
-        // statement would not, so disable the timeout for this transaction
-        // only. SET LOCAL reverts on commit and has no global effect.
+        // The current balances below are built the same way. A single large
+        // statement can outrun a server-side statement_timeout, so SET LOCAL
+        // lifts it for this transaction only.
         sqlx::query("SET LOCAL statement_timeout = 0")
             .execute(&mut *tx)
             .await?;
@@ -846,52 +951,23 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
-        tracing::info!("Selecting current balances");
-
-        let current_balances = sqlx::query("with tempp as (
-                    select max(id) as id
-                    from brc20_historic_balances
-                    group by pkscript, tick
-                  )
-                  select bhb.pkscript, bhb.tick, bhb.overall_balance, bhb.available_balance, bhb.wallet, bhb.block_height
-                  from tempp t
-                  left join brc20_historic_balances bhb on bhb.id = t.id
-                  order by bhb.pkscript asc, bhb.tick asc;")
-            .fetch_all(&mut *tx)
-            .await?;
-
         tracing::info!("Inserting current balances");
 
-        for (index, row) in current_balances.iter().enumerate() {
-            if index % 1000 == 0 {
-                tracing::info!(
-                    "Inserting current balances: {}/{}",
-                    index,
-                    current_balances.len()
-                );
-            }
+        // The newest history row per (pkscript, tick), by block height then
+        // id as the balance reads order them, in one statement.
+        let inserted = sqlx::query!(
+            "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)
+             SELECT DISTINCT ON (pkscript, tick)
+                    pkscript, tick, overall_balance, available_balance, wallet, block_height
+             FROM brc20_historic_balances
+             ORDER BY pkscript, tick, block_height DESC, id DESC"
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tracing::info!("Inserted {inserted} current balance(s)");
 
-            let pkscript: String = row.get("pkscript");
-            let tick: String = row.get("tick");
-            let overall_balance: BigDecimal = row.get("overall_balance");
-            let available_balance: BigDecimal = row.get("available_balance");
-            let wallet: String = row.get("wallet");
-            let block_height: i32 = row.get("block_height");
-
-            sqlx::query!(
-                "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)
-                    VALUES ($1, $2, $3, $4, $5, $6)",
-                pkscript,
-                tick,
-                overall_balance,
-                available_balance,
-                wallet,
-                block_height
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-
+        // The holder counts follow the rebuilt balances.
         ticker_holders::recount_all_brc20(&mut tx).await?;
 
         tracing::info!("Initial index of extra tables completed");
@@ -1036,6 +1112,10 @@ impl Brc20Database {
 
         tracing::info!("Starting reorg up to block height {}", block_height);
 
+        // Extra tables that are not built yet stay empty, so their first
+        // build near the tip is the full one.
+        let extras_built = extras_built(&mut *tx).await?;
+
         sqlx::query("DELETE FROM brc20_tickers WHERE block_height > $1")
             .bind(block_height)
             .execute(&mut *tx)
@@ -1143,92 +1223,11 @@ impl Brc20Database {
 
         prog_balances::reorg(&mut tx, block_height).await?;
 
-        tracing::info!("Starting reorg on extra tables");
-
-        let to_replace_balances = sqlx::query(
-            "delete from brc20_current_balances where block_height > $1 RETURNING pkscript, tick;",
-        )
-        .bind(block_height)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        for (index, row) in to_replace_balances.iter().enumerate() {
-            if index % 1000 == 0 {
-                tracing::info!(
-                    "Replacing current balances: {}/{}",
-                    index,
-                    to_replace_balances.len()
-                );
-            }
-
-            let pkscript: String = row.get("pkscript");
-            let tick: String = row.get("tick");
-
-            sqlx::query!(
-                "INSERT INTO brc20_current_balances (pkscript, tick, overall_balance, available_balance, wallet, block_height)
-                    SELECT pkscript, tick, overall_balance, available_balance, wallet, block_height
-                    FROM brc20_historic_balances
-                    WHERE pkscript = $1 AND tick = $2
-                    ORDER BY block_height DESC LIMIT 1",
-                pkscript,
-                tick
-            )
-            .execute(&mut *tx)
-            .await?;
+        if extras_built {
+            reorg_extra_tables(&mut tx, &self.events_table, block_height).await?;
+        } else {
+            tracing::info!("The extra tables are not built yet; the reorg leaves them empty");
         }
-        ticker_holders::recount_brc20(
-            &mut tx,
-            to_replace_balances
-                .iter()
-                .map(|row| row.get::<&str, _>("tick")),
-        )
-        .await?;
-
-        tracing::info!("Resetting brc20_unused_txes");
-
-        sqlx::query("truncate table brc20_unused_txes restart identity;")
-            .execute(&mut *tx)
-            .await?;
-
-        tracing::info!("Inserting unused txes");
-
-        // Rebuild brc20_unused_txes entirely inside Postgres: select every
-        // transfer-inscribe event with no matching transfer-transfer event
-        // (the "unused" transfers) and insert them in a single statement.
-        // This avoids pulling ~1M rows into the app and inserting them one by
-        // one, which turned this step into a multi-hour operation.
-        //
-        // The old per-row loop survived any server-side statement_timeout
-        // because each tiny insert reset the clock; this single large
-        // statement would not, so disable the timeout for this transaction
-        // only. SET LOCAL reverts on commit and has no global effect.
-        sqlx::query("SET LOCAL statement_timeout = 0")
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query(AssertSqlSafe(format!(
-            "insert into brc20_unused_txes
-                    (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
-                 select t.inscription_id,
-                        t.event->>'tick',
-                        (t.event->>'amount')::numeric,
-                        t.event->>'source_pkScript',
-                        t.event->>'source_wallet',
-                        t.id,
-                        t.block_height
-                 from {events} t
-                 where t.event_type = $1
-                   and not exists (
-                       select 1 from {events} t2
-                       where t2.event_type = $2
-                         and t2.inscription_id = t.inscription_id
-                   );",
-            events = self.events_table
-        )))
-        .bind(crate::types::events::TransferInscribeEvent::event_id())
-        .bind(crate::types::events::TransferTransferEvent::event_id())
-        .execute(&mut *tx)
-        .await?;
 
         tx.commit().await?;
 
