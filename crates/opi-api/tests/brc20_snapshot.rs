@@ -537,7 +537,9 @@ async fn a_snapshot_whose_checks_pass_the_limit_answers_503() {
         let app = common::app_with_env(
             BRC20,
             Db::from_pool(pool.clone()),
-            &[("API_SNAPSHOT_TIMEOUT_MS", "300")],
+            // The held lock outlasts any limit; the follow-up request needs
+            // headroom on a loaded machine.
+            &[("API_SNAPSHOT_TIMEOUT_MS", "2000")],
         );
         // The tip query waits on this lock past the limit.
         let mut lock = pool.begin().await.unwrap();
