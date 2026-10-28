@@ -23,6 +23,7 @@ use crate::{
         extras_verified, get_brc20_database, prog_balances,
         timer::{start_timer, stop_timer},
     },
+    engine_writes::guarded,
     indexer::{
         BitcoinRpcBufferSlot, EventGenerator, EventProcessor,
         brc20_prog_client::retrieve_brc20_prog_traces_hash,
@@ -225,19 +226,37 @@ impl Brc20Indexer {
         }
         self.fill_prog_balances().await?;
 
+        self.initialise_engine(BRC20_PROG_MINE_BATCH_SIZE).await
+    }
+
+    /// Initialises the engine and mines it, `mine_batch` blocks per commit,
+    /// up to the block before BRC2.0's activation. A stop request ends it
+    /// before the initialisation or after a committed batch.
+    async fn initialise_engine(&self, mine_batch: i32) -> Result<(), Box<dyn Error>> {
         if self.stopping_during_start("the BRC2.0 engine's initialisation") {
             return Ok(());
         }
         let brc20_prog_block_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
 
-        self.brc20_prog
-            .brc20_initialise("0".repeat(64).as_str().try_into()?, 0, 0)
-            .await?;
+        let genesis_hash = "0".repeat(64).as_str().try_into()?;
+        guarded(self.brc20_prog.brc20_initialise(genesis_hash, 0, 0)).await?;
 
+        self.mine_to_activation(brc20_prog_block_height, mine_batch)
+            .await
+    }
+
+    /// Mines the engine from `brc20_prog_block_height` up to the block before
+    /// BRC2.0's activation, committing every `mine_batch` blocks. A stop
+    /// request ends it after a committed batch.
+    async fn mine_to_activation(
+        &self,
+        brc20_prog_block_height: i32,
+        mine_batch: i32,
+    ) -> Result<(), Box<dyn Error>> {
         if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height - 1 {
             let mut current_prog_height = brc20_prog_block_height;
             while current_prog_height < self.config.first_brc20_prog_phase_one_height - 1 {
-                let next_prog_height = (current_prog_height + BRC20_PROG_MINE_BATCH_SIZE)
+                let next_prog_height = (current_prog_height + mine_batch)
                     .min(self.config.first_brc20_prog_phase_one_height - 1);
                 tracing::info!(
                     "BRC20 Prog initialising from block height {} to {}",
@@ -247,7 +266,7 @@ impl Brc20Indexer {
                 self.brc20_prog
                     .brc20_mine((next_prog_height - current_prog_height) as u64, 0)
                     .await?;
-                self.brc20_prog.brc20_commit_to_database().await?;
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
                 current_prog_height = next_prog_height;
                 if current_prog_height < self.config.first_brc20_prog_phase_one_height - 1
                     && self.stopping_during_start("the rest of the BRC2.0 engine's initialisation")
@@ -271,7 +290,8 @@ impl Brc20Indexer {
 
     /// Fills the BRC2.0 balance tables from the engine's logs when they are
     /// marked for filling, up to brc20's block, which the engine must also
-    /// hold (see `prog_balance_fill_height`).
+    /// hold (see `prog_balance_fill_height`). A stop request ends it between
+    /// batches, and the next start resumes it.
     async fn fill_prog_balances(&self) -> Result<(), Box<dyn Error>> {
         let (pool, brc20_height) = {
             let database = get_brc20_database();
@@ -297,6 +317,7 @@ impl Brc20Indexer {
             to_height,
             Brc20ProgConfig::from_env().get_logs_max_blocks,
             prog_balances::FILL_BLOCKS,
+            || self.stop_requested(),
         )
         .await?;
         Ok(())
@@ -440,7 +461,7 @@ impl Brc20Indexer {
     pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
         tracing::info!("Reorganizing BRC20 indexer database...");
         if block_height >= self.config.first_brc20_prog_phase_one_height {
-            self.brc20_prog.brc20_reorg(block_height as u64).await?;
+            guarded(self.brc20_prog.brc20_reorg(block_height as u64)).await?;
         }
         get_brc20_database()
             .lock()
@@ -517,7 +538,7 @@ impl Brc20Indexer {
         loop {
             if self.stop_requested() {
                 tracing::info!("Stopping the light client after its last block");
-                self.brc20_prog.brc20_commit_to_database().await?;
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
                 return Ok(());
             }
             let next_block = get_brc20_database()
@@ -537,7 +558,7 @@ impl Brc20Indexer {
                     "Reached height limit of {}, stopping indexer.",
                     self.config.height_limit
                 );
-                self.brc20_prog.brc20_commit_to_database().await?;
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
                 return Ok(());
             }
 
@@ -563,7 +584,7 @@ impl Brc20Indexer {
                     "Reached height limit of {}, stopping indexer.",
                     self.config.height_limit
                 );
-                self.brc20_prog.brc20_commit_to_database().await?;
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
                 return Ok(());
             }
 
@@ -750,7 +771,7 @@ impl Brc20Indexer {
                     .await
                     .reorg(next_block - 1)
                     .await?;
-                self.brc20_prog.brc20_reorg((next_block - 1) as u64).await?;
+                guarded(self.brc20_prog.brc20_reorg((next_block - 1) as u64)).await?;
                 tracing::error!("Cumulative event hash mismatch!!");
                 tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
                 tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
@@ -1231,7 +1252,7 @@ impl Brc20Indexer {
             ))
             .await?;
             if is_synced || block_height % 10 == 0 {
-                timed(self.brc20_prog.brc20_commit_to_database()).await?;
+                timed(guarded(self.brc20_prog.brc20_commit_to_database())).await?;
             }
             stop_timer(&function_timer).await;
         }
@@ -2559,9 +2580,11 @@ impl Brc20Indexer {
         // BRC20 indexer has not indexed any blocks yet, no need to reorg BRC20
         if last_brc20_block_height < self.config.first_brc20_height {
             if last_brc20_prog_block_height > self.config.first_brc20_prog_phase_one_height {
-                self.brc20_prog
-                    .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
-                    .await?;
+                guarded(
+                    self.brc20_prog
+                        .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64),
+                )
+                .await?;
             }
             return Ok(());
         }
@@ -2628,9 +2651,7 @@ impl Brc20Indexer {
                     "BRC20 Prog is ahead of BRC20, reorging BRC20 prog to current BRC20 height: {}",
                     last_brc20_block_height
                 );
-                self.brc20_prog
-                    .brc20_reorg(last_brc20_block_height as u64)
-                    .await?;
+                guarded(self.brc20_prog.brc20_reorg(last_brc20_block_height as u64)).await?;
 
                 last_brc20_prog_block_height = last_brc20_block_height;
             }
@@ -2704,9 +2725,11 @@ impl Brc20Indexer {
                     .reorg(current_brc20_height)
                     .await?;
                 if current_brc20_height >= self.config.first_brc20_prog_phase_one_height {
-                    self.brc20_prog
-                        .brc20_reorg(current_brc20_prog_height as u64)
-                        .await?;
+                    guarded(
+                        self.brc20_prog
+                            .brc20_reorg(current_brc20_prog_height as u64),
+                    )
+                    .await?;
                 }
                 break;
             }
@@ -2722,9 +2745,11 @@ impl Brc20Indexer {
                     .await
                     .reorg(self.config.first_brc20_height)
                     .await?;
-                self.brc20_prog
-                    .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64)
-                    .await?;
+                guarded(
+                    self.brc20_prog
+                        .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64),
+                )
+                .await?;
                 break;
             }
             current_brc20_height -= 1;
@@ -3037,6 +3062,71 @@ mod tests {
         });
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         assert!(indexer.stop_requested());
+    }
+
+    fn light_indexer(engine: &TestEngine, phase_one: i32) -> (Brc20Indexer, watch::Sender<bool>) {
+        let mut indexer = Brc20Indexer::new(
+            Brc20IndexerConfig {
+                light_client_mode: true,
+                first_brc20_prog_phase_one_height: phase_one,
+                ..Default::default()
+            },
+            engine.prog.clone(),
+            engine.bitcoin_rpc_buffer.clone(),
+            None,
+        );
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        (indexer, stop)
+    }
+
+    /// The genesis block exists once the engine is initialised.
+    async fn has_genesis(prog: &Brc20Prog) -> bool {
+        prog.eth_get_block_by_number("0".to_string(), Some(false))
+            .await
+            .is_ok()
+    }
+
+    /// A stop requested before the engine's initialisation leaves the engine
+    /// uninitialised; without one the start initialises it.
+    #[tokio::test]
+    async fn a_stop_before_the_engine_initialisation_skips_it() {
+        let engine = TestEngine::open();
+        let (indexer, stop) = light_indexer(&engine, 5);
+        stop.send(true).unwrap();
+        indexer.initialise_engine(1).await.unwrap();
+        assert!(!has_genesis(&engine.prog).await);
+        assert_eq!(
+            parse_hex_number(&engine.prog.eth_block_number().await.unwrap()).unwrap(),
+            0
+        );
+
+        stop.send(false).unwrap();
+        indexer.initialise_engine(10).await.unwrap();
+        assert!(has_genesis(&engine.prog).await);
+        assert_eq!(
+            parse_hex_number(&engine.prog.eth_block_number().await.unwrap()).unwrap(),
+            4
+        );
+    }
+
+    /// A stop request ends the mining to activation after a committed batch.
+    #[tokio::test]
+    async fn a_stop_ends_the_mining_after_a_committed_batch() {
+        let engine = TestEngine::open();
+        let prog = &engine.prog;
+        prog.brc20_initialise("0".repeat(64).as_str().try_into().unwrap(), 0, 0)
+            .await
+            .unwrap();
+        let (indexer, stop) = light_indexer(&engine, 5);
+        stop.send(true).unwrap();
+        indexer.mine_to_activation(0, 1).await.unwrap();
+        // One batch of one block, committed: clearing the caches keeps it.
+        prog.brc20_clear_caches().await.unwrap();
+        assert_eq!(
+            parse_hex_number(&prog.eth_block_number().await.unwrap()).unwrap(),
+            1
+        );
     }
 
     /// A closed stop channel requests nothing, so a wait lasts its full

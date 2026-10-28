@@ -647,7 +647,9 @@ pub async fn fill_progress(pool: &Pool<Postgres>) -> Result<Option<Option<i32>>,
 /// writes `fill_blocks` blocks and records the last of them in the fill
 /// table, so an interrupted fill resumes after the last committed block. Log
 /// reads span at most `max_log_blocks` blocks. The finished fill drops the
-/// fill table. The process metrics show the fill running, with its last
+/// fill table. `should_stop` is read after each committed transaction; when
+/// it holds, the fill returns and keeps the fill table, so the next fill
+/// resumes. The process metrics show the fill running, with its last
 /// committed block and `to_height`.
 pub async fn fill(
     pool: &Pool<Postgres>,
@@ -656,6 +658,7 @@ pub async fn fill(
     to_height: i32,
     max_log_blocks: u64,
     fill_blocks: i32,
+    should_stop: impl Fn() -> bool,
 ) -> Result<bool, Box<dyn Error>> {
     let Some(filled) = fill_progress(pool).await? else {
         return Ok(false);
@@ -691,6 +694,12 @@ pub async fn fill(
             tracing::info!("BRC2.0 balances: filled to block {end}");
         }
         next = end + 1;
+        if next <= to_height && should_stop() {
+            tracing::info!(
+                "Stopping the BRC2.0 balance fill after block {end}; it resumes at the next start"
+            );
+            return Ok(true);
+        }
     }
     sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {FILL_TABLE}")))
         .execute(pool)
@@ -1492,10 +1501,39 @@ mod db_tests {
             // start, reading logs two blocks at a time.
             drop_tables(&per_block).await;
             let restarted = database(&name, false).await;
-            assert!(fill(&restarted.client, &prog, 0, 3, 2, 2).await.unwrap());
+            assert!(
+                fill(&restarted.client, &prog, 0, 3, 2, 2, || false)
+                    .await
+                    .unwrap()
+            );
             assert_eq!(snapshot(&restarted).await, indexed);
             assert_eq!(fill_progress(&restarted.client).await.unwrap(), None);
-            assert!(!fill(&restarted.client, &prog, 0, 3, 2, 2).await.unwrap());
+            assert!(
+                !fill(&restarted.client, &prog, 0, 3, 2, 2, || false)
+                    .await
+                    .unwrap()
+            );
+
+            // A fill stopped after its first one-block batch keeps its
+            // marker, and the next fill resumes and completes it.
+            drop_tables(&restarted).await;
+            let stopped = database(&name, false).await;
+            assert!(
+                fill(&stopped.client, &prog, 0, 3, 2, 1, || true)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                fill_progress(&stopped.client).await.unwrap(),
+                Some(Some(0))
+            );
+            assert!(
+                fill(&stopped.client, &prog, 0, 3, 2, 1, || false)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(snapshot(&stopped).await, indexed);
+            assert_eq!(fill_progress(&stopped.client).await.unwrap(), None);
 
             // A fill interrupted after block 1 resumes at block 2.
             drop_tables(&restarted).await;
@@ -1511,7 +1549,11 @@ mod db_tests {
             .await
             .unwrap();
             tx.commit().await.unwrap();
-            assert!(fill(&interrupted.client, &prog, 0, 3, 6, FILL_BLOCKS).await.unwrap());
+            assert!(
+                fill(&interrupted.client, &prog, 0, 3, 6, FILL_BLOCKS, || false)
+                    .await
+                    .unwrap()
+            );
             assert_eq!(snapshot(&interrupted).await, indexed);
         })
         .await;
