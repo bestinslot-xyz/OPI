@@ -88,6 +88,10 @@ pub fn routes(router: Router, db: Db, settings: &super::RouteSettings) -> Router
             )
             .route("/v1/brc20/explorer/tokens", get(explorer_tokens))
             .route("/v1/brc20/ticker", get(tickers::ticker_info))
+            .route(
+                "/v1/brc20/ticker/by_contract",
+                get(tickers::ticker_by_contract),
+            )
             .route("/v1/brc20/tickers", get(tickers::tickers))
             .route("/v1/brc20/ticker/holders", get(tickers::holders))
             .route(

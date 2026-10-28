@@ -707,6 +707,7 @@ text parameter holds no NUL byte.
 | Route | Parameters | Lists |
 | --- | --- | --- |
 | `/v1/brc20/ticker` | `ticker` | one ticker |
+| `/v1/brc20/ticker/by_contract` | `contract_address` | the ticker of a BRC2.0 token contract |
 | `/v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | tickers |
 | `/v1/brc20/ticker/holders` | `ticker`, `offset`, `limit` | a ticker's holders |
 | `/v1/brc20/ticker/holders/snapshot` | `ticker`, `block_height`, `format` | a ticker's holders at a block, unpaged |
@@ -750,6 +751,11 @@ a Bitcoin address holding both counts in both. Neither counts the BRC2.0
 module's pkScript `6a09425243323050524f47` (`OP_RETURN "BRC20PROG"`), which
 holds the BRC-20 side of every deposit: that balance is listed per EVM
 address on the BRC2.0 side.
+`/v1/brc20/ticker/by_contract` answers the same object for the ticker a BRC2.0
+token contract carries, with `prog_contract_address` the queried contract and
+`prog_ticker_hash` the ticker hash its `BRC20Created` log registered.
+`contract_address` is `0x` and 40 hex digits in any case; an unknown contract
+answers `404 {"error":"contract not found","result":null}`.
 `/v1/brc20/tickers` lists the same objects without `prog_contract_address`.
 `sort` is `holders` (default), `prog_holders`, `max_supply`, `mint_progress`
 (minted over max supply) or `deploy_height`; `order` is `desc` (default) or
