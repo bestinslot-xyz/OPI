@@ -1,5 +1,5 @@
 mod brc20_indexer;
-pub use brc20_indexer::Brc20Indexer;
+pub use brc20_indexer::{Brc20Indexer, Reconcile};
 
 mod bitcoin_rpc_source;
 pub use bitcoin_rpc_source::{BitcoinRpcBufferSlot, CachedBitcoinRpc};

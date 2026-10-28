@@ -84,7 +84,9 @@ impl BitcoinRpcBufferSlot {
 /// with `bitcoin_rpc_auth`. A success, or an unknown transaction, answered to a
 /// lookup from the brc20 indexing thread is buffered under the next block's
 /// height; every other answer is returned unbuffered. In light mode a miss is
-/// an error, since a light client has no bitcoind. `network()` asks bitcoind's
+/// an error, since a light client has no bitcoind, except a transaction
+/// lookup from another thread (a public JSON-RPC call), which answers "not
+/// found" so the call reverts. `network()` asks bitcoind's
 /// `getblockchaininfo` past the cache in full mode and reports `NETWORK_TYPE`
 /// in light mode.
 ///
@@ -257,6 +259,22 @@ impl Worker {
             }
         }
         if self.light_client_mode {
+            // A public call's transaction lookup answers "not found", so the
+            // precompile fails and the call reverts; an error would have the
+            // engine retry and then panic, stopping the process.
+            if !writer && request["method"] == json!("getrawtransaction") {
+                return Ok(Bytes::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "result": null,
+                        "error": {
+                            "code": NOT_FOUND,
+                            "message": "light mode has no cached answer"
+                        }
+                    })
+                    .to_string(),
+                ));
+            }
             return Err(format!("light mode has no cached answer to {request}").into());
         }
 
@@ -820,10 +838,28 @@ mod tests {
                 signet_response(&raw_transaction_request(&txid(TX), false)),
             )
         });
-        // A disabled cache misses without reaching Postgres.
+        // A disabled cache misses without reaching Postgres: an error for
+        // the indexing thread, "not found" for a public call's transaction.
         let source = CachedBitcoinRpc::new(&config(&url, true, false)).unwrap();
-        assert!(source.get_transaction(&txid(TX)).is_err());
-        assert!(source.get_transaction_with_block_hash(&txid(TX)).is_err());
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name(BRC20_THREAD_NAME.into())
+                .spawn_scoped(scope, || {
+                    assert!(source.get_transaction(&txid(TX)).is_err());
+                    assert!(source.get_transaction_with_block_hash(&txid(TX)).is_err());
+                    assert!(source.get_block_height(&block_hash(HEADER)).is_err());
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        });
+        assert!(source.get_transaction(&txid(TX)).unwrap().is_none());
+        assert!(
+            source
+                .get_transaction_with_block_hash(&txid(TX))
+                .unwrap()
+                .is_none()
+        );
         assert!(source.get_block_height(&block_hash(HEADER)).is_err());
         assert_eq!(source.network().unwrap(), Network::Signet);
 
@@ -1259,31 +1295,39 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
     }
 
-    /// A light client's public JSON-RPC lookups, which come from other
-    /// threads, read the cache and never write it: a stored row answers, and
-    /// a miss is an error that reaches neither bitcoind nor the buffer.
+    /// In light mode a public call's transaction lookup that misses the cache
+    /// answers "not found" without reaching bitcoind or the buffer; the
+    /// indexer's own misses, and other public misses, stay errors.
     #[tokio::test]
-    async fn light_mode_public_lookups_read_the_cache_and_never_write_it() {
+    async fn light_mode_public_transaction_misses_answer_not_found() {
         let (url, seen) = confirmed_bitcoind();
         let worker = worker(&url, true);
-        let request = raw_transaction_request(&txid(TX_INFO), true);
-        let rows = FakeRows::with_stored(signet_response(&request));
-        let answer = worker
-            .answer_with(Some(&rows), &request, false)
-            .await
-            .unwrap();
-        let answer: Value = serde_json::from_slice(&answer).unwrap();
-        assert_eq!(answer["result"]["blockhash"], json!(TX_INFO_BLOCK));
-
         let empty = FakeRows::default();
+        for verbose in [false, true] {
+            let request = raw_transaction_request(&txid(TX_INFO), verbose);
+            let answer = worker
+                .answer_with(Some(&empty), &request, false)
+                .await
+                .unwrap();
+            assert!(matches!(
+                not_found_as_none(parse::<Value>(&answer)),
+                Ok(None)
+            ));
+            assert!(
+                worker
+                    .answer_with(Some(&empty), &request, true)
+                    .await
+                    .is_err()
+            );
+        }
+        let header = block_header_request(&HEADER.parse().unwrap());
         assert!(
             worker
-                .answer_with(Some(&empty), &request, false)
+                .answer_with(Some(&empty), &header, false)
                 .await
                 .is_err()
         );
         assert!(seen.lock().unwrap().is_empty());
-        assert_eq!(rows.buffered_count(), 0);
         assert_eq!(empty.buffered_count(), 0);
     }
 

@@ -8,7 +8,9 @@
 //! which one process holds at a time, so `run` must be stopped first.
 //! `light` serves the metrics listener on METRICS_ADDR, with the OPI
 //! network's best verified block as the chain tip, and the engine's public
-//! JSON-RPC under the same settings as `run`.
+//! JSON-RPC under the same settings as `run`. It stops after its current
+//! block on SIGINT or SIGTERM. Every command that opens the engine runs on
+//! the brc20 thread.
 
 use {
     anyhow::{Result, anyhow, bail},
@@ -16,13 +18,18 @@ use {
     opi_brc20::{
         config::{BitcoinRpcAuth, Brc20IndexerConfig},
         database::{Brc20Database, get_brc20_database, set_brc20_database},
+        fail_stop::BRC20_THREAD_NAME,
         indexer::Brc20Indexer,
     },
+    opi_core::metrics::Phase,
     std::{
         io::{self, BufRead, Write},
         sync::Arc,
     },
-    tokio::sync::Mutex,
+    tokio::{
+        signal::unix::SignalKind,
+        sync::{Mutex, watch},
+    },
 };
 
 #[derive(ClapArgs)]
@@ -145,14 +152,55 @@ fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
     let light = matches!(command, Command::Light);
     let engine = crate::open_brc20_prog(&config)?;
     let public_rpc = public_rpc(&command, &engine, &config)?;
-    let result = runtime.block_on(async {
+    let (stop, stopped) = watch::channel(false);
+    let signals = light.then(|| runtime.spawn(stop_on_signal(stop)));
+    let result = on_brc20_thread(move || async move {
         set_database(&config);
-        execute_with_engine(command, config, engine).await
+        execute_with_engine(command, config, engine, stopped).await
     });
+    if let Some(signals) = signals {
+        signals.abort();
+    }
     if light {
         crate::shut_down_brc20(&runtime, public_rpc);
     }
     result
+}
+
+/// Requests the light client's stop on the first SIGINT or SIGTERM; from then
+/// on readiness answers shutting down.
+async fn stop_on_signal(stop: watch::Sender<bool>) {
+    let Ok(mut sigterm) = tokio::signal::unix::signal(SignalKind::terminate()) else {
+        tracing::error!("listening for SIGTERM failed; the light client stops only on its own");
+        return;
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => tracing::info!("SIGINT received, stopping after the current block"),
+        _ = sigterm.recv() => tracing::info!("SIGTERM received, stopping after the current block"),
+    }
+    opi_core::metrics::global().set_phase(Phase::ShuttingDown);
+    stop.send(true).ok();
+}
+
+/// Runs `job`'s future to completion on a current-thread runtime on a thread
+/// named `BRC20_THREAD_NAME`, as `run`'s brc20 module does: a panic there
+/// stops the process (see `fail_stop`), and the engine's Bitcoin lookups from
+/// it are the indexer's own, which public JSON-RPC calls are not.
+fn on_brc20_thread<F, Fut>(job: F) -> Result<()>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    std::thread::Builder::new()
+        .name(BRC20_THREAD_NAME.into())
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(job())
+        })?
+        .join()
+        .map_err(|_| anyhow!("the brc20 thread panicked"))?
 }
 
 /// The engine's public JSON-RPC for `command`: `light` starts it under
@@ -188,16 +236,21 @@ async fn event_str(height: i32) -> Result<()> {
 }
 
 /// Runs a command that needs `engine`, which holds its database and its own
-/// Bitcoin RPC source for the command's whole run.
+/// Bitcoin RPC source for the command's whole run. `light` stops once `stop`
+/// holds true.
 async fn execute_with_engine(
     command: Command,
     config: Brc20IndexerConfig,
     engine: crate::Brc20Engine,
+    stop: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut indexer = Brc20Indexer::new(config, engine.prog, engine.bitcoin_rpc_buffer, None);
     match command {
         Command::EventStr { .. } => unreachable!("event-str runs without the engine"),
-        Command::Light => indexer.run().await.map_err(|e| anyhow!("{e}"))?,
+        Command::Light => {
+            indexer.stop_on(stop);
+            indexer.run().await.map_err(|e| anyhow!("{e}"))?
+        }
         Command::Reset(Confirm { yes }) => {
             if !confirm(
                 "Are you sure you want to reset the indexer? This will delete all data and start fresh.",
@@ -263,4 +316,30 @@ async fn execute_with_engine(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Engine commands run on the brc20 thread, so their Bitcoin lookups are
+    /// the indexer's own and fail-stop covers their panics; the job's
+    /// result comes back.
+    #[test]
+    fn engine_commands_run_on_the_brc20_thread() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let record = seen.clone();
+        on_brc20_thread(move || async move {
+            *record.lock().unwrap() = std::thread::current().name().map(str::to_string);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen.lock().unwrap().as_deref(), Some(BRC20_THREAD_NAME));
+        assert_eq!(
+            on_brc20_thread(|| async { Err(anyhow!("failed")) })
+                .unwrap_err()
+                .to_string(),
+            "failed"
+        );
+    }
 }

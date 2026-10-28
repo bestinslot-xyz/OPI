@@ -1517,6 +1517,53 @@ mod db_tests {
         .await;
     }
 
+    sol! {
+        function getTxDetails(bytes32 txid);
+    }
+
+    /// In light mode a public call that needs a transaction the cache does
+    /// not hold fails, as a revert, and the engine keeps answering: the
+    /// lookup answers "not found" instead of an error the engine would retry
+    /// and then panic on.
+    #[tokio::test]
+    async fn a_light_public_call_needing_an_uncached_transaction_fails_and_the_engine_keeps_running()
+     {
+        with_database("light_uncached", |name| async move {
+            database(&name, true).await;
+            let config = Brc20IndexerConfig {
+                db_host: "127.0.0.1".into(),
+                db_port: "5432".into(),
+                db_user: "alper".into(),
+                db_password: String::new(),
+                db_database: name.clone(),
+                db_ssl: false,
+                bitcoin_rpc_cache_enabled: true,
+                ..crate::indexer::brc20_prog_client::test_engine::regtest_config(
+                    String::new(),
+                    true,
+                )
+            };
+            let engine = TestEngine::open_with(&config);
+            let prog = engine.prog.clone();
+            prog.brc20_initialise([0u8; 32].into(), 0, 0).await.unwrap();
+            let data = getTxDetailsCall { txid: B256::ZERO }.abi_encode();
+            let call = EthCall::new(
+                Some(Address::ZERO.into()),
+                Some(
+                    "0x00000000000000000000000000000000000000fd"
+                        .try_into()
+                        .unwrap(),
+                ),
+                RawBytes::new(format!("0x{}", hex::encode(data))),
+            );
+            let answer = prog.eth_call(call, None).await;
+            assert!(answer.is_err(), "{answer:?}");
+            assert_eq!(engine_height(&prog).await, 0);
+            drop(engine);
+        })
+        .await;
+    }
+
     /// The BRC2.0 activation height the start-up tests run with.
     const PHASE_ONE: i32 = 2;
 
@@ -1704,6 +1751,43 @@ mod db_tests {
             }
             assert_eq!(engine_height(&prog).await, i64::from(PHASE_ONE - 1));
             indexer.check_brc20_prog_height().await.unwrap();
+            drop(engine);
+        })
+        .await;
+    }
+
+    /// Between blocks an engine below the block before activation is an
+    /// error naming both heights, and brc20 stays where it is.
+    #[tokio::test]
+    async fn between_blocks_an_engine_below_activation_is_an_error() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        let engine = TestEngine::open();
+        with_database("per_block", move |name| async move {
+            let mut database = database(&name, false).await;
+            for height in 1..=3 {
+                database
+                    .set_block_hashes(height, &format!("h{height}"), "", None, &[])
+                    .await
+                    .unwrap();
+            }
+            replace_brc20_database(database).await;
+            let mut indexer = indexer(&name, &engine);
+            let error = indexer
+                .reorg_to_last_synced_block_height(crate::indexer::Reconcile::PerBlock)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("at height 0"), "{error}");
+            assert!(error.contains("brc20 is at 3"), "{error}");
+            assert_eq!(
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .get_current_block_height()
+                    .await
+                    .unwrap(),
+                3
+            );
             drop(engine);
         })
         .await;

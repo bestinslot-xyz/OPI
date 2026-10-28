@@ -2,6 +2,7 @@ use std::{cmp::min, error::Error, sync::Arc};
 
 use brc20_prog::{Brc20Prog, Brc20ProgApiServer, Brc20ProgConfig};
 use opi_core::BlockSource;
+use tokio::sync::watch;
 use versions::{Requirement, Versioning};
 
 use crate::{
@@ -59,6 +60,8 @@ pub struct Brc20Indexer {
     /// The buffer slot of the engine's Bitcoin RPC source, which `init` points
     /// at this indexer's database.
     bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
+    /// Ends the light client's loop once it holds true.
+    stop: Option<watch::Receiver<bool>>,
 }
 
 impl Brc20Indexer {
@@ -83,6 +86,7 @@ impl Brc20Indexer {
             brc20_reporter,
             event_provider_client,
             bitcoin_rpc_buffer,
+            stop: None,
         }
     }
 
@@ -131,7 +135,9 @@ impl Brc20Indexer {
             parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
         );
 
-        self.reorg_to_last_synced_block_height().await?; // Ensure no residue before proceeding
+        // Ensure no residue before proceeding
+        self.reorg_to_last_synced_block_height(Reconcile::AtStart)
+            .await?;
 
         if get_brc20_database()
             .lock()
@@ -185,7 +191,8 @@ impl Brc20Indexer {
         self.clear_caches().await?;
         // Clearing brc20-prog's caches drops its uncommitted blocks, which can
         // leave it below brc20.
-        self.reorg_to_last_synced_block_height().await?;
+        self.reorg_to_last_synced_block_height(Reconcile::AtStart)
+            .await?;
 
         let brc20_prog_version = self.brc20_prog.brc20_version().await?;
         let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).unwrap_or_else(|| {
@@ -426,8 +433,9 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    /// Runs a light client until the height limit. A full-mode indexer runs as
-    /// a module inside `opi-indexer` and indexes through `index_block`.
+    /// Runs a light client until the height limit or a stop request (see
+    /// `stop_on`). A full-mode indexer runs as a module inside `opi-indexer`
+    /// and indexes through `index_block`.
     ///
     /// The process metrics follow it: the process runs once `init` is done,
     /// each read of the OPI network's best verified block is the chain tip,
@@ -437,13 +445,52 @@ impl Brc20Indexer {
             return Err("full mode runs inside opi-indexer".into());
         }
         let metrics = opi_core::metrics::global();
-        let module_metrics = metrics.module("brc20");
         self.init().await?;
         // `init` read the network's best verified block, and start-up is done.
         publish_opi_tip(metrics, self.last_opi_block);
-        metrics.set_phase(opi_core::metrics::Phase::Running);
+        if !self.stop_requested() {
+            metrics.set_phase(opi_core::metrics::Phase::Running);
+        }
+        self.index_until_stopped().await
+    }
+
+    /// Makes the light client's loop stop once `stop` holds true.
+    pub fn stop_on(&mut self, stop: watch::Receiver<bool>) {
+        self.stop = Some(stop);
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.stop.as_ref().is_some_and(|stop| *stop.borrow())
+    }
+
+    /// Waits `duration`, or less when a stop is requested meanwhile.
+    async fn pause(&self, duration: std::time::Duration) {
+        match &self.stop {
+            Some(stop) => {
+                let mut stop = stop.clone();
+                tokio::select! {
+                    _ = tokio::time::sleep(duration) => {}
+                    _ = stop.wait_for(|stop| *stop) => {}
+                }
+            }
+            None => tokio::time::sleep(duration).await,
+        }
+    }
+
+    /// The light client's block loop: indexes each block the OPI network has
+    /// verified, until the height limit or a stop request. A stop request is
+    /// read before each block and ends a wait for new blocks early; the
+    /// engine then commits its blocks and the loop returns.
+    pub(crate) async fn index_until_stopped(&mut self) -> Result<(), Box<dyn Error>> {
+        let metrics = opi_core::metrics::global();
+        let module_metrics = metrics.module("brc20");
         let pool = get_brc20_database().lock().await.client.clone();
         loop {
+            if self.stop_requested() {
+                tracing::info!("Stopping the light client after its last block");
+                self.brc20_prog.brc20_commit_to_database().await?;
+                return Ok(());
+            }
             let next_block = get_brc20_database()
                 .lock()
                 .await
@@ -471,7 +518,8 @@ impl Brc20Indexer {
             // This doesn't always reorg, but it will reorg if the last block is not the same
             let reorg_to_last_synced_block_height_timer =
                 start_timer(SPAN, "reorg_to_last_synced_block_height", next_block);
-            self.reorg_to_last_synced_block_height().await?;
+            self.reorg_to_last_synced_block_height(Reconcile::PerBlock)
+                .await?;
             stop_timer(&reorg_to_last_synced_block_height_timer).await;
 
             let next_block = get_brc20_database()
@@ -496,7 +544,7 @@ impl Brc20Indexer {
                     self.last_opi_block = height;
                     publish_opi_tip(metrics, height);
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                self.pause(tokio::time::Duration::from_secs(5)).await;
                 continue;
             }
 
@@ -559,7 +607,7 @@ impl Brc20Indexer {
                                 err
                             );
                             tracing::error!("Retrying in 5 seconds...");
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            self.pause(tokio::time::Duration::from_secs(5)).await;
                             continue;
                         }
                     };
@@ -574,7 +622,7 @@ impl Brc20Indexer {
                     Err(err) => {
                         tracing::error!("Failed to get events for block {}: {}", next_block, err);
                         tracing::error!("Retrying in 5 seconds...");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        self.pause(tokio::time::Duration::from_secs(5)).await;
                         continue;
                     }
                 };
@@ -2454,7 +2502,15 @@ impl Brc20Indexer {
         Ok(())
     }
 
-    pub async fn reorg_to_last_synced_block_height(&mut self) -> Result<(), Box<dyn Error>> {
+    /// Reconciles brc20 with brc20-prog and, in light mode, with the OPI
+    /// network. An engine below brc20 rolls brc20 back to the engine (see
+    /// `engine_catch_up_height`). Between blocks (`Reconcile::PerBlock`) an
+    /// engine below the block before BRC2.0's activation is an error instead,
+    /// since only a start mines the engine up to that block.
+    pub async fn reorg_to_last_synced_block_height(
+        &mut self,
+        reconcile: Reconcile,
+    ) -> Result<(), Box<dyn Error>> {
         tracing::debug!("Reorganizing BRC20 indexer to last synced block height...");
         let mut last_brc20_block_height = get_brc20_database()
             .lock()
@@ -2491,14 +2547,34 @@ impl Brc20Indexer {
             last_brc20_prog_block_height,
             self.config.first_brc20_prog_phase_one_height,
         ) {
-            tracing::warn!(
+            let phase_one = self.config.first_brc20_prog_phase_one_height;
+            if reconcile == Reconcile::PerBlock && last_brc20_prog_block_height < phase_one - 1 {
+                return Err(format!(
+                    "the BRC2.0 engine at {} is at height {}, below the block before BRC2.0's activation ({}), while brc20 is at {}; restart to replay BRC2.0",
+                    self.config.brc20_prog_db_path,
+                    last_brc20_prog_block_height,
+                    phase_one - 1,
+                    last_brc20_block_height
+                )
+                .into());
+            }
+            let message = format!(
                 "The BRC2.0 engine at {} is at height {}, below brc20's height {}; rolling brc20 back to {}, and the BRC2.0 blocks above {} replay now",
-                std::env::var(crate::config::BRC20_PROG_DB_PATH_KEY).unwrap_or_default(),
+                self.config.brc20_prog_db_path,
                 last_brc20_prog_block_height,
                 last_brc20_block_height,
                 target,
                 target
             );
+            if is_commit_lag(
+                last_brc20_block_height,
+                last_brc20_prog_block_height,
+                phase_one,
+            ) {
+                tracing::info!("{message}");
+            } else {
+                tracing::warn!("{message}");
+            }
             self.reorg(target).await?;
             if target < self.config.first_brc20_height {
                 return Ok(());
@@ -2662,6 +2738,22 @@ fn brc20_prog_height_mismatch(
     }
     (last_prog >= phase_one && last_prog != last_brc20)
         .then(|| format!("brc20 is at {last_brc20} but brc20-prog is at {last_prog}"))
+}
+
+/// When `reorg_to_last_synced_block_height` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reconcile {
+    /// During `init`, before indexing resumes.
+    AtStart,
+    /// Before each block of the light client's run loop.
+    PerBlock,
+}
+
+/// Whether the engine at `last_prog` trails brc20 at `last_brc20` only by
+/// blocks it had not yet committed: at most 10 blocks, from the block
+/// before phase one on.
+fn is_commit_lag(last_brc20: i32, last_prog: i32, phase_one: i32) -> bool {
+    last_brc20 - last_prog <= 10 && last_prog >= phase_one - 1
 }
 
 /// The height brc20 rolls back to when the engine at `last_prog` is below
@@ -2861,6 +2953,68 @@ mod tests {
             &engine.bitcoin_rpc_buffer.current(),
             &database_buffer
         ));
+    }
+
+    /// A stop request ends the light client's loop at its next block
+    /// boundary, after the engine commits its blocks.
+    #[tokio::test]
+    async fn a_stop_request_ends_the_light_loop_with_a_commit() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        crate::database::replace_brc20_database(crate::database::Brc20Database::new(
+            &Brc20IndexerConfig::default(),
+        ))
+        .await;
+        let engine = TestEngine::open();
+        let prog = &engine.prog;
+        prog.brc20_initialise("0".repeat(64).as_str().try_into().unwrap(), 0, 0)
+            .await
+            .unwrap();
+        prog.brc20_mine(2, 0).await.unwrap();
+        let mut indexer = Brc20Indexer::new(
+            Brc20IndexerConfig {
+                light_client_mode: true,
+                ..Default::default()
+            },
+            prog.clone(),
+            engine.bitcoin_rpc_buffer.clone(),
+            None,
+        );
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        stop.send(true).unwrap();
+        indexer.index_until_stopped().await.unwrap();
+
+        // Clearing the caches drops uncommitted blocks; the two blocks stay.
+        prog.brc20_clear_caches().await.unwrap();
+        assert_eq!(
+            parse_hex_number(&prog.eth_block_number().await.unwrap()).unwrap(),
+            2
+        );
+    }
+
+    /// A wait for new blocks ends when a stop is requested.
+    #[tokio::test]
+    async fn a_stop_request_ends_the_wait_for_new_blocks() {
+        let engine = TestEngine::open();
+        let mut indexer = full_indexer(&engine, None);
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        let started = std::time::Instant::now();
+        tokio::join!(indexer.pause(std::time::Duration::from_secs(60)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            stop.send(true).unwrap();
+        });
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(indexer.stop_requested());
+    }
+
+    #[test]
+    fn a_short_engine_lag_from_phase_one_on_is_a_commit_lag() {
+        assert!(is_commit_lag(300_010, 300_000, PHASE_ONE));
+        assert!(is_commit_lag(PHASE_ONE + 3, PHASE_ONE - 1, PHASE_ONE));
+        assert!(!is_commit_lag(300_011, 300_000, PHASE_ONE));
+        assert!(!is_commit_lag(PHASE_ONE + 3, 0, PHASE_ONE));
+        assert!(!is_commit_lag(PHASE_ONE + 3, PHASE_ONE - 2, PHASE_ONE));
     }
 
     #[tokio::test]
