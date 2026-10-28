@@ -9,12 +9,13 @@
 //! balance reads order them, against the current row, on the overall and
 //! available balance, for every nonzero balance. On a difference it
 //! rebuilds the extra tables with `initial_index_of_extra_tables`, which
-//! also recounts every ticker's BRC-20 holders.
+//! also recounts every ticker's BRC-20 holders, and compares again.
 //!
 //! The single-row `brc20_extras_verified` table records that the check
 //! passed. db_init.sql creates it with its row, so a fresh database never
-//! runs the check. The row is written only after the check, and after the
-//! rebuild's commit, so an interrupted check runs again at the next start.
+//! runs the check. The row is written only once the tables match, after the
+//! rebuild's commit, so an interrupted or failed check runs again at the
+//! next start.
 
 use std::{error::Error, time::Instant};
 
@@ -95,20 +96,14 @@ pub async fn compare(pool: &Pool<Postgres>) -> Result<(i64, i64), sqlx::Error> {
 }
 
 /// Runs the check unless the database carries the marker, rebuilds the
-/// extra tables on a difference, then records the marker.
+/// extra tables on a difference, then records the marker once the tables
+/// match. A difference that the rebuild leaves is an error.
 pub async fn verify_once(database: &Brc20Database) -> Result<Verification, Box<dyn Error>> {
     let pool = &database.client;
     if is_verified(pool).await? {
         return Ok(Verification::AlreadyVerified);
     }
-    let built = sqlx::query(
-        "SELECT EXISTS (SELECT 1 FROM brc20_current_balances)
-             OR EXISTS (SELECT 1 FROM brc20_unused_txes)",
-    )
-    .fetch_one(pool)
-    .await?
-    .get::<bool, _>(0);
-    let verification = if !built {
+    let verification = if !super::brc20_database::extras_built(pool).await? {
         tracing::info!(
             "The extra tables are not built yet; they are built from the indexed data once indexing nears the tip"
         );
@@ -135,6 +130,14 @@ pub async fn verify_once(database: &Brc20Database) -> Result<Verification, Box<d
                 "Rebuilt the extra tables in {:.1} s",
                 started.elapsed().as_secs_f64()
             );
+            let remaining = compare(pool).await?;
+            if remaining != (0, 0) {
+                return Err(format!(
+                    "brc20_current_balances still differs from brc20_historic_balances after the rebuild: {} missing or different, {} extra",
+                    remaining.0, remaining.1
+                )
+                .into());
+            }
             Verification::Repaired { missing, extra }
         }
     };
@@ -405,6 +408,77 @@ mod db_tests {
             );
             assert_eq!(current(&database).await, Vec::<String>::new());
             assert!(is_verified(&database.client).await.unwrap());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_leaves_no_marker() {
+        with_database("failed", |name| async move {
+            let database = old_database(&name).await;
+            // The rebuild's holder recount fails, which rolls the rebuild back.
+            sqlx::raw_sql(
+                "DELETE FROM brc20_current_balances WHERE pkscript = 'c3';
+                 DROP TABLE brc20_ticker_holders;",
+            )
+            .execute(&database.client)
+            .await
+            .unwrap();
+            assert!(verify_once(&database).await.is_err());
+            assert!(!is_verified(&database.client).await.unwrap());
+            assert_eq!(compare(&database.client).await.unwrap(), (1, 0));
+        })
+        .await;
+    }
+
+    /// The rebuild takes the newest history row by block height, then by
+    /// id within a block.
+    #[tokio::test]
+    async fn the_rebuild_breaks_a_same_block_tie_by_the_higher_id() {
+        with_database("tie", |name| async move {
+            let database = database(&name).await;
+            historic(&database, 1, "a1", "ordi", 5, 10).await;
+            historic(&database, 2, "a1", "ordi", 3, 10).await;
+            // A later id at an earlier block does not count as newer.
+            historic(&database, 3, "a1", "ordi", 7, 9).await;
+            database.initial_index_of_extra_tables().await.unwrap();
+            assert_eq!(current(&database).await, lines(&["a1 ordi 3 3"]));
+            assert_eq!(holders(&database).await, lines(&["ordi 1"]));
+        })
+        .await;
+    }
+
+    /// A reorg leaves unbuilt extra tables empty, so the first build near the
+    /// tip is the full one.
+    #[tokio::test]
+    async fn a_reorg_leaves_unbuilt_extra_tables_empty() {
+        with_database("reorg_unbuilt", |name| async move {
+            let mut database = database(&name).await;
+            historic(&database, 1, "a1", "ordi", 5, 10).await;
+            historic(&database, 2, "b2", "ordi", 3, 11).await;
+            historic(&database, 3, "c3", "pepe", 9, 12).await;
+            for height in 10..=12 {
+                database
+                    .set_block_hashes(height, &format!("h{height}"), "", None, &[])
+                    .await
+                    .unwrap();
+            }
+            database.reorg(11).await.unwrap();
+            let empty: (i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM brc20_current_balances),
+                        (SELECT count(*) FROM brc20_unused_txes)",
+            )
+            .fetch_one(&database.client)
+            .await
+            .unwrap();
+            assert_eq!(empty, (0, 0));
+
+            // Near the tip the extra tables are built whole.
+            assert!(database.should_index_extras(11, 15).await.unwrap());
+            assert_eq!(
+                current(&database).await,
+                lines(&["a1 ordi 5 5", "b2 ordi 3 3"])
+            );
         })
         .await;
     }
