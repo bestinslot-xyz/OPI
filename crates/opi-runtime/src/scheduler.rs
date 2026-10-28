@@ -2,6 +2,7 @@ use {
     anyhow::{Context, Result, bail},
     opi_core::{BlockSource, BlockView, Module},
     std::{convert::Infallible, sync::Arc, time::Duration},
+    tokio::time::Instant,
 };
 
 /// Most blocks the scheduler rolls a module back in one step. A deeper
@@ -24,14 +25,22 @@ pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 /// `block_view` reads a whole block's records and inscription contents, so it
 /// runs on tokio's blocking pool. `tip` and `block_info` are single-key redb
 /// reads and run inline on the task.
+///
+/// Each cursor read records the module's indexed height and database pool in
+/// the process metrics, and each applied block its height and apply time.
 pub(crate) async fn follow(
     name: &'static str,
     module: &mut dyn Module,
     source: &Arc<dyn BlockSource>,
     poll: Duration,
 ) -> Result<Infallible> {
+    let metrics = opi_core::metrics::global().module(name);
     loop {
         let cursor = module.cursor().await.context("reading the cursor")?;
+        metrics.set_height(cursor.as_ref().map(|cursor| cursor.height));
+        if let Some(stats) = module.pool_stats() {
+            metrics.set_pool(stats);
+        }
         let next = cursor
             .as_ref()
             .map_or_else(|| module.start_height(), |cursor| cursor.height + 1);
@@ -82,10 +91,13 @@ pub(crate) async fn follow(
 
         match block {
             Some(block) => {
+                let started = Instant::now();
                 module
                     .apply(&block)
                     .await
                     .with_context(|| format!("applying block {next}"))?;
+                metrics.observe_block(started.elapsed());
+                metrics.set_height(Some(next));
                 tracing::debug!(module = name, height = next, "applied");
             }
             None => tokio::time::sleep(poll).await,

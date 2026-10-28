@@ -1,3 +1,5 @@
+pub mod metrics;
+
 use std::collections::BTreeMap;
 
 /// Block-level metadata for one finalized height.
@@ -167,6 +169,11 @@ pub trait Module: Send {
     /// Drops every block above `height`.
     async fn rollback_to(&mut self, height: u32) -> anyhow::Result<()>;
     async fn apply(&mut self, block: &BlockView) -> anyhow::Result<()>;
+    /// The connections of the module's database pool, for the process
+    /// metrics; `None` when the module reports none.
+    fn pool_stats(&self) -> Option<metrics::PoolStats> {
+        None
+    }
 }
 
 /// Read access to indexed block data, independent of the backing store.

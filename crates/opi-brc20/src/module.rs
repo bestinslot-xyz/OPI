@@ -38,6 +38,8 @@ pub struct Brc20Module {
     network: Network,
     first_inscription_height: i32,
     height_limit: i32,
+    /// The instance's database pool, which the process metrics read.
+    pool: Option<sqlx::PgPool>,
 }
 
 type Reply<T> = oneshot::Sender<anyhow::Result<T>>;
@@ -90,12 +92,14 @@ impl Brc20Module {
             ))
         }));
         started.await.map_err(|_| worker_stopped())??;
+        let pool = get_brc20_database().lock().await.client.clone();
 
         Ok(Brc20Module {
             requests,
             network,
             first_inscription_height,
             height_limit,
+            pool: Some(pool),
         })
     }
 
@@ -154,6 +158,13 @@ impl Module for Brc20Module {
             reply,
         })
         .await
+    }
+
+    fn pool_stats(&self) -> Option<opi_core::metrics::PoolStats> {
+        self.pool.as_ref().map(|pool| opi_core::metrics::PoolStats {
+            size: pool.size(),
+            idle: pool.num_idle() as u32,
+        })
     }
 }
 
@@ -454,6 +465,7 @@ mod tests {
             network: Network::Regtest,
             first_inscription_height: 0,
             height_limit: i32::MAX,
+            pool: None,
         };
         // The caller gives up on the reply and drops the module, as a
         // shutdown does, while the request is still running.

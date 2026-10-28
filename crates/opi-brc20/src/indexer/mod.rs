@@ -5,6 +5,7 @@ mod bitcoin_rpc_source;
 pub use bitcoin_rpc_source::{BitcoinRpcBufferSlot, CachedBitcoinRpc};
 pub(crate) mod brc20_prog_client;
 mod brc20_swap_refund;
+pub(crate) mod engine_time;
 
 mod utils;
 

@@ -225,6 +225,61 @@ same bitcoind credentials (`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or
 The destructive commands (`reset`, `reorg`, `reindex-extras`) ask for a y/N confirmation; `--yes`
 skips it. `opi-indexer <command> --help` prints each command's usage.
 
+### Metrics and health
+
+`run`, `brc20 light` and `api` each serve Prometheus metrics and health checks
+on a listener of their own, apart from the public API and the engine's
+JSON-RPC, so the metrics stay off the public port. Bind it to loopback or a
+private network.
+
+| Variable | Meaning |
+| --- | --- |
+| `METRICS_ADDR` | listen address of the metrics listener of `run` and `brc20 light`, for example `127.0.0.1:9100`; empty or unset runs none |
+| `API_METRICS_ADDR` | listen address of the metrics listener of `api`; empty or unset runs none |
+| `READY_MAX_LAG_BLOCKS` | the most blocks a module may be behind the chain tip while `run` or `brc20 light` is ready, default `2` |
+
+A start fails when its metrics address is taken. Each listener serves:
+
+| Route | Answers |
+| --- | --- |
+| `GET /metrics` | every metric below, in the OpenMetrics text format |
+| `GET /health/live` | 200 once the process serves |
+| `GET /health/ready` | 200 when ready, else 503 with the reason in the body |
+
+`run` is ready when no start-up fill runs and every enabled module's indexed
+height is at most `READY_MAX_LAG_BLOCKS` below bitcoind's best block, which the
+source reads before each ord update. `brc20 light` compares brc20's height with
+the OPI network's best verified block instead. A module that has not read its
+height yet, or an unknown tip, is not ready. `api` is ready when every enabled
+module's database answers its latest block height within 5 seconds.
+
+Every metric name starts with `opi_`. Metrics a process does not record are
+left out: `api` records only the `api_*` metrics and its pools, `run` everything
+else, and `brc20 light` the brc20 module's.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `opi_chain_tip_height` | gauge | | the chain tip the modules follow: bitcoind's best block, or the OPI network's best verified block in light mode |
+| `opi_indexed_height` | gauge | `module` | last block the module has applied |
+| `opi_lag_blocks` | gauge | `module` | blocks the module is behind the chain tip, 0 when at or above it |
+| `opi_block_seconds` | histogram | `module` | seconds the module takes to apply one block |
+| `opi_engine_seconds` | histogram | `module` (`brc20`) | seconds of one brc20 block spent in the BRC2.0 engine |
+| `opi_fill_running` | gauge | `module`, `fill` | 1 while a start-up fill runs, 0 once it has finished; `fill` is `block_time`, `evm_addresses` or `prog_balances` |
+| `opi_fill_progress` | gauge | `module`, `fill` | last block filled (`block_time`, `prog_balances`), or events read (`evm_addresses`) |
+| `opi_fill_target` | gauge | `module`, `fill` | the block the fill ends at (`prog_balances`) |
+| `opi_db_pool_connections` | gauge | `module` | open connections of the module's database pool |
+| `opi_db_pool_idle_connections` | gauge | `module` | idle connections of the module's database pool |
+| `opi_api_requests_total` | counter | `module`, `route`, `status` | API requests answered |
+| `opi_api_request_seconds` | histogram | `module`, `route` | seconds the API takes to answer a request |
+| `opi_api_rate_limited_total` | counter | `module` | API requests the rate limiter rejected with 429 |
+
+`route` is the route pattern, such as `/v1/brc20/explorer/balances/{evm_address}`,
+never the requested path; a request no route matches has `route="unmatched"`.
+`module` of an API metric is the module whose `/v1/<module>` prefix the path is
+under, or `api` for other paths such as `/v1/status`. Rate-limited requests
+count only in `opi_api_rate_limited_total`. Block histograms have buckets from
+5 ms to 300 s, the request histogram from 1 ms to 10 s.
+
 ### Validation runbook
 
 Cut a deployment over to opi-indexer only after `validate` passes on signet and

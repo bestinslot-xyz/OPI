@@ -351,13 +351,17 @@ struct Driver {
 
 impl Driver {
     /// Runs on its own thread: ord's updater sends events with
-    /// `blocking_send`, which panics on a tokio worker.
+    /// `blocking_send`, which panics on a tokio worker. Each bitcoind tip it
+    /// reads becomes the process metrics' chain tip.
     fn run(self) -> Result<()> {
         let mut backoff = MIN_BACKOFF;
         loop {
             let next = self.index.block_count()?;
             let tip = match self.runtime.block_on(self.rpc.block_count()) {
-                Ok(tip) => tip,
+                Ok(tip) => {
+                    opi_core::metrics::global().set_chain_tip(tip);
+                    tip
+                }
                 Err(err) => {
                     log::warn!("reading bitcoind tip failed, retrying in {backoff:?}: {err:#}");
                     if self.stop.sleep(backoff) {

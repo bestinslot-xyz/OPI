@@ -179,14 +179,25 @@ pub async fn create_and_fill_if_missing(
     }
 
     tracing::info!("Filling evm_addresses from the indexed events");
+    let fill = opi_core::metrics::global().fill("brc20", "evm_addresses");
     sqlx::query(AssertSqlSafe(format!("DROP TABLE IF EXISTS {FILL_TABLE}")))
         .execute(pool)
         .await?;
     sqlx::query(AssertSqlSafe(create_table_sql(FILL_TABLE)))
         .execute(pool)
         .await?;
+    let mut read = 0;
     for events_table in ["brc20_events", "brc20_light_events"] {
-        fill_from(pool, events_table, FILL_TABLE, i32::MIN, network, batch).await?;
+        read += fill_from(
+            pool,
+            events_table,
+            FILL_TABLE,
+            i32::MIN,
+            network,
+            batch,
+            (&fill, read),
+        )
+        .await?;
     }
     let mut tx = pool.begin().await?;
     for statement in RENAME_FILL_TABLE {
@@ -223,8 +234,19 @@ async fn catch_up_from_sidecar(
     // Block heights are never negative, so -1 selects every event.
     let sidecar_height = sidecar_height.unwrap_or(-1);
     tracing::info!("evm_addresses: adding rows for blocks above {sidecar_height}");
+    let fill = opi_core::metrics::global().fill("brc20", "evm_addresses");
+    let mut read = 0;
     for events_table in ["brc20_events", "brc20_light_events"] {
-        fill_from(pool, events_table, TABLE, sidecar_height, network, batch).await?;
+        read += fill_from(
+            pool,
+            events_table,
+            TABLE,
+            sidecar_height,
+            network,
+            batch,
+            (&fill, read),
+        )
+        .await?;
     }
     sqlx::query(AssertSqlSafe(format!(
         "DROP TABLE {SIDECAR_PROGRESS_TABLE}"
@@ -249,8 +271,10 @@ fn pkscript_sql() -> String {
 }
 
 /// Inserts into `target` the rows of the events of `events_table` in blocks
-/// above `above_height`, committing each batch. Logs the events read per
-/// source table.
+/// above `above_height`, committing each batch, and returns the events read.
+/// Logs the events read per source table. `progress` is the fill's metrics
+/// and the events its earlier tables read; each batch sets the fill's
+/// progress to the events read in all.
 async fn fill_from(
     pool: &Pool<Postgres>,
     events_table: &str,
@@ -258,7 +282,8 @@ async fn fill_from(
     above_height: i32,
     network: Network,
     batch: i64,
-) -> Result<(), Box<dyn Error>> {
+    progress: (&opi_core::metrics::FillGuard, usize),
+) -> Result<usize, Box<dyn Error>> {
     let query = format!(
         "SELECT id, {} AS pkscript FROM {events_table}
          WHERE id > $1 AND block_height > $2 ORDER BY id LIMIT $3",
@@ -289,12 +314,14 @@ async fn fill_from(
         let mut conn = pool.acquire().await?;
         insert_rows(&mut conn, target, &rows).await?;
         read += events.len();
+        let (fill, before) = progress;
+        fill.progress(i64::try_from(before + read).unwrap_or(i64::MAX));
         if read % 1_000_000 < events.len() {
             tracing::info!("evm_addresses: read {read} events from {events_table}");
         }
     }
     tracing::info!("evm_addresses: read {read} events from {events_table} in total");
-    Ok(())
+    Ok(read)
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow};
-use opi_core::BlockRef;
+use opi_core::{BlockRef, metrics::PoolStats};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Row};
 
@@ -46,6 +46,14 @@ impl Db {
         let db = Db { pool };
         db.ensure_schema().await?;
         Ok(db)
+    }
+
+    /// The pool's open and idle connections.
+    pub fn pool_stats(&self) -> PoolStats {
+        PoolStats {
+            size: self.pool.size(),
+            idle: self.pool.num_idle() as u32,
+        }
     }
 
     async fn ensure_schema(&self) -> anyhow::Result<()> {

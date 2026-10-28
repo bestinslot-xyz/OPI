@@ -169,6 +169,36 @@ impl ModuleConfigs {
     }
 }
 
+/// The metrics listener of `run` and `brc20 light`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsConfig {
+    /// METRICS_ADDR; `None` when it is unset or empty, which runs no
+    /// metrics listener.
+    pub addr: Option<String>,
+    /// READY_MAX_LAG_BLOCKS: the most blocks a module may be behind the chain
+    /// tip while the process reports ready.
+    pub ready_max_lag_blocks: u64,
+}
+
+impl MetricsConfig {
+    pub fn from_env() -> Result<MetricsConfig> {
+        MetricsConfig::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<MetricsConfig> {
+        let ready_max_lag_blocks = match get("READY_MAX_LAG_BLOCKS").filter(|v| !v.is_empty()) {
+            Some(value) => value.trim().parse::<u64>().with_context(|| {
+                format!("READY_MAX_LAG_BLOCKS must be a whole number of blocks, got `{value}`")
+            })?,
+            None => opi_core::metrics::DEFAULT_READY_MAX_LAG_BLOCKS,
+        };
+        Ok(MetricsConfig {
+            addr: get("METRICS_ADDR").filter(|addr| !addr.is_empty()),
+            ready_max_lag_blocks,
+        })
+    }
+}
+
 /// A module `OPI_MODULES` can enable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleKind {
@@ -475,6 +505,45 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("mainnet"), "{err}");
+    }
+
+    fn metrics_config(vars: &[(&str, &str)]) -> Result<MetricsConfig> {
+        let vars: HashMap<&str, &str> = vars.iter().copied().collect();
+        MetricsConfig::from_lookup(|key| vars.get(key).map(|value| value.to_string()))
+    }
+
+    #[test]
+    fn the_metrics_listener_is_off_by_default_and_readiness_allows_two_blocks() {
+        assert_eq!(
+            metrics_config(&[]).unwrap(),
+            MetricsConfig {
+                addr: None,
+                ready_max_lag_blocks: 2
+            }
+        );
+        assert_eq!(
+            metrics_config(&[("METRICS_ADDR", ""), ("READY_MAX_LAG_BLOCKS", "")]).unwrap(),
+            metrics_config(&[]).unwrap()
+        );
+    }
+
+    #[test]
+    fn metrics_settings_are_read() {
+        assert_eq!(
+            metrics_config(&[
+                ("METRICS_ADDR", "127.0.0.1:9100"),
+                ("READY_MAX_LAG_BLOCKS", "6")
+            ])
+            .unwrap(),
+            MetricsConfig {
+                addr: Some("127.0.0.1:9100".into()),
+                ready_max_lag_blocks: 6
+            }
+        );
+        for bad in ["-1", "two", "1.5"] {
+            let err = metrics_config(&[("READY_MAX_LAG_BLOCKS", bad)]).unwrap_err();
+            assert!(err.to_string().contains("READY_MAX_LAG_BLOCKS"), "{err}");
+        }
     }
 
     #[test]

@@ -27,6 +27,7 @@ use crate::{
         brc20_prog_client::retrieve_brc20_prog_traces_hash,
         brc20_reporter::Brc20Reporter,
         brc20_swap_refund::Brc20SwapRefund,
+        engine_time::{EngineBlock, timed},
         utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
     },
     no_default,
@@ -274,13 +275,15 @@ impl Brc20Indexer {
         if block_height < self.config.first_brc20_prog_phase_one_height {
             return Ok(Vec::new());
         }
-        Ok(
-            prog_balances::balance_events(&self.brc20_prog, block_height, block_height)
-                .await?
-                .into_iter()
-                .flat_map(|(_, events)| events)
-                .collect(),
-        )
+        Ok(timed(prog_balances::balance_events(
+            &self.brc20_prog,
+            block_height,
+            block_height,
+        ))
+        .await?
+        .into_iter()
+        .flat_map(|(_, events)| events)
+        .collect())
     }
 
     pub async fn regenerate_and_validate_trace_hashes(&mut self) -> Result<(), Box<dyn Error>> {
@@ -422,10 +425,16 @@ impl Brc20Indexer {
 
     /// Runs a light client until the height limit. A full-mode indexer runs as
     /// a module inside `opi-indexer` and indexes through `index_block`.
+    ///
+    /// The process metrics follow it: the OPI network's best verified block
+    /// is the chain tip, and each block records brc20's height, block time
+    /// and engine time.
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         if !self.config.light_client_mode {
             return Err("full mode runs inside opi-indexer".into());
         }
+        let metrics = opi_core::metrics::global();
+        let module_metrics = metrics.module("brc20");
         self.init().await?;
         loop {
             let next_block = get_brc20_database()
@@ -433,6 +442,11 @@ impl Brc20Indexer {
                 .await
                 .get_next_block_height()
                 .await?;
+            module_metrics.set_height(u32::try_from(next_block - 1).ok());
+            if let Ok(tip) = u32::try_from(self.last_opi_block) {
+                metrics.set_chain_tip(tip);
+            }
+            module_metrics.set_pool(get_brc20_database().lock().await.pool_stats());
 
             if next_block >= self.config.height_limit {
                 // Check height limit
@@ -444,6 +458,8 @@ impl Brc20Indexer {
             }
 
             let loop_timer = start_timer(SPAN, "run_single_block", next_block);
+            let block_started = std::time::Instant::now();
+            let engine_block = EngineBlock::start();
 
             // This doesn't always reorg, but it will reorg if the last block is not the same
             let reorg_to_last_synced_block_height_timer =
@@ -582,7 +598,11 @@ impl Brc20Indexer {
 
             let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
             let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
-                retrieve_brc20_prog_traces_hash(&self.brc20_prog, next_block).await?
+                timed(retrieve_brc20_prog_traces_hash(
+                    &self.brc20_prog,
+                    next_block,
+                ))
+                .await?
             } else {
                 String::new()
             };
@@ -690,6 +710,9 @@ impl Brc20Indexer {
                 stop_timer(&report_timer).await;
             }
             stop_timer(&loop_timer).await;
+            engine_block.finish();
+            module_metrics.observe_block(block_started.elapsed());
+            module_metrics.set_height(u32::try_from(next_block).ok());
         }
     }
 
@@ -704,6 +727,7 @@ impl Brc20Indexer {
         transfers: Vec<Brc20Tx>,
     ) -> Result<(), Box<dyn Error>> {
         let loop_timer = start_timer(SPAN, "run_single_block", next_block);
+        let engine_block = EngineBlock::start();
         let last_opi_block = self.last_opi_block;
 
         let is_synced = next_block == last_opi_block;
@@ -771,7 +795,11 @@ impl Brc20Indexer {
 
         let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
         let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
-            retrieve_brc20_prog_traces_hash(&self.brc20_prog, next_block).await?
+            timed(retrieve_brc20_prog_traces_hash(
+                &self.brc20_prog,
+                next_block,
+            ))
+            .await?
         } else {
             String::new()
         };
@@ -857,6 +885,7 @@ impl Brc20Indexer {
             stop_timer(&report_timer).await;
         }
         stop_timer(&loop_timer).await;
+        engine_block.finish();
         Ok(())
     }
 
@@ -1106,11 +1135,14 @@ impl Brc20Indexer {
     ) -> Result<(), Box<dyn Error>> {
         if block_height >= self.config.first_brc20_prog_phase_one_height {
             let function_timer = start_timer(SPAN, "finalise_block_for_brc20_prog", block_height);
-            self.brc20_prog
-                .brc20_finalise_block(block_time, block_hash.try_into()?, brc20_prog_tx_idx)
-                .await?;
+            timed(self.brc20_prog.brc20_finalise_block(
+                block_time,
+                block_hash.try_into()?,
+                brc20_prog_tx_idx,
+            ))
+            .await?;
             if is_synced || block_height % 10 == 0 {
-                self.brc20_prog.brc20_commit_to_database().await?;
+                timed(self.brc20_prog.brc20_commit_to_database()).await?;
             }
             stop_timer(&function_timer).await;
         }

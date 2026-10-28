@@ -156,6 +156,21 @@ fn load_config_applies_api_and_rate_limit_defaults() {
             max: 100.0
         }
     );
+    assert_eq!(config.metrics_addr, None);
+}
+
+#[test]
+fn the_metrics_listener_runs_only_with_an_address() {
+    let metrics_addr = |value: &str| {
+        load_config(env(&[("DB_DATABASE", "b"), ("API_METRICS_ADDR", value)]))
+            .unwrap()
+            .metrics_addr
+    };
+    assert_eq!(metrics_addr(""), None);
+    assert_eq!(
+        metrics_addr("127.0.0.1:9101").as_deref(),
+        Some("127.0.0.1:9101")
+    );
 }
 
 #[test]

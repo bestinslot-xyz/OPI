@@ -41,12 +41,14 @@ impl Brc20Database {
     /// Sets `block_time` of every stored block that has none and that the
     /// journal knows under the same block hash, `batch` rows per transaction,
     /// and returns how many rows it set. A height the journal does not hold,
-    /// or holds under another hash, keeps a NULL time.
+    /// or holds under another hash, keeps a NULL time. The process metrics
+    /// show the fill running, with the last height it has looked at.
     pub async fn fill_block_times(
         &self,
         journal: &dyn BlockSource,
         batch: usize,
     ) -> Result<u64, Box<dyn Error>> {
+        let fill = opi_core::metrics::global().fill("brc20", "block_time");
         let mut filled = 0u64;
         let mut after = i32::MIN;
         loop {
@@ -63,6 +65,7 @@ impl Brc20Database {
                 return Ok(filled);
             };
             after = last;
+            fill.progress(i64::from(last));
 
             let mut known = Vec::with_capacity(heights.len());
             let mut times = Vec::with_capacity(heights.len());

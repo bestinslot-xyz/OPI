@@ -59,8 +59,10 @@ impl Runtime {
         }
     }
 
-    /// Adds a module; `name` labels its log lines.
+    /// Adds a module; `name` labels its log lines and its metrics. The module
+    /// counts towards the process's readiness from here on.
     pub fn add(&mut self, name: &'static str, factory: ModuleFactory) {
+        opi_core::metrics::global().module(name);
         self.modules.push((name, factory));
     }
 

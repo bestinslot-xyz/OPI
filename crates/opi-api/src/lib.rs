@@ -13,6 +13,7 @@ pub mod db;
 pub mod extract;
 mod front;
 pub mod js;
+pub mod metrics;
 pub mod params;
 pub mod pg_json;
 pub mod qs;
@@ -47,10 +48,11 @@ impl FrontDoor {
 }
 
 /// The whole app for `config`, each enabled module reading from its entry
-/// in `dbs` (createApp).
+/// in `dbs` (createApp). Every routed request counts in the process metrics
+/// (see [`metrics::track`]).
 pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
     front_door(
-        routes::routes(&config.modules, dbs),
+        routes::routes(&config.modules, dbs).layer(axum::middleware::from_fn(metrics::track)),
         FrontDoor::from_config(config),
     )
 }
@@ -70,13 +72,35 @@ pub fn connect(config: &Config) -> Result<Vec<(Module, Db)>> {
 
 /// Serves the API on API_HOST:API_PORT until `shutdown` completes, with
 /// [`ServeOptions`](server::ServeOptions)' defaults: 60 s to send request
-/// headers, and at most 10 s for requests in flight after the signal.
+/// headers, and at most 10 s for requests in flight after the signal. When
+/// API_METRICS_ADDR is set, the metrics listener serves there too.
 pub async fn serve(
     config: Config,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     config.validate()?;
     let dbs = connect(&config)?;
+    let port = config.listen_port()?;
+    let listener = tokio::net::TcpListener::bind((config.api.host.as_str(), port))
+        .await
+        .with_context(|| format!("listening on {}:{port}", config.api.host))?;
+    let metrics_listener = match &config.metrics_addr {
+        Some(addr) => Some(metrics::bind(addr).await?),
+        None => None,
+    };
+    serve_listeners(config, dbs, listener, metrics_listener, shutdown).await
+}
+
+/// Serves the API for `config` on `listener`, each module reading from its
+/// entry in `dbs`, and the metrics listener on `metrics_listener`, until
+/// `shutdown` completes.
+pub async fn serve_listeners(
+    config: Config,
+    dbs: Vec<(Module, Db)>,
+    listener: tokio::net::TcpListener,
+    metrics_listener: Option<tokio::net::TcpListener>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     // Read each server's integer input rules now. A database that is down
     // at startup does not hold the server back: its rules are read on the
     // first request that needs them.
@@ -100,18 +124,30 @@ pub async fn serve(
             }
         });
     }
+    metrics::report_pools(&dbs);
+    // The metrics listener stops with the API.
+    let metrics_server = metrics_listener.map(|metrics_listener| {
+        let readiness = metrics::api_readiness(dbs.clone());
+        tokio::spawn(async move {
+            if let Err(err) =
+                metrics::serve_metrics(metrics_listener, readiness, std::future::pending()).await
+            {
+                tracing::error!("{err:#}");
+            }
+        })
+    });
     let app = router(&config, dbs);
-    let port = config.listen_port()?;
-    let listener = tokio::net::TcpListener::bind((config.api.host.as_str(), port))
-        .await
-        .with_context(|| format!("listening on {}:{port}", config.api.host))?;
     let names: Vec<&str> = config.modules.iter().map(|m| m.name()).collect();
     tracing::info!(
         "opi-api ({}) listening on {}",
         names.join(", "),
         listener.local_addr()?
     );
-    server::serve_listener(listener, app, server::ServeOptions::default(), shutdown)
+    let served = server::serve_listener(listener, app, server::ServeOptions::default(), shutdown)
         .await
-        .context("serving the API")
+        .context("serving the API");
+    if let Some(metrics_server) = metrics_server {
+        metrics_server.abort();
+    }
+    served
 }
