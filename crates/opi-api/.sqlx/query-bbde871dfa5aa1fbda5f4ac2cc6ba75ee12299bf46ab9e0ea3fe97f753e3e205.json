@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select decimals, block_height from brc20_tickers where tick = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "decimals",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "decimals"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "block_height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "bbde871dfa5aa1fbda5f4ac2cc6ba75ee12299bf46ab9e0ea3fe97f753e3e205"
+}

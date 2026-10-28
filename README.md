@@ -503,6 +503,7 @@ text parameter holds no NUL byte.
 | `/v1/brc20/ticker` | `ticker` | one ticker |
 | `/v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | tickers |
 | `/v1/brc20/ticker/holders` | `ticker`, `offset`, `limit` | a ticker's holders |
+| `/v1/brc20/ticker/holders/snapshot` | `ticker`, `block_height`, `format` | a ticker's holders at a block, unpaged |
 | `/v1/brc20/wallet/balances` | `address`, `offset`, `limit` | a wallet's tickers |
 | `/v1/brc20/ticker/events` | `ticker`, `type`, `before_id`, `limit` | a ticker's events, newest first |
 | `/v1/brc20/wallet/events` | `address` or `pkscript`, `type`, `before_id`, `limit` | a wallet's events, newest first |
@@ -566,6 +567,28 @@ balance on either side, by ticker: `{"tick","decimals","ticker_decimals",
 page with `offset` (default `0`) and `limit`, and report `offset`, `limit`
 and `has_more`. A wallet the database does not know answers `200` with an
 empty list, here and on `/v1/brc20/wallet/events`.
+
+**Holders snapshot.** `/v1/brc20/ticker/holders/snapshot` lists every holder
+of a ticker at the end of block `block_height` (default: the indexed tip),
+for airdrop and snapshot tooling. A holder's balance at that height is its
+latest row at or below it in `brc20_historic_balances` and
+`brc20_prog_historical_balances`; the rows merge, filter and order as
+`/v1/brc20/ticker/holders` lists them, so the snapshot at the tip is that
+route's full list. EVM addresses map to Bitcoin addresses through
+`evm_addresses`. A `block_height` above the indexed tip or below the
+ticker's deploy height answers `400`, and `503` answers while 4 snapshots
+are already streaming. `format=json` (default) answers
+`{"error":null,"result":{"ticker","block_height","decimals",
+"ticker_decimals","holders":[...]}}` with the holders route's row objects
+and no paging. `format=csv` answers `text/csv; charset=utf-8` as the
+attachment `<ticker>-<block_height>.csv`: a header row, then one row per
+holder with the columns `address,evm_address,pkscript,brc20_balance,
+brc20_available_balance,prog_balance,total_balance` (the row object's
+`balance` and `available_balance` are `brc20_balance` and
+`brc20_available_balance`; a null is an empty field), CRLF line ends and RFC
+4180 quoting. Both formats stream from Postgres as the rows arrive; a
+failure partway through ends the body early, so a client checks that a JSON
+answer parses and that a CSV answer's download completed.
 
 **Event feeds.** An event is `{"id","block_height","block_time",
 "inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the
