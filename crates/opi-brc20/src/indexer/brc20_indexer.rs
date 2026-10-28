@@ -211,11 +211,23 @@ impl Brc20Indexer {
             .into());
         }
 
+        // A stop requested during the long start-up steps below ends the
+        // start between them, where each has committed; the next start
+        // resumes from there.
+        if self.stopping_during_start("the current-balances check") {
+            return Ok(());
+        }
         // Once per database, after every start-up reorg.
         extras_verified::verify_once(&*get_brc20_database().lock().await).await?;
 
+        if self.stopping_during_start("the BRC2.0 balance fill") {
+            return Ok(());
+        }
         self.fill_prog_balances().await?;
 
+        if self.stopping_during_start("the BRC2.0 engine's initialisation") {
+            return Ok(());
+        }
         let brc20_prog_block_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
 
         self.brc20_prog
@@ -237,10 +249,24 @@ impl Brc20Indexer {
                     .await?;
                 self.brc20_prog.brc20_commit_to_database().await?;
                 current_prog_height = next_prog_height;
+                if current_prog_height < self.config.first_brc20_prog_phase_one_height - 1
+                    && self.stopping_during_start("the rest of the BRC2.0 engine's initialisation")
+                {
+                    return Ok(());
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Whether a stop was requested, logged as stopping before `step`.
+    fn stopping_during_start(&self, step: &str) -> bool {
+        let stopping = self.stop_requested();
+        if stopping {
+            tracing::info!("Stop requested during start-up; stopping before {step}");
+        }
+        stopping
     }
 
     /// Fills the BRC2.0 balance tables from the engine's logs when they are
@@ -448,9 +474,9 @@ impl Brc20Indexer {
         self.init().await?;
         // `init` read the network's best verified block, and start-up is done.
         publish_opi_tip(metrics, self.last_opi_block);
-        if !self.stop_requested() {
-            metrics.set_phase(opi_core::metrics::Phase::Running);
-        }
+        // A stop requested during start-up keeps shutting down, which the
+        // phase never leaves.
+        metrics.set_phase(opi_core::metrics::Phase::Running);
         self.index_until_stopped().await
     }
 
@@ -464,17 +490,20 @@ impl Brc20Indexer {
     }
 
     /// Waits `duration`, or less when a stop is requested meanwhile.
+    /// A closed stop channel waits the full duration.
     async fn pause(&self, duration: std::time::Duration) {
-        match &self.stop {
-            Some(stop) => {
-                let mut stop = stop.clone();
-                tokio::select! {
-                    _ = tokio::time::sleep(duration) => {}
-                    _ = stop.wait_for(|stop| *stop) => {}
-                }
+        let sleep = tokio::time::sleep(duration);
+        tokio::pin!(sleep);
+        if let Some(stop) = &self.stop {
+            let mut stop = stop.clone();
+            tokio::select! {
+                _ = &mut sleep => return,
+                requested = stop.wait_for(|stop| *stop) => if requested.is_ok() {
+                    return;
+                },
             }
-            None => tokio::time::sleep(duration).await,
         }
+        sleep.await;
     }
 
     /// The light client's block loop: indexes each block the OPI network has
@@ -508,6 +537,7 @@ impl Brc20Indexer {
                     "Reached height limit of {}, stopping indexer.",
                     self.config.height_limit
                 );
+                self.brc20_prog.brc20_commit_to_database().await?;
                 return Ok(());
             }
 
@@ -533,6 +563,7 @@ impl Brc20Indexer {
                     "Reached height limit of {}, stopping indexer.",
                     self.config.height_limit
                 );
+                self.brc20_prog.brc20_commit_to_database().await?;
                 return Ok(());
             }
 
@@ -3006,6 +3037,21 @@ mod tests {
         });
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         assert!(indexer.stop_requested());
+    }
+
+    /// A closed stop channel requests nothing, so a wait lasts its full
+    /// duration instead of returning at once.
+    #[tokio::test]
+    async fn a_closed_stop_channel_waits_the_full_duration() {
+        let engine = TestEngine::open();
+        let mut indexer = full_indexer(&engine, None);
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        drop(stop);
+        let started = std::time::Instant::now();
+        indexer.pause(std::time::Duration::from_millis(300)).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(300));
+        assert!(!indexer.stop_requested());
     }
 
     #[test]

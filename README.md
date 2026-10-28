@@ -153,9 +153,11 @@ runs inside the `opi-indexer` process. There is no separate brc20-prog server.
 `run` and `brc20 light` serve brc20-prog's public JSON-RPC on
 `BRC20_PROG_RPC_SERVER_URL`, under the same settings. Blockscout, the swap
 sequencer and other clients connect there. Each serves it from before its
-start-up until brc20 has finished its last block, after SIGINT or SIGTERM or
-the end of the light client. `brc20 light` stops on SIGINT or SIGTERM after
-its current block, with the engine's blocks committed. It rejects the
+start-up: `run` serves it until brc20 finishes its last block after SIGINT or
+SIGTERM; `brc20 light` until the light client stops. `brc20 light` stops on
+SIGINT or SIGTERM after its current block, or between its start-up steps,
+with the engine's blocks committed; a second signal exits at once with status
+130. It rejects the
 indexer methods (`brc20_mine` and the like) and takes no credentials, so bind
 it to loopback or firewall it. brc20-prog's `BRC20_PROG_RPC_SERVER_ENABLE_AUTH`,
 `BRC20_PROG_RPC_SERVER_USER` and `BRC20_PROG_RPC_SERVER_PASSWORD` do not apply

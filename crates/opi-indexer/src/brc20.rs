@@ -158,28 +158,61 @@ fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
         set_database(&config);
         execute_with_engine(command, config, engine, stopped).await
     });
-    if let Some(signals) = signals {
-        signals.abort();
-    }
     if light {
         crate::shut_down_brc20(&runtime, public_rpc);
+    }
+    // A second signal forces the exit until here.
+    if let Some(signals) = signals {
+        signals.abort();
     }
     result
 }
 
 /// Requests the light client's stop on the first SIGINT or SIGTERM; from then
-/// on readiness answers shutting down.
+/// on readiness answers shutting down. A second signal exits at once with
+/// status 130. Without a SIGTERM listener, SIGINT alone stops it. `stop`
+/// stays open for the whole run, so the light client's waits never see it
+/// closed.
 async fn stop_on_signal(stop: watch::Sender<bool>) {
-    let Ok(mut sigterm) = tokio::signal::unix::signal(SignalKind::terminate()) else {
-        tracing::error!("listening for SIGTERM failed; the light client stops only on its own");
-        return;
+    let mut sigterm = match tokio::signal::unix::signal(SignalKind::terminate()) {
+        Ok(sigterm) => Some(sigterm),
+        Err(err) => {
+            tracing::error!(
+                "listening for SIGTERM failed: {err}; only SIGINT stops the light client"
+            );
+            None
+        }
     };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => tracing::info!("SIGINT received, stopping after the current block"),
-        _ = sigterm.recv() => tracing::info!("SIGTERM received, stopping after the current block"),
-    }
+    let name = next_signal(sigterm.as_mut()).await;
+    tracing::info!("{name} received, stopping after the current block");
     opi_core::metrics::global().set_phase(Phase::ShuttingDown);
     stop.send(true).ok();
+    let name = next_signal(sigterm.as_mut()).await;
+    tracing::warn!("{name} received again, forced stop");
+    std::process::exit(130);
+}
+
+/// The name of the next SIGINT or SIGTERM, read from `sigterm` when there is
+/// one. A failed SIGINT listener waits on SIGTERM alone.
+async fn next_signal(sigterm: Option<&mut tokio::signal::unix::Signal>) -> &'static str {
+    let sigterm = async {
+        match sigterm {
+            Some(sigterm) => {
+                sigterm.recv().await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(sigterm);
+    let sigint = tokio::select! {
+        result = tokio::signal::ctrl_c() => result.is_ok(),
+        _ = &mut sigterm => return "SIGTERM",
+    };
+    if !sigint {
+        sigterm.await;
+        return "SIGTERM";
+    }
+    "SIGINT"
 }
 
 /// Runs `job`'s future to completion on a current-thread runtime on a thread

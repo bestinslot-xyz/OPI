@@ -1793,6 +1793,100 @@ mod db_tests {
         .await;
     }
 
+    /// A stop requested before the start-up's long steps ends `init` before
+    /// them, with nothing written: the current-balances check has not run.
+    #[tokio::test]
+    async fn a_stop_during_start_up_ends_it_before_the_check() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        let engine = TestEngine::open();
+        with_database("stop_start", move |name| async move {
+            let mut database = database(&name, false).await;
+            incomplete_current_balances(&mut database).await;
+            replace_brc20_database(database).await;
+
+            let mut indexer = indexer(&name, &engine);
+            let (stop, stopped) = tokio::sync::watch::channel(true);
+            indexer.stop_on(stopped);
+            indexer.init().await.unwrap();
+            let database = get_brc20_database();
+            let database = database.lock().await;
+            assert!(
+                !crate::database::extras_verified::is_verified(&database.client)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                crate::database::extras_verified::compare(&database.client)
+                    .await
+                    .unwrap(),
+                (1, 0)
+            );
+            drop((stop, engine));
+        })
+        .await;
+    }
+
+    /// The light loop commits the engine's blocks before it returns at the
+    /// height limit.
+    #[tokio::test]
+    async fn the_height_limit_ends_the_light_loop_with_a_commit() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        let engine = TestEngine::open();
+        let prog = engine.prog.clone();
+        with_database("height_limit", move |name| async move {
+            let database = database(&name, true).await;
+            replace_brc20_database(database).await;
+            prog.brc20_initialise([0u8; 32].into(), 0, 0).await.unwrap();
+            prog.brc20_mine(2, 0).await.unwrap();
+            let mut indexer = Brc20Indexer::new(
+                Brc20IndexerConfig {
+                    db_host: "127.0.0.1".into(),
+                    db_port: "5432".into(),
+                    db_user: "alper".into(),
+                    db_password: String::new(),
+                    db_database: name.clone(),
+                    db_ssl: false,
+                    light_client_mode: true,
+                    height_limit: 0,
+                    ..Default::default()
+                },
+                prog.clone(),
+                engine.bitcoin_rpc_buffer.clone(),
+                None,
+            );
+            indexer.index_until_stopped().await.unwrap();
+            prog.brc20_clear_caches().await.unwrap();
+            assert_eq!(engine_height(&prog).await, 2);
+            drop(engine);
+        })
+        .await;
+    }
+
+    /// History for two balances, built extra tables, then one current
+    /// balance lost and the marker dropped, as an old light client leaves it.
+    async fn incomplete_current_balances(database: &mut Brc20Database) {
+        sqlx::raw_sql(
+            "INSERT INTO brc20_historic_balances
+                 (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
+             VALUES ('a1', 'wa1', 'ordi', 5, 5, 1, 1), ('b2', 'wb2', 'ordi', 3, 2, 1, 2);",
+        )
+        .execute(&database.client)
+        .await
+        .unwrap();
+        database.index_extra_tables(1).await.unwrap();
+        database
+            .set_block_hashes(1, "h1", "", None, &[])
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "DELETE FROM brc20_current_balances WHERE pkscript = 'b2';
+             DROP TABLE brc20_extras_verified;",
+        )
+        .execute(&database.client)
+        .await
+        .unwrap();
+    }
+
     /// The indexer's start repairs an incomplete current-balances table once
     /// and records the marker.
     #[tokio::test]
