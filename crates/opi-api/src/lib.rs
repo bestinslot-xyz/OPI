@@ -13,6 +13,7 @@ pub mod db;
 pub mod extract;
 mod front;
 pub mod js;
+pub mod metrics;
 pub mod params;
 pub mod pg_json;
 pub mod qs;
@@ -28,6 +29,7 @@ use {
     axum::Router,
     config::{Config, Module},
     db::Db,
+    opi_core::metrics::Phase,
     rate_limit::RateLimiter,
     std::{future::Future, sync::Arc},
 };
@@ -47,10 +49,11 @@ impl FrontDoor {
 }
 
 /// The whole app for `config`, each enabled module reading from its entry
-/// in `dbs` (createApp).
+/// in `dbs` (createApp). Every routed request counts in the process metrics
+/// (see [`metrics::instrument`]).
 pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
     front_door(
-        routes::routes(
+        metrics::instrument(routes::routes(
             &config.modules,
             dbs,
             &routes::RouteSettings {
@@ -59,7 +62,7 @@ pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
                     .snapshot_timeout()
                     .unwrap_or(routes::RouteSettings::default().snapshot_timeout),
             },
-        ),
+        )),
         FrontDoor::from_config(config),
     )
 }
@@ -79,13 +82,36 @@ pub fn connect(config: &Config) -> Result<Vec<(Module, Db)>> {
 
 /// Serves the API on API_HOST:API_PORT until `shutdown` completes, with
 /// [`ServeOptions`](server::ServeOptions)' defaults: 60 s to send request
-/// headers, and at most 10 s for requests in flight after the signal.
+/// headers, and at most 10 s for requests in flight after the signal. When
+/// API_METRICS_ADDR is set, the metrics listener serves there too.
 pub async fn serve(
     config: Config,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     config.validate()?;
     let dbs = connect(&config)?;
+    let port = config.listen_port()?;
+    let listener = tokio::net::TcpListener::bind((config.api.host.as_str(), port))
+        .await
+        .with_context(|| format!("listening on {}:{port}", config.api.host))?;
+    let metrics_listener = match &config.metrics_addr {
+        Some(addr) => Some(metrics::bind(addr).await?),
+        None => None,
+    };
+    serve_listeners(config, dbs, listener, metrics_listener, shutdown).await
+}
+
+/// Serves the API for `config` on `listener`, each module reading from its
+/// entry in `dbs`, and the metrics listener on `metrics_listener`, until
+/// `shutdown` completes. The process phase is running from the start and
+/// shutting down from `shutdown` on.
+pub async fn serve_listeners(
+    config: Config,
+    dbs: Vec<(Module, Db)>,
+    listener: tokio::net::TcpListener,
+    metrics_listener: Option<tokio::net::TcpListener>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     // Read each server's integer input rules now. A database that is down
     // at startup does not hold the server back: its rules are read on the
     // first request that needs them.
@@ -109,18 +135,40 @@ pub async fn serve(
             }
         });
     }
+    metrics::report_pools(&dbs);
+    // The metrics listener stops gracefully once the API has stopped.
+    let metrics_server = metrics_listener.map(|metrics_listener| {
+        let readiness = metrics::api_readiness(dbs.clone());
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let stopped = async {
+                stopped.await.ok();
+            };
+            if let Err(err) = metrics::serve_metrics(metrics_listener, readiness, stopped).await {
+                tracing::error!("{err:#}");
+            }
+        });
+        (stop, task)
+    });
+    opi_core::metrics::global().set_phase(Phase::Running);
+    // Readiness answers 503 from the shutdown signal on.
+    let shutdown = async move {
+        shutdown.await;
+        opi_core::metrics::global().set_phase(Phase::ShuttingDown);
+    };
     let app = router(&config, dbs);
-    let port = config.listen_port()?;
-    let listener = tokio::net::TcpListener::bind((config.api.host.as_str(), port))
-        .await
-        .with_context(|| format!("listening on {}:{port}", config.api.host))?;
     let names: Vec<&str> = config.modules.iter().map(|m| m.name()).collect();
     tracing::info!(
         "opi-api ({}) listening on {}",
         names.join(", "),
         listener.local_addr()?
     );
-    server::serve_listener(listener, app, server::ServeOptions::default(), shutdown)
+    let served = server::serve_listener(listener, app, server::ServeOptions::default(), shutdown)
         .await
-        .context("serving the API")
+        .context("serving the API");
+    if let Some((stop, task)) = metrics_server {
+        stop.send(()).ok();
+        task.await.ok();
+    }
+    served
 }

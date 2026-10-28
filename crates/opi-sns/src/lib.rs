@@ -170,6 +170,10 @@ impl Module for SnsModule {
         "sns"
     }
 
+    fn pool_stats(&self) -> Option<opi_core::metrics::PoolStats> {
+        Some(self.db.pool_stats())
+    }
+
     fn start_height(&self) -> u32 {
         self.start_height
     }

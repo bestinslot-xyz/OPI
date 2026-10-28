@@ -122,6 +122,9 @@ pub struct Config {
     pub dbs: Vec<(Module, DbConfig)>,
     pub api: ApiSettings,
     pub rate_limit: RateLimitSettings,
+    /// API_METRICS_ADDR, the metrics listener's address; `None` when it is
+    /// unset or empty, which runs no metrics listener.
+    pub metrics_addr: Option<String>,
 }
 
 impl Config {
@@ -254,6 +257,7 @@ pub fn load_config(get: impl Fn(&str) -> Option<String>) -> Result<Config> {
             window_ms: parse_int_str(&or("RATE_LIMIT_WINDOW_MS", &(15 * 60 * 1000).to_string())),
             max: parse_int_str(&or("RATE_LIMIT_MAX", "100")),
         },
+        metrics_addr: get("API_METRICS_ADDR").filter(|addr| !addr.is_empty()),
     })
 }
 

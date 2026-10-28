@@ -3,12 +3,13 @@ mod config;
 mod validate;
 
 use {
-    anyhow::{Result, anyhow, bail},
+    anyhow::{Context, Result, anyhow, bail},
     brc20_prog::{BitcoinRpc, Brc20Prog, Brc20ProgConfig},
     clap::{Parser, Subcommand},
-    config::{Config, ModuleConfigs},
+    config::{Config, MetricsConfig, ModuleConfigs},
     futures::future::BoxFuture,
     jsonrpsee::server::ServerHandle,
+    opi_api::metrics::MetricsThread,
     opi_bitmap::{BitmapConfig, BitmapModule},
     opi_brc20::{
         config::Brc20IndexerConfig,
@@ -17,7 +18,7 @@ use {
         module::Brc20Module,
         service_runtime::ServiceRuntime,
     },
-    opi_core::{BlockSource, Module},
+    opi_core::{BlockSource, Module, metrics::Phase},
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime},
     opi_sns::{SnsConfig, SnsModule},
@@ -107,6 +108,9 @@ fn run() -> Result<()> {
     opi_brc20::fail_stop::install_panic_hook();
     let config = Config::from_env()?;
     let module_configs = ModuleConfigs::load(&config)?;
+    // Serves from here on, answering "starting" until the modules run, and
+    // stops when `run` returns.
+    let metrics = start_metrics(MetricsConfig::from_env()?)?;
 
     // The engine and its Bitcoin RPC source open once, before anything
     // starts; module restarts reuse them.
@@ -142,7 +146,11 @@ fn run() -> Result<()> {
         .build()
         .map_err(anyhow::Error::from)
         .and_then(|runtime| {
+            opi_core::metrics::global().set_phase(Phase::Running);
             let exit = runtime.block_on(supervise(&handle, module_configs, brc20_engine));
+            // Every exit, an error one included, reports shutting down while
+            // brc20 goes idle and the RPC server and source stop.
+            opi_core::metrics::global().set_phase(Phase::ShuttingDown);
             // The brc20 module may still be finishing its last block, such
             // as an engine commit, which the public RPC must outlive.
             if brc20_enabled {
@@ -157,6 +165,9 @@ fn run() -> Result<()> {
     }
     handle.shutdown();
     let joined = handle.join();
+    if let Some(metrics) = metrics {
+        metrics.stop();
+    }
     match exit {
         Ok(Exit::Signal) => joined,
         Ok(Exit::SourceEnded) => {
@@ -170,6 +181,21 @@ fn run() -> Result<()> {
             Err(err)
         }
     }
+}
+
+/// Starts the metrics listener of `run` and `brc20 light` on METRICS_ADDR,
+/// on a thread of its own, before the process starts its work: it answers
+/// liveness during start-up, and a taken address fails the start. Readiness
+/// follows READY_MAX_LAG_BLOCKS and READY_MAX_TIP_AGE_SECS. `None` when
+/// METRICS_ADDR is unset.
+pub(crate) fn start_metrics(config: MetricsConfig) -> Result<Option<MetricsThread>> {
+    let Some(addr) = &config.addr else {
+        return Ok(None);
+    };
+    let listener = std::net::TcpListener::bind(addr)
+        .with_context(|| format!("listening for metrics on {addr}"))?;
+    let readiness = opi_api::metrics::indexer_readiness(config.ready_limits());
+    MetricsThread::start(listener, readiness).map(Some)
 }
 
 /// Serves the HTTP API until SIGINT or SIGTERM. It runs no engine, so it
@@ -238,6 +264,8 @@ async fn supervise(
             Exit::SourceEnded
         }
     };
+    // Readiness answers 503 from here on.
+    opi_core::metrics::global().set_phase(Phase::ShuttingDown);
     stop.send(()).ok();
     modules.await?;
     Ok(exit)

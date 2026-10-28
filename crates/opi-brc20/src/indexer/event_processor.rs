@@ -11,6 +11,7 @@ use crate::{
         Brc20Balance, TransferValidity, get_brc20_database,
         timer::{start_timer, stop_timer},
     },
+    indexer::engine_time::timed,
     types::{
         Ticker,
         events::{
@@ -72,8 +73,8 @@ impl EventProcessor {
             .await
             .set_transfer_validity(inscription_id, TransferValidity::Used);
 
-        prog_client
-            .brc20_deploy(
+        timed(
+            prog_client.brc20_deploy(
                 event.source_pk_script.clone(),
                 event.data.as_ref().map(|d| RawBytes::new(d.to_string())),
                 event
@@ -86,9 +87,10 @@ impl EventProcessor {
                 inscription_id.to_string(),
                 event.byte_len as u64,
                 string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
-            )
-            .await
-            .expect("Failed to deploy smart contract, the embedded brc20-prog engine failed");
+            ),
+        )
+        .await
+        .expect("Failed to deploy smart contract, the embedded brc20-prog engine failed");
 
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::one())
@@ -128,8 +130,8 @@ impl EventProcessor {
             None
         };
 
-        prog_client
-            .brc20_call(
+        timed(
+            prog_client.brc20_call(
                 event.source_pk_script.clone(),
                 contract_address,
                 event
@@ -147,9 +149,10 @@ impl EventProcessor {
                 inscription_id.to_string(),
                 event.byte_len,
                 string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
-            )
-            .await
-            .expect("Failed to call smart contract, the embedded brc20-prog engine failed");
+            ),
+        )
+        .await
+        .expect("Failed to call smart contract, the embedded brc20-prog engine failed");
 
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::one())
@@ -183,8 +186,8 @@ impl EventProcessor {
             .await
             .set_transfer_validity(inscription_id, TransferValidity::Used);
 
-        let transact_result = prog_client
-            .brc20_transact(
+        let transact_result = timed(
+            prog_client.brc20_transact(
                 event.data.as_ref().map(|d| RawBytes::new(d.to_string())),
                 event
                     .base64_data
@@ -196,9 +199,10 @@ impl EventProcessor {
                 inscription_id.to_string(),
                 event.byte_len as u64,
                 string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
-            )
-            .await
-            .expect("Failed to run transact, the embedded brc20-prog engine failed");
+            ),
+        )
+        .await
+        .expect("Failed to run transact, the embedded brc20-prog engine failed");
 
         stop_timer(&function_timer).await;
         Ok(Brc20ProgTxesExecuted::count(transact_result.len() as u64))
@@ -251,18 +255,17 @@ impl EventProcessor {
             .await
             .set_transfer_validity(inscription_id, TransferValidity::Used);
 
-        let withdraw_result = prog_client
-            .brc20_withdraw(
-                event.source_pk_script.clone(),
-                event.ticker.clone(),
-                event.amount.into(),
-                block_time,
-                block_hash.try_into()?,
-                brc20_prog_tx_idx,
-                inscription_id.to_string(),
-            )
-            .await
-            .expect("Failed to run withdraw, the embedded brc20-prog engine failed");
+        let withdraw_result = timed(prog_client.brc20_withdraw(
+            event.source_pk_script.clone(),
+            event.ticker.clone(),
+            event.amount.into(),
+            block_time,
+            block_hash.try_into()?,
+            brc20_prog_tx_idx,
+            inscription_id.to_string(),
+        ))
+        .await
+        .expect("Failed to run withdraw, the embedded brc20-prog engine failed");
 
         if !withdraw_result.status.is_zero() {
             let mut brc20_prog_balance = get_brc20_database()
@@ -555,17 +558,16 @@ impl EventProcessor {
                 )?;
 
                 prog_tx_count += 1;
-                prog_client
-                    .brc20_deposit(
-                        event.source_pk_script.clone(),
-                        event.ticker.clone(),
-                        event.amount.into(),
-                        block_time,
-                        block_hash.try_into()?,
-                        brc20_prog_tx_idx,
-                        inscription_id.to_string(),
-                    )
-                    .await?;
+                timed(prog_client.brc20_deposit(
+                    event.source_pk_script.clone(),
+                    event.ticker.clone(),
+                    event.amount.into(),
+                    block_time,
+                    block_hash.try_into()?,
+                    brc20_prog_tx_idx,
+                    inscription_id.to_string(),
+                ))
+                .await?;
             }
         } else if spent_pk_script == OP_RETURN {
             let mut source_balance = get_brc20_database()

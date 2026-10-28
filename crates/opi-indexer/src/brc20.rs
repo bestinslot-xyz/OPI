@@ -6,6 +6,8 @@
 //! settings. `event-str` reads only Postgres and runs alongside a
 //! running `opi-indexer run`. Every other command opens brc20-prog's database,
 //! which one process holds at a time, so `run` must be stopped first.
+//! `light` serves the metrics listener on METRICS_ADDR, with the OPI
+//! network's best verified block as the chain tip.
 
 use {
     anyhow::{Result, anyhow, bail},
@@ -104,15 +106,27 @@ pub fn run(args: Args) -> Result<()> {
     // the config's default.
     BitcoinRpcAuth::from_env()?;
     let config = Brc20IndexerConfig::default();
-    if matches!(args.command, Command::Light) && !config.light_client_mode {
+    let light = matches!(args.command, Command::Light);
+    if light && !config.light_client_mode {
         bail!(
             "`brc20 light` runs the light client; set OPERATION_MODE=light. Full mode indexes inside `opi-indexer run` with OPI_MODULES including brc20."
         );
     }
-    tokio::runtime::Builder::new_multi_thread()
+    // The light client serves the metrics listener, as `run` does, from
+    // here until it returns; it reports running once its start-up is done.
+    let metrics = if light {
+        crate::start_metrics(crate::config::MetricsConfig::from_env()?)?
+    } else {
+        None
+    };
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(execute(args.command, config))
+        .block_on(execute(args.command, config));
+    if let Some(metrics) = metrics {
+        metrics.stop();
+    }
+    result
 }
 
 // The library reports `Box<dyn Error>`, which is not `Send`; `anyhow!`

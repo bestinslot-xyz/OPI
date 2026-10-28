@@ -11,6 +11,7 @@ futures = "0.3"
 hyper = { version = "1.12", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server-graceful", "tokio"] }
 jiff = "0.2"
+opi-core = { path = "../opi-core" }
 opi-sns = { path = "../opi-sns" }
 sha2 = "0.10"
 sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls"] }

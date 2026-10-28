@@ -235,6 +235,11 @@ pub fn connect_pool(
 }
 
 impl Brc20Database {
+    /// The pool's open and idle connections.
+    pub fn pool_stats(&self) -> opi_core::metrics::PoolStats {
+        opi_core::metrics::PoolStats::new(self.client.size(), self.client.num_idle())
+    }
+
     pub fn new(config: &Brc20IndexerConfig) -> Self {
         let client = connect_pool(config, 5, None);
         let bitcoin_rpc_cache = BitcoinRpcCache::new(

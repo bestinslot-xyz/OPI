@@ -1,7 +1,8 @@
 //! The middleware in front of every route, in order: CORS
 //! (any origin; a preflight answers 200 with no body), then the rate
-//! limiter keyed by the client IP, then routing (case-insensitive, one
-//! optional trailing slash). A panic in a handler answers the 500 body.
+//! limiter keyed by the client IP, whose rejections count in the process
+//! metrics, then routing (case-insensitive, one optional trailing slash). A
+//! panic in a handler answers the 500 body.
 
 use {
     crate::{
@@ -162,6 +163,8 @@ async fn answer(front: Arc<FrontDoor>, mut request: Request, next: Next) -> Resp
         let hit = limiter.hit(ip.as_deref().unwrap_or("undefined"), now_ms());
         rate_headers = hit.headers;
         if hit.blocked {
+            opi_core::metrics::global()
+                .api_rate_limited(crate::metrics::module_label(request.uri().path()));
             let mut response = Reply::send_str(MESSAGE).status(429).into_response();
             insert_headers(&mut response, &rate_headers);
             return response;

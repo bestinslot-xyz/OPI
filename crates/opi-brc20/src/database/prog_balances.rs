@@ -647,7 +647,8 @@ pub async fn fill_progress(pool: &Pool<Postgres>) -> Result<Option<Option<i32>>,
 /// writes `fill_blocks` blocks and records the last of them in the fill
 /// table, so an interrupted fill resumes after the last committed block. Log
 /// reads span at most `max_log_blocks` blocks. The finished fill drops the
-/// fill table.
+/// fill table. The process metrics show the fill running, with its last
+/// committed block and `to_height`.
 pub async fn fill(
     pool: &Pool<Postgres>,
     prog: &Brc20Prog,
@@ -659,7 +660,10 @@ pub async fn fill(
     let Some(filled) = fill_progress(pool).await? else {
         return Ok(false);
     };
+    let metrics = opi_core::metrics::global().fill("brc20", "prog_balances");
+    metrics.target(i64::from(to_height));
     let mut next = filled.map_or(first_height, |filled| (filled + 1).max(first_height));
+    metrics.progress(i64::from(next) - 1);
     let log_span = max_log_blocks.clamp(1, i32::MAX as u64) as i32;
     let fill_blocks = fill_blocks.max(1);
     tracing::info!("Filling BRC2.0 balances from block {next} to {to_height}");
@@ -682,6 +686,7 @@ pub async fn fill(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        metrics.progress(i64::from(end));
         if end % 10_000 < fill_blocks {
             tracing::info!("BRC2.0 balances: filled to block {end}");
         }

@@ -169,6 +169,58 @@ impl ModuleConfigs {
     }
 }
 
+/// The metrics listener of `run` and `brc20 light`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsConfig {
+    /// METRICS_ADDR; `None` when it is unset or empty, which runs no
+    /// metrics listener.
+    pub addr: Option<String>,
+    /// READY_MAX_LAG_BLOCKS: the most blocks a module may be behind the chain
+    /// tip while the process reports ready.
+    pub ready_max_lag_blocks: u64,
+    /// READY_MAX_TIP_AGE_SECS: the longest the chain tip may go unread while
+    /// the process reports ready.
+    pub ready_max_tip_age_secs: u64,
+}
+
+impl MetricsConfig {
+    pub fn from_env() -> Result<MetricsConfig> {
+        MetricsConfig::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<MetricsConfig> {
+        let whole = |key: &str, unit: &str, default: u64| -> Result<u64> {
+            match get(key).filter(|v| !v.is_empty()) {
+                Some(value) => value.trim().parse::<u64>().with_context(|| {
+                    format!("{key} must be a whole number of {unit}, got `{value}`")
+                }),
+                None => Ok(default),
+            }
+        };
+        Ok(MetricsConfig {
+            addr: get("METRICS_ADDR").filter(|addr| !addr.is_empty()),
+            ready_max_lag_blocks: whole(
+                "READY_MAX_LAG_BLOCKS",
+                "blocks",
+                opi_core::metrics::DEFAULT_READY_MAX_LAG_BLOCKS,
+            )?,
+            ready_max_tip_age_secs: whole(
+                "READY_MAX_TIP_AGE_SECS",
+                "seconds",
+                opi_core::metrics::DEFAULT_READY_MAX_TIP_AGE_SECS,
+            )?,
+        })
+    }
+
+    /// The readiness bounds these settings set.
+    pub fn ready_limits(&self) -> opi_core::metrics::ReadyLimits {
+        opi_core::metrics::ReadyLimits {
+            max_lag_blocks: self.ready_max_lag_blocks,
+            max_tip_age: std::time::Duration::from_secs(self.ready_max_tip_age_secs),
+        }
+    }
+}
+
 /// A module `OPI_MODULES` can enable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleKind {
@@ -475,6 +527,63 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("mainnet"), "{err}");
+    }
+
+    fn metrics_config(vars: &[(&str, &str)]) -> Result<MetricsConfig> {
+        let vars: HashMap<&str, &str> = vars.iter().copied().collect();
+        MetricsConfig::from_lookup(|key| vars.get(key).map(|value| value.to_string()))
+    }
+
+    #[test]
+    fn the_metrics_listener_is_off_by_default_and_readiness_allows_two_blocks() {
+        assert_eq!(
+            metrics_config(&[]).unwrap(),
+            MetricsConfig {
+                addr: None,
+                ready_max_lag_blocks: 2,
+                ready_max_tip_age_secs: 600,
+            }
+        );
+        assert_eq!(
+            metrics_config(&[
+                ("METRICS_ADDR", ""),
+                ("READY_MAX_LAG_BLOCKS", ""),
+                ("READY_MAX_TIP_AGE_SECS", "")
+            ])
+            .unwrap(),
+            metrics_config(&[]).unwrap()
+        );
+    }
+
+    #[test]
+    fn metrics_settings_are_read() {
+        let config = metrics_config(&[
+            ("METRICS_ADDR", "127.0.0.1:9100"),
+            ("READY_MAX_LAG_BLOCKS", "6"),
+            ("READY_MAX_TIP_AGE_SECS", "120"),
+        ])
+        .unwrap();
+        assert_eq!(
+            config,
+            MetricsConfig {
+                addr: Some("127.0.0.1:9100".into()),
+                ready_max_lag_blocks: 6,
+                ready_max_tip_age_secs: 120,
+            }
+        );
+        assert_eq!(
+            config.ready_limits(),
+            opi_core::metrics::ReadyLimits {
+                max_lag_blocks: 6,
+                max_tip_age: std::time::Duration::from_secs(120),
+            }
+        );
+        for key in ["READY_MAX_LAG_BLOCKS", "READY_MAX_TIP_AGE_SECS"] {
+            for bad in ["-1", "two", "1.5"] {
+                let err = metrics_config(&[(key, bad)]).unwrap_err();
+                assert!(err.to_string().contains(key), "{err}");
+            }
+        }
     }
 
     #[test]
