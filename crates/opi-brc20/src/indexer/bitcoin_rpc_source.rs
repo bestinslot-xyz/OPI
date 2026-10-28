@@ -91,7 +91,8 @@ impl BitcoinRpcBufferSlot {
 /// in light mode.
 ///
 /// Each lookup runs on a worker on the source's own runtime, with its own
-/// Postgres pool and HTTP client, while the calling thread waits on a std
+/// Postgres pools (one for the indexing thread, one for every other caller)
+/// and HTTP client, while the calling thread waits on a std
 /// channel for at most 20 seconds. Lookups therefore complete from any thread
 /// outside that runtime, including a current-thread runtime's, and never take
 /// the brc20 database lock.
@@ -122,6 +123,7 @@ impl CachedBitcoinRpc {
             let _context = handle.enter();
             Arc::new(Worker {
                 pool: connect_pool(config, 2, Some(POOL_ACQUIRE_TIMEOUT)),
+                public_pool: connect_pool(config, 2, Some(POOL_ACQUIRE_TIMEOUT)),
                 slot: slot.clone(),
                 client: Client::builder().timeout(BITCOIND_TIMEOUT).build()?,
                 bitcoin_rpc_url: config.bitcoin_rpc_url.clone(),
@@ -192,10 +194,14 @@ struct Lookup {
     answer: std::sync::mpsc::Sender<Result<Bytes, BitcoinRpcError>>,
 }
 
-/// What the worker answers lookups with. The pool and the client belong to
+/// What the worker answers lookups with. The pools and the client belong to
 /// the source's runtime.
 struct Worker {
+    /// The indexing thread's lookups.
     pool: Pool<Postgres>,
+    /// Every other lookup (public JSON-RPC calls), so a burst of them never
+    /// takes the indexer's connections.
+    public_pool: Pool<Postgres>,
     slot: BitcoinRpcBufferSlot,
     client: Client,
     bitcoin_rpc_url: String,
@@ -208,6 +214,16 @@ struct Worker {
 }
 
 impl Worker {
+    /// The pool a lookup from the indexing thread (`writer`) or from another
+    /// thread reads the cache through.
+    fn pool_for(&self, writer: bool) -> &Pool<Postgres> {
+        if writer {
+            &self.pool
+        } else {
+            &self.public_pool
+        }
+    }
+
     async fn answer(
         &self,
         request: &Value,
@@ -216,7 +232,7 @@ impl Worker {
     ) -> Result<Bytes, BitcoinRpcError> {
         let cache = cached.then(|| {
             BitcoinRpcCache::new(
-                self.pool.clone(),
+                self.pool_for(writer).clone(),
                 self.slot.current(),
                 self.cache_enabled,
                 self.first_inscription_height,
@@ -1159,6 +1175,7 @@ mod tests {
         let config = config(url, light_client_mode, true);
         Worker {
             pool: connect_pool(&config, 1, Some(Duration::from_millis(100))),
+            public_pool: connect_pool(&config, 1, Some(Duration::from_millis(100))),
             slot: BitcoinRpcBufferSlot::default(),
             client: Client::new(),
             bitcoin_rpc_url: url.to_string(),
@@ -1167,6 +1184,82 @@ mod tests {
             cache_enabled: true,
             first_inscription_height: 0,
             next_id: AtomicU64::new(1),
+        }
+    }
+
+    /// Public lookups read the cache through a pool of their own: with every
+    /// public connection held, an indexer lookup still reads the cache.
+    /// Runs against a throwaway database when `OPI_TEST_PG=1`.
+    #[tokio::test]
+    async fn saturated_public_lookups_leave_the_indexer_a_connection() {
+        use sqlx::Connection;
+        if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
+            eprintln!("OPI_TEST_PG is not 1; skipping");
+            return;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("opi_brc20_rpcpool_{}_{nanos}", std::process::id());
+        let admin = sqlx::postgres::PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(5432)
+            .username("alper")
+            .database("postgres");
+        let mut root = sqlx::PgConnection::connect_with(&admin).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+            .execute(&mut root)
+            .await
+            .unwrap();
+        let result = tokio::spawn({
+            let name = name.clone();
+            async move {
+                let config = Brc20IndexerConfig {
+                    db_host: "127.0.0.1".into(),
+                    db_port: "5432".into(),
+                    db_user: "alper".into(),
+                    db_password: String::new(),
+                    db_database: name,
+                    db_ssl: false,
+                    ..config("http://127.0.0.1:1", true, true)
+                };
+                Brc20Database::new(&config).init().await.unwrap();
+                let worker = Worker {
+                    pool: connect_pool(&config, 1, Some(Duration::from_millis(200))),
+                    public_pool: connect_pool(&config, 1, Some(Duration::from_millis(200))),
+                    ..worker("http://127.0.0.1:1", true)
+                };
+                let request = raw_transaction_request(&txid(TX_INFO), true);
+                let _held = worker.public_pool.acquire().await.unwrap();
+
+                // The public side has no connection left ...
+                let public = worker.answer(&request, true, false).await.unwrap_err();
+                assert!(
+                    public
+                        .to_string()
+                        .contains("reading the Bitcoin RPC cache failed"),
+                    "{public}"
+                );
+                // ... while the indexer reads the cache: a light miss.
+                let indexer = worker.answer(&request, true, true).await.unwrap_err();
+                assert!(
+                    indexer
+                        .to_string()
+                        .contains("light mode has no cached answer"),
+                    "{indexer}"
+                );
+            }
+        })
+        .await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE {name} WITH (FORCE)"
+        )))
+        .execute(&mut root)
+        .await
+        .unwrap();
+        if let Err(error) = result {
+            std::panic::resume_unwind(error.into_panic());
         }
     }
 
