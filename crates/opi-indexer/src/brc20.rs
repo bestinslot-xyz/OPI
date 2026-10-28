@@ -25,6 +25,7 @@ use {
     std::{
         io::{self, BufRead, Write},
         sync::Arc,
+        time::Duration,
     },
     tokio::{
         signal::unix::SignalKind,
@@ -169,8 +170,9 @@ fn execute(command: Command, config: Brc20IndexerConfig) -> Result<()> {
 }
 
 /// Requests the light client's stop on the first SIGINT or SIGTERM; from then
-/// on readiness answers shutting down. A second signal exits at once with
-/// status 130. Without a SIGTERM listener, SIGINT alone stops it. `stop`
+/// on readiness answers shutting down. A second signal exits with status 130
+/// once the engine's current commit has finished (see `forced_exit`).
+/// Without a SIGTERM listener, SIGINT alone stops it. `stop`
 /// stays open for the whole run, so the light client's waits never see it
 /// closed.
 async fn stop_on_signal(stop: watch::Sender<bool>) {
@@ -188,8 +190,25 @@ async fn stop_on_signal(stop: watch::Sender<bool>) {
     opi_core::metrics::global().set_phase(Phase::ShuttingDown);
     stop.send(true).ok();
     let name = next_signal(sigterm.as_mut()).await;
-    tracing::warn!("{name} received again, forced stop");
-    std::process::exit(130);
+    tracing::warn!("{name} received again");
+    forced_exit(FORCED_EXIT_WAIT, |code| std::process::exit(code)).await;
+}
+
+/// How long a forced stop waits for the engine's current commit.
+const FORCED_EXIT_WAIT: Duration = Duration::from_secs(30);
+
+/// Exits through `exit` with status 130 once the engine's current commit has
+/// finished, or after `limit` for a hung disk. The guard stays held, so no
+/// engine write starts before the exit.
+async fn forced_exit(limit: Duration, exit: impl FnOnce(i32)) {
+    let guard = opi_brc20::engine_writes::wait_until_free(limit).await;
+    if guard.is_some() {
+        tracing::warn!("forced stop after the engine commit finished");
+    } else {
+        tracing::error!("forced stop: engine commit still running after {limit:?}");
+    }
+    exit(130);
+    drop(guard);
 }
 
 /// The name of the next SIGINT or SIGTERM, read from `sigterm` when there is
@@ -354,6 +373,48 @@ async fn execute_with_engine(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A forced stop waits for the engine write in progress and exits once
+    /// it has finished; a write that outlasts the limit is not waited for.
+    #[tokio::test]
+    async fn a_forced_stop_waits_for_the_engine_commit() {
+        let (started, wait_started) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let commit = tokio::spawn(opi_brc20::engine_writes::guarded(async move {
+            started.send(()).unwrap();
+            finished.await.ok();
+        }));
+        wait_started.await.unwrap();
+
+        let exited = Arc::new(std::sync::Mutex::new(None));
+        let record = exited.clone();
+        let exit = tokio::spawn(forced_exit(Duration::from_secs(30), move |code| {
+            *record.lock().unwrap() = Some(code);
+        }));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(*exited.lock().unwrap(), None, "exited during the commit");
+        finish.send(()).unwrap();
+        exit.await.unwrap();
+        assert_eq!(*exited.lock().unwrap(), Some(130));
+        commit.await.unwrap();
+
+        // A hung commit: the exit goes ahead after the limit.
+        let (_hold, hung) = tokio::sync::oneshot::channel::<()>();
+        let (started, wait_started) = tokio::sync::oneshot::channel();
+        let hung_commit = tokio::spawn(opi_brc20::engine_writes::guarded(async move {
+            started.send(()).unwrap();
+            hung.await.ok();
+        }));
+        wait_started.await.unwrap();
+        let record = exited.clone();
+        *record.lock().unwrap() = None;
+        forced_exit(Duration::from_millis(100), move |code| {
+            *record.lock().unwrap() = Some(code);
+        })
+        .await;
+        assert_eq!(*exited.lock().unwrap(), Some(130));
+        hung_commit.abort();
+    }
 
     /// Engine commands run on the brc20 thread, so their Bitcoin lookups are
     /// the indexer's own and fail-stop covers their panics; the job's
