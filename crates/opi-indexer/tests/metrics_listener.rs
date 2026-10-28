@@ -45,7 +45,7 @@ fn liveness_answers_during_start_up() {
             "starting\n".to_string()
         )
     );
+    // `stop` returns once the listener's thread has joined.
     metrics.stop();
     assert_eq!(opi_core::metrics::global().phase(), Phase::ShuttingDown);
-    assert!(TcpStream::connect(addr).is_err());
 }

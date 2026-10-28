@@ -148,6 +148,9 @@ fn run() -> Result<()> {
         .and_then(|runtime| {
             opi_core::metrics::global().set_phase(Phase::Running);
             let exit = runtime.block_on(supervise(&handle, module_configs, brc20_engine));
+            // Every exit, an error one included, reports shutting down while
+            // brc20 goes idle and the RPC server and source stop.
+            opi_core::metrics::global().set_phase(Phase::ShuttingDown);
             // The brc20 module may still be finishing its last block, such
             // as an engine commit, which the public RPC must outlive.
             if brc20_enabled {

@@ -195,8 +195,7 @@ pub async fn create_and_fill_if_missing(
             i32::MIN,
             network,
             batch,
-            &fill,
-            read,
+            |now| fill_progress(&fill, read + now),
         )
         .await?;
     }
@@ -245,8 +244,7 @@ async fn catch_up_from_sidecar(
             sidecar_height,
             network,
             batch,
-            &fill,
-            read,
+            |now| fill_progress(&fill, read + now),
         )
         .await?;
     }
@@ -257,6 +255,11 @@ async fn catch_up_from_sidecar(
     .await?;
     tracing::info!("evm_addresses: dropped {SIDECAR_PROGRESS_TABLE}");
     Ok(())
+}
+
+/// Sets the evm_addresses fill's progress to `read` events in all.
+fn fill_progress(fill: &opi_core::metrics::FillGuard, read: usize) {
+    fill.progress(i64::try_from(read).unwrap_or(i64::MAX));
 }
 
 /// A SQL expression for the pkScript of a row's event: the field
@@ -274,10 +277,8 @@ fn pkscript_sql() -> String {
 
 /// Inserts into `target` the rows of the events of `events_table` in blocks
 /// above `above_height`, committing each batch, and returns the events read.
-/// Logs the events read per source table. Each batch sets `fill`'s progress
-/// to the events read in all, counting the `read_before` events its earlier
-/// tables read.
-#[allow(clippy::too_many_arguments)]
+/// Logs the events read per source table. Each batch calls `progress` with
+/// the events read from `events_table` so far.
 async fn fill_from(
     pool: &Pool<Postgres>,
     events_table: &str,
@@ -285,8 +286,7 @@ async fn fill_from(
     above_height: i32,
     network: Network,
     batch: i64,
-    fill: &opi_core::metrics::FillGuard,
-    read_before: usize,
+    progress: impl Fn(usize),
 ) -> Result<usize, Box<dyn Error>> {
     let query = format!(
         "SELECT id, {} AS pkscript FROM {events_table}
@@ -318,7 +318,7 @@ async fn fill_from(
         let mut conn = pool.acquire().await?;
         insert_rows(&mut conn, target, &rows).await?;
         read += events.len();
-        fill.progress(i64::try_from(read_before + read).unwrap_or(i64::MAX));
+        progress(read);
         if read % 1_000_000 < events.len() {
             tracing::info!("evm_addresses: read {read} events from {events_table}");
         }

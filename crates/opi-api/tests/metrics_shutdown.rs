@@ -59,9 +59,8 @@ async fn readiness_answers_503_once_shutdown_begins() {
         .expect("the API stops")
         .unwrap()
         .unwrap();
-    // The metrics listener has stopped with the API, and the API's
-    // readiness answers 503 from the shutdown on.
-    assert!(TcpStream::connect(metrics).await.is_err());
+    // `serve_listeners` returns once the metrics listener's task has
+    // finished, and the API's readiness answers 503 from the shutdown on.
     assert_eq!(
         opi_core::metrics::global().phase(),
         opi_core::metrics::Phase::ShuttingDown

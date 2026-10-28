@@ -50,7 +50,8 @@ pub fn global() -> &'static Metrics {
     METRICS.get_or_init(Metrics::new)
 }
 
-/// Where the process is in its life, for readiness.
+/// Where the process is in its life, for readiness. The phase belongs to the
+/// process, so a test that changes it runs in a test binary of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// The process has not started its work yet.
