@@ -695,6 +695,7 @@ text parameter holds no NUL byte.
 | `/v1/brc20/ticker` | `ticker` | one ticker |
 | `/v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | tickers |
 | `/v1/brc20/ticker/holders` | `ticker`, `offset`, `limit` | a ticker's holders |
+| `/v1/brc20/ticker/holders/snapshot` | `ticker`, `block_height`, `format` | a ticker's holders at a block, unpaged |
 | `/v1/brc20/wallet/balances` | `address`, `offset`, `limit` | a wallet's tickers |
 | `/v1/brc20/ticker/events` | `ticker`, `type`, `before_id`, `limit` | a ticker's events, newest first |
 | `/v1/brc20/wallet/events` | `address` or `pkscript`, `type`, `before_id`, `limit` | a wallet's events, newest first |
@@ -759,6 +760,33 @@ page with `offset` (default `0`) and `limit`, and report `offset`, `limit`
 and `has_more`. A wallet the database does not know answers `200` with an
 empty list, here and on `/v1/brc20/wallet/events`.
 
+**Holders snapshot.** `/v1/brc20/ticker/holders/snapshot` lists every holder
+of a ticker at the end of block `block_height` (default: the indexed tip),
+for airdrop and snapshot tooling. A holder's balance at that height is its
+latest row at or below it in `brc20_historic_balances` and
+`brc20_prog_historical_balances`; the rows merge, filter and order as
+`/v1/brc20/ticker/holders` lists them, so the snapshot at the tip is that
+route's full list. EVM addresses map through the current `evm_addresses`
+table; a mapping depends only on the pkScript. The tip and the rows come
+from one database snapshot (a `REPEATABLE READ READ ONLY` transaction). A
+`block_height` above the indexed tip or below the ticker's deploy height
+answers `400`. At most 4 snapshots, and at most half the pool
+(`DB_MAX_CONNECTIONS`), stream at once; another answers `503`. Each holds a
+pool connection while it streams, for at most `API_SNAPSHOT_TIMEOUT_MS`; one
+that cannot start within that limit answers `503` `"snapshot timed out"`.
+`format=json` (default) answers
+`{"error":null,"result":{"ticker","block_height","decimals",
+"ticker_decimals","holders":[...]}}` with the holders route's row objects
+and no paging. `format=csv` answers `text/csv; charset=utf-8` as the
+attachment `<ticker>-<block_height>.csv`: a header row, then one row per
+holder with the columns `address,evm_address,pkscript,brc20_balance,
+brc20_available_balance,prog_balance,total_balance` (the row object's
+`balance` and `available_balance` are `brc20_balance` and
+`brc20_available_balance`; a null is an empty field), CRLF line ends and RFC
+4180 quoting. Both formats stream from Postgres as the rows arrive. A
+failure partway through, or the time limit passing, aborts the transfer, so
+a complete download is a complete snapshot.
+
 **Event feeds.** An event is `{"id","block_height","block_time",
 "inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the
 block's time in seconds and is null when the block's time is unknown (a block
@@ -809,6 +837,7 @@ win, and a missing file is ignored.
 | `RATE_LIMIT_ENABLE` | `true` turns the rate limiter on, default `false` |
 | `RATE_LIMIT_WINDOW_MS` | rate limit window in milliseconds, default `900000` |
 | `RATE_LIMIT_MAX` | requests per client per window, default `100` |
+| `API_SNAPSHOT_TIMEOUT_MS` | how long a holders snapshot may stream, in milliseconds, default `600000` |
 
 The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*` and `RUNES_DB_*` variables are the same
 ones `opi-indexer run` reads (`USER` and `HOST` default to `postgres` and

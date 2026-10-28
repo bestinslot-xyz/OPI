@@ -31,12 +31,18 @@ pub const NOT_INDEXED: &str = r#"{"error":"block not indexed yet","result":null}
 
 /// The app with only `module` enabled, reading from `db`.
 pub fn app(module: Module, db: Db) -> Router {
+    app_with_env(module, db, &[])
+}
+
+/// [`app`] with the settings `vars` adds to its environment.
+pub fn app_with_env(module: Module, db: Db, vars: &[(&str, &str)]) -> Router {
     let database = format!("{}_DATABASE", module.db_prefix());
     let env: HashMap<String, String> = [
         ("OPI_MODULES".to_string(), module.name().to_string()),
         (database, "d".to_string()),
     ]
     .into_iter()
+    .chain(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())))
     .collect();
     let config = load_config(|key| env.get(key).cloned()).unwrap();
     router(&config, vec![(module, db)])
@@ -130,6 +136,21 @@ pub async fn with_seeded<F, Fut>(
     F: FnOnce(Router, PgPool) -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    with_seeded_pool(module, tag, collation, scripts, 2, body).await;
+}
+
+/// [`with_seeded`] with a pool of `max_connections`.
+pub async fn with_seeded_pool<F, Fut>(
+    module: Module,
+    tag: &str,
+    collation: Option<&str>,
+    scripts: &[&str],
+    max_connections: u32,
+    body: F,
+) where
+    F: FnOnce(Router, PgPool) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     use sqlx::Connection;
     if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
         eprintln!("OPI_TEST_PG is not 1; skipping");
@@ -160,11 +181,13 @@ pub async fn with_seeded<F, Fut>(
         .execute(&mut root)
         .await
         .unwrap();
-    let pool = PgPoolOptions::new().max_connections(2).connect_lazy_with(
-        options()
-            .database(&name)
-            .options([("plan_cache_mode", opi_api::db::PLAN_CACHE_MODE)]),
-    );
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect_lazy_with(
+            options()
+                .database(&name)
+                .options([("plan_cache_mode", opi_api::db::PLAN_CACHE_MODE)]),
+        );
     for script in scripts {
         sqlx::raw_sql(sqlx::AssertSqlSafe(script.to_string()))
             .execute(&pool)
