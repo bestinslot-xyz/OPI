@@ -20,7 +20,7 @@ use {
     axum::{Router, extract::State, routing::get},
 };
 
-pub fn routes(router: Router, db: Db) -> Router {
+pub fn routes(router: Router, db: Db, _settings: &super::RouteSettings) -> Router {
     router.merge(
         Router::new()
             .route("/v1/runes/ip", get(ip))
