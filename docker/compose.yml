@@ -21,9 +21,6 @@ x-opi-env: &opi-env
   OPI_JOURNAL_DIR: /data/journal
   OPI_ORD_DATA_DIR: /data/ord
   BRC20_PROG_DB_PATH: /data/brc20-prog
-  # Uncomment with the metrics settings of opi-indexer:
-  # METRICS_ADDR: 0.0.0.0:9100
-  # API_METRICS_ADDR: 0.0.0.0:9101
 
 x-opi-service: &opi-service
   image: opi-indexer:local
@@ -50,7 +47,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${DB_USER:-postgres}\""]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${DB_USER:-postgres}\""]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -59,6 +56,9 @@ services:
     <<: *opi-service
     command: ["run"]
     environment: *opi-env
+    # Reaches a bitcoind on the host as http://host.docker.internal:<port>.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - opi-data:/data
     depends_on:
@@ -72,7 +72,7 @@ services:
     command: ["api"]
     environment: *opi-env
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,7 +83,7 @@ services:
   # full txindex, so it is not pruned.
   bitcoind:
     profiles: ["bitcoind"]
-    image: ${BITCOIND_IMAGE:-bitcoin/bitcoin:29.0}
+    image: ${BITCOIND_IMAGE:-bitcoin/bitcoin:29.4}
     restart: unless-stopped
     env_file: ../.env
     entrypoint:
@@ -94,11 +94,13 @@ services:
           mainnet) chain=main ;;
           *) chain="$$OPI_CHAIN" ;;
         esac
-        exec bitcoind -datadir=/bitcoin-data -chain="$$chain" -server=1 -txindex=1 \
+        exec /entrypoint.sh bitcoind -chain="$$chain" -server=1 -txindex=1 \
           -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
           -rpcuser="$$BITCOIN_RPC_USER" -rpcpassword="$$BITCOIN_RPC_PASSWD"
     volumes:
-      - bitcoind-data:/bitcoin-data
+      # The image's data dir; its entrypoint chowns it to the bitcoin user and
+      # appends -datadir.
+      - bitcoind-data:/home/bitcoin/.bitcoin
     stop_grace_period: 2m
 
 volumes:

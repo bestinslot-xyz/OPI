@@ -214,8 +214,12 @@ fourth:
 | --- | --- |
 | `postgres` | Postgres 16; creates one database per module from `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE` and `RUNES_DB_DATABASE` when its volume is empty |
 | `indexer` | `opi-indexer run` |
-| `api` | `opi-indexer api`, published on port 8000 |
+| `api` | `opi-indexer api`, published on `127.0.0.1:8000` |
 | `bitcoind` | optional, under the `bitcoind` profile |
+
+The API port is bound to localhost. To serve it more widely, change the `api`
+port mapping in the compose file (for example `"8000:8000"`) or put a reverse
+proxy in front.
 
 Compose reads `.env` from the repository root and overrides the settings that
 differ in the compose network: `DB_HOST` and the other module hosts point at
@@ -243,16 +247,21 @@ the chain, so size the Docker volume for mainnet.
 
 bitcoind is external by default: `BITCOIN_RPC_URL` points at a node with
 `-txindex` that is not pruned, and the credentials are either
-`BITCOIN_RPC_USER` with `BITCOIN_RPC_PASSWD`, or `BITCOIN_RPC_COOKIE`. A cookie
-file has to be readable inside the container, so mount it into `indexer`
-through a `docker/compose.override.yml` and set `BITCOIN_RPC_COOKIE` to the
-mounted path.
+`BITCOIN_RPC_USER` with `BITCOIN_RPC_PASSWD`, or `BITCOIN_RPC_COOKIE`. Inside
+the container `127.0.0.1` is the container itself, so for a bitcoind on the
+host set `BITCOIN_RPC_URL` to `http://host.docker.internal:<port>` (the
+`indexer` service maps that name to the host). A cookie file has to be
+readable inside the container: mount it into `indexer` through a
+`docker/compose.override.yml`, pass both files
+(`docker compose -f docker/compose.yml -f docker/compose.override.yml up -d`;
+compose loads an override file automatically only when no `-f` is given), and
+set `BITCOIN_RPC_COOKIE` to the mounted path.
 
 `docker compose -f docker/compose.yml --profile bitcoind up -d` also starts a
-bitcoind (image `BITCOIND_IMAGE`, default `bitcoin/bitcoin:29.0`) with
+bitcoind (image `BITCOIND_IMAGE`, default `bitcoin/bitcoin:29.4`) with
 `-txindex` on the chain named by `OPI_CHAIN`, authenticated with
 `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`. Set `BITCOIN_RPC_URL` to
-`http://bitcoind:<rpc port>` (8332 mainnet, 38332 signet).
+`http://bitcoind:<port>` (RPC port 8332 mainnet, 38332 signet).
 
 #### Volumes
 

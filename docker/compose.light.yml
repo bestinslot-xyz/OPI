@@ -14,9 +14,6 @@ x-opi-env: &opi-env
   DB_HOST: postgres
   DB_SSL: "false"
   BRC20_PROG_DB_PATH: /data/brc20-prog
-  # Uncomment with the metrics settings of opi-indexer:
-  # METRICS_ADDR: 0.0.0.0:9100
-  # API_METRICS_ADDR: 0.0.0.0:9101
 
 x-opi-service: &opi-service
   image: opi-indexer:local
@@ -42,7 +39,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${DB_USER:-postgres}\""]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${DB_USER:-postgres}\""]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -60,7 +57,7 @@ services:
     <<: *opi-service
     command: ["api"]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy

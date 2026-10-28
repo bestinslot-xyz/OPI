@@ -5,5 +5,4 @@ target/
 scratch
 .env
 .env.*
-!.env_sample
 .DS_Store
