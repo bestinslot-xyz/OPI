@@ -38,7 +38,7 @@ const EVENT_SEPARATOR: &str = "|";
 /// The explorer's page size (EXPLORER_PAGE_SIZE).
 const EXPLORER_PAGE_SIZE: i64 = 50;
 
-pub fn routes(router: Router, db: Db) -> Router {
+pub fn routes(router: Router, db: Db, settings: &super::RouteSettings) -> Router {
     router.merge(
         Router::new()
             .route("/v1/brc20/ip", get(ip))
@@ -92,7 +92,10 @@ pub fn routes(router: Router, db: Db) -> Router {
             .route("/v1/brc20/ticker/holders", get(tickers::holders))
             .route(
                 "/v1/brc20/ticker/holders/snapshot",
-                get(snapshot::snapshot).with_state(snapshot::Snapshots::new(db.clone())),
+                get(snapshot::snapshot).with_state(snapshot::Snapshots::new(
+                    db.clone(),
+                    settings.snapshot_timeout,
+                )),
             )
             .route("/v1/brc20/wallet/balances", get(tickers::wallet_balances))
             .route("/v1/brc20/ticker/events", get(events::ticker_events))

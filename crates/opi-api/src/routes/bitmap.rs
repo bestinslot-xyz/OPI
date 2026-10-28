@@ -48,7 +48,7 @@ use {
 /// The digits of the largest bitmap number, 2147483647.
 pub const MAX_PREFIX_DIGITS: usize = 10;
 
-pub fn routes(router: Router, db: Db) -> Router {
+pub fn routes(router: Router, db: Db, _settings: &super::RouteSettings) -> Router {
     router.merge(
         Router::new()
             .route("/v1/bitmap/ip", get(ip))

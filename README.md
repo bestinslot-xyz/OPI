@@ -574,10 +574,14 @@ for airdrop and snapshot tooling. A holder's balance at that height is its
 latest row at or below it in `brc20_historic_balances` and
 `brc20_prog_historical_balances`; the rows merge, filter and order as
 `/v1/brc20/ticker/holders` lists them, so the snapshot at the tip is that
-route's full list. EVM addresses map to Bitcoin addresses through
-`evm_addresses`. A `block_height` above the indexed tip or below the
-ticker's deploy height answers `400`, and `503` answers while 4 snapshots
-are already streaming. `format=json` (default) answers
+route's full list. EVM addresses map through the current `evm_addresses`
+table; a mapping depends only on the pkScript. The tip and the rows come
+from one database snapshot (a `REPEATABLE READ READ ONLY` transaction). A
+`block_height` above the indexed tip or below the ticker's deploy height
+answers `400`. At most 4 snapshots, and at most half the pool
+(`DB_MAX_CONNECTIONS`), stream at once; another answers `503`. Each holds a
+pool connection while it streams, for at most `API_SNAPSHOT_TIMEOUT_MS`.
+`format=json` (default) answers
 `{"error":null,"result":{"ticker","block_height","decimals",
 "ticker_decimals","holders":[...]}}` with the holders route's row objects
 and no paging. `format=csv` answers `text/csv; charset=utf-8` as the
@@ -586,9 +590,9 @@ holder with the columns `address,evm_address,pkscript,brc20_balance,
 brc20_available_balance,prog_balance,total_balance` (the row object's
 `balance` and `available_balance` are `brc20_balance` and
 `brc20_available_balance`; a null is an empty field), CRLF line ends and RFC
-4180 quoting. Both formats stream from Postgres as the rows arrive; a
-failure partway through ends the body early, so a client checks that a JSON
-answer parses and that a CSV answer's download completed.
+4180 quoting. Both formats stream from Postgres as the rows arrive. A
+failure partway through, or the time limit passing, aborts the transfer, so
+a complete download is a complete snapshot.
 
 **Event feeds.** An event is `{"id","block_height","block_time",
 "inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the
@@ -640,6 +644,7 @@ win, and a missing file is ignored.
 | `RATE_LIMIT_ENABLE` | `true` turns the rate limiter on, default `false` |
 | `RATE_LIMIT_WINDOW_MS` | rate limit window in milliseconds, default `900000` |
 | `RATE_LIMIT_MAX` | requests per client per window, default `100` |
+| `API_SNAPSHOT_TIMEOUT_MS` | how long a holders snapshot may stream, in milliseconds, default `600000` |
 
 The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*` and `RUNES_DB_*` variables are the same
 ones `opi-indexer run` reads (`USER` and `HOST` default to `postgres` and

@@ -50,7 +50,16 @@ impl FrontDoor {
 /// in `dbs` (createApp).
 pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
     front_door(
-        routes::routes(&config.modules, dbs),
+        routes::routes(
+            &config.modules,
+            dbs,
+            &routes::RouteSettings {
+                // `serve` refuses an invalid timeout before building the app
+                snapshot_timeout: config
+                    .snapshot_timeout()
+                    .unwrap_or(routes::RouteSettings::default().snapshot_timeout),
+            },
+        ),
         FrontDoor::from_config(config),
     )
 }

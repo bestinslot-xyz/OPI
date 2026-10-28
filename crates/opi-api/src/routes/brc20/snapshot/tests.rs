@@ -101,3 +101,37 @@ fn attachment_names_stay_printable_ascii() {
         "attachment; filename=\"_b_-1.csv\"; filename*=UTF-8''%C3%A4b%0A-1.csv"
     );
 }
+
+#[test]
+fn the_cap_is_four_and_at_most_half_the_pool() {
+    for (max_connections, expected) in [
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 2),
+        (7, 3),
+        (8, 4),
+        (10, 4),
+        (100, 4),
+    ] {
+        assert_eq!(cap(max_connections), expected, "{max_connections}");
+    }
+}
+
+/// The text of `source` from the merge CTE to the end of its ORDER BY.
+fn merge_and_order(source: &str) -> &str {
+    let start = source.find("m as (").expect("the merge CTE");
+    let end = start
+        + source[start..]
+            .find("evm_address asc nulls first")
+            .expect("the ORDER BY");
+    &source[start..end]
+}
+
+#[test]
+fn the_snapshot_merges_and_orders_as_the_holders_route_does() {
+    let holders = merge_and_order(include_str!("../tickers.rs"));
+    let snapshot = merge_and_order(include_str!("../snapshot.rs"));
+    assert!(holders.contains("full join p"), "{holders}");
+    assert_eq!(snapshot, holders);
+}

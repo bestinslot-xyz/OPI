@@ -16,8 +16,10 @@ use {
         http::Request,
         response::Response,
     },
-    common::{INTERNAL_ERROR, JSON, expect, height, with_seeded},
-    opi_api::{config::Module, js::JsValue},
+    common::{INTERNAL_ERROR, JSON, expect, height, with_seeded_pool},
+    http_body_util::BodyExt,
+    opi_api::{config::Module, db::Db},
+    sqlx::PgPool,
     std::net::SocketAddr,
     tower::ServiceExt,
 };
@@ -49,23 +51,9 @@ async fn invalid_parameters_answer_400_before_any_query() {
         ("?ticker=ordi&block_height=x", height),
         ("?ticker=ordi&block_height=2147483648", height),
         ("?ticker=ordi&format=xml", "format must be json or csv"),
-        (
-            "?ticker=ordi&block_height=301",
-            "block_height is above the indexed tip",
-        ),
     ] {
         expect(&app, &format!("{ROUTE}{query}"), 400, JSON, &bad(reason)).await;
     }
-    // A database with no indexed block has no height to answer.
-    let empty = common::height(BRC20, JsValue::Null);
-    expect(
-        &empty,
-        &format!("{ROUTE}?ticker=ordi"),
-        400,
-        JSON,
-        &bad("block_height is above the indexed tip"),
-    )
-    .await;
     // A valid request answers 500 when its query fails.
     expect(
         &app,
@@ -90,8 +78,9 @@ const MODULE: &str = "6a09425243323050524f47";
 /// 280 (never listed). Its BRC2.0 history: Alice's EVM address 200 at 250
 /// and 150 at 280; Carol's (mapped, no BRC-20 balance) 50 at 255; an
 /// unmapped contract 300 at 150 and 0 at 290; a zero balance at 260. `big`
-/// has 3000 holders, enough for many body chunks, and `a"b` none. The
-/// current balances are each holder's latest row, as the indexer keeps them.
+/// has 3000 holders, enough for many body chunks, `huge` 20000, more than
+/// the channel buffers, and `a"b` none. The current balances are each
+/// holder's latest row, as the indexer keeps them.
 fn fixture() -> String {
     format!(
         r#"INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (300, 'h300');
@@ -101,6 +90,7 @@ fn fixture() -> String {
          VALUES ('ORDI', 'ordi', 1000000, 18, 1000, 0, 0, false, 'ordii0', 100),
                 ('pepe', 'pepe', 1000, 8, 1000, 0, 0, false, 'pepei0', 200),
                 ('big', 'big', 1000000, 18, 1000, 0, 0, false, 'bigi0', 100),
+                ('huge', 'huge', 1000000, 18, 1000, 0, 0, false, 'hugei0', 100),
                 ('a"b', 'a"b', 1000, 0, 1000, 1000, 0, false, 'abi0', 100);
          INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance,
                                               available_balance, block_height, event_id)
@@ -121,6 +111,10 @@ fn fixture() -> String {
                                               available_balance, block_height, event_id)
          SELECT '00' || g, 'tb1qbig' || g, 'big', g % 700, g % 300, 100 + g % 150, 1000 + g
          FROM generate_series(1, 3000) g;
+         INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance,
+                                              available_balance, block_height, event_id)
+         SELECT '01' || g, 'tb1qhuge' || g, 'huge', g, g, 200, 10000 + g
+         FROM generate_series(1, 20000) g;
          INSERT INTO evm_addresses (evm_address, btc_address)
          VALUES ('{ALICE_EVM}', 'tb1qalice'), ('{CAROL_EVM}', 'tb1qcarol');
          INSERT INTO brc20_prog_tickers (contract_address, ticker, ticker_hash, block_height)
@@ -146,20 +140,50 @@ fn fixture() -> String {
 
 const DB_INIT: &str = include_str!("../../opi-brc20/src/database/sql/db_init.sql");
 
+/// Runs `body` with the app and its pool of `max_connections` on a
+/// throwaway database seeded with [`fixture`].
+async fn with_history_pool<F, Fut>(tag: &str, max_connections: u32, body: F)
+where
+    F: FnOnce(Router, PgPool) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let fixture = fixture();
+    with_seeded_pool(
+        BRC20,
+        &format!("snapshot_{tag}"),
+        None,
+        &[DB_INIT, &fixture],
+        max_connections,
+        body,
+    )
+    .await;
+}
+
+/// [`with_history_pool`] with 10 connections, so the cap is 4.
 async fn with_history<F, Fut>(tag: &str, body: F)
 where
     F: FnOnce(Router) -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let fixture = fixture();
-    with_seeded(
-        BRC20,
-        &format!("snapshot_{tag}"),
-        None,
-        &[DB_INIT, &fixture],
-        |app, _| body(app),
-    )
-    .await;
+    with_history_pool(tag, 10, |app, _| body(app)).await;
+}
+
+/// The pool's connections in use.
+fn in_use(pool: &PgPool) -> usize {
+    pool.size() as usize - pool.num_idle()
+}
+
+/// Waits up to 10 s until no pool connection is in use.
+async fn until_idle(pool: &PgPool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while in_use(pool) > 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{} connections still in use",
+            in_use(pool)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 fn ok(result: &str) -> String {
@@ -378,7 +402,7 @@ async fn csv_has_a_header_quoted_fields_and_an_attachment_name() {
 
 #[tokio::test]
 async fn heights_out_of_range_and_unknown_tickers_are_refused() {
-    with_history("refused", |app| async move {
+    with_history_pool("refused", 10, |app, pool| async move {
         for (query, status, reason) in [
             ("ticker=nope", 404, "ticker not found"),
             ("ticker=nope&block_height=200", 404, "ticker not found"),
@@ -407,53 +431,107 @@ async fn heights_out_of_range_and_unknown_tickers_are_refused() {
             )
             .await;
         }
+        // A database with no indexed block has no height to answer.
+        sqlx::query("DELETE FROM brc20_block_hashes")
+            .execute(&pool)
+            .await
+            .unwrap();
+        expect(
+            &app,
+            &format!("{ROUTE}?ticker=ordi"),
+            400,
+            JSON,
+            &bad("block_height is above the indexed tip"),
+        )
+        .await;
+        // Each refusal returns its connection to the pool.
+        until_idle(&pool).await;
+    })
+    .await;
+}
+
+/// Reads `body` to its end: whether it ended with an error, and the bytes
+/// it held.
+async fn read_to_end(mut body: Body) -> (bool, usize) {
+    let mut received = 0;
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => received += frame.into_data().map_or(0, |d| d.len()),
+            Some(Err(_)) => return (true, received),
+            None => return (false, received),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_failure_after_the_first_chunk_ends_the_body_early() {
+    with_history_pool("cut", 10, |app, pool| async move {
+        let response = send(&app, &format!("{ROUTE}?ticker=huge&format=csv")).await;
+        assert_eq!(response.status(), 200);
+        let mut body = response.into_body();
+        let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert!(first.starts_with(b"address,"));
+        // The snapshot's connection goes away mid-stream.
+        sqlx::query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+             WHERE datname = current_database() AND pid <> pg_backend_pid()",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (failed, received) = read_to_end(body).await;
+        assert!(failed, "the body ended cleanly after {received} bytes");
     })
     .await;
 }
 
 #[tokio::test]
-async fn a_failure_after_the_first_chunk_ends_the_body_early() {
-    let fixture = fixture();
-    let huge =
-        "INSERT INTO brc20_tickers (original_tick, tick, max_supply, decimals, limit_per_mint,
-                                           remaining_supply, burned_supply, is_self_mint,
-                                           deploy_inscription_id, block_height)
-                VALUES ('huge', 'huge', 1000000, 18, 1000, 0, 0, false, 'hugei0', 100);
-                INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance,
-                                                     available_balance, block_height, event_id)
-                SELECT '00' || g, 'tb1qhuge' || g, 'huge', g, g, 200, 100000 + g
-                FROM generate_series(1, 100000) g;";
-    with_seeded(
-        BRC20,
-        "snapshot_cut",
-        None,
-        &[DB_INIT, &fixture, huge],
-        |app, pool| async move {
-            use http_body_util::BodyExt;
-            let response = send(&app, &format!("{ROUTE}?ticker=huge&format=csv")).await;
+async fn a_snapshot_stops_at_its_time_limit() {
+    // A pool of 2 caps snapshots at 1.
+    with_history_pool("timeout", 2, |_, pool| async move {
+        let app = common::app_with_env(
+            BRC20,
+            Db::from_pool(pool.clone()),
+            // long enough for the first chunk, which waits for the sort
+            &[("API_SNAPSHOT_TIMEOUT_MS", "2000")],
+        );
+        let uri = format!("{ROUTE}?ticker=huge");
+        // A client that never reads.
+        let stalled = send(&app, &uri).await;
+        assert_eq!(stalled.status(), 200);
+        let busy = bad("too many snapshots running, retry later");
+        expect(&app, &uri, 503, JSON, &busy).await;
+        assert_eq!(in_use(&pool), 1);
+        // At the limit the connection closes and the slot frees.
+        until_idle(&pool).await;
+        let after = common::get(&app, &format!("{ROUTE}?ticker=ordi")).await;
+        assert_eq!(after.status, 200, "{}", after.body);
+        // The stalled body ends with an error, not a clean truncated end.
+        let (failed, received) = read_to_end(stalled.into_body()).await;
+        assert!(failed, "the body ended cleanly after {received} bytes");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_client_that_goes_away_frees_its_connection_and_slot() {
+    with_history_pool("gone", 10, |app, pool| async move {
+        let uri = format!("{ROUTE}?ticker=huge&format=csv");
+        let response = send(&app, &uri).await;
+        let mut body = response.into_body();
+        body.frame().await.unwrap().unwrap();
+        drop(body);
+        until_idle(&pool).await;
+        // Every slot is free again.
+        let mut running = Vec::new();
+        for _ in 0..4 {
+            let response = send(&app, &uri).await;
             assert_eq!(response.status(), 200);
-            let mut body = response.into_body();
-            let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
-            assert!(first.starts_with(b"address,"));
-            // The snapshot's connection goes away mid-stream.
-            sqlx::query(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-                 WHERE datname = current_database() AND pid <> pg_backend_pid()",
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-            let mut received = first.len();
-            let ended = loop {
-                match body.frame().await {
-                    Some(Ok(frame)) => received += frame.into_data().map_or(0, |d| d.len()),
-                    Some(Err(_)) => break true,
-                    None => break false,
-                }
-            };
-            assert!(ended, "the body ended cleanly after {received} bytes");
-        },
-    )
+            running.push(response);
+        }
+        drop(running);
+        until_idle(&pool).await;
+    })
     .await;
 }
 
@@ -466,10 +544,10 @@ async fn send(app: &Router, uri: &str) -> Response {
 
 #[tokio::test]
 async fn at_most_four_snapshots_run_at_once() {
-    with_history("cap", |app| async move {
-        // A small snapshot's query is done before its body is read, so the
-        // held answers keep their permits and no pool connection.
-        let uri = format!("{ROUTE}?ticker=ordi");
+    with_history_pool("cap", 10, |app, pool| async move {
+        // A snapshot larger than its buffers waits for its client, holding
+        // its slot.
+        let uri = format!("{ROUTE}?ticker=huge");
         // Four answers whose bodies are not read yet.
         let mut running = Vec::new();
         for _ in 0..4 {
@@ -487,7 +565,7 @@ async fn at_most_four_snapshots_run_at_once() {
             &busy,
         )
         .await;
-        // A body read to its end ends its snapshot.
+        // A body read to its end frees its slot by the time it ends.
         let done = running.pop().unwrap();
         let body = to_bytes(done.into_body(), usize::MAX).await.unwrap();
         assert!(body.ends_with(b"]}}"));
@@ -495,8 +573,9 @@ async fn at_most_four_snapshots_run_at_once() {
         assert_eq!(response.status(), 200);
         running.push(response);
         expect(&app, &uri, 503, JSON, &busy).await;
-        // So does a client that goes away.
+        // So do clients that go away.
         running.clear();
+        until_idle(&pool).await;
         let again = common::get(&app, &uri).await;
         assert_eq!(again.status, 200);
     })

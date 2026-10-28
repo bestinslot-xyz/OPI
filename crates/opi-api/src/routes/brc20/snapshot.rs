@@ -15,17 +15,22 @@
 //! header row and one row per holder in [`CSV_COLUMNS`] order, RFC 4180
 //! quoted, as an attachment named `<ticker>-<height>.csv`.
 //!
-//! Rows stream from Postgres to the client through a bounded channel, in
-//! chunks of about [`CHUNK_BYTES`], so a snapshot holds a few chunks in
-//! memory whatever its size. A failure before the first chunk answers 500;
-//! a failure after it ends the body early and is logged. At most
-//! [`MAX_RUNNING`] snapshots run at once; another answers 503 until one
-//! ends. A snapshot holds a pool connection while it streams.
+//! The tip, the ticker and the rows are read in one `REPEATABLE READ READ
+//! ONLY` transaction, so they come from one database snapshot. Rows stream
+//! from Postgres to the client through a bounded channel, in chunks of
+//! about [`CHUNK_BYTES`], so a snapshot holds a few chunks in memory
+//! whatever its size, and the body ends with an explicit [`Item::Done`]. A
+//! failure before the first chunk answers 500. A failure after it, the
+//! snapshot's time limit (API_SNAPSHOT_TIMEOUT_MS) passing, or a stream that
+//! stops without `Done` ends the body with an error, so the client sees an
+//! aborted transfer; the cause is logged. A snapshot holds a pool
+//! connection while it streams; one that ends without committing closes the
+//! connection, which ends its Postgres transaction. At most [`cap`]
+//! snapshots run at once; another answers 503 until one ends.
 
 use {
     super::tickers::{AMOUNT_DECIMALS, BRC20_PROG_MODULE_PKSCRIPT, HolderRow, ticker},
     crate::{
-        config::Module,
         db::Db,
         extract::JsQuery,
         js::{JsObject, JsValue, json_stringify},
@@ -39,15 +44,26 @@ use {
         response::{IntoResponse, Response},
     },
     futures::StreamExt,
-    std::{fmt::Write, sync::Arc},
-    tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+    sqlx::{PgPool, Postgres, pool::PoolConnection},
+    std::{fmt::Write, sync::Arc, time::Duration},
+    tokio::{
+        sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+        time::{Instant, timeout_at},
+    },
 };
 
 #[cfg(test)]
 mod tests;
 
-/// The most snapshots one app streams at once.
+/// The most snapshots one app streams at once, whatever the pool size.
 pub const MAX_RUNNING: usize = 4;
+
+/// The snapshots that may run at once on a pool of `max_connections`: at
+/// most [`MAX_RUNNING`] and at most half the pool, so other routes keep
+/// connections, and at least one.
+pub fn cap(max_connections: u32) -> usize {
+    MAX_RUNNING.min(max_connections as usize / 2).max(1)
+}
 
 /// The body size at which a chunk is sent.
 const CHUNK_BYTES: usize = 64 * 1024;
@@ -68,18 +84,73 @@ pub const CSV_COLUMNS: [&str; 7] = [
 
 pub const CSV: &str = "text/csv; charset=utf-8";
 
-/// The route's state: the database and the permits of running snapshots.
+/// The route's state: the database, the permits of running snapshots and
+/// how long one may stream.
 #[derive(Clone)]
 pub struct Snapshots {
     db: Db,
     running: Arc<Semaphore>,
+    timeout: Duration,
 }
 
 impl Snapshots {
-    pub fn new(db: Db) -> Snapshots {
+    /// The state for `db`, whose pool size (DB_MAX_CONNECTIONS) sets the
+    /// [`cap`]. A test double without a pool gets [`MAX_RUNNING`].
+    pub fn new(db: Db, timeout: Duration) -> Snapshots {
+        let permits = match db.pool() {
+            Ok(pool) => cap(pool.options().get_max_connections()),
+            Err(_) => MAX_RUNNING,
+        };
         Snapshots {
             db,
-            running: Arc::new(Semaphore::new(MAX_RUNNING)),
+            running: Arc::new(Semaphore::new(permits)),
+            timeout,
+        }
+    }
+}
+
+/// What the streaming task sends the body.
+enum Item {
+    Chunk(Bytes),
+    /// The last item of a complete answer.
+    Done,
+    /// A failure that ends the answer early.
+    Failed(anyhow::Error),
+}
+
+/// A pool connection inside a `REPEATABLE READ READ ONLY` transaction. One
+/// dropped before [`ReadSnapshot::end`] succeeds is closed rather than
+/// returned to the pool, which ends the transaction and any query still
+/// running on it.
+struct ReadSnapshot {
+    conn: PoolConnection<Postgres>,
+    open: bool,
+}
+
+impl ReadSnapshot {
+    async fn begin(pool: &PgPool) -> Result<ReadSnapshot, sqlx::Error> {
+        let mut snapshot = ReadSnapshot {
+            conn: pool.acquire().await?,
+            open: true,
+        };
+        sqlx::query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *snapshot.conn)
+            .await?;
+        Ok(snapshot)
+    }
+
+    /// Ends the transaction; the connection goes back to the pool.
+    async fn end(mut self) -> Result<(), sqlx::Error> {
+        sqlx::query("COMMIT").execute(&mut *self.conn).await?;
+        self.open = false;
+        Ok(())
+    }
+}
+
+impl Drop for ReadSnapshot {
+    fn drop(&mut self) {
+        if self.open {
+            self.conn.close_on_drop();
         }
     }
 }
@@ -127,9 +198,6 @@ struct Plan {
     format: Format,
 }
 
-/// A body chunk, or the failure that ends the body.
-type Chunk = Result<Bytes, anyhow::Error>;
-
 pub async fn snapshot(
     State(snapshots): State<Snapshots>,
     JsQuery(query): JsQuery,
@@ -141,66 +209,89 @@ pub async fn snapshot(
     let Ok(permit) = snapshots.running.clone().try_acquire_owned() else {
         return Ok(Reply::error(503, "too many snapshots running, retry later").into_response());
     };
-    let db = &snapshots.db;
-    let tip = match db.latest_block_height(Module::Brc20).await? {
-        JsValue::Number(height) => Some(height as i32),
-        _ => None,
-    };
-    let block_height = match (request.block_height, tip) {
-        (Some(height), Some(tip)) if height <= tip => height,
-        (None, Some(tip)) => tip,
-        _ => {
-            return Ok(Reply::error(400, "block_height is above the indexed tip").into_response());
+    let deadline = Instant::now() + snapshots.timeout;
+    let mut read = ReadSnapshot::begin(snapshots.db.pool()?).await?;
+    let plan = match check(&mut read, request).await? {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            // a failed COMMIT closes the connection
+            let _ = read.end().await;
+            return Ok(refusal.into_response());
         }
-    };
-    let ticker = sqlx::query!(
-        "select decimals, block_height from brc20_tickers where tick = $1;",
-        request.tick
-    )
-    .fetch_optional(db.pool()?)
-    .await?;
-    let Some(ticker) = ticker else {
-        return Ok(Reply::error(404, "ticker not found").into_response());
-    };
-    if block_height < ticker.block_height {
-        return Ok(
-            Reply::error(400, "block_height is below the ticker's deploy height").into_response(),
-        );
-    }
-    let plan = Plan {
-        tick: request.tick,
-        block_height,
-        ticker_decimals: ticker.decimals,
-        format: request.format,
     };
     let headers = headers(&plan);
 
-    let permit = Arc::new(permit);
     let (sender, mut receiver) = mpsc::channel(CHANNEL_CHUNKS);
-    tokio::spawn(stream_rows(
-        db.pool()?.clone(),
-        plan,
-        sender,
-        permit.clone(),
-    ));
+    tokio::spawn(stream_rows(read, plan, sender, permit, deadline));
     // The answer waits for the first chunk, so a query that fails before
     // any row answers 500.
     let first = match receiver.recv().await {
-        Some(Ok(first)) => first,
-        Some(Err(error)) => return Err(error.into()),
-        None => {
-            return Err(anyhow::anyhow!("the snapshot stream ended before its first chunk").into());
+        Some(Item::Chunk(first)) => first,
+        Some(Item::Failed(error)) => return Err(error.into()),
+        Some(Item::Done) | None => {
+            return Err(anyhow::anyhow!("the snapshot ended before its first chunk").into());
         }
     };
-    let rest = futures::stream::unfold((receiver, permit), |(mut receiver, permit)| async move {
-        let chunk = receiver.recv().await?;
-        Some((chunk, (receiver, permit)))
+    let rest = futures::stream::unfold(Some(receiver), |receiver| async move {
+        let mut receiver = receiver?;
+        let item = match receiver.recv().await {
+            Some(Item::Chunk(chunk)) => return Some((Ok(chunk), Some(receiver))),
+            Some(Item::Done) => return None,
+            Some(Item::Failed(error)) => error,
+            None => anyhow::anyhow!("snapshot ended early"),
+        };
+        Some((Err(item), None))
     });
     let body = Body::from_stream(futures::stream::once(async { Ok(first) }).chain(rest));
     let mut response = body.into_response();
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().extend(headers);
     Ok(response)
+}
+
+/// The snapshot `request` names, read in `read`'s transaction: its height
+/// (the tip when it names none) and the ticker's precision, or the 400 or
+/// 404 answer that refuses it.
+async fn check(
+    read: &mut ReadSnapshot,
+    request: SnapshotRequest,
+) -> Result<Result<Plan, Reply>, ApiError> {
+    let tip: Option<i32> = sqlx::query_scalar!(
+        "SELECT max(block_height) as max_block_height FROM brc20_block_hashes;"
+    )
+    .fetch_one(&mut *read.conn)
+    .await?;
+    let block_height = match (request.block_height, tip) {
+        (Some(height), Some(tip)) if height <= tip => height,
+        (None, Some(tip)) => tip,
+        _ => {
+            return Ok(Err(Reply::error(
+                400,
+                "block_height is above the indexed tip",
+            )));
+        }
+    };
+    let ticker = sqlx::query!(
+        "select decimals, block_height from brc20_tickers where tick = $1;",
+        request.tick
+    )
+    .fetch_optional(&mut *read.conn)
+    .await?;
+    let Some(ticker) = ticker else {
+        return Ok(Err(Reply::error(404, "ticker not found")));
+    };
+    if block_height < ticker.block_height {
+        return Ok(Err(Reply::error(
+            400,
+            "block_height is below the ticker's deploy height",
+        )));
+    }
+    Ok(Ok(Plan {
+        tick: request.tick,
+        block_height,
+        ticker_decimals: ticker.decimals,
+        format: request.format,
+    }))
 }
 
 fn headers(plan: &Plan) -> Vec<(header::HeaderName, HeaderValue)> {
@@ -286,19 +377,66 @@ fn json_head(plan: &Plan) -> String {
     )
 }
 
-/// Runs the snapshot query and sends its rows to `sender` in chunks. It
-/// stops when the client is gone (the receiver is dropped). `permit` is
-/// held until both this and the body are done.
+/// Why a snapshot stopped before its end.
+enum Stop {
+    /// The client is gone: the body, and so the receiver, was dropped.
+    Gone,
+    /// The deadline passed.
+    TimedOut,
+}
+
+/// Sends `item` unless the client is gone or the deadline passes first.
+async fn send(sender: &mpsc::Sender<Item>, deadline: Instant, item: Item) -> Result<(), Stop> {
+    match timeout_at(deadline, sender.send(item)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(Stop::Gone),
+        Err(_) => Err(Stop::TimedOut),
+    }
+}
+
+/// Runs the snapshot query in `read`'s transaction and sends its rows to
+/// `sender` in chunks, then [`Item::Done`]. It holds `permit` and the
+/// connection until it returns: at the end, when the client is gone, on a
+/// failure, or at `deadline`.
 async fn stream_rows(
-    pool: sqlx::PgPool,
+    read: ReadSnapshot,
     plan: Plan,
-    sender: mpsc::Sender<Chunk>,
-    permit: Arc<OwnedSemaphorePermit>,
+    sender: mpsc::Sender<Item>,
+    permit: OwnedSemaphorePermit,
+    deadline: Instant,
 ) {
-    let _permit = permit;
+    let stopped = match write_rows(read, &plan, &sender, permit, deadline).await {
+        Ok(()) => return,
+        Err(stop) => stop,
+    };
+    match stopped {
+        Stop::Gone => {
+            tracing::debug!(
+                "snapshot of {:?} at {}: the client went away",
+                plan.tick,
+                plan.block_height
+            );
+        }
+        Stop::TimedOut => {
+            tracing::warn!(
+                "snapshot of {:?} at {} stopped at its time limit",
+                plan.tick,
+                plan.block_height
+            );
+        }
+    }
+}
+
+async fn write_rows(
+    mut read: ReadSnapshot,
+    plan: &Plan,
+    sender: &mpsc::Sender<Item>,
+    permit: OwnedSemaphorePermit,
+    deadline: Instant,
+) -> Result<(), Stop> {
     let mut out = String::with_capacity(CHUNK_BYTES * 2);
     match plan.format {
-        Format::Json => out.push_str(&json_head(&plan)),
+        Format::Json => out.push_str(&json_head(plan)),
         Format::Csv => push_csv_line(&mut out, CSV_COLUMNS),
     }
     // Each side takes, per holder, its latest row at or below the height,
@@ -347,11 +485,14 @@ async fn stream_rows(
         BRC20_PROG_MODULE_PKSCRIPT,
         plan.block_height,
     )
-    .fetch(&pool);
+    .fetch(&mut *read.conn);
     let mut sent = false;
     let mut first_row = true;
     loop {
-        match rows.next().await {
+        let next = timeout_at(deadline, rows.next())
+            .await
+            .map_err(|_| Stop::TimedOut)?;
+        match next {
             Some(Ok(row)) => {
                 match plan.format {
                     Format::Json => {
@@ -370,13 +511,13 @@ async fn stream_rows(
                         &mut out,
                         String::with_capacity(CHUNK_BYTES * 2),
                     ));
-                    if sender.send(Ok(chunk)).await.is_err() {
-                        return;
-                    }
+                    send(sender, deadline, Item::Chunk(chunk)).await?;
                     sent = true;
                 }
             }
             Some(Err(error)) => {
+                // Before the first chunk the handler answers 500 and logs
+                // the error itself.
                 if sent {
                     tracing::error!(
                         "snapshot of {:?} at {} ended early: {}",
@@ -385,14 +526,28 @@ async fn stream_rows(
                         error.to_string().escape_debug()
                     );
                 }
-                let _ = sender.send(Err(error.into())).await;
-                return;
+                let _ = send(sender, deadline, Item::Failed(error.into())).await;
+                return Ok(());
             }
             None => break,
         }
     }
+    drop(rows);
+    if let Err(error) = read.end().await {
+        tracing::error!(
+            "snapshot of {:?} at {}: commit: {}",
+            plan.tick,
+            plan.block_height,
+            error.to_string().escape_debug()
+        );
+        let _ = send(sender, deadline, Item::Failed(error.into())).await;
+        return Ok(());
+    }
     if plan.format == Format::Json {
         out.push_str("]}}");
     }
-    let _ = sender.send(Ok(Bytes::from(out))).await;
+    send(sender, deadline, Item::Chunk(Bytes::from(out))).await?;
+    // The slot frees before the client can read the end of the answer.
+    drop(permit);
+    send(sender, deadline, Item::Done).await
 }
