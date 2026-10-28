@@ -1,0 +1,109 @@
+# opi-indexer: full node. Run from the repository root:
+#
+#   cp .env_sample .env        # then edit it
+#   docker compose -f docker/compose.yml up -d
+#
+# Settings come from ../.env. The `environment` blocks below override the
+# values that differ inside the compose network. bitcoind is external by
+# default (BITCOIN_RPC_URL in .env); `--profile bitcoind` starts one here.
+
+x-opi-env: &opi-env
+  # Every module database lives in the postgres service.
+  DB_HOST: postgres
+  BITMAP_DB_HOST: postgres
+  SNS_DB_HOST: postgres
+  RUNES_DB_HOST: postgres
+  # The postgres service has no TLS certificate.
+  DB_SSL: "false"
+  BITMAP_DB_SSL: "false"
+  SNS_DB_SSL: "false"
+  RUNES_DB_SSL: "false"
+  OPI_JOURNAL_DIR: /data/journal
+  OPI_ORD_DATA_DIR: /data/ord
+  BRC20_PROG_DB_PATH: /data/brc20-prog
+
+x-opi-service: &opi-service
+  image: opi-indexer:local
+  build:
+    context: ..
+  env_file: ../.env
+  restart: unless-stopped
+  init: true
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    env_file: ../.env
+    # The image reads POSTGRES_USER and POSTGRES_PASSWORD; they take the
+    # DB_USER and DB_PASSWD of .env.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        export POSTGRES_USER="$${DB_USER:-postgres}" POSTGRES_PASSWORD="$$DB_PASSWD";
+        exec docker-entrypoint.sh postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${DB_USER:-postgres}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  indexer:
+    <<: *opi-service
+    command: ["run"]
+    environment: *opi-env
+    # Reaches a bitcoind on the host as http://host.docker.internal:<port>.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - opi-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # `run` flushes its in-flight block on SIGTERM and waits up to 150 s.
+    stop_grace_period: 3m
+
+  api:
+    <<: *opi-service
+    command: ["api"]
+    environment: *opi-env
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Optional: a bitcoind on the same network. Set BITCOIN_RPC_URL in .env to
+  # http://bitcoind:<rpc port> (8332 mainnet, 38332 signet, 48332 testnet4) and
+  # BITCOIN_RPC_USER and BITCOIN_RPC_PASSWD to its credentials. bitcoind keeps a
+  # full txindex, so it is not pruned.
+  bitcoind:
+    profiles: ["bitcoind"]
+    image: ${BITCOIND_IMAGE:-bitcoin/bitcoin:29.4}
+    restart: unless-stopped
+    env_file: ../.env
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        case "$$OPI_CHAIN" in
+          mainnet) chain=main ;;
+          *) chain="$$OPI_CHAIN" ;;
+        esac
+        exec /entrypoint.sh bitcoind -chain="$$chain" -server=1 -txindex=1 \
+          -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
+          -rpcuser="$$BITCOIN_RPC_USER" -rpcpassword="$$BITCOIN_RPC_PASSWD"
+    volumes:
+      # The image's data dir; its entrypoint chowns it to the bitcoin user and
+      # appends -datadir.
+      - bitcoind-data:/home/bitcoin/.bitcoin
+    stop_grace_period: 2m
+
+volumes:
+  opi-data:
+  postgres-data:
+  bitcoind-data:

@@ -1,0 +1,67 @@
+# opi-indexer: BRC-20 light client. It follows the OPI network's published
+# block data, so there is no bitcoind, journal or ord dir. Run from the
+# repository root:
+#
+#   cp .env_sample .env        # then edit it
+#   docker compose -f docker/compose.light.yml up -d
+
+name: opi-light
+
+x-opi-env: &opi-env
+  OPERATION_MODE: light
+  # Light mode answers Bitcoin lookups from the cache alone.
+  BITCOIN_RPC_CACHE_ENABLED: "true"
+  DB_HOST: postgres
+  DB_SSL: "false"
+  BRC20_PROG_DB_PATH: /data/brc20-prog
+
+x-opi-service: &opi-service
+  image: opi-indexer:local
+  build:
+    context: ..
+  env_file: ../.env
+  environment: *opi-env
+  restart: unless-stopped
+  init: true
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    env_file: ../.env
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        export POSTGRES_USER="$${DB_USER:-postgres}" POSTGRES_PASSWORD="$$DB_PASSWD";
+        exec docker-entrypoint.sh postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${DB_USER:-postgres}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  light:
+    <<: *opi-service
+    command: ["brc20", "light"]
+    volumes:
+      - opi-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *opi-service
+    command: ["api"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  opi-data:
+  postgres-data:
