@@ -153,8 +153,9 @@ runs inside the `opi-indexer` process. There is no separate brc20-prog server.
 `run` and `brc20 light` serve brc20-prog's public JSON-RPC on
 `BRC20_PROG_RPC_SERVER_URL`, under the same settings. Blockscout, the swap
 sequencer and other clients connect there. Each serves it from before its
-start-up until brc20 has finished its last block: `run` on SIGINT or SIGTERM,
-`brc20 light` when the light client ends. It rejects the
+start-up until brc20 has finished its last block, after SIGINT or SIGTERM or
+the end of the light client. `brc20 light` stops on SIGINT or SIGTERM after
+its current block, with the engine's blocks committed. It rejects the
 indexer methods (`brc20_mine` and the like) and takes no credentials, so bind
 it to loopback or firewall it. brc20-prog's `BRC20_PROG_RPC_SERVER_ENABLE_AUTH`,
 `BRC20_PROG_RPC_SERVER_USER` and `BRC20_PROG_RPC_SERVER_PASSWORD` do not apply
@@ -181,7 +182,8 @@ network comes from `NETWORK_TYPE`.
 
 The cache stores successful answers and `getrawtransaction` "not found" (-5)
 answers. Only the indexer's own lookups write it; public `eth_call`s read it,
-in light mode too. A
+in light mode too. In light mode, a public call that needs a Bitcoin
+transaction the cache does not hold fails (reverts). A
 lookup gives up after 20 seconds (a request to bitcoind after 15, a wait for a
 Postgres connection after 5), and the engine retries a failed lookup 5 times
 before it panics, which stops the process (see below).
@@ -202,16 +204,20 @@ point `BRC20_PROG_DB_PATH` at its database; the on-disk format is the same.
 When the engine's height is below brc20's at start, as with a fresh or lagging
 `BRC20_PROG_DB_PATH`, brc20 rolls back to the engine's height (or to the block
 before BRC2.0's activation, 229999 on signet, when the engine is below it) the
-way `brc20 reorg` does, logs a warning naming the engine dir and both heights,
-and replays the BRC2.0 blocks from there.
+way `brc20 reorg` does, logs the engine dir and both heights (a warning,
+except for an engine at most 10 blocks behind from the block before
+activation on, which is uncommitted blocks), and replays the BRC2.0 blocks
+from there. Between blocks of a running light client, an engine below the
+block before activation is an error instead.
 
-Once per database, before indexing resumes, brc20 checks
-`brc20_current_balances` against the newest `brc20_historic_balances` row per
-pkScript and ticker, and rebuilds the extra tables as `brc20 reindex-extras`
-does when they differ. Databases indexed by older light clients can carry an
-incomplete current-balances table. On mainnet the check scans both tables
-once. `brc20_extras_verified` records that it passed; a database created by
-this version carries the record from the start.
+A database whose extra tables were built only partly can carry an incomplete
+current-balances table. Once per database, before indexing resumes, brc20
+checks `brc20_current_balances` against the newest `brc20_historic_balances`
+row per pkScript and ticker, and rebuilds the extra tables as
+`brc20 reindex-extras` does when they differ; a difference the rebuild leaves
+stops the start. On mainnet the check scans both tables once.
+`brc20_extras_verified` records that it passed. db_init.sql creates the
+record, so a new database skips the check.
 
 ### Docker
 
@@ -237,7 +243,9 @@ fourth:
 
 The API port is bound to localhost. To serve it more widely, change the `api`
 port mapping in the compose file (for example `"8000:8000"`) or put a reverse
-proxy in front.
+proxy in front. The engine's public JSON-RPC (`indexer` in `compose.yml`,
+`light` in `compose.light.yml`) listens on `0.0.0.0:18545` inside the
+container and is published on `127.0.0.1:18545`.
 
 Compose reads `.env` from the repository root and overrides the settings that
 differ in the compose network: `DB_HOST` and the other module hosts point at
@@ -336,7 +344,7 @@ same bitcoind credentials (`BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or
 
 | Command | Does |
 | --- | --- |
-| `brc20 light` | runs the BRC-20 light client until stopped, serving the engine's public JSON-RPC as `run` does; needs `OPERATION_MODE=light` |
+| `brc20 light` | runs the BRC-20 light client until SIGINT or SIGTERM, serving the engine's public JSON-RPC as `run` does; needs `OPERATION_MODE=light` |
 | `brc20 reset [--yes]` | deletes all BRC-20 data and starts fresh |
 | `brc20 reorg [--yes] <HEIGHT>` | rolls the BRC-20 state back to a block height |
 | `brc20 recalculate-hashes <FROM>` | recomputes the cumulative event hashes from a height to the latest indexed block |
