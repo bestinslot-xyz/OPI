@@ -38,6 +38,9 @@ pub const MAX_PKSCRIPT_LEN: usize = 20_000;
 /// prefix, namespace or cursor matches nothing and is refused.
 pub const MAX_NAME_LEN: usize = 2048;
 
+/// The longest `modules` list a stream request may name, in bytes.
+pub const MAX_MODULES_LEN: usize = 64;
+
 /// The digits of the largest bitmap number, 2147483647.
 pub const MAX_PREFIX_DIGITS: usize = 10;
 

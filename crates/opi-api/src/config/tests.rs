@@ -16,6 +16,76 @@ fn err(result: anyhow::Result<impl std::fmt::Debug>) -> String {
 }
 
 #[test]
+fn the_stream_settings_default_and_are_checked() {
+    let base = [("DB_DATABASE", "d")];
+    let config = load_config(env(&base)).unwrap();
+    assert_eq!(config.stream.settings().unwrap(), StreamSettings::default());
+    let config = load_config(env(&[
+        ("DB_DATABASE", "d"),
+        ("STREAM_POLL_MS", "250"),
+        ("STREAM_DEFAULT_CONFIRMATIONS", "3"),
+        ("STREAM_MAX_CONFIRMATIONS", "1000"),
+        ("STREAM_MAX_SUBSCRIBERS", "0"),
+        ("STREAM_HEARTBEAT_SECS", "5"),
+        ("STREAM_BUFFER", "2"),
+        ("STREAM_RESUME_WAIT_SECS", "30"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        config.stream.settings().unwrap(),
+        StreamSettings {
+            poll: Duration::from_millis(250),
+            default_confirmations: 3,
+            max_confirmations: 1000,
+            max_subscribers: 0,
+            heartbeat: Duration::from_secs(5),
+            buffer: 2,
+            resume_wait: Duration::from_secs(30),
+        }
+    );
+    for (var, value, message) in [
+        (
+            "STREAM_MAX_CONFIRMATIONS",
+            "1001",
+            "STREAM_MAX_CONFIRMATIONS must be an integer from 1 to 1000, got 1001",
+        ),
+        (
+            "STREAM_DEFAULT_CONFIRMATIONS",
+            "101",
+            "STREAM_DEFAULT_CONFIRMATIONS must be an integer from 1 to 100, got 101",
+        ),
+        (
+            "STREAM_POLL_MS",
+            "x",
+            "STREAM_POLL_MS must be an integer from 10 to 3600000, got NaN",
+        ),
+        (
+            "STREAM_HEARTBEAT_SECS",
+            "0",
+            "STREAM_HEARTBEAT_SECS must be an integer from 1 to 3600, got 0",
+        ),
+        (
+            "STREAM_BUFFER",
+            "0",
+            "STREAM_BUFFER must be an integer from 1 to 65536, got 0",
+        ),
+        (
+            "STREAM_MAX_SUBSCRIBERS",
+            "-1",
+            "STREAM_MAX_SUBSCRIBERS must be an integer from 0 to 1000000, got -1",
+        ),
+        (
+            "STREAM_RESUME_WAIT_SECS",
+            "0",
+            "STREAM_RESUME_WAIT_SECS must be an integer from 1 to 86400, got 0",
+        ),
+    ] {
+        let config = load_config(env(&[("DB_DATABASE", "d"), (var, value)])).unwrap();
+        assert_eq!(err(config.validate()), message);
+    }
+}
+
+#[test]
 fn parse_modules_defaults_to_brc20_when_unset() {
     assert_eq!(parse_modules(None).unwrap(), [Module::Brc20]);
 }

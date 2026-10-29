@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select block_height, block_hash from sns_block_hashes\n                    where block_height = any($1) order by block_height;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sns_block_hashes",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_block_hashes",
+            "name": "block_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ba3fb57f9ed43e80b11334bf4864cbb8308a2caf5a6125f25be5d295d2e7b098"
+}

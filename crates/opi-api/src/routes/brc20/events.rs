@@ -68,6 +68,9 @@ use {
 #[cfg(test)]
 mod tests;
 
+/// The fractional digits of an event's amounts.
+pub(in crate::routes) const EVENT_DECIMALS: i32 = AMOUNT_DECIMALS;
+
 /// The paging and type filter of a feed.
 #[derive(IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -85,7 +88,7 @@ struct FeedParams {
 /// An event of a feed.
 #[derive(ToSchema)]
 #[allow(dead_code)]
-struct Brc20FeedEvent {
+pub(in crate::routes) struct Brc20FeedEvent {
     /// The event's id, which orders the feed.
     id: i64,
     block_height: i32,
@@ -246,23 +249,101 @@ fn page_fields(result: &mut JsObject, rows: Vec<FeedRow>, limit: i64) -> Result<
     } else {
         None
     };
-    let mut events = Vec::with_capacity(rows.len());
-    for row in rows {
-        events.push(JsValue::from(js_object! {
-            "id" => row.id as f64,
-            "block_height" => row.block_height,
-            "block_time" => row.block_time.map(|time| time as f64),
-            "inscription_id" => row.inscription_id,
-            "event_type" => row.event_type,
-            "ticker_decimals" => row.ticker_decimals,
-            "event" => pg_json::text(oid::JSONB, Some(&row.event))?,
-        }));
-    }
+    let events = rows
+        .into_iter()
+        .map(FeedRow::into_event)
+        .collect::<Result<Vec<_>, _>>()?;
     result.set("events", events);
     result.set("limit", limit as f64);
     result.set("has_more", has_more);
     result.set("next_before_id", next_before_id);
     Ok(())
+}
+
+impl FeedRow {
+    /// The row as a feed event.
+    fn into_event(self) -> Result<JsValue, ApiError> {
+        Ok(JsValue::from(js_object! {
+            "id" => self.id as f64,
+            "block_height" => self.block_height,
+            "block_time" => self.block_time.map(|time| time as f64),
+            "inscription_id" => self.inscription_id,
+            "event_type" => self.event_type,
+            "ticker_decimals" => self.ticker_decimals,
+            "event" => pg_json::text(oid::JSONB, Some(&self.event))?,
+        }))
+    }
+}
+
+/// The lowest and the highest id of block `height`'s events, over both
+/// event tables, or `None` for a block without events. A block's events
+/// take consecutive ids, since the indexer writes blocks in order and a
+/// reorg rewinds the id sequences with the blocks.
+pub(in crate::routes) async fn block_event_ids(
+    db: &Db,
+    height: i32,
+) -> Result<Option<(i64, i64)>, ApiError> {
+    // `id + 0` keeps the planner from walking the primary key for the
+    // extremes and filtering on the height, which reads every event below
+    // the block; the block_height index reads only the block's rows.
+    let row = sqlx::query!(
+        r#"select min(u.lo) as "lo?", max(u.hi) as "hi?" from (
+                (select min(id + 0) as lo, max(id + 0) as hi from brc20_events where block_height = $1)
+                union all
+                (select min(id + 0) as lo, max(id + 0) as hi from brc20_light_events where block_height = $1)
+            ) u;"#,
+        height,
+    )
+    .fetch_one(db.pool()?)
+    .await?;
+    Ok(row.lo.zip(row.hi))
+}
+
+/// Up to `limit` of block `height`'s events with an id above `after` and at
+/// most `last` (see [`block_event_ids`]), oldest first, each with its id, in
+/// the feed routes' event form.
+pub(in crate::routes) async fn block_events(
+    db: &Db,
+    height: i32,
+    after: i64,
+    last: i64,
+    limit: i64,
+) -> Result<Vec<(i64, JsValue)>, ApiError> {
+    // Each table is read through its primary key from the cursor, which the
+    // id range keeps inside the block.
+    let rows = sqlx::query_as!(
+        FeedRow,
+        r#"select u.id as "id!", u.block_height as "block_height!", h.block_time as "block_time?",
+                u.inscription_id as "inscription_id!",
+                (select e.event_type_name from brc20_event_types e
+                  where e.event_type_id = u.event_type limit 1) as "event_type?",
+                (select k.decimals from brc20_tickers k
+                  where k.tick = u.event ->> 'tick') as "ticker_decimals?",
+                u.event::text as "event!"
+            from (
+                (select id, block_height, event_type, inscription_id, event
+                 from brc20_events
+                 where id > $2 and id <= $3 and block_height = $1
+                 order by id limit $4)
+                union all
+                (select id, block_height, event_type, inscription_id, event
+                 from brc20_light_events
+                 where id > $2 and id <= $3 and block_height = $1
+                 order by id limit $4)
+            ) u
+            left join brc20_block_hashes h on h.block_height = u.block_height
+            order by u.id
+            limit $4;"#,
+        height,
+        after,
+        last,
+        limit,
+    )
+    .fetch_all(db.pool()?)
+    .await?;
+    rows.into_iter()
+        .map(|row| Ok((row.id, row.into_event()?)))
+        .collect()
 }
 
 /// A page of a ticker's events, newest first.

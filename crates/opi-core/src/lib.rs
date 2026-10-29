@@ -2,6 +2,12 @@ pub mod metrics;
 
 use std::collections::BTreeMap;
 
+/// Most blocks a module rolls back in one step: the scheduler refuses a
+/// deeper disagreement with the journal, `OPI_PRUNE` keeps at least this
+/// many blocks, and the API's push feed bounds its rollbacks and
+/// confirmations by it.
+pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
+
 /// Block-level metadata for one finalized height.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockInfo {

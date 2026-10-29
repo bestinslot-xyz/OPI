@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select min(block_height) as \"h?\" from sns_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "h?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4eb79f47ff75bbc12555dfa79f000659d484fc04acfe1f66b2419412d49f0596"
+}

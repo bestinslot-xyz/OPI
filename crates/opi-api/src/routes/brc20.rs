@@ -36,8 +36,8 @@ use {
     utoipa_axum::{router::UtoipaMethodRouterExt, routes},
 };
 
-mod events;
-mod snapshot;
+pub(super) mod events;
+pub(super) mod snapshot;
 mod tickers;
 
 #[cfg(test)]

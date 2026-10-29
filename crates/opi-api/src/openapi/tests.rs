@@ -11,9 +11,9 @@ use {
             self,
             paging::{
                 DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CURSOR_LEN,
-                MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN,
-                MAX_OFFSET, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN,
-                MAX_TYPE_LEN,
+                MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_MODULES_LEN,
+                MAX_NAME_LEN, MAX_OFFSET, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_RUNE_LEN,
+                MAX_TICKER_LEN, MAX_TYPE_LEN,
             },
         },
     },
@@ -117,7 +117,7 @@ fn the_document_lists_only_the_enabled_modules() {
         for path in paths {
             assert!(
                 path.starts_with(&prefix)
-                    || ["/v1/status", "/v1/openapi.json"].contains(&path.as_str()),
+                    || ["/v1/status", "/v1/openapi.json", "/v1/stream"].contains(&path.as_str()),
                 "{path} with only {} enabled",
                 module.name()
             );
@@ -289,6 +289,8 @@ fn parameter_bounds_are_the_routes_rules() {
                     json!({"maxLength": MAX_PKSCRIPT_LEN, "pattern": "^([0-9a-fA-F]{2})*$"})
                 }
                 (_, "contract_address") => json!({"pattern": "^0[xX][0-9a-fA-F]{40}$"}),
+                ("/v1/stream", "from_height") => json!({"minimum": 0, "maximum": i32::MAX}),
+                ("/v1/stream", "modules") => json!({"maxLength": MAX_MODULES_LEN}),
                 _ => {
                     assert!(
                         !bounded,

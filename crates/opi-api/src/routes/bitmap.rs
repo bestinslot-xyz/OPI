@@ -84,7 +84,7 @@ struct BitmapInscription {
 /// A bitmap.
 #[derive(ToSchema)]
 #[allow(dead_code)]
-struct Bitmap {
+pub(super) struct Bitmap {
     inscription_id: String,
     inscription_number: i32,
     bitmap_number: i32,
@@ -277,15 +277,15 @@ async fn get_inscription_id_of_bitmap(
 }
 
 /// A bitmaps row as the new routes answer it.
-struct BitmapRow {
-    inscription_id: String,
-    inscription_number: i32,
-    bitmap_number: i32,
-    block_height: i32,
+pub(super) struct BitmapRow {
+    pub(super) inscription_id: String,
+    pub(super) inscription_number: i32,
+    pub(super) bitmap_number: i32,
+    pub(super) block_height: i32,
 }
 
 impl BitmapRow {
-    fn into_object(self) -> JsObject {
+    pub(super) fn into_object(self) -> JsObject {
         js_object! {
             "inscription_id" => self.inscription_id,
             "inscription_number" => self.inscription_number,
