@@ -32,7 +32,7 @@ use {
     utoipa::{
         IntoParams, OpenApi, PartialSchema, ToSchema,
         openapi::{
-            self, ContentBuilder, RefOr, ResponseBuilder,
+            self, ContentBuilder, HeaderBuilder, RefOr, ResponseBuilder,
             path::{HttpMethod, Operation},
             schema::Schema,
         },
@@ -223,8 +223,31 @@ pub fn finish(api: &mut openapi::OpenApi) {
                 .build(),
         )
         .build();
+    let header = |description: &str| {
+        HeaderBuilder::new()
+            .schema(Some(json_schema(json!({"type": "string"}))))
+            .description(Some(description))
+            .build()
+    };
     let limited = ResponseBuilder::new()
         .description("RATE_LIMIT_ENABLE is `true` and the client has used up its RATE_LIMIT_MAX requests of the window")
+        .header(
+            "RateLimit-Policy",
+            header("`<RATE_LIMIT_MAX>;w=<window seconds>`"),
+        )
+        .header("RateLimit-Limit", header("RATE_LIMIT_MAX"))
+        .header(
+            "RateLimit-Remaining",
+            header("The requests left in the window: 0"),
+        )
+        .header(
+            "RateLimit-Reset",
+            header("The seconds until the window ends; absent at 0"),
+        )
+        .header(
+            "Retry-After",
+            header("The seconds until the window ends"),
+        )
         .content(
             "text/html",
             ContentBuilder::new()
