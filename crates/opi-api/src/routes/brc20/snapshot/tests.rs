@@ -129,6 +129,22 @@ fn merge_and_order(source: &str) -> &str {
 }
 
 #[test]
+fn a_snapshot_is_settled_from_the_deepest_rollback_down() {
+    // The route's documentation names the depth.
+    assert_eq!(MAX_ROLLBACK_DEPTH, 1000);
+    for (block_height, tip, expected) in [
+        (300, 1300, true),
+        (301, 1300, false),
+        (0, 1000, true),
+        (0, 999, false),
+        (1300, 1300, false),
+        (0, i32::MAX, true),
+    ] {
+        assert_eq!(settled(block_height, tip), expected, "{block_height} {tip}");
+    }
+}
+
+#[test]
 fn the_snapshot_merges_and_orders_as_the_holders_route_does() {
     let holders = merge_and_order(include_str!("../tickers.rs"));
     let snapshot = merge_and_order(include_str!("../snapshot.rs"));

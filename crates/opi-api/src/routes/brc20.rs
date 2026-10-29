@@ -13,7 +13,7 @@
 
 use {
     super::ModuleRoutes,
-    super::no_row,
+    super::{no_row, tip_cache::TipCache},
     crate::{
         config::Module,
         db::Db,
@@ -29,7 +29,9 @@ use {
         reply::{ApiError, Reply},
     },
     axum::extract::State,
+    futures::future::BoxFuture,
     sha2::{Digest, Sha256},
+    sqlx::{PgConnection, PgExecutor},
     utoipa::ToSchema,
     utoipa_axum::{router::UtoipaMethodRouterExt, routes},
 };
@@ -61,7 +63,13 @@ pub fn routes(db: &Db, settings: &super::RouteSettings) -> ModuleRoutes {
         .routes(routes!(get_valid_tx_notes_of_ticker))
         .routes(routes!(holders))
         .routes(routes!(get_hash_of_all_activity))
-        .routes(routes!(get_hash_of_all_current_balances))
+        .routes(
+            routes!(get_hash_of_all_current_balances).with_state(TipCache::new(
+                db.clone(),
+                Module::Brc20,
+                current_balances_answer,
+            )),
+        )
         .routes(routes!(event))
         .routes(routes!(explorer_btc_address))
         .routes(routes!(explorer_balances))
@@ -917,9 +925,9 @@ async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply,
     }))
 }
 
-async fn indexer_version(db: &Db) -> Result<String, ApiError> {
+async fn indexer_version<'e>(executor: impl PgExecutor<'e>) -> Result<String, ApiError> {
     let rows = sqlx::query_scalar!("select indexer_version from brc20_indexer_version;")
-        .fetch_all(db.pool()?)
+        .fetch_all(executor)
         .await?;
     Ok(rows
         .into_iter()
@@ -966,7 +974,7 @@ async fn get_hash_of_all_activity(
         .into_iter()
         .next()
         .ok_or_else(|| no_row("cumulative_event_hash"))?;
-    let indexer_version = indexer_version(&db).await?;
+    let indexer_version = indexer_version(db.pool()?).await?;
 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
@@ -1017,21 +1025,49 @@ fn current_balances_hash(mut rows: Vec<BalanceRow>) -> Result<String, JsError> {
 /// The hash of every current balance.
 ///
 /// The route reads, sorts and hashes the whole `brc20_current_balances`
-/// table.
+/// table once per indexed block and serves that answer until the tip moves.
 #[utoipa::path(
     get,
     path = "/v1/brc20/get_hash_of_all_current_balances",
     tag = "brc20",
     responses((status = 200, description = "The hash", body = Answer<Brc20BalancesHash>)),
 )]
-async fn get_hash_of_all_current_balances(State(db): State<Db>) -> Result<Reply, ApiError> {
-    let current_block_height = block_height_of_db(&db).await;
+async fn get_hash_of_all_current_balances(
+    State(cache): State<TipCache>,
+) -> Result<Reply, ApiError> {
+    cache.answer().await
+}
+
+/// The hash answer at `height`. The indexer commits a block's current
+/// balances before its block hash, so an answer that reads a balance
+/// written above `height` is not settled.
+fn current_balances_answer(
+    conn: &mut PgConnection,
+    height: Option<i32>,
+) -> BoxFuture<'_, Result<(Reply, bool), ApiError>> {
+    Box::pin(async move {
+        let ahead = sqlx::query_scalar!(
+            r#"select exists(select 1 from brc20_current_balances
+                where block_height > coalesce($1::int4, -1)) as "ahead!";"#,
+            height,
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let reply = current_balances_reply(conn, height).await?;
+        Ok((reply, !ahead))
+    })
+}
+
+async fn current_balances_reply(
+    conn: &mut PgConnection,
+    height: Option<i32>,
+) -> Result<Reply, ApiError> {
     let rows = sqlx::query!(
         r#"select pkscript, tick, overall_balance::text as "overall_balance", available_balance::text as "available_balance"
             from brc20_current_balances
             order by pkscript asc, tick asc;"#
     )
-    .fetch_all(db.pool()?)
+    .fetch_all(&mut *conn)
     .await?;
     let mut balances = Vec::with_capacity(rows.len());
     for row in rows {
@@ -1044,14 +1080,14 @@ async fn get_hash_of_all_current_balances(State(db): State<Db>) -> Result<Reply,
     }
     // the whole table is sorted and hashed in memory, off the async workers
     let hash_hex = tokio::task::spawn_blocking(move || current_balances_hash(balances)).await??;
-    let indexer_version = indexer_version(&db).await?;
+    let indexer_version = indexer_version(&mut *conn).await?;
 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
         "result" => js_object! {
             "current_balances_hash" => hash_hex,
             "indexer_version" => indexer_version,
-            "block_height" => current_block_height,
+            "block_height" => height.to_js(),
         },
     }))
 }

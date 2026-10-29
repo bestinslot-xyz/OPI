@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT block_height, block_hash FROM sns_block_hashes ORDER BY block_height DESC LIMIT 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sns_block_hashes",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_block_hashes",
+            "name": "block_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e3b4966b95d918239808359afbc6fc92b921bde39d327d78b9f65a04fe07cb8b"
+}

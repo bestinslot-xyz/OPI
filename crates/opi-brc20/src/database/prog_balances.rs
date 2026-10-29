@@ -71,8 +71,8 @@ CREATE TABLE IF NOT EXISTS public.brc20_prog_historical_balances (
 	block_height int4 NOT NULL,
 	CONSTRAINT brc20_prog_historical_balances_pk PRIMARY KEY (wallet, ticker, block_height)
 );
-CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_ticker_idx ON public.brc20_prog_historical_balances USING btree (ticker);
 CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_block_height_idx ON public.brc20_prog_historical_balances USING btree (block_height);
+CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_ticker_wallet_block_height_idx ON public.brc20_prog_historical_balances USING btree (ticker, wallet, block_height DESC) INCLUDE (amount);
 ";
 
 /// The tables a block writes.
