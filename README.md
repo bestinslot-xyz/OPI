@@ -154,10 +154,38 @@ the deepest rollback the scheduler walks.
 | bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
 
-Each module prunes its tables every 100 blocks; a background task prunes the
-journal every minute, and only while every enabled module is running, in steps
-of 1000 heights. ord's index has no history to prune: `run` keeps ord at its
-defaults, without sat, address or transaction indexes.
+Each module prunes its tables every 100 blocks. ord's index has no history to
+prune: `run` keeps ord at its defaults, without sat, address or transaction
+indexes.
+
+The journal is pruned in steps of at most 1000 heights. A step deletes at most
+10,000 raw events in one write transaction, and at most 10,000 transfer
+records, consumed content rows and rune rows in another. Each takes about a
+second on NVMe, so ord's commits never wait on it for long. A step may stop
+inside a dense height; that height then fails closed in the same commit (it
+goes below the pruned floor, or loses its raw tag), and the next step
+deletes the rest.
+
+- **At start-up**, before it starts ord and the modules, `run` prunes the
+  journal to the window. It reads each enabled module's height, the highest
+  row of its `<module>_block_hashes` table, from the module's database over a
+  read-only connection, and logs the heights done and left per table every 10
+  seconds. Meanwhile readiness answers 503 `starting`, and `/metrics` shows
+  `opi_fill_running{module="journal",fill="journal_prune"}` with its progress
+  and target. SIGINT or SIGTERM, during the height reads or between two
+  steps, stops it and `run` exits 0; the journal stays valid and the next
+  start resumes where it stopped. A fresh module, one whose
+  `<module>_block_hashes` table does not exist yet or holds no block, leaves
+  the records alone: this prune removes raw events only, and the background
+  task below removes the records once every module runs. A height that
+  cannot be read for another reason is retried five times over about one to
+  two minutes, then fails the start, naming the module and the error. With
+  no journal yet, `run` reads no heights.
+- **While `run` indexes**, a background task prunes the new blocks every
+  minute: raw events always, the records only while every enabled module is
+  running. After each step it pauses for as long as the step took, so the
+  journal writes ord's commits wait on get the journal at least half the
+  time.
 
 A pruned journal no longer holds the blocks a module needs to start from
 scratch. A module whose next block is below the journal's pruned floor (a new
@@ -172,6 +200,23 @@ to the file system, stop `run` and compact the journal:
 ```bash
 target/release/opi-indexer compact-journal
 ```
+
+With `OPI_PRUNE` set, `compact-journal` first prunes the journal to the window,
+in the same steps and with the same progress log, from the module heights in
+the databases, then compacts it. It reads the whole `run` configuration from
+the same `.env`. It refuses, naming the module and the reason, when an enabled
+module's height cannot be read, for example an unreachable database or a
+module that has stored no block. So one offline command (stop `run`,
+`compact-journal`, start `run`) prunes and reclaims the space.
+
+redb frees a transaction's pages only once it commits, and it grows its file
+in 4 GiB regions that stay sparse until written, so a prune can raise the
+file's apparent size (`ls -l`) well above its disk usage (`du`). A large
+journal can then fill that gap with pages before compaction shrinks the file.
+Before the first prune, keep free at least the gap between the journal file's
+apparent size and its disk usage, plus 16 GiB. A 6.8 GiB signet journal went
+to 8.0 GiB apparent through its whole prune while its disk usage grew by
+16 MiB, and compacted to 0.2 GiB on disk.
 
 #### BRC2.0 engine
 
@@ -380,7 +425,10 @@ opi-indexer [run | api | validate | compact-journal | brc20 <COMMAND>]
 `api` serves the HTTP API (see [API](#api)); it needs neither the journal nor ord.
 
 `compact-journal` rewrites the journal under `OPI_JOURNAL_DIR` without the
-space pruning freed (see [Pruning](#pruning)). It needs `run` stopped.
+space pruning freed (see [Pruning](#pruning)). It needs `run` stopped and
+refuses while `run` holds the journal. With `OPI_PRUNE` set it first prunes
+the journal to that window, from the heights in the enabled modules'
+databases, and refuses when one cannot be read.
 
 `opi-indexer brc20` holds the BRC-20 light client and maintenance commands. It
 reads only brc20's environment, so it runs on light-client hosts.
