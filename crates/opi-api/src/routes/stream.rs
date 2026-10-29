@@ -30,7 +30,7 @@ use {
         reply::{ApiError, Reply},
         routes::{
             bitmap::Bitmap,
-            brc20::events::Brc20FeedEvent,
+            brc20::{events::Brc20FeedEvent, snapshot},
             paging::{BadParam, MAX_MODULES_LEN, integer, optional_text, single},
             sns::SnsName,
         },
@@ -116,14 +116,31 @@ pub struct Streams(Arc<Inner>);
 
 struct Inner {
     settings: StreamSettings,
-    enabled: Vec<(Module, Db)>,
+    /// Each enabled module's database and the permits of its stream
+    /// readers.
+    enabled: Vec<(Module, Db, Arc<Semaphore>)>,
     pollers: Arc<poller::Pollers>,
     permits: Arc<Semaphore>,
     stop: StreamStop,
 }
 
+/// The streams that read a pool of `max_connections` at once: as many as
+/// the holders snapshots may take, so other routes keep connections.
+pub fn readers(max_connections: u32) -> usize {
+    snapshot::cap(max_connections)
+}
+
 impl Streams {
     pub fn new(settings: StreamSettings, enabled: Vec<(Module, Db)>, stop: StreamStop) -> Streams {
+        let enabled = enabled
+            .into_iter()
+            .map(|(module, db)| {
+                let size = db
+                    .pool()
+                    .map_or(1, |pool| readers(pool.options().get_max_connections()));
+                (module, db, Arc::new(Semaphore::new(size)))
+            })
+            .collect();
         Streams(Arc::new(Inner {
             settings,
             enabled,
@@ -204,7 +221,8 @@ struct StreamSnsBlock {
 }
 
 /// The data of a `rollback` event: a reorg replaced the module's blocks
-/// above `height`, the last block kept; the replacement blocks follow.
+/// above `height`, the last block kept; the replacement blocks follow. The
+/// event's SSE id is the kept block's, `<module>:<height>:<hash>`.
 #[derive(ToSchema)]
 #[allow(dead_code)]
 struct StreamRollback {
@@ -410,16 +428,19 @@ fn parse(
 /// others holds them back.
 ///
 /// When a reorg replaces a block the stream has sent, a `rollback` event
-/// `{"module","height"}` (`StreamRollback`) names the last block kept, and
-/// the replacement blocks follow. A `heartbeat` event `{"tips":{...}}`
+/// `{"module","height"}` (`StreamRollback`) names the last block kept, with
+/// that block's id `<module>:<height>:<hash>`, and the replacement blocks
+/// follow. A `heartbeat` event `{"tips":{...}}`
 /// (`StreamHeartbeat`) comes every STREAM_HEARTBEAT_SECS while no block is
 /// due. A stream whose client cannot take a message for that long ends with
 /// an `error` event `{"error"}` (`StreamError`); so does one whose query
 /// fails.
 ///
 /// The `Last-Event-ID` header resumes after the block it names, and sends a
-/// rollback first when that block is no longer stored. It takes precedence
-/// over `from_height`.
+/// rollback first for each module of the stream whose blocks up to it are
+/// no longer stored. It takes precedence over `from_height`. A resume after
+/// a rollback's id may send the other modules' blocks above the kept one
+/// again.
 #[utoipa::path(
     get,
     path = "/v1/stream",
@@ -429,7 +450,7 @@ fn parse(
         ("Last-Event-ID" = Option<String>, Header, description = "The id of the last block received, `<module>:<height>:<hash>`: the stream resumes after it. Left out, the stream starts at `from_height`."),
     ),
     responses(
-        (status = 200, description = "The stream: `block` events (data: `StreamBlock`), `rollback` events (`StreamRollback`), `heartbeat` events (`StreamHeartbeat`) and a last `error` event (`StreamError`) on an early end. A block's SSE id is `<module>:<height>:<hash>`.", content_type = "text/event-stream", body = String),
+        (status = 200, description = "The stream: `block` events (data: `StreamBlock`), `rollback` events (`StreamRollback`), `heartbeat` events (`StreamHeartbeat`) and a last `error` event (`StreamError`) on an early end between events. The SSE id of a block, and of a rollback's kept block, is `<module>:<height>:<hash>`.", content_type = "text/event-stream", body = String),
         (status = 400, description = "An invalid parameter or `Last-Event-ID`, a module that is unknown, disabled or not on the stream, or a start below a module's oldest kept block", body = ErrorBody),
         (status = 503, description = "`too many stream subscribers`: STREAM_MAX_SUBSCRIBERS streams are open", body = ErrorBody),
     ),
@@ -440,7 +461,7 @@ pub(super) async fn stream(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let inner = &streams.0;
-    let enabled: Vec<Module> = inner.enabled.iter().map(|(module, _)| *module).collect();
+    let enabled: Vec<Module> = inner.enabled.iter().map(|(module, ..)| *module).collect();
     let start = match parse(&query, &headers, &enabled, &inner.settings) {
         Ok(start) => start,
         Err(bad) => return Ok(bad.reply().into_response()),
@@ -453,35 +474,39 @@ pub(super) async fn stream(
         inner
             .enabled
             .iter()
-            .find(|(m, _)| *m == module)
-            .map(|(_, db)| db.clone())
+            .find(|(m, ..)| *m == module)
+            .map(|(_, db, reads)| (db.clone(), reads.clone()))
             .expect("an enabled module")
     };
     let mut cursors = Vec::with_capacity(start.modules.len());
     for &provider in &start.modules {
-        let db = db_of(provider.module());
+        let (db, reads) = db_of(provider.module());
         // subscribe first, so no change after the reads below is missed
         let watch = inner.pollers.watch(provider, &db);
         let tip = provider.tip(&db).await?.map(|(height, _)| height);
         let oldest = provider.oldest(&db).await?;
-        let (next, last) = match &start.resume {
-            Some((module, height, hash)) if *module == provider => {
-                (Some(height + 1), Some((*height, hash.clone())))
+        // Every module indexes the same chain, so the block a Last-Event-ID
+        // names stands for each module's: the modules up to the named one
+        // have received it, and the later ones the block below it, which
+        // the named hash checks once their tip reaches it.
+        let (next, held, pending) = match &start.resume {
+            Some((module, height, hash)) if provider <= *module => {
+                (Some(height + 1), Some((*height, hash.clone())), None)
             }
-            // the blocks before the resumed one in the stream's order
-            Some((module, height, _)) if provider < *module => (Some(height + 1), None),
-            Some((_, height, _)) => (Some(*height), None),
+            Some((_, height, hash)) => (Some(*height), None, Some((*height, hash.clone()))),
             None => match start.from_height {
-                Some(from) => (Some(from), None),
+                Some(from) => (Some(from), None, None),
                 None => (
                     tip.map(|tip| (tip - start.confirmations + 2).max(oldest.unwrap_or(0))),
+                    None,
                     None,
                 ),
             },
         };
         if let (Some(next), Some(oldest)) = (next, oldest)
             && next < oldest
-            && last.is_none()
+            && held.is_none()
+            && pending.is_none()
         {
             let what = if start.resume.is_some() {
                 "Last-Event-ID"
@@ -501,8 +526,10 @@ pub(super) async fn stream(
             provider,
             db,
             watch,
+            reads,
             next,
-            last,
+            ring: held.into_iter().collect(),
+            pending,
             dirty: true,
         });
     }
@@ -519,11 +546,7 @@ pub(super) async fn stream(
         gauge,
     };
     tokio::spawn(session.run());
-    let body = body::SseBody {
-        chunks: receiver,
-        end: Some(ended),
-        done: false,
-    };
+    let body = body::SseBody::new(receiver, ended);
     let mut response = Body::from_stream(body).into_response();
     let response_headers = response.headers_mut();
     response_headers.insert(

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select min(u.lo) as \"lo?\", max(u.hi) as \"hi?\" from (\n                (select min(id) as lo, max(id) as hi from brc20_events where block_height = $1)\n                union all\n                (select min(id) as lo, max(id) as hi from brc20_light_events where block_height = $1)\n            ) u;",
+  "query": "select min(id + 0) as \"lo?\", max(id + 0) as \"hi?\" from bitmaps where block_height = $1;",
   "describe": {
     "columns": [
       {
@@ -26,5 +26,5 @@
       null
     ]
   },
-  "hash": "f81bf95ccc1b14fd815aa93e39185ba1a3419b3d93e13fcc5c971a7144d09a49"
+  "hash": "88a880f20d8116d6166c87630d2615e03b68283502a938ba964d80f7549d4f36"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select min(id) as \"lo?\", max(id) as \"hi?\" from sns_names where block_height = $1;",
+  "query": "select min(id + 0) as \"lo?\", max(id + 0) as \"hi?\" from sns_names where block_height = $1;",
   "describe": {
     "columns": [
       {
@@ -26,5 +26,5 @@
       null
     ]
   },
-  "hash": "cb8b1b3da0e225e53908712c2dafd2f7412aaecd27fb955bf52c4539b936be1a"
+  "hash": "6b3c418bf60fba57391173e356482f5d5723d09f01f5df2762826cb803f6374f"
 }

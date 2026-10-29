@@ -164,15 +164,67 @@ impl Provider {
         Ok(rows)
     }
 
+    /// The rows of the block-hash table at `heights`, ascending, in one
+    /// statement, so they come from one snapshot.
+    pub async fn blocks_at(self, db: &Db, heights: &[i32]) -> Result<Vec<BlockRow>, ApiError> {
+        let pool = db.pool()?;
+        let rows = match self {
+            Provider::Brc20 => sqlx::query!(
+                "select block_height, block_hash, block_time from brc20_block_hashes
+                    where block_height = any($1) order by block_height;",
+                heights,
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| BlockRow {
+                height: row.block_height,
+                hash: row.block_hash,
+                time: row.block_time,
+            })
+            .collect(),
+            Provider::Bitmap => sqlx::query!(
+                "select block_height, block_hash from bitmap_block_hashes
+                    where block_height = any($1) order by block_height;",
+                heights,
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| BlockRow {
+                height: row.block_height,
+                hash: row.block_hash,
+                time: None,
+            })
+            .collect(),
+            Provider::Sns => sqlx::query!(
+                "select block_height, block_hash from sns_block_hashes
+                    where block_height = any($1) order by block_height;",
+                heights,
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| BlockRow {
+                height: row.block_height,
+                hash: row.block_hash,
+                time: None,
+            })
+            .collect(),
+        };
+        Ok(rows)
+    }
+
     /// The lowest and the highest id of block `height`'s events, `None` for
-    /// a block without events.
+    /// a block without events. `id + 0` reads the extremes through the
+    /// block_height index (see [`events::block_event_ids`]).
     pub async fn event_ids(self, db: &Db, height: i32) -> Result<Option<(i64, i64)>, ApiError> {
         let pool = db.pool()?;
         let range = match self {
             Provider::Brc20 => return events::block_event_ids(db, height).await,
             Provider::Bitmap => {
                 let row = sqlx::query!(
-                    r#"select min(id) as "lo?", max(id) as "hi?" from bitmaps where block_height = $1;"#,
+                    r#"select min(id + 0) as "lo?", max(id + 0) as "hi?" from bitmaps where block_height = $1;"#,
                     height,
                 )
                 .fetch_one(pool)
@@ -181,7 +233,7 @@ impl Provider {
             }
             Provider::Sns => {
                 let row = sqlx::query!(
-                    r#"select min(id) as "lo?", max(id) as "hi?" from sns_names where block_height = $1;"#,
+                    r#"select min(id + 0) as "lo?", max(id + 0) as "hi?" from sns_names where block_height = $1;"#,
                     height,
                 )
                 .fetch_one(pool)

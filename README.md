@@ -1002,14 +1002,23 @@ registered), each in its lookup route's form. runes is not on the stream yet.
 | `from_height` | replay the stored blocks from this height on, in order; below a module's oldest kept block it answers 400 with that height. Left out, each module starts with its first block not yet due |
 
 The header `Last-Event-ID` (which an `EventSource` sends when it reconnects)
-resumes after the block it names, and wins over `from_height`.
+resumes after the block it names, and wins over `from_height`. Every module
+indexes the same chain, so the named block stands for each module's at its
+height: the modules up to the named one resume after it, the later ones at
+it, and each module whose blocks up to it were replaced gets a rollback
+first.
 
 | Event | `id` | Data |
 | --- | --- | --- |
 | `block` | `<module>:<height>:<hash>` | `{"module","height","hash","block_time","events":[...]}`; brc20's block adds `"decimals":18`, the fractional digits of its raw amounts, and bitmap's and sns's `block_time` is null |
-| `rollback` | | `{"module","height"}`: the module's blocks above `height`, the last block kept, were replaced; the replacement blocks follow |
+| `rollback` | `<module>:<height>:<hash>` of the kept block, none when no block is stored there | `{"module","height"}`: the module's blocks above `height`, the last block kept, were replaced; the replacement blocks follow |
 | `heartbeat` | | `{"tips":{"<module>":<height>}}`, each module's indexed tip, every `STREAM_HEARTBEAT_SECS` while no block is due |
-| `error` | | `{"error"}`, the last event of a stream that ends early |
+| `error` | | `{"error"}`, the last event of a stream that ends early, sent between events |
+
+A frame's `id` line comes last, so a block cut off by a dropped connection
+carries no id, and a resume sends that block again. A resume after a
+rollback's id may send the other modules' blocks above the kept height
+again.
 
 One `block` event comes per block and module, with every event of the block,
 however many; it is read and sent in pages. The blocks of a stream's modules
@@ -1019,20 +1028,30 @@ on. Each module's blocks wait for that module's own tip.
 
 A reorg shows as a replaced hash in a module's block-hash table. When the
 last block the stream sent is no longer stored, the stream sends `rollback`
-to the last block of the sent branch that still is, then the new blocks.
-Each poller remembers the hashes reorgs replaced, so the rollback names the
-fork exactly, also for a `Last-Event-ID` taken before a reorg this process
-saw. For a stale `Last-Event-ID` from before a reorg it did not see (the
-process started after it), the stream rolls back 1000 blocks, the deepest
-rollback the indexer walks, and replays from there.
+to the newest block it sent that still is, found among the last 1000 it
+sent, then the new blocks. A block is due once the block-hash row
+`confirmations` - 1 above it is stored, read with the block itself. Each
+poller remembers the hashes reorgs replaced, so a rollback below the
+blocks a stream sent, such as one for a `Last-Event-ID` taken before a
+reorg, names the fork exactly when this process saw the reorg. Past what
+it saw (the process started after the reorg), the stream rolls back 1000
+blocks, the deepest rollback the indexer walks, and replays from there.
 
 The API learns of new blocks by polling: one poller per module and process,
 whatever the number of subscribers, reads the module's highest block-hash row
-every `STREAM_POLL_MS`. A subscriber holds no database connection while it
-waits for a block. A stream that cannot queue a message for its client for
-`STREAM_HEARTBEAT_SECS` ends with an `error` event; the client resumes with
-its `Last-Event-ID`. Beyond `STREAM_MAX_SUBSCRIBERS` open streams, a request
-answers `503 {"error":"too many stream subscribers","result":null}`. On
+every `STREAM_POLL_MS`, and the new rows when it changes. A subscriber holds
+no database connection while it waits for a block. The streams read a module
+database with at most as many connections at once as the holders snapshots
+may take (4, and at most half of `DB_MAX_CONNECTIONS`), so replaying streams
+leave connections to the other routes. A stream that cannot queue a message
+for its client for `STREAM_HEARTBEAT_SECS` ends with an `error` event; the
+client resumes with its `Last-Event-ID`. Beyond `STREAM_MAX_SUBSCRIBERS`
+open streams, a request answers
+`503 {"error":"too many stream subscribers","result":null}`; the cap counts
+every client together, so one client can take every place the rate limit
+lets it open. A stream's buffer holds `STREAM_BUFFER` chunks, a brc20 page
+of 100 events being about 60 KB, so at most about 1 MB per stream with the
+default. On
 shutdown every stream ends at once, so its connection closes within the
 10 second grace; the header-read timeout applies only until a request's
 headers have arrived, so it never cuts a stream.
@@ -1044,22 +1063,23 @@ pruned bitmap or sns database keeps the block hashes of at least the last
 ```text
 $ curl -N 'http://127.0.0.1:8000/v1/stream?modules=brc20,sns&confirmations=3&from_height=328270'
 event: block
-id: brc20:328270:000000b1…
 data: {"module":"brc20","height":328270,"hash":"000000b1…","block_time":1761700000,"decimals":18,"events":[{"id":5120001,"block_height":328270,"block_time":1761700000,"inscription_id":"…i0","event_type":"mint-inscribe","ticker_decimals":18,"event":{…}}]}
+id: brc20:328270:000000b1…
 
 event: block
-id: sns:328270:000000b1…
 data: {"module":"sns","height":328270,"hash":"000000b1…","block_time":null,"events":[]}
+id: sns:328270:000000b1…
 
 event: heartbeat
 data: {"tips":{"brc20":328275,"sns":328275}}
 
 event: rollback
 data: {"module":"brc20","height":328272}
+id: brc20:328272:000000a7…
 
 event: block
-id: brc20:328273:000000c4…
 data: {"module":"brc20","height":328273,"hash":"000000c4…","block_time":1761701800,"decimals":18,"events":[]}
+id: brc20:328273:000000c4…
 ```
 
 ### API configuration
@@ -1087,7 +1107,7 @@ win, and a missing file is ignored.
 | `STREAM_MAX_CONFIRMATIONS` | the most confirmations a stream may ask for, at most `1000`, default `100` |
 | `STREAM_MAX_SUBSCRIBERS` | the most streams open at once, default `100`; `0` refuses every stream |
 | `STREAM_HEARTBEAT_SECS` | the heartbeat interval, and how long a stream may be unable to queue a message before it ends, default `15` |
-| `STREAM_BUFFER` | the chunks (a block's head, a page of 100 events, or a small event) a stream queues for its client, default `16` |
+| `STREAM_BUFFER` | the chunks (a block's head, a page of 100 events of up to about 60 KB, or a small event) a stream queues for its client, default `16`, about 1 MB at most |
 
 The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*` and `RUNES_DB_*` variables are the same
 ones `opi-indexer run` reads (`USER` and `HOST` default to `postgres` and

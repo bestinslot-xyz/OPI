@@ -1,8 +1,11 @@
 //! The pollers: one per module and process, shared by every subscriber of
 //! that module. A poller reads the module's highest block-hash row every
-//! STREAM_POLL_MS; when it changes, the poller reads the top [`WINDOW`]
-//! rows, records every block hash a reorg replaced together with the block
-//! the reorg kept, and tells the subscribers through a `watch` channel. A
+//! STREAM_POLL_MS. When it changes and still continues the top the poller
+//! holds, the poller reads only the new rows; otherwise it reads the top
+//! [`WINDOW`] rows and records every block hash a reorg replaced together
+//! with the block the reorg kept. It tells the subscribers of each change
+//! through a `watch` channel. A Last-Event-ID resume follows these records
+//! to the block the client's branch shares with the stored one. A
 //! poller starts with the first subscriber of its module and stops after
 //! the last one has gone, or at shutdown.
 
@@ -17,9 +20,9 @@ use {
     tokio::sync::watch,
 };
 
-/// The rows a poller keeps, and the deepest reorg it records: the deepest
-/// rollback the indexer walks.
-pub const WINDOW: i32 = 1000;
+/// The rows a poller keeps, the deepest reorg it records and the deepest
+/// rollback a stream sends: the deepest rollback the indexer walks.
+pub const WINDOW: i32 = opi_core::MAX_ROLLBACK_DEPTH as i32;
 
 /// The most replaced block hashes a poller remembers.
 const REPLACED_CAP: usize = 100_000;
@@ -86,6 +89,13 @@ impl History {
             }
         }
         self.window = fetched;
+    }
+
+    /// Adds the rows `added` above the window's top, which they continue,
+    /// and drops the rows below `low`.
+    pub fn append(&mut self, added: impl IntoIterator<Item = (i32, String)>, low: i32) {
+        self.window.extend(added);
+        self.window = self.window.split_off(&low);
     }
 
     /// The block kept by the reorg that replaced `hash` at `height`, if
@@ -201,11 +211,30 @@ async fn poll(
     if tip == *last {
         return Ok(None);
     }
-    let old = history
+    let old_top = history
         .lock()
         .expect("the history lock")
         .top()
-        .map(|(h, _)| h);
+        .map(|(h, hash)| (h, hash.clone()));
+    // The chain grew on the old top: only the new rows are read.
+    if let (Some((height, _)), Some((old, old_hash))) = (&tip, &old_top)
+        && height >= old
+    {
+        let rows = provider.blocks(db, *old, *height).await?;
+        if rows
+            .first()
+            .is_some_and(|row| row.height == *old && &row.hash == old_hash)
+        {
+            let mut history = history.lock().expect("the history lock");
+            history.append(
+                rows.into_iter().map(|row| (row.height, row.hash)),
+                height - WINDOW + 1,
+            );
+            *last = history.top().map(|(h, hash)| (h, hash.clone()));
+            return Ok(Some(last.as_ref().map(|(h, _)| *h)));
+        }
+    }
+    let old = old_top.map(|(h, _)| h);
     let Some(top) = tip.as_ref().map(|(h, _)| *h).or(old) else {
         *last = tip;
         return Ok(Some(None));
@@ -257,6 +286,17 @@ mod tests {
         assert_eq!(history.kept(1, "a"), None);
         assert_eq!(history.kept(2, "b"), None);
         assert_eq!(history.top(), Some((4, &"d".to_string())));
+    }
+
+    #[test]
+    fn appended_rows_extend_the_window_and_records_still_follow_it() {
+        let mut history = History::default();
+        history.update(1, rows(&[(1, "a"), (2, "b")]));
+        history.append([(2, "b".to_string()), (3, "c".to_string())], 2);
+        assert_eq!(history.top(), Some((3, &"c".to_string())));
+        history.update(2, rows(&[(2, "b"), (3, "x")]));
+        assert_eq!(history.kept(3, "c"), Some((2, Some("b".into()))));
+        assert_eq!(history.kept(1, "a"), None);
     }
 
     #[test]

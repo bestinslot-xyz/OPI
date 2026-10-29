@@ -130,7 +130,7 @@ pub struct StreamVars {
 /// The deepest `STREAM_MAX_CONFIRMATIONS`: the smallest `OPI_PRUNE`, so a
 /// pruned module database keeps the block hashes of every height a
 /// subscriber may wait on.
-pub const STREAM_CONFIRMATIONS_LIMIT: u32 = 1000;
+pub const STREAM_CONFIRMATIONS_LIMIT: u32 = opi_core::MAX_ROLLBACK_DEPTH;
 
 /// The push feed's settings (`/v1/stream`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

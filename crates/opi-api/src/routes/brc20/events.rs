@@ -321,11 +321,14 @@ pub(in crate::routes) async fn block_event_ids(
     db: &Db,
     height: i32,
 ) -> Result<Option<(i64, i64)>, ApiError> {
+    // `id + 0` keeps the planner from walking the primary key for the
+    // extremes and filtering on the height, which reads every event below
+    // the block; the block_height index reads only the block's rows.
     let row = sqlx::query!(
         r#"select min(u.lo) as "lo?", max(u.hi) as "hi?" from (
-                (select min(id) as lo, max(id) as hi from brc20_events where block_height = $1)
+                (select min(id + 0) as lo, max(id + 0) as hi from brc20_events where block_height = $1)
                 union all
-                (select min(id) as lo, max(id) as hi from brc20_light_events where block_height = $1)
+                (select min(id + 0) as lo, max(id + 0) as hi from brc20_light_events where block_height = $1)
             ) u;"#,
         height,
     )

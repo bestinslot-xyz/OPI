@@ -185,6 +185,15 @@ where
     F: FnOnce(PgPool) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    with_chain_pool(tag, blocks, 10, body).await;
+}
+
+/// [`with_chain`] on a pool of `max_connections`.
+async fn with_chain_pool<F, Fut>(tag: &str, blocks: i32, max_connections: u32, body: F)
+where
+    F: FnOnce(PgPool) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     let scripts = [
         include_str!("../../opi-brc20/src/database/sql/db_init.sql"),
         include_str!("../../opi-bitmap/src/db_init.sql"),
@@ -196,7 +205,7 @@ where
         tag,
         None,
         &scripts,
-        10,
+        max_connections,
         |_, pool| async move {
             add_blocks(&pool, 1..=blocks, "b").await;
             body(pool).await;
@@ -226,11 +235,77 @@ async fn expect_block(sse: &mut Sse, module: &str, height: i32, tag: &str) -> Fr
     frame
 }
 
-async fn expect_rollback(sse: &mut Sse, module: &str, height: i32) {
+/// Takes the next frame as the rollback of `module` to `height`, whose
+/// block is on branch `tag` (`None` for a height without a stored block).
+async fn expect_rollback(sse: &mut Sse, module: &str, height: i32, tag: Option<&str>) {
     let frame = message(sse).await;
     assert_eq!(frame.event, "rollback", "{frame:?}");
     assert_eq!(frame.data, json!({"module": module, "height": height}));
-    assert_eq!(frame.id, None);
+    assert_eq!(
+        frame.id,
+        tag.map(|tag| format!("{module}:{height}:{tag}{height}"))
+    );
+}
+
+/// The blocks a stream's frames leave the client with: each block's
+/// height, hash and events after applying the rollbacks, and the
+/// rollbacks' heights.
+#[derive(Default)]
+struct Applied {
+    blocks: Vec<(i32, String, Vec<Value>)>,
+    rollbacks: Vec<i32>,
+}
+
+impl Applied {
+    fn apply(&mut self, frame: &Frame) {
+        let height = frame.data["height"].as_i64().unwrap() as i32;
+        match frame.event.as_str() {
+            "block" => {
+                if let Some((last, ..)) = self.blocks.last() {
+                    assert_eq!(*last + 1, height, "blocks in order");
+                }
+                self.blocks.push((
+                    height,
+                    frame.data["hash"].as_str().unwrap().to_string(),
+                    frame.data["events"].as_array().unwrap().clone(),
+                ));
+            }
+            "rollback" => {
+                self.rollbacks.push(height);
+                self.blocks.retain(|(h, ..)| *h <= height);
+            }
+            other => panic!("an unexpected {other}"),
+        }
+    }
+
+    fn events(&self) -> Vec<Value> {
+        self.blocks
+            .iter()
+            .flat_map(|(_, _, events)| events.clone())
+            .collect()
+    }
+}
+
+/// Seeds the brc20 blocks `heights` of branch `b` with `events` events of
+/// about 500 bytes each.
+async fn add_big_blocks(pool: &PgPool, heights: std::ops::RangeInclusive<i32>, events: i32) {
+    let (low, high) = (heights.start(), heights.end());
+    let sql = format!(
+        "INSERT INTO brc20_block_hashes (block_height, block_hash, block_time)
+             SELECT h, 'b' || h, 1000 + h FROM generate_series({low}, {high}) h;
+         INSERT INTO brc20_events (id, event_type, block_height, inscription_id, inscription_number,
+                                   old_satpoint, new_satpoint, txid, event)
+             SELECT h * 100000 + i, 1, h, 'bm' || (h * 100000 + i) || 'i0', h * 100000 + i,
+                    NULL, 'sp', 'tx',
+                    jsonb_build_object('minted_pkScript', '0014a1', 'minted_wallet', 'tb1qb',
+                        'tick', 'ordi', 'original_tick', 'ORDI', 'amount', i || '{E18}',
+                        'parent_id', repeat('p', 300))
+             FROM generate_series({low}, {high}) h, generate_series(0, {events} - 1) i;"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 /// The brc20 events the event feed lists, oldest first.
@@ -286,7 +361,7 @@ async fn a_reorg_rolls_a_one_confirmation_subscriber_back() {
             delivered.push((height, frame.data["events"].as_array().unwrap().clone()));
         }
         reorg(&pool, 7, 12, "x").await;
-        expect_rollback(&mut sse, "brc20", 7).await;
+        expect_rollback(&mut sse, "brc20", 7, Some("b")).await;
         delivered.retain(|(height, _)| *height <= 7);
         for height in 8..=12 {
             let frame = expect_block(&mut sse, "brc20", height, "x").await;
@@ -322,9 +397,9 @@ async fn a_stream_resumes_by_from_height_and_by_last_event_id() {
         let mut watching = Sse::open(&app, "/v1/stream?modules=brc20&from_height=10", None).await;
         expect_block(&mut watching, "brc20", 10, "b").await;
         reorg(&pool, 5, 10, "x").await;
-        expect_rollback(&mut watching, "brc20", 5).await;
+        expect_rollback(&mut watching, "brc20", 5, Some("b")).await;
         let mut sse = Sse::open(&app, "/v1/stream?modules=brc20", Some("brc20:6:b6")).await;
-        expect_rollback(&mut sse, "brc20", 5).await;
+        expect_rollback(&mut sse, "brc20", 5, Some("b")).await;
         for height in 6..=10 {
             expect_block(&mut sse, "brc20", height, "x").await;
         }
@@ -334,8 +409,112 @@ async fn a_stream_resumes_by_from_height_and_by_last_event_id() {
         // reorg may go
         let fresh = stream_app(&pool, &[]);
         let mut sse = Sse::open(&fresh, "/v1/stream?modules=brc20", Some("brc20:6:b6")).await;
-        expect_rollback(&mut sse, "brc20", 0).await;
+        expect_rollback(&mut sse, "brc20", 0, None).await;
         expect_block(&mut sse, "brc20", 1, "b").await;
+        drop(sse);
+
+        // a rollback's id resumes after the kept block
+        let mut sse = Sse::open(&app, "/v1/stream?modules=brc20", Some("brc20:5:b5")).await;
+        expect_block(&mut sse, "brc20", 6, "x").await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stale_id_rolls_back_every_module_of_the_stream() {
+    with_chain("stream_stale_modules", 10, |pool| async move {
+        let app = stream_app(&pool, &[]);
+        // a stream at the tip keeps the pollers, which see the reorg
+        let mut watching = Sse::open(&app, "/v1/stream?from_height=10", None).await;
+        for module in ["bitmap", "brc20", "sns"] {
+            expect_block(&mut watching, module, 10, "b").await;
+        }
+        reorg(&pool, 5, 10, "x").await;
+        // each module's poller sees the reorg on its own
+        let mut rolled = Vec::new();
+        while rolled.len() < 3 {
+            let frame = message(&mut watching).await;
+            if frame.event == "rollback" {
+                assert_eq!(frame.data["height"], 5);
+                rolled.push(frame.data["module"].as_str().unwrap().to_string());
+            }
+        }
+        rolled.sort();
+        assert_eq!(rolled, ["bitmap", "brc20", "sns"]);
+        // brc20's block 6 stands for every module's: bitmap had received
+        // it, sns block 5 below it
+        let mut sse = Sse::open(&app, "/v1/stream", Some("brc20:6:b6")).await;
+        for module in ["bitmap", "brc20", "sns"] {
+            expect_rollback(&mut sse, module, 5, Some("b")).await;
+        }
+        for height in 6..=10 {
+            for module in ["bitmap", "brc20", "sns"] {
+                expect_block(&mut sse, module, height, "x").await;
+            }
+        }
+        drop((sse, watching));
+        // a fresh process, which saw no reorg, rolls each module back as
+        // deep as a reorg may go
+        let fresh = stream_app(&pool, &[]);
+        let mut sse = Sse::open(&fresh, "/v1/stream", Some("bitmap:6:b6")).await;
+        for module in ["bitmap", "brc20", "sns"] {
+            expect_rollback(&mut sse, module, 0, None).await;
+        }
+        expect_block(&mut sse, "bitmap", 1, "b").await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_reorg_during_a_replay_rolls_back_what_was_sent() {
+    with_chain("stream_midreplay", 30, |pool| async move {
+        let app = stream_app(&pool, &[]);
+        let mut sse = Sse::open(&app, "/v1/stream?modules=brc20&from_height=1", None).await;
+        let mut applied = Applied::default();
+        for height in 1..=10 {
+            applied.apply(&expect_block(&mut sse, "brc20", height, "b").await);
+        }
+        reorg(&pool, 5, 30, "x").await;
+        // blocks of the old branch may still come before the rollback
+        while applied
+            .blocks
+            .last()
+            .is_none_or(|(height, hash, _)| !(*height == 30 && hash == "x30"))
+        {
+            applied.apply(&message(&mut sse).await);
+        }
+        assert_eq!(applied.rollbacks, [5]);
+        assert!(
+            applied.blocks[5..]
+                .iter()
+                .all(|(_, hash, _)| hash.starts_with('x'))
+        );
+        assert_eq!(applied.events(), feed(&app).await);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_reorg_below_the_confirmations_rolls_back_and_one_above_them_does_not() {
+    with_chain("stream_conf_reorg", 10, |pool| async move {
+        let app = stream_app(&pool, &[]);
+        let mut sse = Sse::open(
+            &app,
+            "/v1/stream?modules=brc20&confirmations=3&from_height=1",
+            None,
+        )
+        .await;
+        for height in 1..=8 {
+            expect_block(&mut sse, "brc20", height, "b").await;
+        }
+        reorg(&pool, 6, 12, "x").await;
+        expect_rollback(&mut sse, "brc20", 6, Some("b")).await;
+        for height in 7..=10 {
+            expect_block(&mut sse, "brc20", height, "x").await;
+        }
+        // blocks 11 and 12 were not sent yet: replacing them needs no rollback
+        reorg(&pool, 10, 13, "y").await;
+        expect_block(&mut sse, "brc20", 11, "y").await;
     })
     .await;
 }
@@ -354,7 +533,8 @@ async fn several_modules_interleave_by_height_then_name() {
                     let events = frame.data["events"].as_array().unwrap();
                     assert_eq!(events.len(), 1);
                     let short = if module == "bitmap" { "bm" } else { "sn" };
-                    let uri = format!("/v1/{module}/by_inscription?inscription_id=b{short}{height}i0");
+                    let uri =
+                        format!("/v1/{module}/by_inscription?inscription_id=b{short}{height}i0");
                     let answer: Value = serde_json::from_str(&get(&app, &uri).await.body).unwrap();
                     assert_eq!(events[0], answer["result"]);
                 }
@@ -362,28 +542,35 @@ async fn several_modules_interleave_by_height_then_name() {
         }
         // a resume within a height goes on with the modules after it
         drop(sse);
-        let mut sse = Sse::open(&app, "/v1/stream?modules=sns,bitmap,brc20", Some("brc20:2:b2")).await;
+        let mut sse = Sse::open(
+            &app,
+            "/v1/stream?modules=sns,bitmap,brc20",
+            Some("brc20:2:b2"),
+        )
+        .await;
         expect_block(&mut sse, "sns", 2, "b").await;
         expect_block(&mut sse, "bitmap", 3, "b").await;
         // a reorg of one module rolls that module back alone
         drop(sse);
-        let mut sse = Sse::open(&app, "/v1/stream?modules=sns,bitmap", None).await;
+        let mut sse = Sse::open(&app, "/v1/stream?modules=sns,bitmap&from_height=1", None).await;
+        for height in 1..=3 {
+            expect_block(&mut sse, "bitmap", height, "b").await;
+            expect_block(&mut sse, "sns", height, "b").await;
+        }
         sqlx::raw_sql(
             "BEGIN; DELETE FROM sns_names WHERE block_height > 1;
-             DELETE FROM sns_block_hashes WHERE block_height > 1; COMMIT;",
+             DELETE FROM sns_block_hashes WHERE block_height > 1;
+             INSERT INTO sns_block_hashes (block_height, block_hash) VALUES (2, 'x2'), (3, 'x3');
+             COMMIT;",
         )
         .execute(&pool)
         .await
         .unwrap();
-        let mut sns = String::new();
+        expect_rollback(&mut sse, "sns", 1, Some("b")).await;
         for height in 2..=3 {
-            sns.push_str(&format!(
-                "INSERT INTO sns_block_hashes (block_height, block_hash) VALUES ({height}, 'x{height}');"
-            ));
+            let frame = expect_block(&mut sse, "sns", height, "x").await;
+            assert_eq!(frame.data["events"], json!([]));
         }
-        sqlx::raw_sql(sqlx::AssertSqlSafe(sns)).execute(&pool).await.unwrap();
-        // the stream started after the tip, so nothing was delivered: the
-        // replaced blocks need no rollback
         let quiet = tokio::time::timeout(Duration::from_millis(500), sse.next_message()).await;
         assert!(quiet.is_err(), "{quiet:?}");
     })
@@ -442,25 +629,40 @@ async fn the_subscriber_cap_answers_503() {
         .await;
         drop(sse);
         // the stream ends once its client has gone, freeing its place
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let answer = get(&app, "/v1/stream").await;
-            if answer.status == 200 {
-                break;
-            }
-            assert!(tokio::time::Instant::now() < deadline, "{}", answer.body);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        wait_for_a_free_place(&app).await;
     })
     .await;
+}
+
+/// Asks for a stream until one answers, within 10 seconds; the answer's
+/// stream closes at once.
+async fn wait_for_a_free_place(app: &Router) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let answer = get(app, "/v1/stream").await;
+        if answer.status == 200 {
+            return;
+        }
+        assert_eq!(answer.status, 503, "{}", answer.body);
+        assert!(tokio::time::Instant::now() < deadline, "no place came free");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test]
 async fn a_slow_subscriber_is_cut_with_an_error_event() {
     with_chain("stream_slow", 6, |pool| async move {
-        let app = stream_app(&pool, &[("STREAM_BUFFER", "1"), ("STREAM_HEARTBEAT_SECS", "1")]);
+        let app = stream_app(
+            &pool,
+            &[
+                ("STREAM_BUFFER", "1"),
+                ("STREAM_HEARTBEAT_SECS", "1"),
+                ("STREAM_MAX_SUBSCRIBERS", "1"),
+            ],
+        );
         let mut sse = Sse::open(&app, "/v1/stream?from_height=1", None).await;
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        // the stream, unread, ends and frees its place
+        wait_for_a_free_place(&app).await;
         let frame = sse.next().await.unwrap();
         assert_eq!(frame.event, "error");
         assert_eq!(
@@ -533,6 +735,206 @@ async fn shutdown_ends_the_streams() {
             "{:?}",
             started.elapsed()
         );
+    })
+    .await;
+}
+
+/// The API over brc20's database on `pool`, with the `vars` settings, on a
+/// local port, until the sender's drop or send.
+async fn serve_brc20(
+    pool: &PgPool,
+    vars: &[(&str, &str)],
+) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>) {
+    let env: HashMap<&str, &str> = [("OPI_MODULES", "brc20"), ("DB_DATABASE", "d")]
+        .into_iter()
+        .chain(vars.iter().copied())
+        .collect();
+    let config = load_config(|key| env.get(key).map(|v| v.to_string())).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(serve_listeners(
+        config,
+        vec![(Module::Brc20, Db::from_pool(pool.clone()))],
+        listener,
+        None,
+        async {
+            stopped.await.ok();
+        },
+    ));
+    (addr, stop)
+}
+
+/// Sends a GET of `path` with `headers` and reads the answer's head.
+async fn open_raw(
+    addr: std::net::SocketAddr,
+    path: &str,
+    headers: &str,
+) -> (TcpStream, String, Vec<u8>) {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(format!("GET {path} HTTP/1.1\r\nhost: x\r\n{headers}\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&seen[..end]).to_string();
+            let rest = seen[end + 4..].to_vec();
+            return (stream, head, rest);
+        }
+        let n = stream.read(&mut buffer).await.unwrap();
+        assert!(n > 0, "{}", String::from_utf8_lossy(&seen));
+        seen.extend_from_slice(&buffer[..n]);
+    }
+}
+
+/// The payload of a chunked body, read to its end.
+fn unchunk(mut body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let line_end = body
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .expect("a chunk size");
+        let size =
+            usize::from_str_radix(std::str::from_utf8(&body[..line_end]).unwrap(), 16).unwrap();
+        body = &body[line_end + 2..];
+        if size == 0 {
+            return out;
+        }
+        out.extend_from_slice(&body[..size]);
+        body = &body[size + 2..];
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_cut_off_mid_block_resumes_at_that_block() {
+    with_chain("stream_cut", 0, |pool| async move {
+        add_big_blocks(&pool, 1..=40, 300).await;
+        let (addr, _stop) = serve_brc20(
+            &pool,
+            &[
+                ("STREAM_BUFFER", "1"),
+                ("STREAM_HEARTBEAT_SECS", "1"),
+                ("STREAM_MAX_SUBSCRIBERS", "1"),
+            ],
+        )
+        .await;
+        let (mut stream, head, mut body) =
+            open_raw(addr, "/v1/stream?from_height=1", "connection: close\r\n").await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        // read a little, then stop reading until the stream has ended
+        let mut buffer = vec![0; 64 * 1024];
+        let n = stream.read(&mut buffer).await.unwrap();
+        body.extend_from_slice(&buffer[..n]);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let (_probe, head, _) = open_raw(addr, "/v1/stream", "connection: close\r\n").await;
+            if head.starts_with("HTTP/1.1 200") {
+                break;
+            }
+            assert!(head.starts_with("HTTP/1.1 503"), "{head}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the stream did not end"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        stream.read_to_end(&mut body).await.unwrap();
+        let text = String::from_utf8(unchunk(&body)).unwrap();
+        let (whole, cut) = text.rsplit_once("\n\n").unwrap();
+        assert!(
+            !cut.contains("\nid: "),
+            "an id in the unfinished frame {:.200}",
+            cut
+        );
+        let mut last_id = None;
+        for frame in whole.split("\n\n") {
+            let data = frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap();
+            let data: Value = serde_json::from_str(data).expect("a whole frame's data");
+            if frame.starts_with("event: block") {
+                last_id = frame
+                    .lines()
+                    .find_map(|line| line.strip_prefix("id: "))
+                    .map(str::to_string);
+                assert!(data["events"].as_array().is_some());
+            } else {
+                assert!(frame.starts_with("event: error"), "{frame:.200}");
+            }
+        }
+        let last_id = last_id.expect("a whole block before the cut");
+        let height: i32 = last_id.split(':').nth(1).unwrap().parse().unwrap();
+        assert!(height < 40, "the stream was not cut");
+        if !cut.is_empty() {
+            assert!(cut.starts_with("event: block\ndata: "), "{cut:.200}");
+            assert!(
+                cut.contains(&format!("\"height\":{},", height + 1)),
+                "{cut:.200}"
+            );
+        }
+        // the client's Last-Event-ID resumes at the block it did not finish,
+        // once the probe's stream has gone
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let (mut stream, mut body) = loop {
+            let (stream, head, body) = open_raw(
+                addr,
+                "/v1/stream?from_height=1",
+                &format!("last-event-id: {last_id}\r\n"),
+            )
+            .await;
+            if head.starts_with("HTTP/1.1 200 OK") {
+                break (stream, body);
+            }
+            assert!(head.starts_with("HTTP/1.1 503"), "{head}");
+            assert!(tokio::time::Instant::now() < deadline, "no place came free");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let mut buffer = [0; 4096];
+        while !body.windows(6).any(|w| w == b"data: ") {
+            let n = stream.read(&mut buffer).await.unwrap();
+            body.extend_from_slice(&buffer[..n]);
+        }
+        let start = String::from_utf8_lossy(&body).to_string();
+        assert!(
+            start.contains(&format!("\"height\":{},", height + 1)),
+            "{start:.300}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replaying_streams_leave_connections_to_the_other_routes() {
+    with_chain_pool("stream_pool", 0, 2, |pool| async move {
+        add_big_blocks(&pool, 1..=10, 1000).await;
+        let app = stream_app(&pool, &[]);
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let mut sse = Sse::open(&app, "/v1/stream?modules=brc20&from_height=1", None).await;
+            readers.push(tokio::spawn(async move {
+                for height in 1..=10 {
+                    expect_block(&mut sse, "brc20", height, "b").await;
+                }
+            }));
+        }
+        for _ in 0..5 {
+            let asked = std::time::Instant::now();
+            let answer = get(&app, "/v1/brc20/ticker/events?ticker=ordi&limit=1").await;
+            assert_eq!(answer.status, 200, "{}", answer.body);
+            assert!(
+                asked.elapsed() < Duration::from_secs(3),
+                "{:?}",
+                asked.elapsed()
+            );
+        }
+        for reader in readers {
+            reader.await.unwrap();
+        }
     })
     .await;
 }

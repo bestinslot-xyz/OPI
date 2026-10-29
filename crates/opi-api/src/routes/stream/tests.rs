@@ -71,6 +71,17 @@ fn bad_parameters_are_refused() {
 }
 
 #[test]
+fn streams_read_a_pool_as_the_snapshots_do() {
+    for (max_connections, readers) in [(1, 1), (2, 1), (4, 2), (10, 4), (100, 4)] {
+        assert_eq!(
+            super::readers(max_connections),
+            readers,
+            "{max_connections}"
+        );
+    }
+}
+
+#[test]
 fn a_disabled_module_is_refused() {
     let headers = HeaderMap::new();
     let refused = parse(

@@ -35,7 +35,7 @@ use {
 };
 
 pub(super) mod events;
-mod snapshot;
+pub(super) mod snapshot;
 mod tickers;
 
 #[cfg(test)]

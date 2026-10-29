@@ -2,21 +2,25 @@
 //! of each module of the stream from that module's database, in order, and
 //! queues their frames for the client.
 //!
-//! Each module has a cursor: the next height to deliver and the last block
-//! delivered. The stream delivers the cursor lowest by height, then module
-//! name, once its module's indexed tip has reached the height plus the
-//! confirmations less one; until then it waits, without a database
+//! Each module has a cursor: the next height to deliver and the blocks
+//! delivered last. The stream delivers the cursor lowest by height, then
+//! module name, once the module's block-hash table holds the height plus
+//! the confirmations less one; until then it waits, without a database
 //! connection, for a poller to report a change, sending a heartbeat every
 //! STREAM_HEARTBEAT_SECS. Before each block, and on each change its poller
 //! reports, a module's last delivered block is checked against the stored
-//! hash; when it was replaced, the stream sends a rollback to the last block
-//! still stored and goes on after it.
+//! hash; when it was replaced, the stream sends a rollback to the last
+//! delivered block still stored and goes on after it.
+//!
+//! A block's reads take a permit of its module database's stream readers,
+//! which leaves the rest of the pool to the other routes; no permit is held
+//! while a chunk waits for room in the client's buffer.
 
 use {
     super::{
         StreamStop,
         poller::{WINDOW, Watch},
-        provider::Provider,
+        provider::{BlockRow, Provider},
     },
     crate::{
         config::StreamSettings,
@@ -26,9 +30,13 @@ use {
     },
     axum::body::Bytes,
     opi_core::metrics::{StreamSubscriberGuard, global},
-    std::time::Duration,
+    std::{
+        collections::{HashMap, VecDeque},
+        sync::Arc,
+        time::Duration,
+    },
     tokio::{
-        sync::{OwnedSemaphorePermit, mpsc, oneshot},
+        sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit, mpsc, oneshot},
         time::Instant,
     },
 };
@@ -44,13 +52,20 @@ pub struct Cursor {
     pub provider: Provider,
     pub db: Db,
     pub watch: Watch,
+    /// The permits of the module database's stream readers.
+    pub reads: Arc<Semaphore>,
     /// The next height to deliver; `None` until the module's first block is
     /// indexed, for a stream that named no start.
     pub next: Option<i32>,
-    /// The last block delivered (or, on a resume, received), as height and
-    /// hash.
-    pub last: Option<(i32, String)>,
-    /// Whether `last` is to be checked against the stored hash.
+    /// The last blocks the client holds, as height and hash, oldest first:
+    /// those the stream delivered, at most [`WINDOW`], after the block a
+    /// Last-Event-ID named.
+    pub ring: VecDeque<(i32, String)>,
+    /// A block of the stream's chain the client holds, from a
+    /// Last-Event-ID naming an earlier module at the same height: checked
+    /// once the module's tip reaches it.
+    pub pending: Option<(i32, String)>,
+    /// Whether the cursor is to be checked against the stored hashes.
     pub dirty: bool,
 }
 
@@ -94,16 +109,50 @@ pub struct Session {
     pub gauge: StreamSubscriberGuard,
 }
 
-/// A frame of `event` with `data`, and the id of a block.
-fn frame(event: &str, id: Option<&str>, data: &str) -> String {
+/// A frame of `event` with `data`, and its id last, so an id comes only
+/// with a whole frame.
+fn frame(event: &str, data: &str, id: Option<&str>) -> String {
     match id {
-        Some(id) => format!("event: {event}\nid: {id}\ndata: {data}\n\n"),
+        Some(id) => format!("event: {event}\ndata: {data}\nid: {id}\n\n"),
         None => format!("event: {event}\ndata: {data}\n\n"),
     }
 }
 
 fn js_string(text: &str) -> String {
     json_stringify(&JsValue::from(text)).unwrap_or_default()
+}
+
+impl Cursor {
+    /// Waits for a permit of the module database's stream readers.
+    async fn read_permit(&self) -> SemaphorePermit<'_> {
+        self.reads
+            .acquire()
+            .await
+            .expect("the readers' semaphore stays open")
+    }
+
+    /// The rows of `heights`, under a reader permit.
+    async fn rows(&self, heights: &[i32]) -> Result<Vec<BlockRow>, ApiError> {
+        let _permit = self.read_permit().await;
+        self.provider.blocks_at(&self.db, heights).await
+    }
+
+    /// The stored hash at `height`.
+    async fn stored(&self, height: i32) -> Result<Option<String>, ApiError> {
+        Ok(self
+            .rows(&[height])
+            .await?
+            .into_iter()
+            .next()
+            .map(|row| row.hash))
+    }
+
+    fn push(&mut self, block: (i32, String)) {
+        self.ring.push_back(block);
+        while self.ring.len() > WINDOW as usize {
+            self.ring.pop_front();
+        }
+    }
 }
 
 impl Session {
@@ -123,9 +172,8 @@ impl Session {
             End::Gone(reason) => Some(reason),
         };
         let last = last.map(|reason| {
-            global().stream_message("error");
             let data = format!("{{\"error\":{}}}", js_string(&reason));
-            Bytes::from(frame("error", None, &data))
+            Bytes::from(frame("error", &data, None))
         });
         self.end.send(last).ok();
         drop(self.permit);
@@ -199,6 +247,8 @@ impl Session {
         };
         let cursor = &self.cursors[index];
         let next = cursor.next.expect("a cursor with a next height");
+        // the poller's tip spares the reads of a block that is not due yet;
+        // the block's own read decides
         let due = cursor.watch.tip.borrow().height.is_some_and(|tip| {
             i64::from(tip) >= i64::from(next) + i64::from(self.confirmations) - 1
         });
@@ -208,36 +258,64 @@ impl Session {
         self.deliver(index, next).await
     }
 
-    /// Rolls the cursor back when its last delivered block is no longer
-    /// stored. Answers whether it rolled back.
+    /// Rolls the cursor back when the last block the client holds is no
+    /// longer stored. Answers whether it rolled back.
     async fn check(&mut self, index: usize) -> Result<bool, End> {
         let cursor = &self.cursors[index];
-        let Some((height, hash)) = &cursor.last else {
+        if let Some((height, hash)) = cursor.pending.clone() {
+            let reached = cursor
+                .watch
+                .tip
+                .borrow()
+                .height
+                .is_some_and(|tip| tip >= height);
+            if !reached {
+                return Ok(false);
+            }
+            if cursor.stored(height).await?.as_ref() == Some(&hash) {
+                self.cursors[index].pending = None;
+                return Ok(false);
+            }
+            let kept = self.follow(index, height, hash).await?;
+            let kept = match kept {
+                Some((kept, _)) => kept,
+                None => self.deepest(index, height).await?,
+            };
+            self.rollback(index, kept.min(height - 1)).await?;
+            return Ok(true);
+        }
+        let Some((height, hash)) = cursor.ring.back() else {
             return Ok(false);
         };
-        let stored = cursor.provider.blocks(&cursor.db, *height, *height).await?;
-        if stored.first().is_some_and(|row| &row.hash == hash) {
+        if cursor.stored(*height).await?.as_ref() == Some(hash) {
             return Ok(false);
         }
-        self.rollback(index).await?;
+        let kept = self.kept(index).await?;
+        self.rollback(index, kept).await?;
         Ok(true)
     }
 
-    /// Delivers block `height` of the cursor at `index`. Answers whether
-    /// it delivered or rolled back.
+    /// Delivers block `height` of the cursor at `index` when it is due.
+    /// Answers whether it delivered or rolled back.
     async fn deliver(&mut self, index: usize, height: i32) -> Result<bool, End> {
         let cursor = &self.cursors[index];
+        if cursor.pending.is_some() {
+            // its check comes first, once the tip reaches it
+            return Ok(false);
+        }
         let (provider, db) = (cursor.provider, cursor.db.clone());
-        let rows = provider.blocks(&db, height - 1, height).await?;
-        if let Some((last, hash)) = &cursor.last
+        let due_at = height + self.confirmations - 1;
+        let rows = cursor.rows(&[height - 1, height, due_at]).await?;
+        if let Some((last, hash)) = cursor.ring.back()
             && !rows
                 .iter()
                 .any(|row| row.height == *last && &row.hash == hash)
         {
-            self.rollback(index).await?;
+            let kept = self.kept(index).await?;
+            self.rollback(index, kept).await?;
             return Ok(true);
         }
-        let Some(row) = rows.into_iter().find(|row| row.height == height) else {
+        let Some(row) = rows.iter().find(|row| row.height == height).cloned() else {
             // a reorg in progress, or a block pruning has deleted
             if let Some(oldest) = provider.oldest(&db).await?
                 && oldest > height
@@ -249,23 +327,32 @@ impl Session {
             }
             return Ok(false);
         };
+        if !rows.iter().any(|row| row.height == due_at) {
+            return Ok(false);
+        }
+        let range = {
+            let _permit = cursor.read_permit().await;
+            provider.event_ids(&db, height).await?
+        };
         let name = provider.name();
-        let id = format!("{name}:{height}:{}", row.hash);
         let time = row.time.map_or("null".to_string(), |time| time.to_string());
         let head = format!(
-            "{{\"module\":\"{name}\",\"height\":{height},\"hash\":{},\"block_time\":{time}{},\"events\":[",
+            "event: block\ndata: {{\"module\":\"{name}\",\"height\":{height},\"hash\":{},\"block_time\":{time}{},\"events\":[",
             js_string(&row.hash),
             provider.header_fields(),
         );
-        let head = format!("event: block\nid: {id}\ndata: {head}");
         self.send(head).await?;
-        if let Some((low, high)) = provider.event_ids(&db, height).await? {
+        if let Some((low, high)) = range {
             let mut after = low - 1;
             let mut first = true;
             loop {
-                let page = provider
-                    .events(&db, height, after, high, EVENT_PAGE)
-                    .await?;
+                let page = {
+                    let cursor = &self.cursors[index];
+                    let _permit = cursor.read_permit().await;
+                    provider
+                        .events(&db, height, after, high, EVENT_PAGE)
+                        .await?
+                };
                 let Some((last_id, _)) = page.last() else {
                     break;
                 };
@@ -285,42 +372,104 @@ impl Session {
                 }
             }
         }
-        self.send("]}\n\n".to_string()).await?;
+        self.send(format!("]}}\nid: {name}:{height}:{}\n\n", row.hash))
+            .await?;
         global().stream_message("block");
         let cursor = &mut self.cursors[index];
-        cursor.last = Some((height, row.hash));
+        cursor.push((height, row.hash));
         cursor.next = Some(height + 1);
         Ok(true)
     }
 
-    /// Sends the rollback of the cursor at `index` to the last block of its
-    /// delivered branch that is still stored, and goes on after it.
-    async fn rollback(&mut self, index: usize) -> Result<(), End> {
-        let kept = self.kept(index).await?;
+    /// Sends the rollback of the cursor at `index` to block `kept`, the last
+    /// block of the client's branch still stored, and goes on after it.
+    async fn rollback(&mut self, index: usize, kept: i32) -> Result<(), End> {
         let cursor = &self.cursors[index];
         let name = cursor.provider.name();
-        let stored = cursor.provider.blocks(&cursor.db, kept, kept).await?;
+        let kept_hash = cursor.stored(kept).await?;
         let data = format!("{{\"module\":\"{name}\",\"height\":{kept}}}");
-        self.send(frame("rollback", None, &data)).await?;
+        let id = kept_hash
+            .as_ref()
+            .map(|hash| format!("{name}:{kept}:{hash}"));
+        self.send(frame("rollback", &data, id.as_deref())).await?;
         global().stream_message("rollback");
         let cursor = &mut self.cursors[index];
-        cursor.last = stored.into_iter().next().map(|row| (row.height, row.hash));
+        cursor.pending = None;
         cursor.next = Some(kept + 1);
+        let in_ring = cursor
+            .ring
+            .iter()
+            .any(|(height, hash)| *height == kept && Some(hash) == kept_hash.as_ref());
+        if in_ring {
+            while cursor.ring.back().is_some_and(|(height, _)| *height > kept) {
+                cursor.ring.pop_back();
+            }
+        } else {
+            cursor.ring.clear();
+            if let Some(hash) = kept_hash {
+                cursor.ring.push_back((kept, hash));
+            }
+        }
         Ok(())
     }
 
-    /// The last block of the cursor's delivered branch that is still
-    /// stored: followed back through the reorgs its module's poller saw, or,
-    /// past what it saw, [`WINDOW`] blocks below the last delivered one,
-    /// the deepest rollback the indexer walks.
+    /// The last block the client holds of the cursor's that is still
+    /// stored: the newest block of its ring with the stored hash, read in
+    /// one statement. A reorg below the whole ring, such as one below a
+    /// Last-Event-ID's block, is followed back from the ring's first block
+    /// through the reorgs the module's poller saw, and past those the
+    /// rollback goes as deep as the indexer's.
     async fn kept(&self, index: usize) -> Result<i32, End> {
         let cursor = &self.cursors[index];
-        let (mut height, mut hash) = cursor.last.clone().expect("a delivered block");
-        let delivered = height;
+        let (low, _) = cursor
+            .ring
+            .front()
+            .cloned()
+            .expect("a block the client holds");
+        let (high, _) = cursor
+            .ring
+            .back()
+            .cloned()
+            .expect("a block the client holds");
+        let stored: HashMap<i32, String> = {
+            let _permit = cursor.read_permit().await;
+            cursor.provider.blocks(&cursor.db, low, high).await?
+        }
+        .into_iter()
+        .map(|row| (row.height, row.hash))
+        .collect();
+        if let Some((height, _)) = cursor
+            .ring
+            .iter()
+            .rev()
+            .find(|(height, hash)| stored.get(height) == Some(hash))
+        {
+            return Ok(*height);
+        }
+        let (front, hash) = cursor
+            .ring
+            .front()
+            .cloned()
+            .expect("a block the client holds");
+        match self.follow(index, front, hash).await? {
+            Some((kept, _)) => Ok(kept.min(front - 1)),
+            None => self.deepest(index, front).await,
+        }
+    }
+
+    /// The block of `hash` at `height`, followed back through the reorgs
+    /// the module's poller saw to one still stored, or to the block a reorg
+    /// kept below the poller's window; `None` past what the poller saw.
+    async fn follow(
+        &self,
+        index: usize,
+        mut height: i32,
+        mut hash: String,
+    ) -> Result<Option<(i32, Option<String>)>, End> {
+        let cursor = &self.cursors[index];
         for _ in 0..MAX_FORKS {
-            let stored = cursor.provider.blocks(&cursor.db, height, height).await?;
-            if stored.first().is_some_and(|row| row.hash == hash) {
-                return Ok(height.min(delivered - 1));
+            if cursor.stored(height).await?.as_ref() == Some(&hash) {
+                return Ok(Some((height, Some(hash))));
             }
             let kept = cursor
                 .watch
@@ -330,16 +479,30 @@ impl Session {
                 .kept(height, &hash);
             match kept {
                 Some((kept, Some(kept_hash))) => (height, hash) = (kept, kept_hash),
-                Some((kept, None)) => return Ok(kept.min(delivered - 1)),
-                None => break,
+                Some((kept, None)) => return Ok(Some((kept, None))),
+                None => return Ok(None),
             }
         }
-        let floor = cursor
-            .provider
-            .oldest(&cursor.db)
-            .await?
-            .map_or(i32::MIN, |oldest| oldest - 1);
-        Ok((delivered - WINDOW).max(floor).min(delivered - 1))
+        Ok(None)
+    }
+
+    /// The deepest rollback below `height`: [`WINDOW`] blocks, the deepest
+    /// the indexer walks, and not below the module's first stored block.
+    async fn deepest(&self, index: usize, height: i32) -> Result<i32, End> {
+        Ok((height - WINDOW)
+            .max(self.floor(index).await?)
+            .min(height - 1))
+    }
+
+    /// The height below the module's first stored block, 0 for an empty
+    /// table.
+    async fn floor(&self, index: usize) -> Result<i32, End> {
+        let cursor = &self.cursors[index];
+        let oldest = {
+            let _permit = cursor.read_permit().await;
+            cursor.provider.oldest(&cursor.db).await?
+        };
+        Ok(oldest.map_or(0, |oldest| (oldest - 1).max(0)))
     }
 
     async fn heartbeat(&mut self) -> Result<(), End> {
@@ -353,7 +516,7 @@ impl Session {
             })
             .collect();
         let data = format!("{{\"tips\":{{{}}}}}", tips.join(","));
-        self.send(frame("heartbeat", None, &data)).await?;
+        self.send(frame("heartbeat", &data, None)).await?;
         global().stream_message("heartbeat");
         Ok(())
     }
