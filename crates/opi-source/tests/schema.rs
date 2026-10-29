@@ -3,11 +3,11 @@ use {
         InscriptionInfo, InscriptionRecord, RuneEtching, RuneEvent, RuneEventKind, RuneTerms,
     },
     opi_source::journal::{
-        Journal, cf, compress_info, decode_info, decode_rune_balance_row, decode_rune_counter_log,
-        decode_rune_etching, decode_rune_event, decode_transfer, decompress_info, encode_info,
-        encode_rune_balance_row, encode_rune_counter_log, encode_rune_etching, encode_rune_event,
-        encode_transfer, rune_counter_log_key, rune_id_key, rune_id_string, rune_outpoint_key,
-        table, transfer_key,
+        Journal, JournalOptions, cf, compress_info, decode_info, decode_rune_balance_row,
+        decode_rune_counter_log, decode_rune_etching, decode_rune_event, decode_transfer,
+        decompress_info, encode_info, encode_rune_balance_row, encode_rune_counter_log,
+        encode_rune_etching, encode_rune_event, encode_transfer, rune_counter_log_key, rune_id_key,
+        rune_id_string, rune_outpoint_key, table, transfer_key,
     },
     ord::Chain,
     redb::{ReadableDatabase, TableHandle},
@@ -366,6 +366,14 @@ fn reopen_rejects_chain_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     drop(Journal::open(&path, Chain::Regtest, true).unwrap());
+    let small = JournalOptions {
+        cache_bytes: 64 << 20,
+    };
+    let journal = Journal::open_with(&path, Chain::Regtest, true, &small).unwrap();
+    journal.set_gate_limit(7).unwrap();
+    assert_eq!(journal.gate_limit().unwrap(), Some(7));
+    drop(journal);
+    assert!(Journal::compact(&path, &small).is_ok());
     drop(Journal::open(&path, Chain::Regtest, true).unwrap());
     let err = Journal::open(&path, Chain::Signet, true).err().unwrap();
     assert!(err.to_string().contains("chain"), "{err}");

@@ -95,6 +95,7 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `OPI_CHAIN` | `mainnet`, `signet`, `testnet4` or `regtest` |
 | `OPI_ORD_DATA_DIR` | directory of ord's index database |
 | `OPI_JOURNAL_DIR` | directory of the journal |
+| `OPI_JOURNAL_CACHE_MB` | the journal's redb page cache in MiB, 64 to 65536, default `1024`; 4096-8192 speeds up indexing and pruning on large journals when the RAM is free, and the process's memory grows by up to that amount |
 | `BITCOIN_RPC_URL` | bitcoind RPC URL |
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |

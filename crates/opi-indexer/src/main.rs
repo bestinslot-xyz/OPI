@@ -235,7 +235,11 @@ fn compact_journal() -> Result<()> {
         .ok()
         .filter(|dir| !dir.is_empty())
         .context("OPI_JOURNAL_DIR is not set")?;
-    prune::compact_journal(&std::path::Path::new(&dir).join(opi_source::driver::JOURNAL_FILE))
+    let options = config::journal_options(&|key| std::env::var(key).ok())?;
+    prune::compact_journal(
+        &std::path::Path::new(&dir).join(opi_source::driver::JOURNAL_FILE),
+        &options,
+    )
 }
 
 /// Runs the enabled modules over the journal until a signal arrives or the

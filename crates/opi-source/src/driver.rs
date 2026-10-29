@@ -5,8 +5,8 @@ use {
     crate::{
         check_ord_index, check_ord_settings,
         journal::{
-            ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalReader, RuneModelError,
-            finalize_range, init_path, remove_if_exists, reorg_check, sync_parent,
+            ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalOptions, JournalReader,
+            RuneModelError, finalize_range, init_path, remove_if_exists, reorg_check, sync_parent,
         },
         ord_settings,
         proxy::{GateProxy, ProxyConfig, UpstreamAuth},
@@ -50,6 +50,8 @@ pub struct SourceConfig {
     /// Whether ord indexes runes and the journal keeps rune records. Fixed
     /// for the life of an ord data dir and journal.
     pub runes: bool,
+    /// How the journal database is opened.
+    pub journal: JournalOptions,
 }
 
 impl SourceConfig {
@@ -146,12 +148,13 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     std::fs::create_dir_all(&cfg.journal_dir)
         .with_context(|| format!("creating {}", cfg.journal_dir.display()))?;
     let journal_path = cfg.journal_path();
-    let journal = Journal::open(&journal_path, cfg.chain, cfg.runes).with_context(|| {
-        format!(
-            "opening the journal of ord's data dir {}",
-            cfg.ord_data_dir.display()
-        )
-    })?;
+    let journal = Journal::open_with(&journal_path, cfg.chain, cfg.runes, &cfg.journal)
+        .with_context(|| {
+            format!(
+                "opening the journal of ord's data dir {}",
+                cfg.ord_data_dir.display()
+            )
+        })?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
