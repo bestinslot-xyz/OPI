@@ -94,7 +94,7 @@ fn prune_keeps_what_later_blocks_need() {
     drop((reader, journal));
 
     let path = tmp.path().join("journal").join("journal.redb");
-    Journal::compact(&path).unwrap();
+    Journal::compact(&path, &Default::default()).unwrap();
     let journal = Journal::open(&path, ord::Chain::Regtest, true).unwrap();
     assert_eq!(journal.pruned_below().unwrap(), floor);
     let tx = journal.db().begin_read().unwrap();

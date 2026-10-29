@@ -324,6 +324,7 @@ pub fn source_config(dir: &Path, url: String, chunk: u32) -> SourceConfig {
         bitcoin_auth: UpstreamAuth::UserPass("user".into(), "pass".into()),
         chunk,
         runes: true,
+        journal: Default::default(),
     }
 }
 
