@@ -945,6 +945,192 @@ async fn holders_follow_blocks_and_rollbacks() {
     .await;
 }
 
+/// A xorshift generator, so the random blocks repeat from a seed.
+struct Random(u64);
+
+impl Random {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+}
+
+/// A block of random transfers, burns and mints over the unspent outpoints
+/// the database holds: each transfer spends up to three outpoints into one
+/// to three outputs of six owners, sometimes splitting a rune across two
+/// outputs or burning it, so balances appear, move, empty and vanish.
+async fn random_block(conn: &mut PgConnection, random: &mut Random, height: u32) -> BlockView {
+    use RuneEventKind::*;
+    let owner = |i: u64| hex::decode(format!("0014{i:040x}")).unwrap();
+    let mut unspent: Vec<(String, String, Vec<String>, Vec<String>)> = sqlx::query_as(
+        "SELECT outpoint, pkscript, rune_ids, balances::text[] FROM runes_outpoint_to_balances \
+         WHERE NOT spent ORDER BY id",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap();
+    let mut events = Vec::new();
+    for tx_index in 0..random.below(4) {
+        let txid = format!("{:064x}", u64::from(height) * 100 + tx_index);
+        let mut totals: std::collections::BTreeMap<String, u128> = Default::default();
+        for _ in 0..=random.below(3) {
+            if unspent.is_empty() {
+                break;
+            }
+            let (outpoint, pkscript, runes, balances) =
+                unspent.remove(random.below(unspent.len() as u64) as usize);
+            for (rune, amount) in runes.iter().zip(&balances) {
+                let amount: u128 = amount.parse().unwrap();
+                events.push(RuneEvent {
+                    kind: Input,
+                    txid: txid.clone(),
+                    outpoint: Some(outpoint.clone()),
+                    pkscript: Some(hex::decode(&pkscript).unwrap()),
+                    rune_id: rune.clone(),
+                    amount,
+                });
+                *totals.entry(rune.clone()).or_default() += amount;
+            }
+        }
+        // a mint now and then
+        if random.below(3) == 0 {
+            let rune = format!("1:{}", 1 + random.below(3));
+            events.push(plain(Mint, "00", &rune, 10));
+            *totals.entry(rune).or_default() += 10 + random.below(90) as u128;
+        }
+        let outputs = 1 + random.below(3) as u32;
+        let mut allocated: std::collections::BTreeMap<u32, Vec<(String, u128)>> =
+            Default::default();
+        for (rune, total) in totals {
+            match random.below(5) {
+                0 => {} // burned
+                1 if total > 1 => {
+                    let part = 1 + random.below(total as u64 - 1) as u128;
+                    allocated.entry(0).or_default().push((rune.clone(), part));
+                    let vout = random.below(u64::from(outputs)) as u32;
+                    allocated
+                        .entry(vout)
+                        .or_default()
+                        .push((rune, total - part));
+                }
+                _ => {
+                    let vout = random.below(u64::from(outputs)) as u32;
+                    allocated.entry(vout).or_default().push((rune, total));
+                }
+            }
+        }
+        for (vout, runes) in allocated {
+            let pkscript = owner(random.below(6));
+            let mut merged: std::collections::BTreeMap<String, u128> = Default::default();
+            for (rune, amount) in runes {
+                *merged.entry(rune).or_default() += amount;
+            }
+            for (rune, amount) in merged {
+                events.push(RuneEvent {
+                    kind: Output,
+                    txid: txid.clone(),
+                    outpoint: Some(format!("{txid}:{vout}")),
+                    pkscript: Some(pkscript.clone()),
+                    rune_id: rune,
+                    amount,
+                });
+            }
+        }
+    }
+    view(
+        height,
+        RuneFeed {
+            events,
+            etchings: Vec::new(),
+            counters: Vec::new(),
+        },
+    )
+}
+
+/// After random blocks, rollbacks and replays, the balances and counts kept
+/// by deltas equal a full recount of the unspent outpoints.
+#[tokio::test]
+async fn delta_counts_match_a_recount_after_random_blocks_and_reorgs() {
+    with_database("holders_random", |name| async move {
+        use RuneEventKind::*;
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        let mut conn = connect(&name).await;
+        // block 1 etches three runes and spreads their premines over owners
+        let mut events = Vec::new();
+        let mut etchings = Vec::new();
+        for (i, rune) in ["ALPHARUNE", "BETARUNE", "GAMMARUNE"].iter().enumerate() {
+            let rune_id = format!("1:{}", i + 1);
+            let mut etched = etching(&rune_id, "a0", rune, 6000);
+            etched.number = i as u64;
+            etchings.push(etched);
+            events.push(plain(NewAllocation, "a0", &rune_id, 6000));
+            for owner in 0..6u64 {
+                events.push(located(
+                    Output,
+                    "a0",
+                    outpoint("a0", (i as u32) * 6 + owner as u32),
+                    hex::decode(format!("0014{owner:040x}")).unwrap(),
+                    &rune_id,
+                    1000,
+                ));
+            }
+        }
+        // outputs of one outpoint are contiguous, so order by outpoint
+        let (allocations, outputs): (Vec<_>, Vec<_>) =
+            events.into_iter().partition(|e| e.kind == NewAllocation);
+        let mut outputs = outputs;
+        outputs.sort_by_key(|e| e.outpoint.clone());
+        let feed = RuneFeed {
+            events: allocations.into_iter().chain(outputs).collect(),
+            etchings,
+            counters: Vec::new(),
+        };
+        module.apply(&view(1, feed)).await.unwrap();
+        assert_eq!(holder_mismatches(&mut conn).await, 0);
+
+        let mut random = Random(0x9e37_79b9_7f4a_7c15);
+        for height in 2..=60 {
+            let block = random_block(&mut conn, &mut random, height).await;
+            module.apply(&block).await.unwrap();
+            assert_eq!(holder_mismatches(&mut conn).await, 0, "block {height}");
+        }
+        let empty: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM runes_holders WHERE holders <= 0")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(empty, 0);
+
+        // a reorg of 25 blocks, a different chain of 30, and a deep reorg
+        module.rollback_to(35).await.unwrap();
+        assert_eq!(holder_mismatches(&mut conn).await, 0, "rollback to 35");
+        let mut fork = Random(0x2545_f491_4f6c_dd1d);
+        for height in 36..=65 {
+            let block = random_block(&mut conn, &mut fork, height).await;
+            module.apply(&block).await.unwrap();
+            assert_eq!(holder_mismatches(&mut conn).await, 0, "fork block {height}");
+        }
+        for target in [64, 50, 10, 1] {
+            module.rollback_to(target).await.unwrap();
+            assert_eq!(
+                holder_mismatches(&mut conn).await,
+                0,
+                "rollback to {target}"
+            );
+        }
+        let transfers: i64 = sqlx::query_scalar("SELECT count(*) FROM runes_events")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert!(transfers >= 19, "{transfers}");
+    })
+    .await;
+}
+
 /// A database without the holder tables or the API indexes gets them at
 /// start, filled from the unspent outpoints; the superseded event indexes
 /// are dropped.

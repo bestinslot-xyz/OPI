@@ -6,23 +6,23 @@
 //!   pkScript's address. Only positive sums have a row.
 //! - `runes_holders` holds, per rune, `holders`: the pkScripts with a row in
 //!   `runes_current_balances`, so the distinct owners with a positive
-//!   balance over unspent outpoints.
+//!   balance over unspent outpoints. Only positive counts have a row.
 //!
-//! A block's write applies the balances of the outpoints it creates and
-//! spends to `runes_current_balances` and recounts the holders of each rune
-//! it touches, in the block's transaction. A rollback recomputes the
-//! balances of every pkScript whose outpoints it removes or unspends from
-//! the outpoints left, and recounts their runes. A recount reads the rune's
-//! rows through the primary key, so a block costs one index-only count per
-//! rune it touches. Nothing here feeds an event, hash or report.
+//! Both tables change by deltas, in the transaction of the write that
+//! changes the outpoints: a block adds the balances of the outpoints it
+//! creates and subtracts those of the outpoints it spends, and a rollback
+//! subtracts the unspent outpoints it removes and adds back those it
+//! unspends. One statement upserts each changed (rune, pkScript) balance
+//! and moves the rune's count by one for each balance that turns positive
+//! or reaches zero, so a block costs in proportion to its own balance
+//! changes. Only the start fill counts from scratch. Nothing here feeds an
+//! event, hash or report.
 //!
 //! The tables and indexes are created at start when missing, and a new
 //! table pair is filled from the unspent outpoints in the transaction that
 //! creates it. The same statements are in db_init.sql.
 
-use std::collections::BTreeSet;
-
-use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 
 /// The tables, also in db_init.sql.
 pub const TABLES_SQL: &str = "CREATE TABLE IF NOT EXISTS public.runes_current_balances (
@@ -145,8 +145,15 @@ pub async fn create_if_missing(pool: &PgPool) -> Result<bool, sqlx::Error> {
     }
     // The lookup comes first, so a start that finds the index never waits
     // on the table lock.
+    let mut announced = false;
     for (name, sql) in INDEXES {
         if !index_exists(pool, name).await? {
+            if name.starts_with("runes_events_") && !announced {
+                tracing::info!(
+                    "building runes event indexes, this can take minutes (once, on the first start of this version)"
+                );
+                announced = true;
+            }
             tracing::info!("Creating index {name}");
             sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
         }
@@ -164,126 +171,131 @@ pub async fn create_if_missing(pool: &PgPool) -> Result<bool, sqlx::Error> {
     Ok(missing)
 }
 
-/// Recounts the holders of `runes` from `runes_current_balances`; a rune
-/// without an entry loses its row.
-async fn recount(conn: &mut PgConnection, runes: BTreeSet<String>) -> Result<(), sqlx::Error> {
-    if runes.is_empty() {
-        return Ok(());
-    }
-    let runes: Vec<String> = runes.into_iter().collect();
-    sqlx::query(
-        "INSERT INTO runes_holders (rune_id, holders) \
-         SELECT r.rune_id, (SELECT count(*) FROM runes_current_balances c \
-                            WHERE c.rune_id = r.rune_id) \
-         FROM UNNEST($1::text[]) AS r(rune_id) \
-         ON CONFLICT (rune_id) DO UPDATE SET holders = excluded.holders",
-    )
-    .bind(&runes)
-    .execute(&mut *conn)
-    .await?;
-    sqlx::query(
-        "DELETE FROM runes_holders h WHERE h.rune_id = ANY($1) \
-         AND NOT EXISTS (SELECT 1 FROM runes_id_to_entry e WHERE e.rune_id = h.rune_id)",
-    )
-    .bind(&runes)
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
+/// The statement that applies the balance changes a `changed` CTE lists as
+/// `(rune_id, pkscript, wallet_addr, delta)`. It nets them per rune and
+/// pkScript, upserts each balance, and moves each rune's count by +1 for a
+/// balance that turns positive and -1 for one that reaches zero (all CTEs
+/// read the snapshot before the upsert, so `prior` holds the old balance).
+/// It answers the pairs and runes left at zero or below, which the caller
+/// deletes: `('b', rune_id, pkscript)` and `('h', rune_id, '')`.
+macro_rules! apply_deltas {
+    ($changed:literal) => {
+        concat!(
+            "WITH changed AS (",
+            $changed,
+            "), net AS ( \
+                 SELECT rune_id, pkscript, max(wallet_addr) AS wallet_addr, sum(delta) AS delta \
+                 FROM changed GROUP BY rune_id, pkscript HAVING sum(delta) <> 0 \
+             ), prior AS ( \
+                 SELECT n.rune_id, n.pkscript, n.wallet_addr, n.delta, \
+                        coalesce(c.balance, 0) AS before \
+                 FROM net n LEFT JOIN runes_current_balances c \
+                 ON c.rune_id = n.rune_id AND c.pkscript = n.pkscript \
+             ), balances AS ( \
+                 INSERT INTO runes_current_balances AS c (rune_id, pkscript, wallet_addr, balance) \
+                 SELECT rune_id, pkscript, wallet_addr, delta FROM prior \
+                 ON CONFLICT (rune_id, pkscript) DO UPDATE SET balance = c.balance + excluded.balance \
+                 RETURNING c.rune_id, c.pkscript, c.balance \
+             ), moves AS ( \
+                 SELECT rune_id, \
+                        sum(CASE WHEN before <= 0 AND before + delta > 0 THEN 1 \
+                                 WHEN before > 0 AND before + delta <= 0 THEN -1 \
+                                 ELSE 0 END)::int8 AS moved \
+                 FROM prior GROUP BY rune_id \
+             ), counts AS ( \
+                 INSERT INTO runes_holders AS h (rune_id, holders) \
+                 SELECT rune_id, moved FROM moves WHERE moved <> 0 \
+                 ON CONFLICT (rune_id) DO UPDATE SET holders = h.holders + excluded.holders \
+                 RETURNING h.rune_id, h.holders \
+             ) \
+             SELECT 'b'::text, rune_id, pkscript FROM balances WHERE balance <= 0 \
+             UNION ALL \
+             SELECT 'h'::text, rune_id, ''::text FROM counts WHERE holders <= 0"
+        )
+    };
 }
 
-/// Applies block `height`'s outpoints to the current balances and recounts
-/// the runes they hold: those it creates add, and those it spends
-/// (`spent`) subtract. Runs after the block's outpoints are written and
-/// spent.
-pub async fn apply_block(
+/// Deletes the balances and counts [`apply_deltas`] left at zero or below.
+async fn drop_emptied(
     tx: &mut Transaction<'_, Postgres>,
-    height: i32,
-    spent: &[String],
+    emptied: Vec<(String, String, String)>,
 ) -> Result<(), sqlx::Error> {
-    let rows: Vec<(String, String, bool)> = sqlx::query_as(
-        "WITH changed AS ( \
-             SELECT u.rune_id, o.pkscript, o.wallet_addr, u.balance AS delta \
-             FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-             WHERE o.block_height = $1 \
-             UNION ALL \
-             SELECT u.rune_id, o.pkscript, o.wallet_addr, -u.balance \
-             FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-             WHERE o.outpoint = ANY($2) \
-         ) \
-         INSERT INTO runes_current_balances AS c (rune_id, pkscript, wallet_addr, balance) \
-         SELECT rune_id, pkscript, max(wallet_addr), sum(delta) FROM changed \
-         GROUP BY rune_id, pkscript HAVING sum(delta) <> 0 \
-         ON CONFLICT (rune_id, pkscript) DO UPDATE SET balance = c.balance + excluded.balance \
-         RETURNING c.rune_id, c.pkscript, c.balance <= 0",
-    )
-    .bind(height)
-    .bind(spent)
-    .fetch_all(&mut **tx)
-    .await?;
-    let (emptied_runes, emptied_pkscripts): (Vec<String>, Vec<String>) = rows
-        .iter()
-        .filter(|row| row.2)
-        .map(|row| (row.0.clone(), row.1.clone()))
-        .unzip();
-    if !emptied_runes.is_empty() {
+    let mut runes = Vec::new();
+    let mut pkscripts = Vec::new();
+    let mut counted = Vec::new();
+    for (kind, rune_id, pkscript) in emptied {
+        if kind == "b" {
+            runes.push(rune_id);
+            pkscripts.push(pkscript);
+        } else {
+            counted.push(rune_id);
+        }
+    }
+    if !runes.is_empty() {
         sqlx::query(
             "DELETE FROM runes_current_balances c \
              USING UNNEST($1::text[], $2::text[]) AS e(rune_id, pkscript) \
              WHERE c.rune_id = e.rune_id AND c.pkscript = e.pkscript AND c.balance <= 0",
         )
-        .bind(&emptied_runes)
-        .bind(&emptied_pkscripts)
+        .bind(&runes)
+        .bind(&pkscripts)
         .execute(&mut **tx)
         .await?;
     }
-    recount(tx, rows.into_iter().map(|row| row.0).collect()).await
-}
-
-/// The pkScripts whose outpoints a rollback to `height` removes or
-/// unspends, read before it runs.
-pub async fn rollback_pkscripts(
-    tx: &mut Transaction<'_, Postgres>,
-    height: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT pkscript FROM runes_outpoint_to_balances WHERE block_height > $1 \
-         UNION \
-         SELECT pkscript FROM runes_outpoint_to_balances \
-         WHERE outpoint IN (SELECT outpoint FROM runes_events \
-                            WHERE block_height > $1 AND event_type = 0) \
-         AND spent_block_height > $1",
-    )
-    .bind(height)
-    .fetch_all(&mut **tx)
-    .await
-}
-
-/// Recomputes the current balances of `pkscripts` from the outpoints a
-/// rollback left, and recounts the runes they held before or hold now.
-pub async fn rollback(
-    tx: &mut Transaction<'_, Postgres>,
-    pkscripts: &[String],
-) -> Result<(), sqlx::Error> {
-    if pkscripts.is_empty() {
-        return Ok(());
+    if !counted.is_empty() {
+        sqlx::query("DELETE FROM runes_holders WHERE rune_id = ANY($1) AND holders <= 0")
+            .bind(&counted)
+            .execute(&mut **tx)
+            .await?;
     }
-    let mut runes: BTreeSet<String> = sqlx::query_scalar(
-        "DELETE FROM runes_current_balances WHERE pkscript = ANY($1) RETURNING rune_id",
-    )
-    .bind(pkscripts)
-    .fetch_all(&mut **tx)
-    .await?
-    .into_iter()
-    .collect();
-    let restored: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(concat!(
-        unspent_sums!(" AND o.pkscript = ANY($1)"),
-        " RETURNING rune_id"
-    )))
-    .bind(pkscripts)
+    Ok(())
+}
+
+/// Applies block `height`'s balance changes: the outpoints it creates add,
+/// and those it spends (`spent`) subtract. Runs after the block's outpoints
+/// are written and spent.
+pub async fn apply_block(
+    tx: &mut Transaction<'_, Postgres>,
+    height: i32,
+    spent: &[String],
+) -> Result<(), sqlx::Error> {
+    let emptied = sqlx::query_as(apply_deltas!(
+        "SELECT u.rune_id, o.pkscript, o.wallet_addr, u.balance AS delta \
+         FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
+         WHERE o.block_height = $1 \
+         UNION ALL \
+         SELECT u.rune_id, o.pkscript, o.wallet_addr, -u.balance \
+         FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
+         WHERE o.outpoint = ANY($2)"
+    ))
+    .bind(height)
+    .bind(spent)
     .fetch_all(&mut **tx)
     .await?;
-    runes.extend(restored);
-    recount(tx, runes).await
+    drop_emptied(tx, emptied).await
+}
+
+/// Reverts the balance changes of every block above `height`, read before
+/// the rollback changes the outpoints: the unspent outpoints it removes
+/// subtract, and the outpoints it unspends (found through the input events
+/// above `height`) add back. An outpoint created and spent above `height`
+/// holds no current balance and changes nothing.
+pub async fn rollback(tx: &mut Transaction<'_, Postgres>, height: i64) -> Result<(), sqlx::Error> {
+    let emptied = sqlx::query_as(apply_deltas!(
+        "SELECT u.rune_id, o.pkscript, o.wallet_addr, -u.balance AS delta \
+         FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
+         WHERE o.block_height > $1 AND NOT o.spent \
+         UNION ALL \
+         SELECT u.rune_id, o.pkscript, o.wallet_addr, u.balance \
+         FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
+         WHERE o.outpoint IN (SELECT outpoint FROM runes_events \
+                              WHERE block_height > $1 AND event_type = 0) \
+         AND o.block_height <= $1 AND o.spent_block_height > $1"
+    ))
+    .bind(height)
+    .fetch_all(&mut **tx)
+    .await?;
+    drop_emptied(tx, emptied).await
 }
 
 /// Empties both tables, for a rollback that drops every block.

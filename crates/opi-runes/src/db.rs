@@ -189,7 +189,12 @@ impl Db {
     pub async fn rollback_to(&self, height: Option<u32>) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         let height = height.map_or(-1, i64::from);
-        let pkscripts = holders::rollback_pkscripts(&mut tx, height).await?;
+        // the deltas read the outpoints as they are before the rollback
+        if height < 0 {
+            holders::clear(&mut tx).await?;
+        } else {
+            holders::rollback(&mut tx, height).await?;
+        }
         for statement in [
             "DELETE FROM runes_outpoint_to_balances WHERE block_height > $1",
             "UPDATE runes_outpoint_to_balances SET spent = false, spent_block_height = NULL \
@@ -229,11 +234,6 @@ impl Db {
             "SELECT setval('runes_block_hashes_id_seq', max(id)) FROM runes_block_hashes",
         ] {
             sqlx::query(reset_sequence).execute(&mut *tx).await?;
-        }
-        if height < 0 {
-            holders::clear(&mut tx).await?;
-        } else {
-            holders::rollback(&mut tx, &pkscripts).await?;
         }
         tx.commit().await?;
         Ok(())
