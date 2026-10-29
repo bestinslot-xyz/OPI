@@ -271,6 +271,7 @@ pub(crate) fn catch_up(
                 transfers = pruned.transfers,
                 infos = pruned.infos,
                 rune_rows = pruned.rune_rows,
+                inscription_moves = pruned.inscription_moves,
                 steps,
                 longest_step_ms = longest.as_millis(),
                 elapsed_secs = started.elapsed().as_secs(),
@@ -436,6 +437,7 @@ async fn prune_once(
                 transfers = step.pruned.transfers,
                 infos = step.pruned.infos,
                 rune_rows = step.pruned.rune_rows,
+                inscription_moves = step.pruned.inscription_moves,
                 "a journal prune step held the journal for long"
             );
         } else if !step.pruned.is_empty() {
@@ -597,6 +599,18 @@ pub(crate) fn module_dbs(configs: &ModuleConfigs) -> Result<Vec<ModuleDb>> {
             c.db_ssl,
         );
         dbs.push(ModuleDb::new("runes", db));
+    }
+    if let Some(c) = &configs.inscriptions {
+        let password = c.db_password.as_deref();
+        let db = options(
+            &c.db_host,
+            c.db_port,
+            &c.db_user,
+            password,
+            &c.db_database,
+            c.db_ssl,
+        );
+        dbs.push(ModuleDb::new("inscriptions", db));
     }
     Ok(dbs)
 }

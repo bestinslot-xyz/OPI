@@ -1,0 +1,161 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select sequence_number, inscription_id, \"number\", content_type, media_type, charms,\n                outpoint, \"offset\", pkscript, address, genesis_height, last_moved_height\n            from inscriptions_entries\n            where ($1::text is null or inscription_id = $1)\n              and ($2::int8 is null or \"number\" = $2);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence_number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "media_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "charms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "charms"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "outpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "outpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "pkscript",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "address"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "genesis_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "genesis_height"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "last_moved_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "last_moved_height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "f0f53139e103d4bf023b107b678672a4bf95b267187a564495f015f64d7b7291"
+}

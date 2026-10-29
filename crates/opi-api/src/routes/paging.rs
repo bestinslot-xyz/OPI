@@ -1,6 +1,6 @@
 //! The parameter rules the routes without a JavaScript original share: a
 //! refused parameter's 400 answer, single-valued and integer parameters,
-//! the page limits and the LIKE prefix pattern.
+//! the page and batch limits and the LIKE prefix pattern.
 
 use crate::{
     js::{JsObject, JsValue},
@@ -55,6 +55,13 @@ pub const MAX_CURSOR_LEN: usize = 256;
 /// most 80 digits), `:` and a pkScript of at most [`MAX_PKSCRIPT_LEN`] hex
 /// digits.
 pub const MAX_HOLDERS_CURSOR_LEN: usize = MAX_PKSCRIPT_LEN + 81;
+
+/// The longest `content_type` an inscriptions wallet request may name, in
+/// bytes.
+pub const MAX_CONTENT_TYPE_LEN: usize = 256;
+
+/// The most outpoints a batch request may name.
+pub const MAX_OUTPOINTS: usize = 500;
 
 /// The wallet a route lists: exactly one of `address` and `pkscript`.
 #[derive(Debug, Clone, PartialEq, Eq)]

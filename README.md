@@ -39,6 +39,7 @@ Each module reads the journal and keeps its own Postgres database. The API serve
 | `bitmap` | Bitmap | `BITMAP_DB_*` |
 | `sns` | Sats Names, by the written spec (see [SNS indexing rules](#sns-indexing-rules)) | `SNS_DB_*` |
 | `runes` | Runes, from ord's rune events | `RUNES_DB_*` |
+| `inscriptions` | Every bound inscription's number, content type, current outpoint and owner (see [Inscriptions module](#inscriptions-module)) | `INSCRIPTIONS_DB_*` |
 
 The `*_DB_*` variables are `USER`, `HOST`, `PORT`, `DATABASE`, `PASSWD` and
 `SSL`, for example `BITMAP_DB_DATABASE`. The runes module reports `event_hash_version` 2 because it orders a
@@ -76,6 +77,27 @@ Every ord data dir and journal built by earlier versions has rune indexing. To
 keep one, add `runes` to `OPI_MODULES` (this also starts the runes module and
 needs `RUNES_DB_DATABASE`), or delete both dirs to run without runes.
 
+#### Inscriptions module
+
+The `inscriptions` module keeps one row per bound inscription in
+`inscriptions_entries`: its id, number, sequence number, content type (as
+inscribed, plus a lowercased `media_type` without parameters for filtering),
+charms, outpoint and offset, pkscript and address, genesis height and last
+moved height. Cursed inscriptions are included (negative `number`). Burned
+ones stay at their OP_RETURN output with no address. Unbound inscriptions have
+no location and are left out. Inscription content is not stored.
+
+It reads every creation and transfer from the journal's `inscription_moves`
+table, which the journal keeps only when `inscriptions` is in `OPI_MODULES`.
+Like runes, the choice is fixed when the journal is created (its
+`inscriptions` meta row): a start that disagrees is refused, and turning the
+module on for an existing journal means deleting `OPI_JOURNAL_DIR` and
+`OPI_ORD_DATA_DIR` and indexing from the start. Each block's moves apply in
+ord's emission order, with one update per moved inscription.
+`inscriptions_events` keeps one row per creation and transfer with the prior
+location, which a reorg rolls back to. The module reports no event hashes to
+the OPI network.
+
 ### Prerequisites
 
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
@@ -100,9 +122,9 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
-| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) |
+| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
 | `OPI_PRUNE` | blocks of history to keep, at least `1000`; unset keeps everything (see [Pruning](#pruning)) |
-| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE` and `RUNES_DB_DATABASE` have no default and are required when the module is enabled |
+| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE` and `INSCRIPTIONS_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
 | `RUST_LOG` | log filter, default `info` |
@@ -149,10 +171,11 @@ the deepest rollback the scheduler walks.
 
 | Store | Pruned | Kept |
 | --- | --- | --- |
-| journal | raw events below the final tip minus `<blocks>`; transfer records, per-block rune rows and the content of inscriptions already transferred below the lowest module height minus `<blocks>` | block headers, first transfers, the content of inscriptions not yet transferred, current rune state |
+| journal | raw events below the final tip minus `<blocks>`; transfer records, inscription moves, per-block rune rows and the content of inscriptions already transferred below the lowest module height minus `<blocks>` | block headers, first transfers, the content of inscriptions not yet transferred, current rune state |
 | brc20 | `brc20_logs`, which nothing reads | every table the API, the light clients and `validate` read |
 | bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
+| inscriptions | `inscriptions_events` and `inscriptions_block_hashes` below the window | `inscriptions_entries` |
 
 Each module prunes its tables every 100 blocks. ord's index has no history to
 prune: `run` keeps ord at its defaults, without sat, address or transaction
@@ -322,7 +345,7 @@ fourth:
 
 | Service | Runs |
 | --- | --- |
-| `postgres` | Postgres 16; creates one database per module from `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE` and `RUNES_DB_DATABASE` when its volume is empty |
+| `postgres` | Postgres 16; creates one database per module from `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE` and `INSCRIPTIONS_DB_DATABASE` when its volume is empty |
 | `indexer` | `opi-indexer run` |
 | `api` | `opi-indexer api`, published on `127.0.0.1:8000` |
 | `bitcoind` | optional, under the `bitcoind` profile |
@@ -759,6 +782,7 @@ process. It reads the same `.env` as `run`.
 - **Bitmap** exposes block hash and cumulative hash at a given block, hash of all bitmaps and inscription_id of a given bitmap.
 - **SNS** exposes block hash and cumulative hash at a given block, hash of all registered names, id number and domain of a given name, id number and name tuples of a domain, and all registered namespaces endpoints.
 - **Runes** exposes activity on a block (`/v1/runes/activity_on_block`), the balance of a wallet at the start of a height (`/v1/runes/balance_on_block`), the current balance of a wallet (`/v1/runes/get_current_balance_of_wallet`), the unspent rune outpoints of a wallet (`/v1/runes/get_unspent_rune_outpoints_of_wallet`), the holders of a rune (`/v1/runes/holders`), and the block hash and cumulative hash at a height (`/v1/runes/get_hash_of_all_activity`), plus paged rune, holder, wallet balance and event feed routes (see [Rune, holder and wallet routes](#rune-holder-and-wallet-routes)).
+- **Inscriptions** exposes an inscription's metadata and current location, a wallet's inscriptions filtered by content type, genesis height or curse, and the inscriptions on one or many outputs; with runes also enabled, `/v1/outputs` answers the inscriptions and runes on many outputs at once (see [Inscription and output routes](#inscription-and-output-routes)).
 
 Each module's routes live under `/v1/<module>/`. A module outside `OPI_MODULES`
 answers `404 {"error":"<module> is not enabled on this node"}`. `/v1/status`
@@ -917,6 +941,21 @@ bracketed parameter).
 | `GET /v1/runes/runes` | `sort`, `order`, `search`, `after`, `limit` | A page of runes, by holders or another order. |
 | `GET /v1/runes/wallet/balances` | `address`, `pkscript`, `after`, `limit` | A page of the runes a wallet holds, with its balances. |
 | `GET /v1/runes/wallet/events` | `address`, `pkscript`, `type`, `before_id`, `limit` | A page of a wallet's runes events, newest first. |
+
+**inscriptions**: Inscriptions and their current locations.
+
+| Route | Query parameters | Answers |
+| --- | --- | --- |
+| `GET /v1/inscriptions/inscription` | `id`, `number` | One inscription's metadata and current location. |
+| `GET /v1/inscriptions/outpoint` | **`outpoint`** | The inscriptions an output holds, with their offsets. |
+| `POST /v1/inscriptions/outpoints` |  | The inscriptions on up to 500 outputs, with their offsets. |
+| `GET /v1/inscriptions/wallet` | `address`, `pkscript`, `content_type`, `from_height`, `to_height`, `cursed`, `after`, `limit` | A page of the inscriptions a wallet holds, newest first. |
+
+**outputs**: The inscriptions and runes on outputs.
+
+| Route | Query parameters | Answers |
+| --- | --- | --- |
+| `POST /v1/outputs` |  | The inscriptions and runes on up to 500 outputs. |
 
 **stream**: The push feed of each block's events.
 
@@ -1139,6 +1178,71 @@ events. A rune's feed lists the events of its id; a wallet's feed, by
 `address` or `pkscript`, lists the `input` and `output` events of its
 outpoints. Both page by `before_id`, as the brc20 feeds do.
 
+### Inscription and output routes
+
+The inscriptions routes (`/v1/inscriptions/inscription`,
+`/v1/inscriptions/wallet`, `/v1/inscriptions/outpoint` and
+`POST /v1/inscriptions/outpoints`) and `POST /v1/outputs` answer
+`{"error":null,"result":...}`. A missing or invalid parameter or body
+answers `400 {"error":"<reason>","result":null}`, and an unknown inscription
+answers `404 {"error":"inscription not found","result":null}`. They read
+the inscriptions module's current-state table: one row per bound
+inscription at its current location, kept per block and on every rollback.
+Unbound inscriptions have no location and are not listed; a burned one stays
+on its OP_RETURN output with a null `address`; cursed ones are listed with a
+negative `number`.
+
+**Indexed height.** Every answer carries `indexed_height`, the highest block
+the answer covers: the rows and the height come from one database snapshot.
+An output confirmed above `indexed_height` is unknown, not clean, so a
+wallet treats it as unsafe to spend until the node catches up.
+
+**Inscriptions.** An inscription is `{"inscription_id","number",
+"sequence_number","content_type","media_type","charms","cursed","outpoint",
+"offset","pkscript","address","genesis_height","last_moved_height"}`.
+`content_type` is the envelope's content type as inscribed and `media_type`
+the same lowercased without parameters (both null without one), `charms` is
+ord's charm bitfield, `cursed` tells whether `number` is negative, `offset`
+is the inscribed sat's offset in the output and `pkscript` the output's
+script in hex. `/v1/inscriptions/inscription` takes `id` (`<txid>i<index>`,
+any case) or `number`, exactly one.
+
+**Wallet inscriptions.** `/v1/inscriptions/wallet` takes `address` or
+`pkscript` (hex) and lists the inscriptions on the wallet's outputs, newest
+first by sequence number. `content_type` keeps one media type, compared
+lowercased and without parameters: exactly (`text/plain`), or by prefix when
+it ends with `/` (`image/`). `from_height` and `to_height` bound the genesis
+height, both inclusive, and `cursed=true` or `cursed=false` keeps the cursed
+inscriptions or the others. The result echoes the filters as applied. The
+list pages by key: `limit` (default `100`, at most `500`) and `after`, the
+previous page's `next_after`; `has_more` tells whether more follow and
+`next_after` is null on the last page. A wallet the database does not know
+answers an empty list.
+
+**Outputs.** An outpoint is `<txid>:<vout>`: 64 hex digits, any case, and a
+32-bit output index. `/v1/inscriptions/outpoint?outpoint=` answers
+`{"outpoint","inscriptions","indexed_height"}`, the inscriptions by offset.
+`POST /v1/inscriptions/outpoints` takes the body
+`{"outpoints":["<txid>:<vout>",...]}` with 1 to 500 outpoints and answers
+`{"outpoints":[{"outpoint","inscriptions"}],"indexed_height"}`, one entry
+per requested outpoint in the request's order; an output without
+inscriptions has an empty list. Answers name outpoints in lowercase.
+
+`POST /v1/outputs` takes the same body and answers, per outpoint, its
+inscriptions and its runes: `{"outputs":[{"outpoint","inscriptions",
+"runes"}],"indexed_height","heights":{"inscriptions","runes"}}`. A rune is
+`{"rune_id","rune_name","spaced_rune_name","divisibility","symbol",
+"amount"}`, from the runes module's unspent outpoints, `amount` a raw
+integer as a string with `divisibility` fractional digits. `indexed_height`
+is the lower of the two modules' heights and null while either has no
+block. The route needs both `inscriptions` and `runes` in `OPI_MODULES`:
+without one it answers
+`404 {"error":"runes is not enabled on this node","result":null}` (or
+`inscriptions`), since an output holding what the missing module tracks
+would look clean. A wallet that builds transactions from its own node's
+`listunspent` sends its candidate outputs here and spends only those with
+two empty lists, confirmed at or below `indexed_height`.
+
 ### Push feed
 
 `GET /v1/stream` pushes each block's events as server-sent events
@@ -1146,17 +1250,18 @@ outpoints. Both page by `before_id`, as the brc20 feeds do.
 asks for, and rolls the subscriber back when a reorg replaces a block it has
 received. It carries brc20 (the block's events, in the event feeds' form),
 bitmap (the bitmaps the block registered) and sns (the names the block
-registered), each in its lookup route's form. runes is not on the stream yet.
+registered), each in its lookup route's form, and inscriptions (the block's
+creations and transfers). runes is not on the stream yet.
 
 | Parameter | Meaning |
 | --- | --- |
-| `modules` | comma-separated `brc20`, `bitmap`, `sns`; left out, every enabled one. A module that is unknown, disabled or runes answers 400 |
+| `modules` | comma-separated `brc20`, `bitmap`, `sns`, `inscriptions`; left out, every enabled one. A module that is unknown, disabled or runes answers 400 |
 | `confirmations` | block H is sent once its module's indexed tip reaches H + `confirmations` - 1, so `1` sends each block as soon as it is indexed; from 1 to `STREAM_MAX_CONFIRMATIONS`, default `STREAM_DEFAULT_CONFIRMATIONS` |
 | `from_height` | replay the stored blocks from this height on, in order; below a module's oldest kept block it answers 400 with that height. Left out, each module starts with its first block not yet due |
 
 | Event | `id` | Data |
 | --- | --- | --- |
-| `block` | the stream's position | `{"module","height","hash","block_time","events":[...]}`; brc20's block adds `"decimals":18`, the fractional digits of its raw amounts, and bitmap's and sns's `block_time` is null |
+| `block` | the stream's position | `{"module","height","hash","block_time","events":[...]}`; brc20's block adds `"decimals":18`, the fractional digits of its raw amounts, and bitmap's and sns's `block_time` is null. An inscriptions event is `{"id","block_height","event_type","sequence_number","inscription_id","number","cursed","content_type","media_type","old_outpoint","old_offset","old_pkscript","old_address","new_outpoint","new_offset","new_pkscript","new_address"}`: `event_type` is `creation` (the `old_` fields null) or `transfer`, in the order ord applied them |
 | `rollback` | the stream's position | `{"module","height"}`: the module's blocks above `height`, the last block kept, were replaced; the replacement blocks follow |
 | `heartbeat` | | `{"tips":{"<module>":<height>}}`, each module's indexed tip, every `STREAM_HEARTBEAT_SECS` while no block is due |
 | `error` | | `{"error"}`, the last event of a stream that ends early, sent between events |
@@ -1219,7 +1324,7 @@ shutdown every stream ends at once, so its connection closes within the
 headers have arrived, so it never cuts a stream.
 
 `STREAM_MAX_CONFIRMATIONS` is at most 1000, the smallest `OPI_PRUNE`: a
-pruned bitmap or sns database keeps the block hashes of at least the last
+pruned bitmap, sns or inscriptions database keeps the block hashes of at least the last
 1000 blocks, so every block a subscriber may wait for is still stored.
 
 ```text
@@ -1255,7 +1360,7 @@ win, and a missing file is ignored.
 | --- | --- |
 | `OPI_MODULES` | the modules to serve, as for `opi-indexer`, default `brc20` |
 | `OPI_ENV_FILE` | alternative `.env` path; only works as a process environment variable |
-| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*` | the module databases; the database name is required for each enabled module |
+| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*` | the module databases; the database name is required for each enabled module |
 | `DB_MAX_CONNECTIONS` | maximum connections per module database pool, default `10` |
 | `API_HOST` | listen address, default `127.0.0.1` |
 | `API_PORT` | listen port, default `8000` |
@@ -1272,8 +1377,8 @@ win, and a missing file is ignored.
 | `STREAM_RESUME_WAIT_SECS` | how long a resumed module's position may wait for its block to be stored or its reorg to be read before it is taken as stale and rolled back 1000 blocks, from 1 to 86400, default `300` |
 | `STREAM_BUFFER` | the chunks (a block's head, a page of 100 events of up to about 60 KB, or a small event) a stream queues for its client, default `16`, about 1 MB at most |
 
-The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*` and `RUNES_DB_*` variables are the same
-ones `opi-indexer run` reads (`USER` and `HOST` default to `postgres` and
+The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*` and `INSCRIPTIONS_DB_*`
+variables are the same ones `opi-indexer run` reads (`USER` and `HOST` default to `postgres` and
 `localhost`, `PORT` to `5432`, `SSL` is on only when exactly `true`).
 
 Run `opi-indexer api` in place of the Node API or the four per-module API
@@ -1330,7 +1435,7 @@ with `cargo sqlx prepare` (sqlx-cli 0.9) against a database that holds the
 schema, then verify it with `cargo sqlx prepare --check`. The `DATABASE_URL`
 needs an explicit user.
 
-For `opi-api`, build a throwaway database from the four schemas plus the two
+For `opi-api`, build a throwaway database from the five schemas plus the two
 tables the API reads that no `db_init.sql` creates (`brc20_unused_tx_inscrs`
 and `brc20_extras_block_hashes`), whose DDL goes in a local file
 `api_extra_tables.sql`:
@@ -1349,7 +1454,8 @@ CREATE TABLE public.brc20_extras_block_hashes (
 ```bash
 createdb -h /tmp opi_api_sqlx_prepare
 for f in crates/opi-brc20/src/database/sql/db_init.sql crates/opi-bitmap/src/db_init.sql \
-         crates/opi-sns/src/db_init.sql crates/opi-runes/src/db_init.sql api_extra_tables.sql; do
+         crates/opi-sns/src/db_init.sql crates/opi-runes/src/db_init.sql \
+         crates/opi-inscriptions/src/db_init.sql api_extra_tables.sql; do
   psql -h /tmp -d opi_api_sqlx_prepare -X -q -v ON_ERROR_STOP=1 -f "$f"
 done
 cd crates/opi-api

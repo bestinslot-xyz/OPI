@@ -10,7 +10,8 @@
 use {
     anyhow::{Context, Result, bail, ensure},
     opi_core::{
-        InscriptionInfo, InscriptionRecord, RuneEtching, RuneEvent, RuneEventKind, RuneTerms,
+        InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord, RuneEtching,
+        RuneEvent, RuneEventKind, RuneTerms,
     },
 };
 
@@ -594,4 +595,64 @@ pub fn decode_rune_counter_log(value: &[u8]) -> Result<(Option<RuneTotals>, Rune
     let after = (c.u128()?, c.u128()?);
     c.finish()?;
     Ok((before, after))
+}
+
+/// Key of an inscription move: height (`u32` BE) ++ position among the
+/// height's inscription events (`u32` BE).
+pub fn inscription_move_key(height: u32, seq: u32) -> [u8; 8] {
+    transfer_key(height, seq)
+}
+
+/// Inscription move value: inscription id ++ sequence number (`u32` BE) ++
+/// satpoint ++ length-prefixed pkscript ++ optional genesis (number `i32`
+/// BE ++ charms `u16` BE ++ optional length-prefixed content type). An
+/// optional is a flag byte followed by the value when the flag is 1.
+pub fn encode_inscription_move(m: &InscriptionMove) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(INSCRIPTION_ID_LEN + 4 + SATPOINT_LEN + 4 + 40);
+    out.extend(encode_inscription_id(&m.inscription_id)?);
+    out.extend(m.sequence_number.to_be_bytes());
+    out.extend(encode_satpoint(&m.satpoint)?);
+    push_prefixed(&mut out, &m.pkscript)?;
+    out.push(u8::from(m.genesis.is_some()));
+    if let Some(genesis) = &m.genesis {
+        out.extend(genesis.number.to_be_bytes());
+        out.extend(genesis.charms.to_be_bytes());
+        out.push(u8::from(genesis.content_type.is_some()));
+        if let Some(content_type) = &genesis.content_type {
+            push_prefixed(&mut out, content_type)?;
+        }
+    }
+    Ok(out)
+}
+
+pub fn decode_inscription_move(value: &[u8]) -> Result<InscriptionMove> {
+    let mut c = Cursor::new(value, "inscription move");
+    let inscription_id = decode_inscription_id(c.take(INSCRIPTION_ID_LEN)?);
+    let sequence_number = c.u32()?;
+    let satpoint = decode_satpoint(c.take(SATPOINT_LEN)?);
+    let pkscript = c.prefixed()?.to_vec();
+    let genesis = if c.flag()? {
+        let number = i32::from_be_bytes(c.take(4)?.try_into().unwrap());
+        let charms = u16::from_be_bytes(c.take(2)?.try_into().unwrap());
+        let content_type = if c.flag()? {
+            Some(c.prefixed()?.to_vec())
+        } else {
+            None
+        };
+        Some(InscriptionGenesis {
+            number,
+            charms,
+            content_type,
+        })
+    } else {
+        None
+    };
+    c.finish()?;
+    Ok(InscriptionMove {
+        inscription_id,
+        sequence_number,
+        genesis,
+        satpoint,
+        pkscript,
+    })
 }

@@ -4,6 +4,7 @@ use {
     anyhow::{Context, Result, anyhow, bail},
     opi_bitmap::BitmapConfig,
     opi_brc20::config::Brc20IndexerConfig,
+    opi_inscriptions::InscriptionsConfig,
     opi_runes::RunesConfig,
     opi_runtime::MAX_ROLLBACK_DEPTH,
     opi_sns::SnsConfig,
@@ -88,7 +89,10 @@ impl Config {
                 bitcoin_auth,
                 chunk,
                 runes: modules.contains(&ModuleKind::Runes),
-                journal: journal_options(&get)?,
+                journal: JournalOptions {
+                    inscriptions: modules.contains(&ModuleKind::Inscriptions),
+                    ..journal_options(&get)?
+                },
             },
             modules,
             prune,
@@ -126,6 +130,7 @@ pub struct ModuleConfigs {
     pub bitmap: Option<BitmapConfig>,
     pub sns: Option<SnsConfig>,
     pub runes: Option<RunesConfig>,
+    pub inscriptions: Option<InscriptionsConfig>,
 }
 
 impl ModuleConfigs {
@@ -155,6 +160,7 @@ impl ModuleConfigs {
             bitmap: None,
             sns: None,
             runes: None,
+            inscriptions: None,
         };
         for module in &config.modules {
             match module {
@@ -184,6 +190,13 @@ impl ModuleConfigs {
                     let runes = RunesConfig::from_lookup(get).context("runes config")?;
                     config.check_network(&runes.network_type)?;
                     configs.runes = Some(runes);
+                }
+                ModuleKind::Inscriptions => {
+                    require("INSCRIPTIONS_DB_DATABASE")?;
+                    let inscriptions =
+                        InscriptionsConfig::from_lookup(get).context("inscriptions config")?;
+                    config.check_network(&inscriptions.network_type)?;
+                    configs.inscriptions = Some(inscriptions);
                 }
             }
         }
@@ -250,7 +263,10 @@ pub enum ModuleKind {
     Bitmap,
     Sns,
     Runes,
+    Inscriptions,
 }
+
+const SUPPORTED_MODULES: &str = "brc20, bitmap, sns, runes, inscriptions";
 
 /// Parses a comma-separated module list, trimming names and dropping repeats.
 fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
@@ -265,10 +281,9 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
             "bitmap" => ModuleKind::Bitmap,
             "sns" => ModuleKind::Sns,
             "runes" => ModuleKind::Runes,
+            "inscriptions" => ModuleKind::Inscriptions,
             other => {
-                bail!(
-                    "unknown module `{other}` in OPI_MODULES (supported: brc20, bitmap, sns, runes)"
-                )
+                bail!("unknown module `{other}` in OPI_MODULES (supported: {SUPPORTED_MODULES})")
             }
         };
         if !modules.contains(&module) {
@@ -276,7 +291,7 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
         }
     }
     if modules.is_empty() {
-        bail!("OPI_MODULES names no module (supported: brc20, bitmap, sns, runes)");
+        bail!("OPI_MODULES names no module (supported: {SUPPORTED_MODULES})");
     }
     Ok(modules)
 }
@@ -303,6 +318,7 @@ pub(crate) fn journal_options(get: &impl Fn(&str) -> Option<String>) -> Result<J
                 })?;
             Ok(JournalOptions {
                 cache_bytes: mb * 1024 * 1024,
+                ..JournalOptions::default()
             })
         }
         None => Ok(JournalOptions::default()),
@@ -443,6 +459,50 @@ mod tests {
             }
             assert_eq!(load(&vars).unwrap().source.runes, runes, "{modules:?}");
         }
+    }
+
+    #[test]
+    fn inscription_moves_follow_the_module_list() {
+        let cases = [
+            (None, false),
+            (Some("brc20,runes"), false),
+            (Some("inscriptions"), true),
+            (Some("brc20, inscriptions ,runes"), true),
+        ];
+        for (modules, inscriptions) in cases {
+            let mut vars = base();
+            if let Some(modules) = modules {
+                vars.insert("OPI_MODULES", modules);
+            }
+            vars.insert("OPI_JOURNAL_CACHE_MB", "128");
+            let config = load(&vars).unwrap();
+            assert_eq!(
+                config.source.journal.inscriptions, inscriptions,
+                "{modules:?}"
+            );
+            assert_eq!(config.source.journal.cache_bytes, 128 << 20);
+        }
+    }
+
+    #[test]
+    fn inscriptions_requires_its_database_name() {
+        let signet = ("NETWORK_TYPE", "signet");
+        let err = load_modules("inscriptions", &[signet], brc20_signet())
+            .err()
+            .unwrap();
+        assert!(
+            err.to_string().contains("INSCRIPTIONS_DB_DATABASE"),
+            "{err}"
+        );
+        let configs = load_modules(
+            "inscriptions",
+            &[signet, ("INSCRIPTIONS_DB_DATABASE", "opi_inscriptions")],
+            brc20_signet(),
+        )
+        .unwrap();
+        let inscriptions = configs.inscriptions.unwrap();
+        assert_eq!(inscriptions.db_database, "opi_inscriptions");
+        assert_eq!(inscriptions.network_type, "signet");
     }
 
     #[test]

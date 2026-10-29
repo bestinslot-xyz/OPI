@@ -66,6 +66,7 @@ fn block(height: u32, entries: Vec<(InscriptionInfo, Option<&str>)>) -> BlockVie
         time: 0,
         inscriptions: InscriptionFeed { records, infos },
         runes: opi_core::RuneFeed::default(),
+        inscription_moves: Vec::new(),
     }
 }
 

@@ -58,14 +58,21 @@ fn path_template(path: &str) -> Option<&'static str> {
         })
 }
 
-/// Checks `answer` to a GET of `uri` against the OpenAPI document: the
-/// operation lists its status and content type, and a JSON body validates
-/// against that answer's schema. Two 404s are not checked: a path the
-/// document has no template for (an unknown route) and a disabled module's
-/// `"<module> is not enabled on this node"`, which the document leaves out
-/// since it lists only the enabled modules. Any other answer on a path
-/// without a template fails, so a mistyped test URI cannot skip the check.
+/// Checks `answer` to a GET of `uri` against the OpenAPI document (see
+/// [`check_method_against_document`]).
 pub fn check_against_document(uri: &str, answer: &Answer) {
+    check_method_against_document("get", uri, answer);
+}
+
+/// Checks `answer` to a `method` (lowercase) request of `uri` against the
+/// OpenAPI document: the operation lists its status and content type, and a
+/// JSON body validates against that answer's schema. Two 404s are not
+/// checked: a path the document has no template for (an unknown route) and
+/// a disabled module's `"<module> is not enabled on this node"`, which the
+/// document leaves out since it lists only the enabled modules. Any other
+/// answer on a path without a template fails, so a mistyped test URI cannot
+/// skip the check.
+pub fn check_method_against_document(method: &str, uri: &str, answer: &Answer) {
     if answer.status == 404 {
         let disabled = serde_json::from_str::<Value>(&answer.body).is_ok_and(|body| {
             body["error"]
@@ -89,10 +96,10 @@ pub fn check_against_document(uri: &str, answer: &Answer) {
         return;
     };
     let status = answer.status.to_string();
-    let response = &DOCUMENT["paths"][template]["get"]["responses"][&status];
+    let response = &DOCUMENT["paths"][template][method]["responses"][&status];
     assert!(
         response.is_object(),
-        "{uri}: the document lists no {status} answer for {template}"
+        "{uri}: the document lists no {status} answer for {method} {template}"
     );
     let media = answer
         .content_type
@@ -109,7 +116,7 @@ pub fn check_against_document(uri: &str, answer: &Answer) {
     if media != "application/json" {
         return;
     }
-    let key = format!("{template} {status} {media}");
+    let key = format!("{method} {template} {status} {media}");
     let validator = VALIDATORS
         .lock()
         .unwrap()
@@ -145,16 +152,27 @@ pub fn app(module: Module, db: Db) -> Router {
 
 /// [`app`] with the settings `vars` adds to its environment.
 pub fn app_with_env(module: Module, db: Db, vars: &[(&str, &str)]) -> Router {
-    let database = format!("{}_DATABASE", module.db_prefix());
-    let env: HashMap<String, String> = [
-        ("OPI_MODULES".to_string(), module.name().to_string()),
-        (database, "d".to_string()),
-    ]
-    .into_iter()
-    .chain(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())))
-    .collect();
+    modules_app(&[module], db, vars)
+}
+
+/// The app with `modules` enabled, each reading from `db`, with the
+/// settings `vars` adds to its environment.
+pub fn modules_app(modules: &[Module], db: Db, vars: &[(&str, &str)]) -> Router {
+    let names: Vec<&str> = modules.iter().map(|module| module.name()).collect();
+    let env: HashMap<String, String> = [("OPI_MODULES".to_string(), names.join(","))]
+        .into_iter()
+        .chain(
+            modules
+                .iter()
+                .map(|module| (format!("{}_DATABASE", module.db_prefix()), "d".to_string())),
+        )
+        .chain(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect();
     let config = load_config(|key| env.get(key).cloned()).unwrap();
-    router(&config, vec![(module, db)])
+    router(
+        &config,
+        modules.iter().map(|&module| (module, db.clone())).collect(),
+    )
 }
 
 /// The app over a database double whose latest height is `value`.
@@ -206,12 +224,48 @@ pub async fn get_with(app: &Router, uri: &str, headers: &[(&str, &str)]) -> Answ
     answer
 }
 
+/// The answer to a POST of `body` (as `application/json`) to `uri`, checked
+/// against the OpenAPI document.
+pub async fn post(app: &Router, uri: &str, body: &str) -> Answer {
+    let response = send(
+        app,
+        "POST",
+        uri,
+        &[("content-type", "application/json")],
+        Body::from(body.to_string()),
+    )
+    .await;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_string());
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let answer = Answer {
+        status,
+        content_type,
+        body: String::from_utf8(body.to_vec()).unwrap(),
+    };
+    check_method_against_document("post", uri, &answer);
+    answer
+}
+
 async fn request(app: &Router, uri: &str, headers: &[(&str, &str)]) -> axum::response::Response {
-    let mut request = Request::builder().uri(uri);
+    send(app, "GET", uri, headers, Body::empty()).await
+}
+
+async fn send(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Body,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
-    let mut request = request.body(Body::empty()).unwrap();
+    let mut request = request.body(body).unwrap();
     let peer: SocketAddr = "127.0.0.1:50000".parse().unwrap();
     request.extensions_mut().insert(ConnectInfo(peer));
     app.clone().oneshot(request).await.unwrap()
@@ -422,6 +476,22 @@ pub async fn with_seeded_pool<F, Fut>(
     F: FnOnce(Router, PgPool) -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    with_seeded_modules(&[module], tag, collation, scripts, max_connections, body).await;
+}
+
+/// [`with_seeded_pool`] with the app of `modules`, every module reading the
+/// one throwaway database (their tables have distinct names).
+pub async fn with_seeded_modules<F, Fut>(
+    modules: &[Module],
+    tag: &str,
+    collation: Option<&str>,
+    scripts: &[&str],
+    max_connections: u32,
+    body: F,
+) where
+    F: FnOnce(Router, PgPool) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     use sqlx::Connection;
     if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
         eprintln!("OPI_TEST_PG is not 1; skipping");
@@ -465,7 +535,7 @@ pub async fn with_seeded_pool<F, Fut>(
             .await
             .unwrap();
     }
-    let router = app(module, Db::from_pool(pool.clone()));
+    let router = modules_app(modules, Db::from_pool(pool.clone()), &[]);
     let result = tokio::spawn(body(router, pool.clone())).await;
     pool.close().await;
     sqlx::query(sqlx::AssertSqlSafe(format!(

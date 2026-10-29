@@ -83,6 +83,7 @@ fn view(height: u32, entries: &[(&str, i32, &str)]) -> BlockView {
         time: 0,
         inscriptions: InscriptionFeed { records, infos },
         runes: opi_core::RuneFeed::default(),
+        inscription_moves: Vec::new(),
     }
 }
 

@@ -52,9 +52,13 @@ pub mod cf {
     pub const RUNE_COUNTER_LOG: &str = "rune_counter_log";
     /// Outpoint (store form) -> pkscript and the runes it holds.
     pub const RUNE_BALANCES: &str = "rune_outpoint_balances";
+    /// Every inscription creation and transfer: height (`u32` BE) ++
+    /// position among the height's inscription events (`u32` BE) -> encoded
+    /// move.
+    pub const INSCRIPTION_MOVES: &str = "inscription_moves";
 }
 
-const ALL_TABLES: [&str; 12] = [
+const ALL_TABLES: [&str; 13] = [
     cf::TRANSFERS,
     cf::INFO,
     cf::HEADERS,
@@ -67,6 +71,7 @@ const ALL_TABLES: [&str; 12] = [
     cf::RUNE_COUNTERS,
     cf::RUNE_COUNTER_LOG,
     cf::RUNE_BALANCES,
+    cf::INSCRIPTION_MOVES,
 ];
 
 const RUNE_TABLES: [&str; 5] = [
@@ -86,6 +91,11 @@ const META_SCHEMA: &[u8] = b"schema";
 /// keeps them when it has a rune table; one without finalized blocks takes
 /// the setting it is opened with.
 const META_RUNES: &[u8] = b"runes";
+/// Whether the journal keeps every inscription move: one byte, 1 or 0,
+/// written when the journal is created. A journal without the row keeps
+/// none when it has finalized blocks; one without finalized blocks takes the
+/// setting it is opened with.
+const META_INSCRIPTIONS: &[u8] = b"inscriptions";
 /// Lowest height whose transfer records and per-block rune rows the journal
 /// holds (`u32` BE); absent when nothing was pruned.
 const META_PRUNED_BELOW: &[u8] = b"pruned_below";
@@ -99,13 +109,15 @@ pub struct Journal {
     db: Arc<Database>,
     created: bool,
     runes: bool,
+    inscriptions: bool,
 }
 
-/// The tables of a journal that keeps rune records when `runes` is set.
-fn tables(runes: bool) -> impl Iterator<Item = &'static str> {
-    ALL_TABLES
-        .into_iter()
-        .filter(move |name| runes || !RUNE_TABLES.contains(name))
+/// The tables of a journal that keeps rune records when `runes` is set and
+/// every inscription move when `inscriptions` is set.
+fn tables(runes: bool, inscriptions: bool) -> impl Iterator<Item = &'static str> {
+    ALL_TABLES.into_iter().filter(move |name| {
+        (runes || !RUNE_TABLES.contains(name)) && (inscriptions || *name != cf::INSCRIPTION_MOVES)
+    })
 }
 
 /// The scratch path a file is built at before being renamed to `path`.
@@ -159,6 +171,9 @@ pub fn table(name: &'static str) -> TableDefinition<'static, &'static [u8], &'st
 pub struct JournalOptions {
     /// Size of redb's page cache in bytes.
     pub cache_bytes: usize,
+    /// Whether the journal keeps every inscription move, for the
+    /// inscriptions module. Fixed when the journal is created.
+    pub inscriptions: bool,
 }
 
 /// redb's own default page cache size.
@@ -168,6 +183,7 @@ impl Default for JournalOptions {
     fn default() -> Self {
         JournalOptions {
             cache_bytes: DEFAULT_CACHE_BYTES,
+            inscriptions: false,
         }
     }
 }
@@ -188,10 +204,11 @@ impl Journal {
     }
 
     /// Opens the journal at `path`, creating it for `chain` when absent, with
-    /// rune records when `runes` is set. Fails when an existing journal
-    /// belongs to another chain or schema, was built with the other `runes`
-    /// setting, or keeps rune records and has finalized blocks without the
-    /// rune tables. A refused open leaves the journal unchanged.
+    /// rune records when `runes` is set and every inscription move when
+    /// `options.inscriptions` is set. Fails when an existing journal belongs
+    /// to another chain or schema, was built with the other `runes` or
+    /// `inscriptions` setting, or keeps rune records and has finalized blocks
+    /// without the rune tables. A refused open leaves the journal unchanged.
     ///
     /// redb holds an exclusive file lock while the database is open, so a
     /// second `open` of the same path from another process fails.
@@ -222,20 +239,26 @@ impl Journal {
             .with_context(|| format!("opening journal at {}", path.display()))?;
         let chain = chain.to_string();
 
+        let inscriptions = options.inscriptions;
         let mut journal = Journal {
             db: Arc::new(db),
             created,
             runes,
+            inscriptions,
         };
         journal.check_runes(path)?;
+        journal.check_inscriptions(path)?;
         let tx = journal.begin_write()?;
         {
-            for name in tables(runes) {
+            for name in tables(runes, inscriptions) {
                 tx.open_table(table(name))?;
             }
             let mut meta = tx.open_table(table(cf::META))?;
             if meta.get(META_RUNES)?.is_none() {
                 meta.insert(META_RUNES, [u8::from(runes)].as_slice())?;
+            }
+            if meta.get(META_INSCRIPTIONS)?.is_none() {
+                meta.insert(META_INSCRIPTIONS, [u8::from(inscriptions)].as_slice())?;
             }
             let existing_chain = meta.get(META_CHAIN)?.map(|v| v.value().to_vec());
             let existing_schema = meta.get(META_SCHEMA)?.map(|v| v.value().to_vec());
@@ -309,6 +332,41 @@ impl Journal {
         Ok(())
     }
 
+    /// Fails when the journal was built with the other inscriptions setting
+    /// than `self.inscriptions`: its finalized heights then carry no moves,
+    /// or carry moves nothing reads, so the journal and ord's data dir are
+    /// rebuilt together. A journal without the inscriptions meta row keeps
+    /// no moves when it has finalized blocks, and takes `self.inscriptions`
+    /// otherwise.
+    fn check_inscriptions(&self, path: &Path) -> Result<()> {
+        let tx = self.db.begin_read()?;
+        let has_meta = tx.list_tables()?.any(|handle| handle.name() == cf::META);
+        if !has_meta {
+            return Ok(());
+        }
+        let built = match tx.open_table(table(cf::META))?.get(META_INSCRIPTIONS)? {
+            Some(raw) => match raw.value() {
+                [0] => false,
+                [1] => true,
+                other => bail!("journal inscriptions setting is {other:?}, expected [0] or [1]"),
+            },
+            None if final_tip_in(&tx)?.is_none() => self.inscriptions,
+            None => false,
+        };
+        if built != self.inscriptions {
+            bail!(
+                "journal at {} was built {} the inscription moves the inscriptions module \
+                 reads, but the module is {}; start with it {} again, or delete the journal \
+                 and ord's data dir and index again",
+                path.display(),
+                with_or_without(built),
+                enabled_or_disabled(self.inscriptions),
+                enabled_or_disabled(built),
+            );
+        }
+        Ok(())
+    }
+
     /// Creates the journal file at `path` with its tables and the meta rows
     /// in one durable transaction.
     fn initialize(path: &Path, chain: Chain, runes: bool, options: &JournalOptions) -> Result<()> {
@@ -318,13 +376,17 @@ impl Journal {
             .with_context(|| format!("creating journal at {}", path.display()))?;
         let tx = db.begin_write()?;
         {
-            for name in tables(runes) {
+            for name in tables(runes, options.inscriptions) {
                 tx.open_table(table(name))?;
             }
             let mut meta = tx.open_table(table(cf::META))?;
             meta.insert(META_CHAIN, chain.to_string().as_bytes())?;
             meta.insert(META_SCHEMA, SCHEMA_VERSION.to_be_bytes().as_slice())?;
             meta.insert(META_RUNES, [u8::from(runes)].as_slice())?;
+            meta.insert(
+                META_INSCRIPTIONS,
+                [u8::from(options.inscriptions)].as_slice(),
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -383,6 +445,11 @@ impl Journal {
     /// Whether the journal keeps rune records.
     pub fn runes(&self) -> bool {
         self.runes
+    }
+
+    /// Whether the journal keeps every inscription move.
+    pub fn inscriptions(&self) -> bool {
+        self.inscriptions
     }
 
     pub fn db(&self) -> &Arc<Database> {

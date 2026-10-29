@@ -1,13 +1,15 @@
 use {
     opi_core::{
-        InscriptionInfo, InscriptionRecord, RuneEtching, RuneEvent, RuneEventKind, RuneTerms,
+        InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord, RuneEtching,
+        RuneEvent, RuneEventKind, RuneTerms,
     },
     opi_source::journal::{
-        Journal, JournalOptions, cf, compress_info, decode_info, decode_rune_balance_row,
-        decode_rune_counter_log, decode_rune_etching, decode_rune_event, decode_transfer,
-        decompress_info, encode_info, encode_rune_balance_row, encode_rune_counter_log,
-        encode_rune_etching, encode_rune_event, encode_transfer, rune_counter_log_key, rune_id_key,
-        rune_id_string, rune_outpoint_key, table, transfer_key,
+        Journal, JournalOptions, cf, compress_info, decode_info, decode_inscription_move,
+        decode_rune_balance_row, decode_rune_counter_log, decode_rune_etching, decode_rune_event,
+        decode_transfer, decompress_info, encode_info, encode_inscription_move,
+        encode_rune_balance_row, encode_rune_counter_log, encode_rune_etching, encode_rune_event,
+        encode_transfer, inscription_move_key, rune_counter_log_key, rune_id_key, rune_id_string,
+        rune_outpoint_key, table, transfer_key,
     },
     ord::Chain,
     redb::{ReadableDatabase, TableHandle},
@@ -368,6 +370,7 @@ fn reopen_rejects_chain_mismatch() {
     drop(Journal::open(&path, Chain::Regtest, true).unwrap());
     let small = JournalOptions {
         cache_bytes: 64 << 20,
+        ..JournalOptions::default()
     };
     let journal = Journal::open_with(&path, Chain::Regtest, true, &small).unwrap();
     journal.set_gate_limit(7).unwrap();
@@ -552,6 +555,124 @@ fn unfinalized_journal_without_the_runes_row_takes_the_setting() {
     let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
     assert!(!journal.runes());
     assert_eq!(get_meta(&journal, b"runes").unwrap(), [0]);
+}
+
+fn with_moves() -> JournalOptions {
+    JournalOptions {
+        inscriptions: true,
+        ..JournalOptions::default()
+    }
+}
+
+#[test]
+fn inscription_move_round_trips() {
+    let genesis = InscriptionGenesis {
+        number: -7,
+        charms: 0x0204,
+        content_type: Some(b"text/plain;charset=utf-8".to_vec()),
+    };
+    let moves = [
+        InscriptionMove {
+            inscription_id: format!("{TXID_A}i2"),
+            sequence_number: 99,
+            genesis: Some(genesis.clone()),
+            satpoint: format!("{TXID_B}:5:77"),
+            pkscript: vec![0x51, 0x20, 0xaa],
+        },
+        InscriptionMove {
+            genesis: Some(InscriptionGenesis {
+                content_type: None,
+                ..genesis
+            }),
+            pkscript: Vec::new(),
+            ..moves_base()
+        },
+        moves_base(),
+    ];
+    for m in moves {
+        let value = encode_inscription_move(&m).unwrap();
+        assert_eq!(decode_inscription_move(&value).unwrap(), m);
+    }
+    let mut value = encode_inscription_move(&moves_base()).unwrap();
+    value.push(0);
+    assert!(decode_inscription_move(&value).is_err());
+    assert_eq!(inscription_move_key(5, 2), transfer_key(5, 2));
+}
+
+fn moves_base() -> InscriptionMove {
+    InscriptionMove {
+        inscription_id: format!("{TXID_B}i0"),
+        sequence_number: u32::MAX,
+        genesis: None,
+        satpoint: format!("{TXID_A}:0:{}", u64::MAX),
+        pkscript: vec![0x00, 0x14],
+    }
+}
+
+/// A journal records the inscriptions setting it was created with and has
+/// the moves table only when it keeps moves; an open with the other setting
+/// is refused.
+#[test]
+fn open_records_the_inscriptions_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let without = dir.path().join("without");
+    let journal = Journal::open(&without, Chain::Regtest, false).unwrap();
+    assert!(!journal.inscriptions());
+    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [0]);
+    assert!(
+        !table_names(&journal)
+            .iter()
+            .any(|name| name == cf::INSCRIPTION_MOVES)
+    );
+    drop(journal);
+    let err = Journal::open_with(&without, Chain::Regtest, false, &with_moves())
+        .err()
+        .unwrap();
+    assert!(
+        format!("{err:#}").contains("built without the inscription moves"),
+        "{err:#}"
+    );
+
+    let with = dir.path().join("with");
+    let journal = Journal::open_with(&with, Chain::Regtest, false, &with_moves()).unwrap();
+    assert!(journal.inscriptions());
+    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [1]);
+    assert!(
+        table_names(&journal)
+            .iter()
+            .any(|name| name == cf::INSCRIPTION_MOVES)
+    );
+    drop(journal);
+    let err = Journal::open(&with, Chain::Regtest, false).err().unwrap();
+    assert!(
+        format!("{err:#}").contains("built with the inscription moves"),
+        "{err:#}"
+    );
+}
+
+/// A finalized journal without the inscriptions meta row keeps no moves, so
+/// an open that wants them is refused; an unfinalized one takes the setting.
+#[test]
+fn journal_without_the_inscriptions_row_keeps_no_moves_once_finalized() {
+    let dir = tempfile::tempdir().unwrap();
+    let finalized = dir.path().join("finalized");
+    {
+        let journal = Journal::open(&finalized, Chain::Regtest, false).unwrap();
+        put_meta(&journal, b"final_tip", &10u32.to_be_bytes());
+        remove_meta(&journal, b"inscriptions");
+    }
+    assert!(Journal::open_with(&finalized, Chain::Regtest, false, &with_moves()).is_err());
+    let journal = Journal::open(&finalized, Chain::Regtest, false).unwrap();
+    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [0]);
+
+    let fresh = dir.path().join("fresh");
+    {
+        let journal = Journal::open(&fresh, Chain::Regtest, false).unwrap();
+        remove_meta(&journal, b"inscriptions");
+    }
+    let journal = Journal::open_with(&fresh, Chain::Regtest, false, &with_moves()).unwrap();
+    assert!(journal.inscriptions());
+    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [1]);
 }
 
 #[test]

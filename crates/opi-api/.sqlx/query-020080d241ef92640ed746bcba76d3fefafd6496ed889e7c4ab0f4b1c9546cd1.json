@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select min(block_height) as \"h?\" from inscriptions_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "h?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "020080d241ef92640ed746bcba76d3fefafd6496ed889e7c4ab0f4b1c9546cd1"
+}

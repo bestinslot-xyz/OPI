@@ -13,11 +13,13 @@ x-opi-env: &opi-env
   BITMAP_DB_HOST: postgres
   SNS_DB_HOST: postgres
   RUNES_DB_HOST: postgres
+  INSCRIPTIONS_DB_HOST: postgres
   # The postgres service has no TLS certificate.
   DB_SSL: "false"
   BITMAP_DB_SSL: "false"
   SNS_DB_SSL: "false"
   RUNES_DB_SSL: "false"
+  INSCRIPTIONS_DB_SSL: "false"
   OPI_JOURNAL_DIR: /data/journal
   OPI_ORD_DATA_DIR: /data/ord
   BRC20_PROG_DB_PATH: /data/brc20-prog

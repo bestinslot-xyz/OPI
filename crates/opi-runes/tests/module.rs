@@ -190,6 +190,7 @@ fn view(height: u32, runes: RuneFeed) -> BlockView {
             infos: Default::default(),
         },
         runes,
+        inscription_moves: Vec::new(),
     }
 }
 

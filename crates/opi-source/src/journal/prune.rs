@@ -1,10 +1,11 @@
 //! Prune: deletes journal rows no module will read again.
 //!
 //! A height's raw events serve only to finalize it, so once it is finalized
-//! and deeper than the reorg window they can go. A height's transfer records
-//! and per-block rune rows serve the modules that apply it and the journal's
-//! reorg check above the agreed height, so they can go once every module has
-//! applied it and it is deeper than the reorg window. An info row serves the
+//! and deeper than the reorg window they can go. A height's transfer records,
+//! inscription moves and per-block rune rows serve the modules that apply it
+//! and the journal's reorg check above the agreed height, so they can go
+//! once every module has applied it and it is deeper than the reorg window.
+//! An info row serves the
 //! inscription's creation and its first transfer, the only transfer the
 //! journal records, so it goes with the record of that first transfer. The
 //! info rows of inscriptions never transferred stay, as do `first_transfer`,
@@ -39,6 +40,7 @@ pub struct Pruned {
     pub transfers: u64,
     pub infos: u64,
     pub rune_rows: u64,
+    pub inscription_moves: u64,
 }
 
 impl Pruned {
@@ -51,6 +53,7 @@ impl Pruned {
         self.transfers += other.transfers;
         self.infos += other.infos;
         self.rune_rows += other.rune_rows;
+        self.inscription_moves += other.inscription_moves;
     }
 }
 
@@ -135,17 +138,15 @@ impl Journal {
 
     /// The tables holding a height's records, all keyed by height (`u32` BE)
     /// first.
-    fn record_tables(&self) -> &'static [&'static str] {
+    fn record_tables(&self) -> Vec<&'static str> {
+        let mut names = vec![cf::TRANSFERS];
         if self.runes {
-            &[
-                cf::TRANSFERS,
-                cf::RUNE_EVENTS,
-                cf::RUNE_ETCHINGS,
-                cf::RUNE_COUNTER_LOG,
-            ]
-        } else {
-            &[cf::TRANSFERS]
+            names.extend([cf::RUNE_EVENTS, cf::RUNE_ETCHINGS, cf::RUNE_COUNTER_LOG]);
         }
+        if self.inscriptions {
+            names.push(cf::INSCRIPTION_MOVES);
+        }
+        names
     }
 
     /// Lowest height a records step starts from: the pruned floor, or the
@@ -231,7 +232,7 @@ impl Journal {
         let mut highest = None::<u32>;
         let mut whole = true;
         let end = to.to_be_bytes();
-        for &name in self.record_tables() {
+        for name in self.record_tables() {
             if budget == 0 {
                 whole = false;
                 break;
@@ -285,6 +286,8 @@ impl Journal {
                         pruned.infos += 1;
                     }
                 }
+            } else if name == cf::INSCRIPTION_MOVES {
+                pruned.inscription_moves += deleted;
             } else {
                 pruned.rune_rows += deleted;
             }

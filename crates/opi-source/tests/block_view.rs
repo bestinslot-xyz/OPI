@@ -65,6 +65,7 @@ fn block_view_matches_individual_reads() {
                 time: block.time,
                 inscriptions: InscriptionFeed { records, infos },
                 runes: RuneFeed::default(),
+                inscription_moves: Vec::new(),
             }
         );
     }

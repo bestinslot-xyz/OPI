@@ -113,11 +113,11 @@ cargo build --release --locked -p opi-indexer;
 
 ## Initialise .env configuration and databases
 
-Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns` and `runes` run). Create each module's database first (for example `sudo -u postgres createdb opi_brc20`); its schema is created on first start.
+Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns`, `runes` and `inscriptions` run). Create each module's database first (for example `sudo -u postgres createdb opi_brc20`); its schema is created on first start.
 
 `opi-indexer run` and `opi-indexer api` read this one `.env` (the API settings are listed in the README's [API configuration](README.md#api-configuration)).
 
-Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
+Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`, `INSCRIPTIONS_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
 
 # Run
 
