@@ -9,10 +9,13 @@ env:
   CARGO_TERM_COLOR: always
   # the sqlx query macros check against .sqlx, without a database
   SQLX_OFFLINE: "true"
+  # no debug info keeps the target directory and the cache small
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       # librocksdb-sys (brc20-prog) compiles C++ and runs bindgen, as in the
@@ -33,3 +36,6 @@ jobs:
       # Postgres tests skip; the route and OpenAPI tests run
       - name: Test
         run: cargo test --workspace --locked
+      - name: Disk usage
+        if: always()
+        run: df -h

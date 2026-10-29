@@ -366,8 +366,8 @@ docker compose -f docker/compose.light.yml up -d --build
 resolve. It does not publish the image.
 
 `.github/workflows/rust.yml` runs on the same events: `cargo fmt --all
---check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-`cargo test --workspace`, with `SQLX_OFFLINE=true`. No database is set, so
+--check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`
+and `cargo test --workspace --locked`, with `SQLX_OFFLINE=true`. No database is set, so
 the Postgres tests skip; the OpenAPI drift tests run.
 
 ### Subcommands
