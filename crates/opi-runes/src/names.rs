@@ -12,13 +12,14 @@ use ordinals::{Rune, RuneId, SpacedRune};
 pub enum RuneRef {
     /// A rune id, `block:tx` in ord's form.
     Id(String),
-    /// A rune name's letters, with the spacers the request gave (`None`
-    /// for a name written without spacers).
-    Name { name: String, spacers: Option<u32> },
+    /// A rune name's letters. A rune's identity is its unspaced name, so
+    /// the spacers a request writes do not take part.
+    Name(String),
 }
 
 /// The rune `text` names: a rune id (`block:tx`) or a name, spaced (`•` or
-/// `.`) or not, in any ASCII case. `None` for text that is neither.
+/// `.`) with any spacing or not, in any ASCII case. `None` for text that is
+/// neither.
 pub fn parse_rune(text: &str) -> Option<RuneRef> {
     if text.contains(':') {
         return RuneId::from_str(text)
@@ -26,11 +27,7 @@ pub fn parse_rune(text: &str) -> Option<RuneRef> {
             .map(|id| RuneRef::Id(id.to_string()));
     }
     let spaced = SpacedRune::from_str(&text.to_ascii_uppercase()).ok()?;
-    let spaced_input = text.contains(['•', '.']);
-    Some(RuneRef::Name {
-        name: spaced.rune.to_string(),
-        spacers: spaced_input.then_some(spaced.spacers),
-    })
+    Some(RuneRef::Name(spaced.rune.to_string()))
 }
 
 /// The spaced form of a stored name and its spacers, as ord displays it
@@ -120,28 +117,25 @@ pub fn symbol_char(stored: &str) -> Option<char> {
 mod tests {
     use super::*;
 
-    fn name(name: &str, spacers: Option<u32>) -> Option<RuneRef> {
-        Some(RuneRef::Name {
-            name: name.into(),
-            spacers,
-        })
-    }
-
     #[test]
     fn runes_parse_by_id_or_name() {
         assert_eq!(parse_rune("840000:3"), Some(RuneRef::Id("840000:3".into())));
         assert_eq!(parse_rune("01:002"), Some(RuneRef::Id("1:2".into())));
         assert_eq!(parse_rune("1:"), None);
         assert_eq!(parse_rune("a:1"), None);
-        assert_eq!(parse_rune("uncommongoods"), name("UNCOMMONGOODS", None));
-        assert_eq!(
-            parse_rune("Uncommon•Goods"),
-            name("UNCOMMONGOODS", Some(1 << 7))
-        );
-        assert_eq!(
-            parse_rune("UNCOMMON.GOODS"),
-            name("UNCOMMONGOODS", Some(1 << 7))
-        );
+        // any spacing of the letters names the same rune
+        for spelling in [
+            "uncommongoods",
+            "Uncommon•Goods",
+            "UNCOMMON.GOODS",
+            "U.N.C.OMMONGOODS",
+        ] {
+            assert_eq!(
+                parse_rune(spelling),
+                Some(RuneRef::Name("UNCOMMONGOODS".into())),
+                "{spelling}"
+            );
+        }
         for bad in [
             "",
             "A..B",

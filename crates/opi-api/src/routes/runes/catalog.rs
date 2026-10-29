@@ -2,13 +2,15 @@
 //! `/v1/runes/rune/holders` and `/v1/runes/wallet/balances`.
 //!
 //! They answer `{"error":null,"result":...}`. A missing or invalid parameter
-//! answers `400 {"error":"<reason>","result":null}` and an unknown rune
-//! `404 {"error":"rune not found","result":null}`.
+//! answers `400 {"error":"<reason>","result":null}`, an unknown rune
+//! `404 {"error":"rune not found","result":null}`, and a database the runes
+//! module has not built its API tables in `503` ([`super::RunesTables`]).
 //!
 //! A rune is named by its id (`block:tx`) or its name, spaced (`•` or `.`)
 //! or not, in any case, read with ord's parsers ([`opi_runes::names`]). A
-//! spaced name must carry the rune's own spacers. Amounts are raw integers
-//! as strings with the rune's `divisibility` fractional digits.
+//! rune's identity is its unspaced name, so any spacing of its letters finds
+//! it, and the answer carries the rune's own spaced name. Amounts are raw
+//! integers as strings with the rune's `divisibility` fractional digits.
 //!
 //! Holders and balances come from the runes module's rollup:
 //! `runes_current_balances` (per rune and pkScript, the sum over unspent
@@ -22,7 +24,7 @@
 //! follow and `next_after` is null on the last page.
 
 use {
-    super::block_height_of_db,
+    super::{RunesTables, block_height_of_db},
     crate::{
         db::Db,
         extract::JsQuery,
@@ -52,7 +54,7 @@ mod tests;
 #[allow(dead_code)]
 pub(super) struct RuneParam {
     /// The rune: its id (`block:tx`), or its name, spaced (`•` or `.`) or
-    /// not, in any case. A spaced name must carry the rune's spacers.
+    /// not, in any case; any spacing of the rune's letters finds it.
     #[param(min_length = 1, max_length = 128)]
     rune: String,
 }
@@ -407,11 +409,11 @@ impl RuneRow {
 
 /// The rune `rune` names, or `None` when the database has no such rune.
 pub(super) async fn find_rune(db: &Db, rune: &RuneRef) -> Result<Option<RuneRow>, ApiError> {
-    let (rune_id, rune_name, spacers) = match rune {
-        RuneRef::Id(id) => (Some(id.as_str()), None, None),
-        RuneRef::Name { name, spacers } => (None, Some(name.as_str()), *spacers),
+    let (rune_id, rune_name) = match rune {
+        RuneRef::Id(id) => (Some(id.as_str()), None),
+        RuneRef::Name(name) => (None, Some(name.as_str())),
     };
-    let row = sqlx::query_as!(
+    Ok(sqlx::query_as!(
         RuneRow,
         r#"select e.rune_id, e.rune_name, e.spacers, e."number"::text as "number!",
                 e.divisibility, e.symbol, e.etching, e.genesis_height,
@@ -433,8 +435,7 @@ pub(super) async fn find_rune(db: &Db, rune: &RuneRef) -> Result<Option<RuneRow>
         rune_name,
     )
     .fetch_optional(db.pool()?)
-    .await?;
-    Ok(row.filter(|row| spacers.is_none_or(|spacers| i64::from(spacers) == row.spacers)))
+    .await?)
 }
 
 /// A rune's etching, supply, mint terms and progress, and holder count.
@@ -449,13 +450,21 @@ pub(super) async fn find_rune(db: &Db, rune: &RuneRef) -> Result<Option<RuneRow>
         (status = 200, description = "The rune", body = Answer<RunesRuneInfo>),
         (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
         (status = 404, description = "`rune not found`", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
     ),
 )]
-pub async fn rune_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
+pub async fn rune_info(
+    State(tables): State<RunesTables>,
+    JsQuery(query): JsQuery,
+) -> Result<Reply, ApiError> {
     let rune = match rune_param(&query) {
         Ok(rune) => rune,
         Err(bad) => return Ok(bad.reply()),
     };
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
     let Some(row) = find_rune(&db, &rune).await? else {
         return Ok(Reply::error(404, "rune not found"));
@@ -481,13 +490,21 @@ pub async fn rune_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<
     responses(
         (status = 200, description = "The page", body = Answer<RunesList>),
         (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
     ),
 )]
-pub async fn runes(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
+pub async fn runes(
+    State(tables): State<RunesTables>,
+    JsQuery(query): JsQuery,
+) -> Result<Reply, ApiError> {
     let request = match RunesRequest::from_query(&query) {
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply()),
     };
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
     let direction = if request.ascending { "asc" } else { "desc" };
     let (pattern, mask, spacers) = match &request.search {
@@ -626,10 +643,11 @@ fn holders_cursor(text: &str) -> Option<(String, String)> {
         (status = 200, description = "The page", body = Answer<RunesRuneHolders>),
         (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
         (status = 404, description = "`rune not found`", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
     ),
 )]
 pub async fn rune_holders(
-    State(db): State<Db>,
+    State(tables): State<RunesTables>,
     JsQuery(query): JsQuery,
 ) -> Result<Reply, ApiError> {
     let (rune, page) = match rune_param(&query)
@@ -638,6 +656,10 @@ pub async fn rune_holders(
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply()),
     };
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
     let Some(rune) = find_rune(&db, &rune).await? else {
         return Ok(Reply::error(404, "rune not found"));
@@ -762,10 +784,11 @@ fn number_cursor(text: &str) -> Option<String> {
     responses(
         (status = 200, description = "The page", body = Answer<RunesWalletBalances>),
         (status = 400, description = "A missing or invalid parameter, or both or neither of `address` and `pkscript`", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
     ),
 )]
 pub async fn wallet_balances(
-    State(db): State<Db>,
+    State(tables): State<RunesTables>,
     JsQuery(query): JsQuery,
 ) -> Result<Reply, ApiError> {
     let (wallet, page) = match Wallet::from_query(&query)
@@ -774,6 +797,10 @@ pub async fn wallet_balances(
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply()),
     };
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
     let (address, pkscript) = match wallet {
         Wallet::Address(address) => (Some(address), None),

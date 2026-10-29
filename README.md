@@ -675,12 +675,14 @@ The first hashed block uses its `block_event_hash` as the cumulative hash.
 **API tables.** For the API's rune routes the module keeps
 `runes_current_balances` (per rune and pkScript, the sum of its unspent
 outpoints' balances) and `runes_holders` (the pkScripts with a positive
-balance per rune) in each block's transaction and on every rollback; they
-feed no event, hash or report. A database without them gets them filled
-from the unspent outpoints at start, and the indexes the routes read are
-created at start when missing (a few seconds on signet). The API reads these
-tables, so run the module once with this version before serving the routes
-from a database.
+balance per rune) in each block's transaction and on every rollback, from
+that block's balance changes alone; they feed no event, hash or report. A
+database without them gets them filled from the unspent outpoints at start,
+and the indexes the routes read are created at start when missing. On a
+database the module wrote before, the first start builds the runes event
+indexes, which takes a few seconds on signet and minutes on mainnet; it logs
+`building runes event indexes, this can take minutes` at info while it does.
+Until the tables and indexes exist, the API's rune routes answer `503`.
 
 **Versions.** Reports send `opi-runes-full-node v1.0.0` with `db_version` 6. A
 database with another `db_version` is refused and must be indexed from scratch.
@@ -1001,14 +1003,19 @@ The generic runes routes (`/v1/runes/rune`, `/v1/runes/runes`,
 `{"error":null,"result":...}` with the database's `block_height`, as the
 brc20 ticker routes do. A missing or invalid parameter answers
 `400 {"error":"<reason>","result":null}`, and an unknown rune answers
-`404 {"error":"rune not found","result":null}`. Lists take `limit` (default
+`404 {"error":"rune not found","result":null}`. On a database the runes
+module has not built its API tables and indexes in (it builds them when
+`opi-indexer run` starts), they answer
+`503 {"error":"the runes API tables are not built yet; start opi-indexer run once","result":null}`;
+the parity routes above do not need these tables. Lists take `limit` (default
 `100`, at most `500`). `rune` and `search` are at most 128 bytes and `after`
 at most 256; the other bounds are those of the ticker routes.
 
 **Runes.** `rune` names a rune by its id (`block:tx`) or its name, spaced
 (`•` or `.`) or not, in any case, read with ord's own parsers: `uncommongoods`,
-`UNCOMMON•GOODS` and `uncommon.goods` find the same rune. A spaced name must
-carry the rune's spacers. `/v1/runes/rune` answers `rune_id`, `rune_name`
+`UNCOMMON•GOODS` and `uncommon.goods` find the same rune. A rune's identity
+is its unspaced name, so any spacing of its letters finds it, and every
+answer carries the rune's own `spaced_rune_name`. `/v1/runes/rune` answers `rune_id`, `rune_name`
 (the letters), `spaced_rune_name`, `number`, `divisibility`, `symbol`,
 `spacers`, `etching`, `etching_block_height`, `timestamp`, `turbo`,
 `premine`, `mints`, `burned`, `supply` (the premine plus `mints` times the
@@ -1030,7 +1037,7 @@ balance of the rune over its unspent outpoints, as
 `{"address","pkscript","balance"}` (`address` is null for a script without
 one). The runes module keeps these balances in `runes_current_balances` and
 their count per rune in `runes_holders`, in each block's transaction and on
-every rollback. `/v1/runes/rune/holders` orders by balance, largest first,
+every rollback (see [Runes Indexer](#runes-indexer)). `/v1/runes/rune/holders` orders by balance, largest first,
 then by pkScript, descending. `/v1/runes/wallet/balances` takes `address` or
 `pkscript` (hex) and answers one row per rune the wallet holds, by rune
 number: `{"rune_id","rune_name","spaced_rune_name","number","divisibility",

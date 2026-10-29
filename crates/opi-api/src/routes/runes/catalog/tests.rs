@@ -14,10 +14,7 @@ fn runes_are_named_by_id_or_name() {
     );
     assert_eq!(
         rune_param(&query("rune=uncommon%E2%80%A2goods")),
-        Ok(RuneRef::Name {
-            name: "UNCOMMONGOODS".into(),
-            spacers: Some(128)
-        })
+        Ok(RuneRef::Name("UNCOMMONGOODS".into()))
     );
     for bad in [
         "",

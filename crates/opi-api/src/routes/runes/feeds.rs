@@ -29,7 +29,7 @@
 
 use {
     super::{
-        block_height_of_db,
+        RunesTables, block_height_of_db,
         catalog::{RuneParam, WalletParams, find_rune, rune_param},
     },
     crate::{
@@ -270,14 +270,22 @@ fn page_fields(result: &mut JsObject, rows: Vec<FeedRow>, limit: i64) {
         (status = 200, description = "The page", body = Answer<RunesRuneEvents>),
         (status = 400, description = "A missing or invalid parameter, or a `type` `runes_event_types` does not list", body = ErrorBody),
         (status = 404, description = "`rune not found`", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
     ),
 )]
-pub async fn rune_events(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
+pub async fn rune_events(
+    State(tables): State<RunesTables>,
+    JsQuery(query): JsQuery,
+) -> Result<Reply, ApiError> {
     let (rune, request) =
         match rune_param(&query).and_then(|rune| Ok((rune, FeedRequest::from_query(&query)?))) {
             Ok(request) => request,
             Err(bad) => return Ok(bad.reply()),
         };
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
     let Some(rune) = find_rune(&db, &rune).await? else {
         return Ok(Reply::error(404, "rune not found"));
@@ -343,10 +351,11 @@ pub async fn rune_events(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
     responses(
         (status = 200, description = "The page", body = Answer<RunesWalletEvents>),
         (status = 400, description = "A missing or invalid parameter, both or neither of `address` and `pkscript`, or a `type` `runes_event_types` does not list", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
     ),
 )]
 pub async fn wallet_events(
-    State(db): State<Db>,
+    State(tables): State<RunesTables>,
     JsQuery(query): JsQuery,
 ) -> Result<Reply, ApiError> {
     let (wallet, request) = match Wallet::from_query(&query)
@@ -355,6 +364,10 @@ pub async fn wallet_events(
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply()),
     };
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
     let event_type = match event_type_id(&db, request.event_type.as_deref()).await? {
         Ok(id) => id,

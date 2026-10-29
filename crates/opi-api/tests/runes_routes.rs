@@ -210,6 +210,58 @@ where
     .await;
 }
 
+/// Before the runes module built its tables and indexes, every rune route
+/// answers 503 (after its parameter checks); once they exist, the routes
+/// answer, and the answer stays cached.
+#[tokio::test]
+async fn the_routes_answer_503_until_the_tables_are_built() {
+    let schema = include_str!("../../opi-runes/src/db_init.sql");
+    with_seeded(
+        RUNES,
+        "unbuilt",
+        None,
+        &[schema, FIXTURE],
+        |app, pool| async move {
+            let unbuilt = bad("the runes API tables are not built yet; start opi-indexer run once");
+            let uris = [
+                "/v1/runes/rune?rune=10%3A1",
+                "/v1/runes/runes",
+                "/v1/runes/rune/holders?rune=FIRSTRUNE",
+                "/v1/runes/wallet/balances?address=addr1",
+                "/v1/runes/rune/events?rune=10%3A1",
+                "/v1/runes/wallet/events?pkscript=001401",
+            ];
+            for uri in uris {
+                expect(&app, uri, 503, JSON, &unbuilt).await;
+            }
+            // parameters are still checked first
+            expect(&app, "/v1/runes/rune", 400, JSON, &bad("rune is required")).await;
+            // the parity routes do not need the tables
+            assert_eq!(
+                get(&app, "/v1/runes/holders?rune_name=FIRSTRUNE")
+                    .await
+                    .status,
+                200
+            );
+            // tables without the indexes are not built yet
+            sqlx::raw_sql(sqlx::AssertSqlSafe(opi_runes::holders::TABLES_SQL))
+                .execute(&pool)
+                .await
+                .unwrap();
+            expect(&app, uris[0], 503, JSON, &unbuilt).await;
+            sqlx::raw_sql("DROP TABLE runes_current_balances; DROP TABLE runes_holders;")
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(opi_runes::holders::create_if_missing(&pool).await.unwrap());
+            for uri in uris {
+                assert_eq!(get(&app, uri).await.status, 200, "{uri}");
+            }
+        },
+    )
+    .await;
+}
+
 /// The answer to `uri`, which must be `status`, as JSON.
 async fn answer(app: &Router, uri: &str, status: u16) -> Value {
     let answer = get(app, uri).await;
@@ -301,11 +353,15 @@ async fn a_rune_answers_by_id_or_name() {
                 "block_height": 40,
             })
         );
+        // any spacing of the letters finds the rune, which answers its own
+        // spaced name
         for name in [
             "FIRSTRUNE",
             "firstrune",
             "fir.strune",
             "FIR%E2%80%A2STRUNE",
+            "FI.RSTRUNE",
+            "f.i.r.s.t.r.u.n.e",
             "010%3A01",
         ] {
             assert_eq!(
@@ -314,8 +370,11 @@ async fn a_rune_answers_by_id_or_name() {
                 "{name}"
             );
         }
-        // a spaced name must carry the rune's spacers
-        for missing in ["FI.RSTRUNE", "NOSUCHRUNE", "99%3A1"] {
+        let holders = result(&app, "/v1/runes/rune/holders?rune=FIRSTRU.NE&limit=1").await;
+        assert_eq!(holders["spaced_rune_name"], "FIR•STRUNE");
+        let events = result(&app, "/v1/runes/rune/events?rune=F.IRSTRUNE&limit=1").await;
+        assert_eq!(events["rune_id"], "10:1");
+        for missing in ["NOSUCHRUNE", "FIRSTRUNEX", "99%3A1"] {
             expect(
                 &app,
                 &format!("/v1/runes/rune?rune={missing}"),
