@@ -25,6 +25,22 @@ pub const MAX_ADDRESS_LEN: usize = 128;
 /// The longest ticker a request may name, in bytes.
 pub const MAX_TICKER_LEN: usize = 256;
 
+/// The largest `before_id` an event feed request may name.
+pub const MAX_BEFORE_ID: i64 = 999_999_999_999_999_999;
+
+/// The longest event `type` a request may name, in bytes.
+pub const MAX_TYPE_LEN: usize = 256;
+
+/// The longest `pkscript` an event feed request may name, in hex digits.
+pub const MAX_PKSCRIPT_LEN: usize = 20_000;
+
+/// The longest name the SNS indexer stores, in UTF-8 bytes; a longer
+/// prefix, namespace or cursor matches nothing and is refused.
+pub const MAX_NAME_LEN: usize = 2048;
+
+/// The digits of the largest bitmap number, 2147483647.
+pub const MAX_PREFIX_DIGITS: usize = 10;
+
 /// The page of `rows`, fetched as one more than `limit`, and whether more
 /// follow.
 pub fn split_page<T>(mut rows: Vec<T>, limit: i64) -> (Vec<T>, bool) {

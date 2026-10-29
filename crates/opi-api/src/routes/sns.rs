@@ -38,8 +38,8 @@ use {
     super::{
         no_row,
         paging::{
-            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, integer, optional_text,
-            prefix_pattern, split_page, text,
+            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN, integer,
+            optional_text, prefix_pattern, split_page, text,
         },
     },
     crate::{
@@ -61,10 +61,6 @@ use {
 };
 
 const EVENT_SEPARATOR: &str = "|";
-
-/// The longest name the indexer stores, in UTF-8 bytes; a longer prefix,
-/// namespace or cursor matches nothing and is refused.
-pub const MAX_NAME_LEN: usize = 2048;
 
 pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
     ModuleRoutes::new()

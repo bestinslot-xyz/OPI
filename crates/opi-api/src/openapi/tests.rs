@@ -8,13 +8,12 @@ use {
     crate::{
         config::{MODULES, Module},
         routes::{
-            self, bitmap,
-            brc20::events::{MAX_BEFORE_ID, MAX_PKSCRIPT_LEN, MAX_TYPE_LEN},
+            self,
             paging::{
-                DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_OFFSET,
-                MAX_TICKER_LEN,
+                DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT,
+                MAX_NAME_LEN, MAX_OFFSET, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_TICKER_LEN,
+                MAX_TYPE_LEN,
             },
-            sns::MAX_NAME_LEN,
         },
     },
     axum::{
@@ -253,7 +252,7 @@ fn parameter_bounds_are_the_routes_rules() {
                     json!({"minimum": 0, "maximum": i32::MAX})
                 }
                 ("/v1/bitmap/search", "prefix") => {
-                    json!({"pattern": format!("^[0-9]{{1,{}}}$", bitmap::MAX_PREFIX_DIGITS)})
+                    json!({"pattern": format!("^[0-9]{{1,{}}}$", MAX_PREFIX_DIGITS)})
                 }
                 ("/v1/sns/search", "prefix") => json!({"minLength": 1, "maxLength": MAX_NAME_LEN}),
                 ("/v1/sns/search", "namespace" | "after") => json!({"maxLength": MAX_NAME_LEN}),

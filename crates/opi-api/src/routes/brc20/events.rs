@@ -57,8 +57,8 @@ use {
         pg_json::{self, oid},
         reply::{ApiError, Reply},
         routes::paging::{
-            BadParam, DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_LIMIT, integer, optional_text, single,
-            split_page,
+            BadParam, DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_LIMIT, MAX_PKSCRIPT_LEN,
+            MAX_TYPE_LEN, integer, optional_text, single, split_page,
         },
     },
     axum::extract::State,
@@ -67,15 +67,6 @@ use {
 
 #[cfg(test)]
 mod tests;
-
-/// The largest `before_id` a request may name.
-pub const MAX_BEFORE_ID: i64 = 999_999_999_999_999_999;
-
-/// The longest `type` a request may name, in bytes.
-pub const MAX_TYPE_LEN: usize = 256;
-
-/// The longest `pkscript` a request may name, in hex digits.
-pub const MAX_PKSCRIPT_LEN: usize = 20_000;
 
 /// The paging and type filter of a feed.
 #[derive(IntoParams)]

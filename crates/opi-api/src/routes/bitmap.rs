@@ -30,8 +30,8 @@ use {
     super::{
         no_row,
         paging::{
-            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, integer, required, single,
-            split_page, text,
+            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_PREFIX_DIGITS, integer,
+            required, single, split_page, text,
         },
     },
     crate::{
@@ -49,9 +49,6 @@ use {
     utoipa::{IntoParams, ToSchema},
     utoipa_axum::routes,
 };
-
-/// The digits of the largest bitmap number, 2147483647.
-pub const MAX_PREFIX_DIGITS: usize = 10;
 
 pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
     ModuleRoutes::new()

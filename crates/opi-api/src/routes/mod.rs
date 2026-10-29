@@ -9,12 +9,12 @@
 //! [`ModuleRoutes`], which takes nothing else; the disabled modules'
 //! catch-alls here are plain routes, outside the document.
 
-pub(crate) mod bitmap;
-pub(crate) mod brc20;
+mod bitmap;
+mod brc20;
 pub mod paging;
 mod registry;
 mod runes;
-pub(crate) mod sns;
+mod sns;
 
 pub use registry::ModuleRoutes;
 
