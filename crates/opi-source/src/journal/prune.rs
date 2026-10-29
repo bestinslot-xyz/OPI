@@ -93,9 +93,11 @@ impl Journal {
     /// nothing for it.
     ///
     /// A transaction that stops inside a height makes that height fail
-    /// closed in the same commit: a raw height loses its tag, so finalize
-    /// refuses it, and a records height goes below the pruned floor, so the
-    /// reader refuses it. The next step resumes from the lowest row left.
+    /// closed in the same commit: a raw height loses its tag, so nothing
+    /// reads the rest of a cut height as that block's log (finalize works
+    /// only above the final tip), and a records height goes below the pruned
+    /// floor, so the reader refuses it. The next step resumes from the
+    /// lowest row left.
     pub fn prune_step(
         &self,
         raw_below: u32,
@@ -176,8 +178,9 @@ impl Journal {
     /// Deletes at most `max_rows` raw events of `from..to`, lowest first, and
     /// the height tags of `from` up to the height it stops in, in one
     /// transaction. A height whose events it deletes only in part keeps the
-    /// rest without its tag, so finalize refuses it and the raw floor stays
-    /// at it for the next step. Returns the events deleted and the height
+    /// rest without its tag, so nothing reads the rest of a cut height as
+    /// that block's log (finalize works only above the final tip), and the
+    /// raw floor stays at it for the next step. Returns the events deleted and the height
     /// below which nothing is left, `to` when it deleted all of `from..to`.
     fn prune_raw(&self, from: u32, to: u32, max_rows: u64) -> Result<(u64, u32)> {
         let tx = self.begin_write()?;

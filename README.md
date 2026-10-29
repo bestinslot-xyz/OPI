@@ -173,11 +173,13 @@ deletes the rest.
   `opi_fill_running{module="journal",fill="journal_prune"}` with its progress
   and target. SIGINT or SIGTERM, during the height reads or between two
   steps, stops it and `run` exits 0; the journal stays valid and the next
-  start resumes where it stopped. A module that has stored no block yet (a
-  fresh module) leaves the records alone: this prune removes raw events only,
-  and the background task below removes the records once every module runs.
-  A height that cannot be read is retried five times over about a minute,
-  then fails the start, naming the module and the error.
+  start resumes where it stopped. A fresh module, one whose
+  `<module>_block_hashes` table does not exist yet or holds no block, leaves
+  the records alone: this prune removes raw events only, and the background
+  task below removes the records once every module runs. A height that
+  cannot be read for another reason is retried five times over about one to
+  two minutes, then fails the start, naming the module and the error. With
+  no journal yet, `run` reads no heights.
 - **While `run` indexes**, a background task prunes the new blocks every
   minute: raw events always, the records only while every enabled module is
   running. After each step it pauses for as long as the step took, so the

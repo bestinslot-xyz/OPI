@@ -39,6 +39,10 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(10);
 /// warn.
 const SLOW_STEP: Duration = Duration::from_secs(2);
 
+/// SQLSTATE `undefined_table`: a module's block hashes table that its first
+/// start has not created yet.
+const UNDEFINED_TABLE: &str = "42P01";
+
 /// How long one read of a module's height may take.
 const HEIGHT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -94,8 +98,66 @@ pub(crate) fn watch_signals() -> Result<()> {
 
 /// Resolves once [`signalled`] turns true.
 pub(crate) async fn wait_signalled() {
-    while !signalled() {
+    until(&signalled).await;
+}
+
+/// Resolves once `stop` returns true, checking it every 200 ms.
+async fn until(stop: &dyn Fn() -> bool) {
+    while !stop() {
         tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Runs `read` on a runtime of its own until it ends or `stop` holds;
+/// `None` when `stop` held first.
+fn read_or_stop<T>(read: impl Future<Output = T>, stop: &dyn Fn() -> bool) -> Result<Option<T>> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            tokio::select! {
+                value = read => Some(value),
+                () = until(stop) => None,
+            }
+        }))
+}
+
+/// What `run` reads before its catch-up.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StartHeights {
+    /// The lowest module height, `None` while a module is fresh or when
+    /// there is no journal to prune yet.
+    Lowest(Option<u32>),
+    /// `stop` held during the reads.
+    Stopped,
+}
+
+/// The module heights `run`'s catch-up of the journal at `path` prunes
+/// with. With no journal yet it reads none. A read that fails after its
+/// retries fails the start; `stop` ends the reads at once.
+pub(crate) fn start_heights(
+    path: &Path,
+    modules: &[ModuleDb],
+    stop: &dyn Fn() -> bool,
+) -> Result<StartHeights> {
+    start_heights_with(path, modules, stop, HEIGHT_ATTEMPTS, HEIGHT_RETRY)
+}
+
+fn start_heights_with(
+    path: &Path,
+    modules: &[ModuleDb],
+    stop: &dyn Fn() -> bool,
+    attempts: u32,
+    retry: Duration,
+) -> Result<StartHeights> {
+    if !path.exists() {
+        return Ok(StartHeights::Lowest(None));
+    }
+    match read_or_stop(run_lowest_height_with(modules, attempts, retry), stop)? {
+        Some(lowest) => Ok(StartHeights::Lowest(
+            lowest.context("the journal catch-up needs every enabled module's height")?,
+        )),
+        None => Ok(StartHeights::Stopped),
     }
 }
 
@@ -286,13 +348,13 @@ pub(crate) fn compact_command(
 ) -> Result<()> {
     if let Some(prune) = prune {
         let journal = open_existing(path, prune.chain, prune.runes)?;
-        let lowest = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(lowest_height(prune.modules))
-            .context(
-                "compact-journal prunes to OPI_PRUNE first, from every enabled module's height",
-            )?;
+        let Some(lowest) = read_or_stop(lowest_height(prune.modules), stop)? else {
+            tracing::info!("signal received while reading the module heights; nothing pruned");
+            return Ok(());
+        };
+        let lowest = lowest.context(
+            "compact-journal prunes to OPI_PRUNE first, from every enabled module's height",
+        )?;
         if let Some(window) = window(&journal, Some(lowest), prune.keep)?
             && catch_up(&journal, window, PRUNE_STEP_ROWS, stop)? == CatchUp::Interrupted
         {
@@ -425,18 +487,27 @@ impl ModuleDb {
     }
 
     /// The module's height: the highest `block_height` of its block hashes
-    /// table, `None` when it has stored no block.
+    /// table, `None` when it has stored no block or the table does not exist
+    /// yet. Every other error is an error.
     async fn height(&self) -> Result<Option<u32>> {
         let read = async {
             let mut connection = PgConnection::connect_with(&self.options).await?;
-            let height: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            let height = sqlx::query_scalar::<_, Option<i64>>(sqlx::AssertSqlSafe(format!(
                 "SELECT max(block_height)::int8 FROM {}",
                 self.block_hashes_table()
             )))
             .fetch_one(&mut connection)
-            .await?;
+            .await;
             connection.close().await.ok();
-            Ok::<_, sqlx::Error>(height)
+            match height {
+                // The module creates the table on its first start.
+                Err(sqlx::Error::Database(err))
+                    if err.code().as_deref() == Some(UNDEFINED_TABLE) =>
+                {
+                    Ok(None)
+                }
+                height => height,
+            }
         };
         let height = tokio::time::timeout(HEIGHT_TIMEOUT, read)
             .await
@@ -575,7 +646,8 @@ pub(crate) async fn lowest_height(modules: &[ModuleDb]) -> Result<u32> {
     for (name, height) in heights(modules, 1, Duration::ZERO).await? {
         let height = height.with_context(|| {
             format!(
-                "{name} has no height: {name}_block_hashes holds no block, so it needs the \
+                "{name} has no height: {name}_block_hashes is missing or holds no block, so it \
+                 needs the \
                  whole journal"
             )
         })?;
@@ -584,16 +656,13 @@ pub(crate) async fn lowest_height(modules: &[ModuleDb]) -> Result<u32> {
     lowest.context("no module is enabled")
 }
 
-/// The lowest height of `modules` for `run`'s catch-up, retrying each read
-/// [`HEIGHT_ATTEMPTS`] times over about a minute. `None`, after a warning,
-/// when a module has stored no block yet (a fresh module), so the catch-up
-/// prunes raw events only and the background task prunes the records once
-/// every module runs. Fails, failing the start, when a height cannot be
-/// read.
-pub(crate) async fn run_lowest_height(modules: &[ModuleDb]) -> Result<Option<u32>> {
-    run_lowest_height_with(modules, HEIGHT_ATTEMPTS, HEIGHT_RETRY).await
-}
-
+/// The lowest height of `modules` for `run`'s catch-up, making each read up
+/// to `attempts` times; with [`HEIGHT_ATTEMPTS`] and [`HEIGHT_RETRY`] that
+/// takes about one to two minutes. `None`, after a warning, when a module is
+/// fresh (its block hashes table does not exist yet or holds no block), so
+/// the catch-up prunes raw events only and the background task prunes the
+/// records once every module runs. Fails, failing the start, when a height
+/// cannot be read.
 async fn run_lowest_height_with(
     modules: &[ModuleDb],
     attempts: u32,
@@ -793,17 +862,61 @@ mod tests {
 
     /// `run` fails its start when a module's height cannot be read after its
     /// retries, naming the module.
-    #[tokio::test]
-    async fn run_fails_its_start_on_an_unreachable_module_database() {
+    #[test]
+    fn run_fails_its_start_on_an_unreachable_module_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = journal_in(tmp.path());
         let started = Instant::now();
-        let err = run_lowest_height_with(&[unreachable("sns")], 3, Duration::from_millis(20))
-            .await
+        let modules = [unreachable("sns")];
+        let err = start_heights_with(&path, &modules, &|| false, 3, Duration::from_millis(20))
             .unwrap_err();
         assert!(
             format!("{err:#}").contains("reading sns's height from sns_block_hashes"),
             "{err:#}"
         );
         assert!(started.elapsed() >= Duration::from_millis(60));
+    }
+
+    /// With no journal yet, `run` reads no module height.
+    #[test]
+    fn run_reads_no_heights_without_a_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let modules = [unreachable("bitmap")];
+        let started = Instant::now();
+        let heights = start_heights_with(
+            &tmp.path().join("journal.redb"),
+            &modules,
+            &|| false,
+            5,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(heights, StartHeights::Lowest(None));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A signal during the height reads ends them at once: `run` stops, and
+    /// `compact-journal` neither prunes nor compacts.
+    #[test]
+    fn a_signal_ends_the_height_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = journal_in(tmp.path());
+        let before = std::fs::metadata(&path).unwrap().len();
+        let modules = [unreachable("brc20")];
+        let heights =
+            start_heights_with(&path, &modules, &|| true, 5, Duration::from_secs(1)).unwrap();
+        assert_eq!(heights, StartHeights::Stopped);
+
+        let prune = OfflinePrune {
+            chain: Chain::Regtest,
+            runes: false,
+            keep: KEEP,
+            modules: &modules,
+        };
+        compact_command(&path, Some(prune), &|| true).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), before);
+        let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+        assert_eq!(journal.raw_floor().unwrap(), Some(0));
     }
 
     /// With no module height, `run`'s catch-up prunes raw events only.
@@ -1001,7 +1114,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let prefix = format!("opi_prune_test_{}_{nanos}", std::process::id());
-        let names = ["brc20", "bitmap", "sns"].map(|module| format!("{prefix}_{module}"));
+        let names = ["brc20", "bitmap", "sns", "runes"].map(|module| format!("{prefix}_{module}"));
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let mut root = runtime
             .block_on(PgConnection::connect_with(&admin()))
@@ -1011,12 +1124,39 @@ mod tests {
             module_database(&mut root, &names[0], "brc20", &[lowest + 10, lowest + 3]).await;
             module_database(&mut root, &names[1], "bitmap", &[lowest - 5, lowest]).await;
             module_database(&mut root, &names[2], "sns", &[]).await;
+            // A module that has never started: its database has no table.
+            sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {}", names[3])))
+                .execute(&mut root)
+                .await
+                .unwrap();
         });
 
         let result = std::panic::catch_unwind(|| {
             let db = |module, index: usize| ModuleDb::new(module, admin().database(&names[index]));
             let tmp = tempfile::tempdir().unwrap();
             let path = journal_in(tmp.path());
+
+            // A module whose table does not exist yet is fresh: `run` starts
+            // with raw-only pruning.
+            let never_started = [db("brc20", 0), db("runes", 3)];
+            let heights =
+                start_heights_with(&path, &never_started, &|| false, 1, Duration::ZERO).unwrap();
+            assert_eq!(heights, StartHeights::Lowest(None));
+            catch_up_then(&path, Chain::Regtest, false, None, KEEP, &|| false, || {
+                let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+                assert_eq!(journal.raw_floor().unwrap(), Some(RAW_BELOW));
+                assert_eq!(journal.pruned_below().unwrap(), 0);
+                Ok(())
+            })
+            .unwrap();
+            let err = read_or_stop(lowest_height(&never_started), &|| false)
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                format!("{err:#}").contains("runes has no height"),
+                "{err:#}"
+            );
 
             // `run` prunes raw events only while a module is fresh, and reads
             // the lowest height otherwise.
@@ -1038,7 +1178,8 @@ mod tests {
             };
             let err = compact_command(&path, Some(prune), &|| false).unwrap_err();
             assert!(
-                format!("{err:#}").contains("sns has no height: sns_block_hashes holds no block"),
+                format!("{err:#}")
+                    .contains("sns has no height: sns_block_hashes is missing or holds no block"),
                 "{err:#}"
             );
             assert_eq!(

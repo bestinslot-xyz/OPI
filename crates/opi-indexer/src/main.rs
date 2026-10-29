@@ -136,23 +136,17 @@ fn run() -> Result<()> {
 fn prune_then_index(config: &Config, module_configs: ModuleConfigs, keep: u32) -> Result<()> {
     prune::watch_signals()?;
     let modules = prune::module_dbs(&module_configs)?;
-    let read = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            tokio::select! {
-                lowest = prune::run_lowest_height(&modules) => Some(lowest),
-                () = prune::wait_signalled() => None,
-            }
-        });
-    let Some(lowest) = read else {
-        tracing::info!("signal received while reading the module heights, shutting down");
-        return Ok(());
+    let path = config.source.journal_path();
+    let lowest = match prune::start_heights(&path, &modules, &prune::signalled)? {
+        prune::StartHeights::Lowest(lowest) => lowest,
+        prune::StartHeights::Stopped => {
+            tracing::info!("signal received while reading the module heights, shutting down");
+            return Ok(());
+        }
     };
-    let lowest = lowest.context("the journal catch-up needs every enabled module's height")?;
     // `None` is a signal during the catch-up, which ends `run` with success.
     prune::catch_up_then(
-        &config.source.journal_path(),
+        &path,
         config.source.chain,
         config.source.runes,
         lowest,
