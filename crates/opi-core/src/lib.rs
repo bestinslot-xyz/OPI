@@ -169,6 +169,12 @@ pub trait Module: Send {
     /// Drops every block above `height`.
     async fn rollback_to(&mut self, height: u32) -> anyhow::Result<()>;
     async fn apply(&mut self, block: &BlockView) -> anyhow::Result<()>;
+    /// Deletes the module's history below `height` that neither the module
+    /// nor the API reads: a rollback to `height` or above, and every API
+    /// route, answer as before. Keeps everything by default.
+    async fn prune_below(&mut self, _height: u32) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// The connections of the module's database pool, for the process
     /// metrics; `None` when the module reports none.
     fn pool_stats(&self) -> Option<metrics::PoolStats> {

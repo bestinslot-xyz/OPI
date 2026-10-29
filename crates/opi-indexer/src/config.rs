@@ -5,6 +5,7 @@ use {
     opi_bitmap::BitmapConfig,
     opi_brc20::config::Brc20IndexerConfig,
     opi_runes::RunesConfig,
+    opi_runtime::MAX_ROLLBACK_DEPTH,
     opi_sns::SnsConfig,
     opi_source::{
         driver::{DEFAULT_CHUNK, SourceConfig},
@@ -18,6 +19,9 @@ use {
 pub struct Config {
     pub source: SourceConfig,
     pub modules: Vec<ModuleKind>,
+    /// Blocks of history kept below the tip when pruning; `None` keeps
+    /// everything.
+    pub prune: Option<u32>,
 }
 
 impl Config {
@@ -58,6 +62,21 @@ impl Config {
         };
 
         let modules = parse_modules(&get("OPI_MODULES").unwrap_or_else(|| "brc20".into()))?;
+        let prune = match get("OPI_PRUNE").filter(|value| !value.is_empty()) {
+            Some(value) => Some(
+                value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|keep| *keep >= MAX_ROLLBACK_DEPTH)
+                    .with_context(|| {
+                        format!(
+                            "OPI_PRUNE must be a block count of at least {MAX_ROLLBACK_DEPTH}, \
+                             got `{value}`"
+                        )
+                    })?,
+            ),
+            None => None,
+        };
 
         Ok(Config {
             source: SourceConfig {
@@ -70,6 +89,7 @@ impl Config {
                 runes: modules.contains(&ModuleKind::Runes),
             },
             modules,
+            prune,
         })
     }
 
@@ -304,6 +324,21 @@ mod tests {
         let mut vars = base();
         vars.insert("OPI_CHUNK", "250");
         assert_eq!(load(&vars).unwrap().source.chunk, 250);
+        assert_eq!(config.prune, None);
+    }
+
+    #[test]
+    fn config_prune_keeps_at_least_the_rollback_depth() {
+        let mut vars = base();
+        vars.insert("OPI_PRUNE", "");
+        assert_eq!(load(&vars).unwrap().prune, None);
+        vars.insert("OPI_PRUNE", "1000");
+        assert_eq!(load(&vars).unwrap().prune, Some(1000));
+        for bad in ["999", "0", "-5", "lots"] {
+            vars.insert("OPI_PRUNE", bad);
+            let err = load(&vars).unwrap_err();
+            assert!(err.to_string().contains("OPI_PRUNE"), "{err}");
+        }
     }
 
     #[test]

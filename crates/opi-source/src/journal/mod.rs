@@ -1,5 +1,6 @@
 mod finalize;
 pub mod order;
+mod prune;
 mod reader;
 mod reorg;
 mod runes;
@@ -7,6 +8,7 @@ mod schema;
 
 pub use {
     finalize::{ChainData, EmissionOrderError, FINALIZE_BATCH, finalize_range, is_json_body},
+    prune::{PRUNE_BATCH, Pruned},
     reader::JournalReader,
     reorg::reorg_check,
     runes::RuneModelError,
@@ -82,6 +84,9 @@ const META_SCHEMA: &[u8] = b"schema";
 /// keeps them when it has a rune table; one without finalized blocks takes
 /// the setting it is opened with.
 const META_RUNES: &[u8] = b"runes";
+/// Lowest height whose transfer records and per-block rune rows the journal
+/// holds (`u32` BE); absent when nothing was pruned.
+const META_PRUNED_BELOW: &[u8] = b"pruned_below";
 const SCHEMA_VERSION: u32 = 1;
 const ZSTD_LEVEL: i32 = 3;
 

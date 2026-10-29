@@ -1,5 +1,6 @@
 mod brc20;
 mod config;
+mod prune;
 mod validate;
 
 use {
@@ -20,7 +21,7 @@ use {
     },
     opi_core::{BlockSource, Module, metrics::Phase},
     opi_runes::{RunesConfig, RunesModule},
-    opi_runtime::{ModuleFactory, Runtime},
+    opi_runtime::{ModuleFactory, Runtime, RuntimeOptions},
     opi_sns::{SnsConfig, SnsModule},
     opi_source::driver::{SourceHandle, spawn_source},
     std::{process::ExitCode, sync::Arc, time::Duration},
@@ -58,6 +59,9 @@ enum Command {
     /// API_HOST:API_PORT, until SIGINT or SIGTERM. Runs alongside `run`.
     /// Reads the env file OPI_ENV_FILE names, or `.env`.
     Api,
+    /// Rewrite the journal file without the space pruning freed. Needs `run`
+    /// stopped. Reads OPI_JOURNAL_DIR.
+    CompactJournal,
 }
 
 /// Why the modules stopped.
@@ -83,6 +87,7 @@ fn main() -> ExitCode {
         Command::Run => run().map(|()| true),
         Command::Brc20(args) => brc20::run(args).map(|()| true),
         Command::Api => api().map(|()| true),
+        Command::CompactJournal => compact_journal().map(|()| true),
         Command::Validate(args) => {
             return match validate::run(args) {
                 Ok(true) => ExitCode::SUCCESS,
@@ -145,7 +150,12 @@ fn run() -> Result<()> {
     {
         Ok(runtime) => {
             opi_core::metrics::global().set_phase(Phase::Running);
-            let exit = runtime.block_on(supervise(&handle, module_configs, brc20_engine));
+            let exit = runtime.block_on(supervise(
+                &handle,
+                module_configs,
+                brc20_engine,
+                config.prune,
+            ));
             // Every exit, an error one included, reports shutting down while
             // brc20 goes idle and the RPC server and source stop.
             if brc20_enabled {
@@ -219,27 +229,53 @@ fn api() -> Result<()> {
         })
 }
 
+/// Compacts the journal under OPI_JOURNAL_DIR.
+fn compact_journal() -> Result<()> {
+    let dir = std::env::var("OPI_JOURNAL_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty())
+        .context("OPI_JOURNAL_DIR is not set")?;
+    prune::compact_journal(&std::path::Path::new(&dir).join(opi_source::driver::JOURNAL_FILE))
+}
+
 /// Runs the enabled modules over the journal until a signal arrives or the
-/// source driver exits, then stops them.
+/// source driver exits, then stops them. With `prune` set, the modules prune
+/// their history and a pruner task prunes the journal, each keeping the last
+/// `prune` blocks.
 async fn supervise(
     handle: &SourceHandle,
     configs: ModuleConfigs,
     brc20_engine: Option<Brc20Engine>,
+    prune: Option<u32>,
 ) -> Result<Exit> {
-    let journal: Arc<dyn BlockSource> = Arc::new(handle.reader());
-    let mut runtime = Runtime::new(journal.clone());
+    let reader = handle.reader();
+    let journal: Arc<dyn BlockSource> = Arc::new(reader.clone());
+    let mut runtime = Runtime::with_options(
+        journal.clone(),
+        RuntimeOptions {
+            prune,
+            ..RuntimeOptions::default()
+        },
+    );
+    let mut names = Vec::new();
     if let Some(engine) = brc20_engine {
         runtime.add("brc20", brc20_factory(engine, journal.clone()));
+        names.push("brc20");
     }
     if let Some(config) = configs.bitmap {
         runtime.add("bitmap", bitmap_factory(config, journal.clone()));
+        names.push("bitmap");
     }
     if let Some(config) = configs.sns {
         runtime.add("sns", sns_factory(config, journal.clone()));
+        names.push("sns");
     }
     if let Some(config) = configs.runes {
         runtime.add("runes", runes_factory(config, journal));
+        names.push("runes");
     }
+    let pruner =
+        prune.map(|keep| tokio::spawn(prune::prune_journal(reader.journal().clone(), names, keep)));
 
     let (stop, stopped) = oneshot::channel::<()>();
     let modules = runtime.run(async {
@@ -268,6 +304,10 @@ async fn supervise(
     };
     // Readiness answers 503 from here on.
     opi_core::metrics::global().set_phase(Phase::ShuttingDown);
+    if let Some(pruner) = pruner {
+        pruner.abort();
+        pruner.await.ok();
+    }
     stop.send(()).ok();
     modules.await?;
     Ok(exit)

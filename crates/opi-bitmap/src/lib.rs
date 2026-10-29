@@ -186,6 +186,10 @@ impl Module for BitmapModule {
         self.db.rollback_to(height).await
     }
 
+    async fn prune_below(&mut self, height: u32) -> anyhow::Result<()> {
+        self.db.prune_below(height).await
+    }
+
     /// Writes the block, then reports it. The block is committed before the
     /// report, so a report failure is logged and never fails the block.
     async fn apply(&mut self, block: &BlockView) -> anyhow::Result<()> {

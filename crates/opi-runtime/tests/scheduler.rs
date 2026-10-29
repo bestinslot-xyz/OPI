@@ -127,6 +127,7 @@ struct Store {
     blocks: BTreeMap<u32, String>,
     applied: Vec<Applied>,
     rollbacks: Vec<u32>,
+    prunes: Vec<u32>,
     builds: Vec<Instant>,
     drops: usize,
     fail_build: bool,
@@ -188,6 +189,11 @@ impl Module for FakeModule {
         let mut store = lock(&self.store);
         store.rollbacks.push(height);
         store.blocks.split_off(&(height + 1));
+        Ok(())
+    }
+
+    async fn prune_below(&mut self, height: u32) -> Result<()> {
+        lock(&self.store).prunes.push(height);
         Ok(())
     }
 
@@ -261,6 +267,7 @@ fn fast_options() -> RuntimeOptions {
         min_backoff: Duration::from_millis(50),
         max_backoff: Duration::from_millis(400),
         healthy_reset: Duration::from_secs(1),
+        prune: None,
     }
 }
 
@@ -317,6 +324,36 @@ fn matches_chain(store: &Shared, source: &Arc<MemSource>, from: u32) -> impl FnM
 
 fn applied_heights(store: &Shared) -> Vec<u32> {
     lock(store).applied.iter().map(|a| a.height).collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn prunes_every_hundred_blocks_when_set() {
+    let source = MemSource::new(2500);
+    let pruned = store();
+    let kept = store();
+    let running = start(
+        &source,
+        RuntimeOptions {
+            prune: Some(1000),
+            ..fast_options()
+        },
+        vec![("pruned", factory("pruned", 0, &pruned))],
+    );
+    wait_until("pruned module at tip", cursor_is(&pruned, 2500)).await;
+    running.stop().await;
+    let expected = (0..=25)
+        .map(|n| (n * 100 + 1u32).saturating_sub(1000))
+        .collect::<Vec<_>>();
+    assert_eq!(lock(&pruned).prunes, expected);
+
+    let running = start(
+        &source,
+        fast_options(),
+        vec![("kept", factory("kept", 0, &kept))],
+    );
+    wait_until("kept module at tip", cursor_is(&kept, 2500)).await;
+    running.stop().await;
+    assert!(lock(&kept).prunes.is_empty());
 }
 
 #[tokio::test(start_paused = true)]

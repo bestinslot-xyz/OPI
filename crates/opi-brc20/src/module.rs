@@ -160,6 +160,19 @@ impl Module for Brc20Module {
         .await
     }
 
+    /// Deletes `brc20_logs` below `height`. Nothing reads them; every other
+    /// brc20 history table backs an API route or the balance computation.
+    async fn prune_below(&mut self, height: u32) -> anyhow::Result<()> {
+        let Some(pool) = &self.pool else {
+            return Ok(());
+        };
+        sqlx::query("DELETE FROM brc20_logs WHERE block_height < $1")
+            .bind(height as i32)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     fn pool_stats(&self) -> Option<opi_core::metrics::PoolStats> {
         self.pool
             .as_ref()
