@@ -743,7 +743,8 @@ The document comes from the route code: each handler carries a
 A module registers its routes through `ModuleRoutes`, which takes nothing
 but `routes!`, so a route without an operation does not compile. Unit tests
 fail when the document does not validate against the OpenAPI 3.1 schema and
-when the tables below differ from it. The tables are generated
+when the tables below differ from it, and every route test checks its
+answer's status, content type and JSON body against the document. The tables are generated
 from the document; after a route change, rewrite them with
 `OPI_UPDATE_README=1 cargo test -p opi-api readme`.
 
