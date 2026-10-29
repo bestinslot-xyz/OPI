@@ -1,5 +1,7 @@
-//! The document against the router it comes from, the OpenAPI 3.1 schema,
-//! the parameter rules and the README.
+//! The document against the modules it covers, the OpenAPI 3.1 schema, the
+//! parameter rules and the README. Every module route has an operation by
+//! construction: [`ModuleRoutes`](crate::routes::ModuleRoutes) takes routes
+//! only from `routes!`.
 
 use {
     super::{ApiDoc, operations_mut},
@@ -18,7 +20,7 @@ use {
     axum::{
         Router,
         body::{Body, to_bytes},
-        http::{Method, Request},
+        http::Request,
     },
     serde_json::{Value, json},
     std::collections::BTreeSet,
@@ -28,16 +30,6 @@ use {
 
 /// The OpenAPI 3.1 schema (https://spec.openapis.org/oas/3.1/schema/2022-10-07).
 const OAS_3_1_SCHEMA: &str = include_str!("oas-3.1-schema.json");
-
-/// The methods a route can take; axum answers HEAD with the GET route and
-/// the front door answers OPTIONS.
-const METHODS: [Method; 5] = [
-    Method::GET,
-    Method::POST,
-    Method::PUT,
-    Method::PATCH,
-    Method::DELETE,
-];
 
 fn app(modules: &[Module]) -> (Router, Document) {
     routes::app(modules, vec![], &Default::default())
@@ -66,14 +58,6 @@ fn each_operation(document: &Value) -> Vec<(String, String, &Value)> {
     // another crate of the build may turn on
     found.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
     found
-}
-
-/// The (method, path) pairs of `document`'s operations.
-fn operations(document: &Document) -> BTreeSet<(String, String)> {
-    each_operation(&serde_json::to_value(document).unwrap())
-        .into_iter()
-        .map(|(method, path, _)| (method, path))
-        .collect()
 }
 
 /// The README's route tables of `document`: one per tag, each operation
@@ -111,74 +95,6 @@ fn route_tables(document: &Document) -> String {
         out.push('\n');
     }
     out
-}
-
-/// The route paths of `router`, as its Debug form lists them: the
-/// `path_router`'s node maps each route id to its path. axum exposes no
-/// other way to list a router's routes.
-fn router_paths(router: &Router) -> BTreeSet<String> {
-    let debug = format!("{router:?}");
-    let path_router = debug
-        .split("fallback_router:")
-        .next()
-        .expect("a Router's Debug form names its path_router first");
-    let node = path_router
-        .split_once("node: Node { paths: {")
-        .expect("the path_router's node lists its paths")
-        .1;
-    let paths: BTreeSet<String> = node
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_string)
-        .collect();
-    assert!(
-        paths.contains("/v1/status"),
-        "the Debug form of axum's Router no longer lists paths as this test reads them: {paths:?}"
-    );
-    paths
-}
-
-/// Whether `router` takes `method` on `path`: a request no route takes gets
-/// finalhandler's `Cannot METHOD /path` page. Only a 404's body is read,
-/// so a route that streams without end does not hold the test.
-async fn takes(router: &Router, method: &Method, path: &str) -> bool {
-    let uri = path.replace(['{', '}'], "");
-    let request = Request::builder()
-        .method(method)
-        .uri(&uri)
-        .body(Body::empty())
-        .unwrap();
-    let response = router.clone().oneshot(request).await.unwrap();
-    if response.status() != 404 {
-        return true;
-    }
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    !String::from_utf8_lossy(&body).contains(&format!("<pre>Cannot {method} "))
-}
-
-#[tokio::test]
-async fn the_document_lists_every_route_of_the_router_and_no_other() {
-    let (router, document) = app(&MODULES);
-    let mut routed = BTreeSet::new();
-    for path in router_paths(&router) {
-        for method in &METHODS {
-            if takes(&router, method, &path).await {
-                routed.insert((method.to_string(), path.clone()));
-            }
-        }
-    }
-    let documented = operations(&document);
-    let undocumented: Vec<_> = routed.difference(&documented).collect();
-    let unrouted: Vec<_> = documented.difference(&routed).collect();
-    assert!(
-        undocumented.is_empty(),
-        "routes without an operation (register them with `.routes(routes!(handler))`): {undocumented:?}"
-    );
-    assert!(
-        unrouted.is_empty(),
-        "operations without a route: {unrouted:?}"
-    );
 }
 
 #[test]

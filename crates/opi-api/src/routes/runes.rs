@@ -7,6 +7,7 @@
 //! array parser reads it with parseFloat.
 
 use {
+    super::ModuleRoutes,
     super::no_row,
     crate::{
         config::Module,
@@ -21,11 +22,11 @@ use {
     },
     axum::extract::State,
     utoipa::ToSchema,
-    utoipa_axum::{router::OpenApiRouter, routes},
+    utoipa_axum::routes,
 };
 
-pub fn routes(db: Db, _settings: &super::RouteSettings) -> OpenApiRouter {
-    OpenApiRouter::default()
+pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+    ModuleRoutes::new()
         .routes(routes!(ip))
         .routes(routes!(block_height))
         .routes(routes!(balance_on_block))
@@ -35,7 +36,6 @@ pub fn routes(db: Db, _settings: &super::RouteSettings) -> OpenApiRouter {
         .routes(routes!(holders))
         .routes(routes!(get_hash_of_all_activity))
         .routes(routes!(event))
-        .with_state(db)
 }
 
 /// A runes route's answer: `error` null, the `result` and the database's

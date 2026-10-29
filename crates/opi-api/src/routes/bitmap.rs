@@ -26,6 +26,7 @@
 //! ask with (null on the last page).
 
 use {
+    super::ModuleRoutes,
     super::{
         no_row,
         paging::{
@@ -46,14 +47,14 @@ use {
     anyhow::anyhow,
     axum::extract::State,
     utoipa::{IntoParams, ToSchema},
-    utoipa_axum::{router::OpenApiRouter, routes},
+    utoipa_axum::routes,
 };
 
 /// The digits of the largest bitmap number, 2147483647.
 pub const MAX_PREFIX_DIGITS: usize = 10;
 
-pub fn routes(db: Db, _settings: &super::RouteSettings) -> OpenApiRouter {
-    OpenApiRouter::default()
+pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+    ModuleRoutes::new()
         .routes(routes!(ip))
         .routes(routes!(block_height))
         .routes(routes!(get_hash_of_all_activity))
@@ -61,7 +62,6 @@ pub fn routes(db: Db, _settings: &super::RouteSettings) -> OpenApiRouter {
         .routes(routes!(get_inscription_id_of_bitmap))
         .routes(routes!(by_inscription))
         .routes(routes!(search))
-        .with_state(db)
 }
 
 /// A block's event hashes.

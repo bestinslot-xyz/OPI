@@ -740,9 +740,10 @@ route does.
 The document comes from the route code: each handler carries a
 `#[utoipa::path]` annotation, and its module registers it with
 `.routes(routes!(handler))`, which adds the route and its operation together.
-Unit tests fail when a route of the router has no operation or an operation
-has no route, when the document does not validate against the OpenAPI 3.1
-schema, and when the tables below differ from it. The tables are generated
+A module registers its routes through `ModuleRoutes`, which takes nothing
+but `routes!`, so a route without an operation does not compile. Unit tests
+fail when the document does not validate against the OpenAPI 3.1 schema and
+when the tables below differ from it. The tables are generated
 from the document; after a route change, rewrite them with
 `OPI_UPDATE_README=1 cargo test -p opi-api readme`.
 

@@ -34,6 +34,7 @@
 //! where two apply), and `namespace` is null when none was given.
 
 use {
+    super::ModuleRoutes,
     super::{
         no_row,
         paging::{
@@ -56,7 +57,7 @@ use {
     opi_sns::unicode::to_lowercase,
     sha2::{Digest, Sha256},
     utoipa::{IntoParams, ToSchema},
-    utoipa_axum::{router::OpenApiRouter, routes},
+    utoipa_axum::routes,
 };
 
 const EVENT_SEPARATOR: &str = "|";
@@ -65,8 +66,8 @@ const EVENT_SEPARATOR: &str = "|";
 /// namespace or cursor matches nothing and is refused.
 pub const MAX_NAME_LEN: usize = 2048;
 
-pub fn routes(db: Db, _settings: &super::RouteSettings) -> OpenApiRouter {
-    OpenApiRouter::default()
+pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+    ModuleRoutes::new()
         .routes(routes!(ip))
         .routes(routes!(block_height))
         .routes(routes!(get_hash_of_all_activity))
@@ -76,7 +77,6 @@ pub fn routes(db: Db, _settings: &super::RouteSettings) -> OpenApiRouter {
         .routes(routes!(get_registered_namespaces))
         .routes(routes!(by_inscription))
         .routes(routes!(search))
-        .with_state(db)
 }
 
 /// A block's event hashes.

@@ -3,15 +3,20 @@
 //! 404 for its whole prefix when it is not, then finalhandler's 404 for
 //! anything else.
 //!
-//! Every route is registered with `.routes(routes!(handler))` on an
-//! [`OpenApiRouter`], which adds the handler's `#[utoipa::path]` operation to
-//! the OpenAPI document (see [`openapi`](crate::openapi)).
+//! Every route is registered with `.routes(routes!(handler))`, which adds
+//! the handler's `#[utoipa::path]` operation to the OpenAPI document (see
+//! [`openapi`](crate::openapi)). A module registers through
+//! [`ModuleRoutes`], which takes nothing else; the disabled modules'
+//! catch-alls here are plain routes, outside the document.
 
 pub(crate) mod bitmap;
 pub(crate) mod brc20;
 pub mod paging;
+mod registry;
 mod runes;
 pub(crate) mod sns;
+
+pub use registry::ModuleRoutes;
 
 use {
     crate::{
@@ -64,7 +69,7 @@ impl Default for RouteSettings {
 
 /// A module's route registration: the module's routes, which read from
 /// `db`, with their operations.
-pub type RouteModule = fn(db: Db, settings: &RouteSettings) -> OpenApiRouter;
+pub type RouteModule = fn(db: &Db, settings: &RouteSettings) -> ModuleRoutes;
 
 /// The registration function of `module`.
 pub fn module_routes(module: Module) -> RouteModule {
@@ -105,7 +110,9 @@ pub fn app(
         .routes(routes!(openapi::openapi_json).with_state(spec.clone()));
     for module in MODULES {
         if enabled.contains(&module) {
-            router = router.merge(module_routes(module)(db_of(module), settings));
+            let db = db_of(module);
+            let module_router = module_routes(module)(&db, settings).into_inner();
+            router = router.merge(module_router.with_state(db));
         } else {
             let prefix = format!("/v1/{}", module.name());
             let disabled = move || async move {

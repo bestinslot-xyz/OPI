@@ -12,6 +12,7 @@
 //! [`pg_json::text`].
 
 use {
+    super::ModuleRoutes,
     super::no_row,
     crate::{
         config::Module,
@@ -27,10 +28,7 @@ use {
     axum::extract::State,
     sha2::{Digest, Sha256},
     utoipa::ToSchema,
-    utoipa_axum::{
-        router::{OpenApiRouter, UtoipaMethodRouterExt},
-        routes,
-    },
+    utoipa_axum::{router::UtoipaMethodRouterExt, routes},
 };
 
 pub(crate) mod events;
@@ -45,8 +43,8 @@ const EVENT_SEPARATOR: &str = "|";
 /// The explorer's page size (EXPLORER_PAGE_SIZE).
 const EXPLORER_PAGE_SIZE: i64 = 50;
 
-pub fn routes(db: Db, settings: &super::RouteSettings) -> OpenApiRouter {
-    OpenApiRouter::default()
+pub fn routes(db: &Db, settings: &super::RouteSettings) -> ModuleRoutes {
+    ModuleRoutes::new()
         .routes(routes!(ip))
         .routes(routes!(db_version))
         .routes(routes!(event_hash_version))
@@ -79,7 +77,6 @@ pub fn routes(db: Db, settings: &super::RouteSettings) -> OpenApiRouter {
         .routes(routes!(tickers::wallet_balances))
         .routes(routes!(events::ticker_events))
         .routes(routes!(events::wallet_events))
-        .with_state(db)
 }
 
 /// A brc20 event as the block and inscription routes list it: the stored
