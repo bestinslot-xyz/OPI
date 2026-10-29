@@ -112,6 +112,13 @@ pub fn app(
         if enabled.contains(&module) {
             let db = db_of(module);
             let module_router = module_routes(module)(&db, settings).into_inner();
+            let schemas: Vec<_> = module_router
+                .get_openapi()
+                .components
+                .iter()
+                .flat_map(|components| components.schemas.clone())
+                .collect();
+            registry::check_components(router.get_openapi(), &schemas);
             router = router.merge(module_router.with_state(db));
         } else {
             let prefix = format!("/v1/{}", module.name());

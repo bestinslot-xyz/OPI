@@ -289,6 +289,14 @@ fn parameter_bounds_are_the_routes_rules() {
     );
 }
 
+/// `ModuleRoutes` and the app's merge refuse a schema name two different
+/// schemas take, so building every module checks them all.
+#[test]
+fn component_names_are_unique_across_the_routes() {
+    let document = app(&MODULES).1;
+    assert!(document.components.unwrap().schemas.len() > 50);
+}
+
 #[test]
 #[should_panic(expected = "utoipa dropped a keyword")]
 fn a_written_schema_keeps_every_keyword() {
