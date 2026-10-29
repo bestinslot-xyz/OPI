@@ -11,7 +11,7 @@
 use {
     crate::config::ModuleConfigs,
     anyhow::{Context, Result, anyhow, ensure},
-    opi_source::journal::{Journal, PRUNE_STEP_ROWS, Pruned, is_in_use},
+    opi_source::journal::{Journal, JournalOptions, PRUNE_STEP_ROWS, Pruned, is_in_use},
     ord::Chain,
     sqlx::{
         Connection, PgConnection,
@@ -281,11 +281,16 @@ pub(crate) fn catch_up(
     }
 }
 
-/// Opens the existing journal at `path`, refusing while another open, such
-/// as `run`, holds it.
-fn open_existing(path: &Path, chain: Chain, runes: bool) -> Result<Journal> {
+/// Opens the existing journal at `path` with `options`, refusing while
+/// another open, such as `run`, holds it.
+fn open_existing(
+    path: &Path,
+    chain: Chain,
+    runes: bool,
+    options: &JournalOptions,
+) -> Result<Journal> {
     ensure!(path.exists(), "no journal at {}", path.display());
-    Journal::open(path, chain, runes).map_err(|err| in_use(err, path))
+    Journal::open_with(path, chain, runes, options).map_err(|err| in_use(err, path))
 }
 
 fn in_use(err: anyhow::Error, path: &Path) -> anyhow::Error {
@@ -299,14 +304,16 @@ fn in_use(err: anyhow::Error, path: &Path) -> anyhow::Error {
     }
 }
 
-/// `run`'s catch-up: prunes the journal at `path` to the window of `keep`
-/// blocks below its final tip and below `lowest`, closes it, and only then
-/// calls `start`, which starts ord and the modules. Nothing else holds the
-/// journal while it prunes. `None` when `stop` held during the catch-up or
-/// right after it; `start` has not run then. A journal that does not exist
-/// yet has nothing to prune.
+/// `run`'s catch-up: prunes the journal at `path`, opened with `options`,
+/// to the window of `keep` blocks below its final tip and below `lowest`,
+/// closes it, and only then calls `start`, which starts ord and the modules.
+/// Nothing else holds the journal while it prunes. `None` when `stop` held
+/// during the catch-up or right after it; `start` has not run then. A
+/// journal that does not exist yet has nothing to prune.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn catch_up_then<T>(
     path: &Path,
+    options: &JournalOptions,
     chain: Chain,
     runes: bool,
     lowest: Option<u32>,
@@ -315,7 +322,7 @@ pub(crate) fn catch_up_then<T>(
     start: impl FnOnce() -> Result<T>,
 ) -> Result<Option<T>> {
     if path.exists() {
-        let journal = open_existing(path, chain, runes)?;
+        let journal = open_existing(path, chain, runes, options)?;
         if let Some(window) = window(&journal, lowest, keep)?
             && catch_up(&journal, window, PRUNE_STEP_ROWS, stop)? == CatchUp::Interrupted
         {
@@ -338,16 +345,18 @@ pub(crate) struct OfflinePrune<'a> {
 
 /// `compact-journal`: with `prune`, prunes the journal at `path` to the
 /// window of `prune.keep` blocks below its final tip and below the lowest
-/// height read from the module databases, then compacts it. Refuses when a
-/// module's height cannot be read, and while another open holds the journal.
-/// A signal between two prune steps ends it without compacting.
+/// height read from the module databases, then compacts it, opening it with
+/// `options` both times. Refuses when a module's height cannot be read, and
+/// while another open holds the journal. A signal during the height reads
+/// or between two prune steps ends it without compacting.
 pub(crate) fn compact_command(
     path: &Path,
+    options: &JournalOptions,
     prune: Option<OfflinePrune>,
     stop: &dyn Fn() -> bool,
 ) -> Result<()> {
     if let Some(prune) = prune {
-        let journal = open_existing(path, prune.chain, prune.runes)?;
+        let journal = open_existing(path, prune.chain, prune.runes, options)?;
         let Some(lowest) = read_or_stop(lowest_height(prune.modules), stop)? else {
             tracing::info!("signal received while reading the module heights; nothing pruned");
             return Ok(());
@@ -361,7 +370,7 @@ pub(crate) fn compact_command(
             return Ok(());
         }
     }
-    compact_journal(path)
+    compact_journal(path, options)
 }
 
 /// Prunes `journal` every [`PRUNE_INTERVAL`] until cancelled, keeping the
@@ -682,7 +691,7 @@ async fn run_lowest_height_with(
 }
 
 /// Rewrites the journal file at `path` without the pages pruning freed.
-pub(crate) fn compact_journal(path: &Path) -> Result<()> {
+pub(crate) fn compact_journal(path: &Path, options: &JournalOptions) -> Result<()> {
     let before = std::fs::metadata(path)
         .with_context(|| format!("reading {}", path.display()))?
         .len();
@@ -691,7 +700,7 @@ pub(crate) fn compact_journal(path: &Path) -> Result<()> {
         bytes = before,
         "compacting the journal; this cannot be interrupted"
     );
-    Journal::compact(path)
+    Journal::compact(path, options)
         .map_err(|err| in_use(err, path))
         .with_context(|| format!("compacting {}", path.display()))?;
     let after = std::fs::metadata(path)?.len();
@@ -829,6 +838,7 @@ mod tests {
         };
         let out = catch_up_then(
             &path,
+            &JournalOptions::default(),
             Chain::Regtest,
             false,
             Some(LOWEST),
@@ -913,7 +923,7 @@ mod tests {
             keep: KEEP,
             modules: &modules,
         };
-        compact_command(&path, Some(prune), &|| true).unwrap();
+        compact_command(&path, &JournalOptions::default(), Some(prune), &|| true).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), before);
         let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
         assert_eq!(journal.raw_floor().unwrap(), Some(0));
@@ -924,13 +934,22 @@ mod tests {
     fn run_without_a_module_height_prunes_raw_events_only() {
         let tmp = tempfile::tempdir().unwrap();
         let path = journal_in(tmp.path());
-        catch_up_then(&path, Chain::Regtest, false, None, KEEP, &|| false, || {
-            let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
-            assert_eq!(journal.raw_floor().unwrap(), Some(RAW_BELOW));
-            assert_eq!(journal.pruned_below().unwrap(), 0);
-            assert!(has_info(&journal, 0, 0));
-            Ok(())
-        })
+        catch_up_then(
+            &path,
+            &JournalOptions::default(),
+            Chain::Regtest,
+            false,
+            None,
+            KEEP,
+            &|| false,
+            || {
+                let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+                assert_eq!(journal.raw_floor().unwrap(), Some(RAW_BELOW));
+                assert_eq!(journal.pruned_below().unwrap(), 0);
+                assert!(has_info(&journal, 0, 0));
+                Ok(())
+            },
+        )
         .unwrap();
     }
 
@@ -977,6 +996,7 @@ mod tests {
 
         let stopped = catch_up_then(
             &path,
+            &JournalOptions::default(),
             Chain::Regtest,
             false,
             Some(LOWEST),
@@ -988,6 +1008,7 @@ mod tests {
 
         catch_up_then(
             &path,
+            &JournalOptions::default(),
             Chain::Regtest,
             false,
             Some(LOWEST),
@@ -1027,7 +1048,8 @@ mod tests {
             keep: KEEP,
             modules: &modules,
         };
-        let err = compact_command(&path, Some(prune), &|| false).unwrap_err();
+        let err =
+            compact_command(&path, &JournalOptions::default(), Some(prune), &|| false).unwrap_err();
         let message = format!("{err:#}");
         assert!(
             message.contains("reading bitmap's height from bitmap_block_hashes"),
@@ -1056,7 +1078,8 @@ mod tests {
                 modules: &modules,
             }),
         ] {
-            let err = compact_command(&path, prune, &|| false).unwrap_err();
+            let err =
+                compact_command(&path, &JournalOptions::default(), prune, &|| false).unwrap_err();
             assert!(
                 format!("{err:#}").contains("is in use; stop `opi-indexer run` first"),
                 "{err:#}"
@@ -1142,12 +1165,21 @@ mod tests {
             let heights =
                 start_heights_with(&path, &never_started, &|| false, 1, Duration::ZERO).unwrap();
             assert_eq!(heights, StartHeights::Lowest(None));
-            catch_up_then(&path, Chain::Regtest, false, None, KEEP, &|| false, || {
-                let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
-                assert_eq!(journal.raw_floor().unwrap(), Some(RAW_BELOW));
-                assert_eq!(journal.pruned_below().unwrap(), 0);
-                Ok(())
-            })
+            catch_up_then(
+                &path,
+                &JournalOptions::default(),
+                Chain::Regtest,
+                false,
+                None,
+                KEEP,
+                &|| false,
+                || {
+                    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+                    assert_eq!(journal.raw_floor().unwrap(), Some(RAW_BELOW));
+                    assert_eq!(journal.pruned_below().unwrap(), 0);
+                    Ok(())
+                },
+            )
             .unwrap();
             let err = read_or_stop(lowest_height(&never_started), &|| false)
                 .unwrap()
@@ -1176,7 +1208,8 @@ mod tests {
                 keep: KEEP,
                 modules: &modules,
             };
-            let err = compact_command(&path, Some(prune), &|| false).unwrap_err();
+            let err = compact_command(&path, &JournalOptions::default(), Some(prune), &|| false)
+                .unwrap_err();
             assert!(
                 format!("{err:#}")
                     .contains("sns has no height: sns_block_hashes is missing or holds no block"),
@@ -1198,7 +1231,7 @@ mod tests {
                 keep: KEEP,
                 modules: &modules,
             };
-            compact_command(&path, Some(prune), &|| false).unwrap();
+            compact_command(&path, &JournalOptions::default(), Some(prune), &|| false).unwrap();
             assert!(std::fs::metadata(&path).unwrap().len() < before);
             assert_pruned_to_window(&path);
         });

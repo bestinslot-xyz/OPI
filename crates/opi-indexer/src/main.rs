@@ -147,6 +147,7 @@ fn prune_then_index(config: &Config, module_configs: ModuleConfigs, keep: u32) -
     // `None` is a signal during the catch-up, which ends `run` with success.
     prune::catch_up_then(
         &path,
+        &config.source.journal,
         config.source.chain,
         config.source.runes,
         lowest,
@@ -286,6 +287,7 @@ fn compact_journal() -> Result<()> {
         };
         return prune::compact_command(
             &config.source.journal_path(),
+            &config.source.journal,
             Some(offline),
             &prune::signalled,
         );
@@ -294,8 +296,9 @@ fn compact_journal() -> Result<()> {
         .ok()
         .filter(|dir| !dir.is_empty())
         .context("OPI_JOURNAL_DIR is not set")?;
+    let options = config::journal_options(&|key| std::env::var(key).ok())?;
     let path = std::path::Path::new(&dir).join(opi_source::driver::JOURNAL_FILE);
-    prune::compact_command(&path, None, &|| false)
+    prune::compact_command(&path, &options, None, &|| false)
 }
 
 /// Runs the enabled modules over the journal until a signal arrives or the

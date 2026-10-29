@@ -326,8 +326,8 @@ impl Journal {
     /// Rewrites the journal file at `path` without its free pages, so the
     /// space pruning freed returns to the file system. Needs the journal
     /// closed: redb holds an exclusive lock on an open file.
-    pub fn compact(path: &std::path::Path) -> Result<bool> {
-        let mut db = redb::Database::open(path)?;
+    pub fn compact(path: &std::path::Path, options: &super::JournalOptions) -> Result<bool> {
+        let mut db = options.builder().open(path)?;
         Ok(db.compact()?)
     }
 }

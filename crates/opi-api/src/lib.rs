@@ -14,6 +14,7 @@ pub mod extract;
 mod front;
 pub mod js;
 pub mod metrics;
+pub mod openapi;
 pub mod params;
 pub mod pg_json;
 pub mod qs;

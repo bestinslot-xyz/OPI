@@ -148,3 +148,10 @@ fn evm_addresses_are_0x_and_40_hex_digits() {
         "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
     ));
 }
+
+#[test]
+fn the_sort_schema_names_each_sort() {
+    let schema = serde_json::to_value(<TickerSort as utoipa::PartialSchema>::schema()).unwrap();
+    let names: Vec<&str> = TickerSort::ALL.iter().map(|sort| sort.name()).collect();
+    assert_eq!(schema["enum"], serde_json::json!(names));
+}

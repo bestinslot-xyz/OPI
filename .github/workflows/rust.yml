@@ -1,0 +1,41 @@
+name: rust
+
+on:
+  push:
+    branches: [main, opi-monolith]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # the sqlx query macros check against .sqlx, without a database
+  SQLX_OFFLINE: "true"
+  # no debug info keeps the target directory and the cache small
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # librocksdb-sys (brc20-prog) compiles C++ and runs bindgen, as in the
+      # Dockerfile's builder
+      - name: Install the native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # OPI_TEST_PG and the OPI_API_TEST_* database URLs are unset, so the
+      # Postgres tests skip; the route and OpenAPI tests run
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Disk usage
+        if: always()
+        run: df -h

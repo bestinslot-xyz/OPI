@@ -1076,7 +1076,9 @@ def run_rate_limit(args) -> int:
             a.status != 0
             and a.status == b.status
             and a.content_type == b.content_type
-            and a.raw == b.raw
+            # `/v1/status` lists its modules in completion order, as in the
+            # main mode
+            and (a.raw == b.raw or (request.route == "/v1/status" and status_bodies_match(a, b)))
             and rate_limit_headers_match(a, b)
         )
         verdict = "PASS" if same else "DIFF"
