@@ -130,7 +130,7 @@ struct SnsNamespace {
 /// A registered name.
 #[derive(ToSchema)]
 #[allow(dead_code)]
-struct SnsName {
+pub(super) struct SnsName {
     inscription_id: String,
     inscription_number: i32,
     name: String,
@@ -459,16 +459,16 @@ async fn get_registered_namespaces(State(db): State<Db>) -> Result<Reply, ApiErr
 }
 
 /// An sns_names row as the new routes answer it.
-struct SnsRow {
-    inscription_id: String,
-    inscription_number: i32,
-    name: String,
-    namespace: String,
-    block_height: i32,
+pub(super) struct SnsRow {
+    pub(super) inscription_id: String,
+    pub(super) inscription_number: i32,
+    pub(super) name: String,
+    pub(super) namespace: String,
+    pub(super) block_height: i32,
 }
 
 impl SnsRow {
-    fn into_object(self) -> JsObject {
+    pub(super) fn into_object(self) -> JsObject {
         js_object! {
             "inscription_id" => self.inscription_id,
             "inscription_number" => self.inscription_number,

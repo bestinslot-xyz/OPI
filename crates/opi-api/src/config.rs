@@ -116,12 +116,105 @@ pub struct RateLimitSettings {
     pub max: f64,
 }
 
+/// The push feed's `STREAM_*` variables as `parseInt` reads them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamVars {
+    pub poll_ms: f64,
+    pub default_confirmations: f64,
+    pub max_confirmations: f64,
+    pub max_subscribers: f64,
+    pub heartbeat_secs: f64,
+    pub buffer: f64,
+}
+
+/// The deepest `STREAM_MAX_CONFIRMATIONS`: the smallest `OPI_PRUNE`, so a
+/// pruned module database keeps the block hashes of every height a
+/// subscriber may wait on.
+pub const STREAM_CONFIRMATIONS_LIMIT: u32 = 1000;
+
+/// The push feed's settings (`/v1/stream`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamSettings {
+    /// How often each module's block hashes are read (STREAM_POLL_MS).
+    pub poll: Duration,
+    /// The confirmations of a request that names none
+    /// (STREAM_DEFAULT_CONFIRMATIONS).
+    pub default_confirmations: u32,
+    /// The most confirmations a request may ask for
+    /// (STREAM_MAX_CONFIRMATIONS).
+    pub max_confirmations: u32,
+    /// The most streams open at once (STREAM_MAX_SUBSCRIBERS).
+    pub max_subscribers: usize,
+    /// The heartbeat interval, which is also how long a stream may stay
+    /// unable to queue a message before it is cut (STREAM_HEARTBEAT_SECS).
+    pub heartbeat: Duration,
+    /// The chunks a stream queues for its client (STREAM_BUFFER).
+    pub buffer: usize,
+}
+
+impl Default for StreamSettings {
+    fn default() -> Self {
+        StreamSettings {
+            poll: Duration::from_millis(1000),
+            default_confirmations: 1,
+            max_confirmations: 100,
+            max_subscribers: 100,
+            heartbeat: Duration::from_secs(15),
+            buffer: 16,
+        }
+    }
+}
+
+impl StreamVars {
+    /// The settings, or why they cannot run.
+    pub fn settings(&self) -> Result<StreamSettings> {
+        let whole = |name: &str, value: f64, min: f64, max: f64| -> Result<u64> {
+            if value.is_nan() || value < min || value > max {
+                bail!("{name} must be an integer from {min} to {max}, got {value}");
+            }
+            Ok(value as u64)
+        };
+        let limit = f64::from(STREAM_CONFIRMATIONS_LIMIT);
+        let max_confirmations = whole(
+            "STREAM_MAX_CONFIRMATIONS",
+            self.max_confirmations,
+            1.0,
+            limit,
+        )?;
+        let default_confirmations = whole(
+            "STREAM_DEFAULT_CONFIRMATIONS",
+            self.default_confirmations,
+            1.0,
+            max_confirmations as f64,
+        )?;
+        Ok(StreamSettings {
+            poll: Duration::from_millis(whole("STREAM_POLL_MS", self.poll_ms, 10.0, 3_600_000.0)?),
+            default_confirmations: default_confirmations as u32,
+            max_confirmations: max_confirmations as u32,
+            max_subscribers: whole(
+                "STREAM_MAX_SUBSCRIBERS",
+                self.max_subscribers,
+                0.0,
+                1_000_000.0,
+            )? as usize,
+            heartbeat: Duration::from_secs(whole(
+                "STREAM_HEARTBEAT_SECS",
+                self.heartbeat_secs,
+                1.0,
+                3600.0,
+            )?),
+            buffer: whole("STREAM_BUFFER", self.buffer, 1.0, 65536.0)? as usize,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub modules: Vec<Module>,
     pub dbs: Vec<(Module, DbConfig)>,
     pub api: ApiSettings,
     pub rate_limit: RateLimitSettings,
+    pub stream: StreamVars,
     /// API_METRICS_ADDR, the metrics listener's address; `None` when it is
     /// unset or empty, which runs no metrics listener.
     pub metrics_addr: Option<String>,
@@ -167,10 +260,11 @@ impl Config {
 
     /// Checks the settings that cannot run as they are, before the server
     /// starts: the listen port, each database's port and pool size, a NaN
-    /// rate limit window and the snapshot timeout.
+    /// rate limit window, the snapshot timeout and the push feed's settings.
     pub fn validate(&self) -> Result<()> {
         self.listen_port()?;
         self.snapshot_timeout()?;
+        self.stream.settings()?;
         for (_, db) in &self.dbs {
             db.pg_port()?;
             db.max_connections()?;
@@ -256,6 +350,14 @@ pub fn load_config(get: impl Fn(&str) -> Option<String>) -> Result<Config> {
             enabled: or("RATE_LIMIT_ENABLE", "false") == "true",
             window_ms: parse_int_str(&or("RATE_LIMIT_WINDOW_MS", &(15 * 60 * 1000).to_string())),
             max: parse_int_str(&or("RATE_LIMIT_MAX", "100")),
+        },
+        stream: StreamVars {
+            poll_ms: parse_int_str(&or("STREAM_POLL_MS", "1000")),
+            default_confirmations: parse_int_str(&or("STREAM_DEFAULT_CONFIRMATIONS", "1")),
+            max_confirmations: parse_int_str(&or("STREAM_MAX_CONFIRMATIONS", "100")),
+            max_subscribers: parse_int_str(&or("STREAM_MAX_SUBSCRIBERS", "100")),
+            heartbeat_secs: parse_int_str(&or("STREAM_HEARTBEAT_SECS", "15")),
+            buffer: parse_int_str(&or("STREAM_BUFFER", "16")),
         },
         metrics_addr: get("API_METRICS_ADDR").filter(|addr| !addr.is_empty()),
     })

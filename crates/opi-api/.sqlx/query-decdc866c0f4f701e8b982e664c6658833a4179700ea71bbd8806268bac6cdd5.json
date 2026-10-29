@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select min(id) as \"lo?\", max(id) as \"hi?\" from bitmaps where block_height = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lo?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "hi?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "decdc866c0f4f701e8b982e664c6658833a4179700ea71bbd8806268bac6cdd5"
+}

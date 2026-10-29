@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.id as \"id!\", u.block_height as \"block_height!\", h.block_time as \"block_time?\",\n                u.inscription_id as \"inscription_id!\",\n                (select e.event_type_name from brc20_event_types e\n                  where e.event_type_id = u.event_type limit 1) as \"event_type?\",\n                (select k.decimals from brc20_tickers k\n                  where k.tick = u.event ->> 'tick') as \"ticker_decimals?\",\n                u.event::text as \"event!\"\n            from (\n                (select id, block_height, event_type, inscription_id, event\n                 from brc20_events\n                 where id > $2 and id <= $3 and block_height = $1\n                 order by id limit $4)\n                union all\n                (select id, block_height, event_type, inscription_id, event\n                 from brc20_light_events\n                 where id > $2 and id <= $3 and block_height = $1\n                 order by id limit $4)\n            ) u\n            left join brc20_block_hashes h on h.block_height = u.block_height\n            order by u.id\n            limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "block_height!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "block_time?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_time"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "inscription_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "event_type?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "ticker_decimals?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "event!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      true,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "8a1181b0104f8029f8708659e704141181d0251b589ff5ce964c26c1e0d5a01e"
+}

@@ -1,5 +1,6 @@
-//! The app's routes, registered in this order: `/v1/status` and
-//! `/v1/openapi.json`, then each module's routes when it is enabled, or a
+//! The app's routes, registered in this order: `/v1/status`,
+//! `/v1/openapi.json` and the push feed `/v1/stream` (see [`stream`]), then
+//! each module's routes when it is enabled, or a
 //! 404 for its whole prefix when it is not, then finalhandler's 404 for
 //! anything else.
 //!
@@ -15,12 +16,16 @@ pub mod paging;
 mod registry;
 mod runes;
 mod sns;
+mod stream;
 
-pub use registry::ModuleRoutes;
+pub use {
+    registry::ModuleRoutes,
+    stream::{StreamStop, StreamStopper},
+};
 
 use {
     crate::{
-        config::{MODULES, Module},
+        config::{MODULES, Module, StreamSettings},
         db::Db,
         js::{JsError, JsObject, JsValue},
         js_object,
@@ -53,16 +58,22 @@ fn no_row(field: &str) -> JsError {
 }
 
 /// The API settings routes run with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RouteSettings {
     /// How long a holders snapshot may stream (API_SNAPSHOT_TIMEOUT_MS).
     pub snapshot_timeout: Duration,
+    /// The push feed's settings (`STREAM_*`).
+    pub stream: StreamSettings,
+    /// The signal that ends every stream of `/v1/stream`.
+    pub stream_stop: StreamStop,
 }
 
 impl Default for RouteSettings {
     fn default() -> Self {
         RouteSettings {
             snapshot_timeout: Duration::from_millis(600_000),
+            stream: StreamSettings::default(),
+            stream_stop: StreamStop::never(),
         }
     }
 }
@@ -104,10 +115,25 @@ pub fn app(
             })
     };
     let status_dbs: Vec<(Module, Db)> = enabled.iter().map(|&m| (m, db_of(m))).collect();
+    let streams = stream::Streams::new(
+        settings.stream,
+        status_dbs.clone(),
+        settings.stream_stop.clone(),
+    );
     let spec = SpecJson::default();
     let mut router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(status).with_state(Arc::new(status_dbs)))
-        .routes(routes!(openapi::openapi_json).with_state(spec.clone()));
+        .routes(routes!(openapi::openapi_json).with_state(spec.clone()))
+        .routes(routes!(stream::stream).with_state(streams));
+    // the stream's event payloads, which no operation's schema names
+    let events = stream::components(enabled);
+    registry::check_components(router.get_openapi(), &events);
+    router
+        .get_openapi_mut()
+        .components
+        .get_or_insert_with(Default::default)
+        .schemas
+        .extend(events);
     for module in MODULES {
         if enabled.contains(&module) {
             let db = db_of(module);

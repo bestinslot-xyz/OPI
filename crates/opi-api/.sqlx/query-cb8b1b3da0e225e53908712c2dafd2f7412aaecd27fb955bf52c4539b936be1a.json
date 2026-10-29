@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select min(id) as \"lo?\", max(id) as \"hi?\" from sns_names where block_height = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lo?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "hi?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "cb8b1b3da0e225e53908712c2dafd2f7412aaecd27fb955bf52c4539b936be1a"
+}
