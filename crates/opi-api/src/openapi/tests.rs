@@ -79,7 +79,14 @@ fn route_tables(document: &Document) -> String {
                 .into_iter()
                 .flatten()
                 .filter(|parameter| parameter["in"] == "query")
-                .map(|parameter| format!("`{}`", parameter["name"].as_str().unwrap()))
+                .map(|parameter| {
+                    let name = parameter["name"].as_str().unwrap();
+                    if parameter["required"] == true {
+                        format!("**`{name}`**")
+                    } else {
+                        format!("`{name}`")
+                    }
+                })
                 .collect();
             let summary = operation["summary"]
                 .as_str()
@@ -324,7 +331,7 @@ fn parameter_defaults_match_their_schemas() {
 }
 
 /// The README's route tables, generated from the document.
-const README_BEGIN: &str = "<!-- BEGIN route tables: generated from the OpenAPI document; OPI_UPDATE_README=1 cargo test -p opi-api readme rewrites them -->";
+const README_BEGIN: &str = "<!-- BEGIN route tables -->";
 const README_END: &str = "<!-- END route tables -->";
 
 #[test]

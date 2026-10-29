@@ -746,7 +746,9 @@ fail when the document does not validate against the OpenAPI 3.1 schema and
 when the tables below differ from it, and every route test checks its
 answer's status, content type and JSON body against the document. The tables are generated
 from the document; after a route change, rewrite them with
-`OPI_UPDATE_README=1 cargo test -p opi-api readme`.
+`OPI_UPDATE_README=1 cargo test -p opi-api readme`. A parameter in bold is
+required: the route needs it for a useful answer, and the document says
+what the route answers without it.
 
 The Node API's routes answer byte for byte as the Node API does, so their
 schemas describe node-pg's value forms: an int8 count or a numeric amount is a string, a
@@ -754,7 +756,7 @@ missing column value is null, and a route that echoes a query parameter
 echoes it as given (a string, or an array or object for a repeated or
 bracketed parameter).
 
-<!-- BEGIN route tables: generated from the OpenAPI document; OPI_UPDATE_README=1 cargo test -p opi-api readme rewrites them -->
+<!-- BEGIN route tables -->
 
 **api**: The node's status and this document.
 
@@ -768,31 +770,31 @@ bracketed parameter).
 | Route | Query parameters | Answers |
 | --- | --- | --- |
 | `GET /v1/brc20/activity_on_block` | `block_height` | Every brc20 event of a block height. |
-| `GET /v1/brc20/balance_on_block` | `block_height`, `pkscript`, `ticker` | A ticker's balance of a pkscript at the start of a block height. |
+| `GET /v1/brc20/balance_on_block` | **`block_height`**, **`pkscript`**, **`ticker`** | A ticker's balance of a pkscript at the start of a block height. |
 | `GET /v1/brc20/bitcoin_rpc_results_on_block` | `block_height` | Every cached bitcoin RPC result of a block height. |
 | `GET /v1/brc20/block_height` |  | The latest indexed block height. |
 | `GET /v1/brc20/db_version` |  | The database's schema version. |
-| `GET /v1/brc20/event` | `inscription_id` | Every event of an inscription id. |
+| `GET /v1/brc20/event` | **`inscription_id`** | Every event of an inscription id. |
 | `GET /v1/brc20/event_hash_version` |  | The version of the event hash format. |
 | `GET /v1/brc20/explorer/address_tabs_counters/{evm_address}` |  | The address tab counters of an EVM address, for the BRC2.0 explorer. |
 | `GET /v1/brc20/explorer/balances/{evm_address}` |  | The BRC-20 balances of an EVM address's BTC address, for the BRC2.0 explorer. |
 | `GET /v1/brc20/explorer/btc_address/{evm_address}` |  | The BTC address an EVM address maps to, for the BRC2.0 explorer. |
 | `GET /v1/brc20/explorer/tokens` | `q`, `items_count`, `order` | A page of tickers by holder count, for the BRC2.0 explorer. |
 | `GET /v1/brc20/extras_block_height` |  | The latest block height of `brc20_extras_block_hashes`. |
-| `GET /v1/brc20/get_current_balance_of_wallet` | `address`, `pkscript`, `ticker` | A wallet's current balance of a ticker. |
-| `GET /v1/brc20/get_hash_of_all_activity` | `block_height` | A block's event and trace hashes, cumulative and its own. |
+| `GET /v1/brc20/get_current_balance_of_wallet` | `address`, `pkscript`, **`ticker`** | A wallet's current balance of a ticker. |
+| `GET /v1/brc20/get_hash_of_all_activity` | **`block_height`** | A block's event and trace hashes, cumulative and its own. |
 | `GET /v1/brc20/get_hash_of_all_current_balances` |  | The hash of every current balance. |
-| `GET /v1/brc20/get_valid_tx_notes_of_ticker` | `ticker` | A ticker's unused transfer inscriptions. |
+| `GET /v1/brc20/get_valid_tx_notes_of_ticker` | **`ticker`** | A ticker's unused transfer inscriptions. |
 | `GET /v1/brc20/get_valid_tx_notes_of_wallet` | `address`, `pkscript` | A wallet's unused transfer inscriptions. |
-| `GET /v1/brc20/holders` | `ticker` | A ticker's holders and their current balances. |
+| `GET /v1/brc20/holders` | **`ticker`** | A ticker's holders and their current balances. |
 | `GET /v1/brc20/ip` |  | The client's IP address, as the API sees it through API_TRUSTED_PROXY_CNT proxies. |
-| `GET /v1/brc20/ticker` | `ticker` | A ticker's supply, mint progress, holder counts and BRC2.0 token contract. |
-| `GET /v1/brc20/ticker/by_contract` | `contract_address` | The ticker a BRC2.0 token contract carries. |
-| `GET /v1/brc20/ticker/events` | `ticker`, `type`, `before_id`, `limit` | A page of a ticker's events, newest first. |
-| `GET /v1/brc20/ticker/holders` | `ticker`, `offset`, `limit` | A page of a ticker's holders, BRC-20 and BRC2.0 balances merged. |
-| `GET /v1/brc20/ticker/holders/snapshot` | `ticker`, `block_height`, `format` | Every holder of a ticker at the end of a block, streamed. |
+| `GET /v1/brc20/ticker` | **`ticker`** | A ticker's supply, mint progress, holder counts and BRC2.0 token contract. |
+| `GET /v1/brc20/ticker/by_contract` | **`contract_address`** | The ticker a BRC2.0 token contract carries. |
+| `GET /v1/brc20/ticker/events` | **`ticker`**, `type`, `before_id`, `limit` | A page of a ticker's events, newest first. |
+| `GET /v1/brc20/ticker/holders` | **`ticker`**, `offset`, `limit` | A page of a ticker's holders, BRC-20 and BRC2.0 balances merged. |
+| `GET /v1/brc20/ticker/holders/snapshot` | **`ticker`**, `block_height`, `format` | Every holder of a ticker at the end of a block, streamed. |
 | `GET /v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | A page of tickers, by holders or another order. |
-| `GET /v1/brc20/wallet/balances` | `address`, `offset`, `limit` | A page of a wallet's tickers, BRC-20 and BRC2.0 balances side by side. |
+| `GET /v1/brc20/wallet/balances` | **`address`**, `offset`, `limit` | A page of a wallet's tickers, BRC-20 and BRC2.0 balances side by side. |
 | `GET /v1/brc20/wallet/events` | `address`, `pkscript`, `type`, `before_id`, `limit` | A page of the events a wallet takes part in, newest first. |
 
 **bitmap**: Bitmap.
@@ -800,26 +802,26 @@ bracketed parameter).
 | Route | Query parameters | Answers |
 | --- | --- | --- |
 | `GET /v1/bitmap/block_height` |  | The latest indexed block height. |
-| `GET /v1/bitmap/by_inscription` | `inscription_id` | The bitmap an inscription registered. |
-| `GET /v1/bitmap/get_hash_of_all_activity` | `block_height` | A block's event hashes, cumulative and its own. |
+| `GET /v1/bitmap/by_inscription` | **`inscription_id`** | The bitmap an inscription registered. |
+| `GET /v1/bitmap/get_hash_of_all_activity` | **`block_height`** | A block's event hashes, cumulative and its own. |
 | `GET /v1/bitmap/get_hash_of_all_bitmaps` |  | The hash of every bitmap; the route always fails. |
-| `GET /v1/bitmap/get_inscription_id_of_bitmap` | `bitmap_number` | The inscription id of a bitmap number. |
+| `GET /v1/bitmap/get_inscription_id_of_bitmap` | **`bitmap_number`** | The inscription id of a bitmap number. |
 | `GET /v1/bitmap/ip` |  | The client's IP address, as the API sees it through API_TRUSTED_PROXY_CNT proxies. |
-| `GET /v1/bitmap/search` | `prefix`, `after`, `limit` | A page of the bitmaps whose number starts with a prefix. |
+| `GET /v1/bitmap/search` | **`prefix`**, `after`, `limit` | A page of the bitmaps whose number starts with a prefix. |
 
 **sns**: SNS names and namespaces.
 
 | Route | Query parameters | Answers |
 | --- | --- | --- |
 | `GET /v1/sns/block_height` |  | The latest indexed block height. |
-| `GET /v1/sns/by_inscription` | `inscription_id` | The name an inscription registered. |
-| `GET /v1/sns/get_hash_of_all_activity` | `block_height` | A block's event hashes, cumulative and its own. |
+| `GET /v1/sns/by_inscription` | **`inscription_id`** | The name an inscription registered. |
+| `GET /v1/sns/get_hash_of_all_activity` | **`block_height`** | A block's event hashes, cumulative and its own. |
 | `GET /v1/sns/get_hash_of_all_registered_names` |  | The hash of every registered name. |
-| `GET /v1/sns/get_info_of_sns` | `name` | The inscription and namespace of a registered name. |
-| `GET /v1/sns/get_inscriptions_of_domain` | `domain` | Every name of a namespace, with its inscription. |
+| `GET /v1/sns/get_info_of_sns` | **`name`** | The inscription and namespace of a registered name. |
+| `GET /v1/sns/get_inscriptions_of_domain` | **`domain`** | Every name of a namespace, with its inscription. |
 | `GET /v1/sns/get_registered_namespaces` |  | Every registered namespace, with its inscription. |
 | `GET /v1/sns/ip` |  | The client's IP address, as the API sees it through API_TRUSTED_PROXY_CNT proxies. |
-| `GET /v1/sns/search` | `prefix`, `namespace`, `after`, `limit` | A page of the names that start with a prefix. |
+| `GET /v1/sns/search` | **`prefix`**, `namespace`, `after`, `limit` | A page of the names that start with a prefix. |
 
 **runes**: Runes.
 
@@ -828,9 +830,9 @@ bracketed parameter).
 | `GET /v1/runes/activity_on_block` | `block_height` | Every runes event of a block height. |
 | `GET /v1/runes/balance_on_block` | `block_height`, `pkscript`, `address` | Every rune balance of a pkscript or address at the start of a block height. |
 | `GET /v1/runes/block_height` |  | The latest indexed block height. |
-| `GET /v1/runes/event` | `transaction_id` | Every runes event of a transaction id. |
+| `GET /v1/runes/event` | **`transaction_id`** | Every runes event of a transaction id. |
 | `GET /v1/runes/get_current_balance_of_wallet` | `address`, `pkscript` | Every current rune balance of a wallet. |
-| `GET /v1/runes/get_hash_of_all_activity` | `block_height` | A block's event hashes, cumulative and its own. |
+| `GET /v1/runes/get_hash_of_all_activity` | **`block_height`** | A block's event hashes, cumulative and its own. |
 | `GET /v1/runes/get_unspent_rune_outpoints_of_wallet` | `address`, `pkscript` | Every unspent outpoint of a wallet that holds runes. |
 | `GET /v1/runes/holders` | `rune_name`, `rune_id` | Every holder of a rune, largest balance first. |
 | `GET /v1/runes/ip` |  | The client's IP address, as the API sees it through API_TRUSTED_PROXY_CNT proxies. |
