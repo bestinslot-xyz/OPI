@@ -165,6 +165,11 @@ struct RequestLabels {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct EventLabels {
+    event: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct FillLabels {
     module: String,
     fill: String,
@@ -216,6 +221,9 @@ struct State {
     fills: Mutex<Vec<(&'static str, &'static str, Arc<FillState>)>>,
     /// Pools read on each scrape, such as the API's.
     pools: Mutex<Vec<(&'static str, PoolProbe)>>,
+    /// The open streams of the API's push feed, [`UNKNOWN`] before the
+    /// first.
+    stream_subscribers: AtomicI64,
 }
 
 impl Default for State {
@@ -228,6 +236,7 @@ impl Default for State {
             modules: Mutex::default(),
             fills: Mutex::default(),
             pools: Mutex::default(),
+            stream_subscribers: AtomicI64::new(UNKNOWN),
         }
     }
 }
@@ -299,6 +308,7 @@ pub struct Metrics {
     api_requests: Family<RequestLabels, Counter>,
     api_request_seconds: HistogramFamily<RouteLabels>,
     api_rate_limited: Family<ModuleLabels, Counter>,
+    stream_messages: Family<EventLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -345,6 +355,12 @@ impl Metrics {
             "API requests the rate limiter rejected",
             api_rate_limited.clone(),
         );
+        let stream_messages = Family::default();
+        registry.register(
+            "stream_messages",
+            "Messages the API's push feed sent, by event",
+            stream_messages.clone(),
+        );
         registry.register_collector(Box::new(StateCollector(state.clone())));
         Metrics {
             registry,
@@ -354,7 +370,37 @@ impl Metrics {
             api_requests,
             api_request_seconds,
             api_rate_limited,
+            stream_messages,
         }
+    }
+
+    /// Counts a push feed subscriber until the guard drops.
+    pub fn stream_subscriber(&self) -> StreamSubscriberGuard {
+        let subscribers = &self.state.stream_subscribers;
+        if subscribers
+            .compare_exchange(UNKNOWN, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            subscribers.fetch_add(1, Ordering::SeqCst);
+        }
+        StreamSubscriberGuard {
+            state: self.state.clone(),
+        }
+    }
+
+    /// The push feed's open streams, `None` before the first.
+    pub fn stream_subscribers(&self) -> Option<u64> {
+        known(self.state.stream_subscribers.load(Ordering::SeqCst))
+    }
+
+    /// Counts a push feed message of `event` (`block`, `rollback`,
+    /// `heartbeat` or `error`).
+    pub fn stream_message(&self, event: &str) {
+        self.stream_messages
+            .get_or_create(&EventLabels {
+                event: event.to_string(),
+            })
+            .inc();
     }
 
     /// The text exposition of every metric.
@@ -618,6 +664,19 @@ impl ModuleMetrics {
     }
 }
 
+/// An open push feed stream, counted in `opi_stream_subscribers` while the
+/// guard is alive.
+#[derive(Debug)]
+pub struct StreamSubscriberGuard {
+    state: Arc<State>,
+}
+
+impl Drop for StreamSubscriberGuard {
+    fn drop(&mut self) {
+        self.state.stream_subscribers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A running fill. The fill runs while any of its guards is alive.
 #[derive(Debug)]
 pub struct FillGuard {
@@ -808,6 +867,16 @@ impl Collector for StateCollector {
             "Idle connections of a module's database pool",
             &idle,
         )?;
+        let subscribers = state.stream_subscribers.load(Ordering::SeqCst);
+        if subscribers != UNKNOWN {
+            let mut metric = encoder.encode_descriptor(
+                "stream_subscribers",
+                "Open streams of the API's push feed",
+                None,
+                MetricType::Gauge,
+            )?;
+            metric.encode_gauge(&subscribers)?;
+        }
         Ok(())
     }
 }
@@ -1024,6 +1093,29 @@ mod tests {
                 .encode()
                 .contains(r#"opi_fill_running{module="brc20",fill="prog_balances"} 0"#)
         );
+    }
+
+    #[test]
+    fn stream_metrics_count_subscribers_and_messages() {
+        let metrics = Metrics::new();
+        assert!(!metrics.encode().contains("opi_stream_subscribers"));
+        let first = metrics.stream_subscriber();
+        let second = metrics.stream_subscriber();
+        metrics.stream_message("block");
+        metrics.stream_message("block");
+        metrics.stream_message("heartbeat");
+        let text = metrics.encode();
+        for line in [
+            "opi_stream_subscribers 2",
+            r#"opi_stream_messages_total{event="block"} 2"#,
+            r#"opi_stream_messages_total{event="heartbeat"} 1"#,
+        ] {
+            assert!(text.contains(line), "{line} missing from\n{text}");
+        }
+        drop(first);
+        drop(second);
+        assert_eq!(metrics.stream_subscribers(), Some(0));
+        assert!(metrics.encode().contains("opi_stream_subscribers 0"));
     }
 
     #[test]
