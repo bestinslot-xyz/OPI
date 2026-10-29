@@ -25,6 +25,13 @@ use {
 const RUNES: Module = Module::Runes;
 const NOT_FOUND: &str = r#"{"error":"rune not found","result":null}"#;
 
+/// A 1-of-3 bare multisig of uncompressed keys: 402 hex digits.
+fn multisig() -> String {
+    let script = format!("51{}53ae", format!("4104{}", "ab".repeat(64)).repeat(3));
+    assert_eq!(script.len(), 402);
+    script
+}
+
 fn bad(reason: &str) -> String {
     json!({"error": reason, "result": null}).to_string()
 }
@@ -79,6 +86,17 @@ async fn invalid_parameters_answer_400_before_any_query() {
             "limit must be an integer from 1 to 500",
         ),
         ("/v1/runes/rune/holders?rune=A&after=x%3A00".into(), after),
+        (
+            format!(
+                "/v1/runes/rune/holders?rune=A&after=1%3A{}",
+                "a".repeat(20080)
+            ),
+            "after must be at most 20081 bytes without NUL",
+        ),
+        (
+            format!("/v1/runes/runes?after=1%3A{}", "1".repeat(255)),
+            "after must be at most 256 bytes without NUL",
+        ),
         ("/v1/runes/rune/holders".into(), "rune is required"),
         (
             "/v1/runes/wallet/balances".into(),
@@ -173,7 +191,8 @@ INSERT INTO runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_id
 ('o5:0', '001405', 'addr5', '{10:1}', '{10}', 12, false, NULL),
 ('o6:0', '001406', 'addr6', '{10:1}', '{20}', 12, false, NULL),
 ('o7:0', '001407', 'addr7', '{10:1}', '{30}', 12, false, NULL),
-('o8:0', 'ffff', NULL, '{1:0}', '{1}', 2, false, NULL);
+('o8:0', 'ffff', NULL, '{1:0}', '{1}', 2, false, NULL),
+('o9:0', '51' || repeat('4104' || repeat('ab', 64), 3) || '53ae', NULL, '{1:0}', '{2}', 2, false, NULL);
 INSERT INTO runes_events (id, event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount,
     block_height) VALUES
 (0, 1, 't10', NULL, NULL, NULL, '10:1', 1000, 10),
@@ -393,7 +412,7 @@ async fn a_rune_answers_by_id_or_name() {
             seed["max_supply"],
             "340282366920938463463374607431768211455"
         );
-        assert_eq!(seed["holders"], 2);
+        assert_eq!(seed["holders"], 3);
         let plain = result(&app, "/v1/runes/rune?rune=SECONDRUNE").await;
         assert_eq!(plain["terms"], Value::Null);
         assert_eq!(plain["mint_progress"], Value::Null);
@@ -500,15 +519,35 @@ async fn a_runes_holders_page_by_balance() {
         assert_eq!(page["spaced_rune_name"], "FIR•STRUNE");
         assert_eq!(page["divisibility"], 2);
         assert_eq!(page["next_after"], "30:001401");
-        // a script without an address
+        // scripts without an address, one a 402-digit bare multisig, which
+        // a page can end on: its cursor is longer than the other lists'
+        let multisig = multisig();
         let seed = result(&app, "/v1/runes/rune/holders?rune=1%3A0").await;
         assert_eq!(
             seed["holders"],
             json!([
+                {"address": null, "pkscript": multisig, "balance": "2"},
                 {"address": "addr1", "pkscript": "001401", "balance": "2"},
                 {"address": null, "pkscript": "ffff", "balance": "1"},
             ])
         );
+        let paged = pages(
+            &app,
+            "/v1/runes/rune/holders?rune=1%3A0&limit=1",
+            "holders",
+            "after",
+        )
+        .await;
+        assert_eq!(
+            ids(&paged, "pkscript"),
+            vec![
+                vec![multisig.clone()],
+                vec!["001401".into()],
+                vec!["ffff".into()]
+            ]
+        );
+        let first = result(&app, "/v1/runes/rune/holders?rune=1%3A0&limit=1").await;
+        assert_eq!(first["next_after"], format!("2:{multisig}"));
         expect(
             &app,
             "/v1/runes/rune/holders?rune=NOSUCHRUNE",

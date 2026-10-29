@@ -48,6 +48,11 @@ pub const MAX_RUNE_LEN: usize = 128;
 /// The longest `after` cursor of a runes list, in bytes.
 pub const MAX_CURSOR_LEN: usize = 256;
 
+/// The longest `after` cursor of `/v1/runes/rune/holders`: a balance (at
+/// most 80 digits), `:` and a pkScript of at most [`MAX_PKSCRIPT_LEN`] hex
+/// digits.
+pub const MAX_HOLDERS_CURSOR_LEN: usize = MAX_PKSCRIPT_LEN + 81;
+
 /// The wallet a route lists: exactly one of `address` and `pkscript`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wallet {

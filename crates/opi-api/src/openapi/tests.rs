@@ -11,8 +11,9 @@ use {
             self,
             paging::{
                 DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CURSOR_LEN,
-                MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN, MAX_OFFSET, MAX_PKSCRIPT_LEN,
-                MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN, MAX_TYPE_LEN,
+                MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN,
+                MAX_OFFSET, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN,
+                MAX_TYPE_LEN,
             },
         },
     },
@@ -268,10 +269,12 @@ fn parameter_bounds_are_the_routes_rules() {
                 ("/v1/runes/runes", "search") => json!({"maxLength": MAX_RUNE_LEN}),
                 (_, "search") => json!({"maxLength": MAX_TICKER_LEN}),
                 (_, "type") => json!({"maxLength": MAX_TYPE_LEN}),
-                (
-                    "/v1/runes/runes" | "/v1/runes/rune/holders" | "/v1/runes/wallet/balances",
-                    "after",
-                ) => json!({"maxLength": MAX_CURSOR_LEN}),
+                ("/v1/runes/runes" | "/v1/runes/wallet/balances", "after") => {
+                    json!({"maxLength": MAX_CURSOR_LEN})
+                }
+                ("/v1/runes/rune/holders", "after") => {
+                    json!({"maxLength": MAX_HOLDERS_CURSOR_LEN})
+                }
                 (
                     "/v1/brc20/wallet/events"
                     | "/v1/runes/wallet/balances"

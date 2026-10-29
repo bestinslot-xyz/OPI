@@ -684,6 +684,16 @@ indexes, which takes a few seconds on signet and minutes on mainnet; it logs
 `building runes event indexes, this can take minutes` at info while it does.
 Until the tables and indexes exist, the API's rune routes answer `503`.
 
+**Disk space for the first start.** The event indexes `(rune_id, id)`,
+`(wallet_addr, id)` and `(pkscript, id)` take about 190 bytes per row of
+`runes_events` (193 on signet, against about 45 for the single-column
+indexes they replace): about 19 GB per 100 million events. The old indexes
+are dropped only after the new ones exist, and each build sorts its rows in
+temporary files beside them (`maintenance_work_mem` is set to 1GB for the
+builds), so check that the database's disk has free space of at least twice
+the new indexes' size before upgrading. `SELECT count(*) FROM runes_events`
+gives the row count.
+
 **Versions.** Reports send `opi-runes-full-node v1.0.0` with `db_version` 6. A
 database with another `db_version` is refused and must be indexed from scratch.
 `RUNES_DB_DATABASE` names a new database: one that holds blocks written by
@@ -1025,7 +1035,8 @@ amount), `terms` (`amount`, `cap`, `height_start`, `height_end`,
 (mints over the cap, null without a cap) and `holders`. Amounts are raw
 integers as strings with `divisibility` fractional digits.
 `/v1/runes/runes` lists the same objects. `sort` is `holders` (default),
-`supply`, `mint_progress` (runes without a cap sort below every other) or
+`supply`, `mint_progress` (a rune without a mint cap sorts as -1: last in
+`desc`, first in `asc`) or
 `etching_height`; `order` is `desc` (default) or `asc`; ties order by rune
 number in the same direction. `search` keeps the runes whose name starts
 with it: written without spacers it matches the letters (`UNCOMMONG` finds

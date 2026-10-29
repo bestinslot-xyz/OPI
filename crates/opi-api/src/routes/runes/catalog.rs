@@ -33,8 +33,8 @@ use {
         openapi::{Answer, DbHeight, ErrorBody, LimitParam, with_default},
         reply::{ApiError, Reply},
         routes::paging::{
-            BadParam, DEFAULT_LIMIT, MAX_CURSOR_LEN, MAX_LIMIT, MAX_RUNE_LEN, Wallet, integer,
-            optional_text, prefix_pattern, single, split_page, text,
+            BadParam, DEFAULT_LIMIT, MAX_CURSOR_LEN, MAX_HOLDERS_CURSOR_LEN, MAX_LIMIT,
+            MAX_RUNE_LEN, Wallet, integer, optional_text, prefix_pattern, single, split_page, text,
         },
     },
     axum::extract::State,
@@ -76,11 +76,15 @@ pub struct KeyPage<C> {
 }
 
 impl<C> KeyPage<C> {
-    /// `limit`, and `after` read by `cursor` (`None` for a cursor it
-    /// refuses).
-    fn from_query(query: &JsObject, cursor: fn(&str) -> Option<C>) -> Result<Self, BadParam> {
+    /// `limit`, and `after` of at most `max_len` bytes read by `cursor`
+    /// (`None` for a cursor it refuses).
+    fn from_query(
+        query: &JsObject,
+        max_len: usize,
+        cursor: fn(&str) -> Option<C>,
+    ) -> Result<Self, BadParam> {
         let limit = integer(query, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT)?;
-        let after = match optional_text(query, "after", MAX_CURSOR_LEN)? {
+        let after = match optional_text(query, "after", max_len)? {
             None | Some("") => None,
             Some(text) => Some(cursor(text).ok_or_else(|| {
                 BadParam("after must be the next_after of a previous page".into())
@@ -97,6 +101,17 @@ impl<C> KeyPage<C> {
 struct AfterParam {
     /// The previous page's `next_after`: the page holds the rows after it.
     #[param(max_length = 256)]
+    after: Option<String>,
+}
+
+/// The `after` parameter of `/v1/runes/rune/holders`, whose cursor holds a
+/// pkScript.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct HoldersAfterParam {
+    /// The previous page's `next_after`: the page holds the holders after it.
+    #[param(max_length = 20081)]
     after: Option<String>,
 }
 
@@ -168,8 +183,9 @@ fn order_schema() -> RefOr<Schema> {
 #[allow(dead_code)]
 struct RunesParams {
     /// The order: `holders`, `supply` (premine plus minted), `mint_progress`
-    /// (mints over the mint cap; runes without a cap sort below every other)
-    /// or `etching_height`; ties order by rune number in the same direction.
+    /// (mints over the mint cap; a rune without a cap sorts as -1, last in
+    /// `desc` and first in `asc`) or `etching_height`; ties order by rune
+    /// number in the same direction.
     #[param(schema_with = sort_schema)]
     sort: Option<RuneSort>,
     /// The direction.
@@ -238,7 +254,7 @@ impl RunesRequest {
             sort,
             ascending,
             search,
-            page: KeyPage::from_query(query, runes_cursor)?,
+            page: KeyPage::from_query(query, MAX_CURSOR_LEN, runes_cursor)?,
         })
     }
 }
@@ -638,7 +654,7 @@ fn holders_cursor(text: &str) -> Option<(String, String)> {
     get,
     path = "/v1/runes/rune/holders",
     tag = "runes",
-    params(RuneParam, AfterParam, LimitParam),
+    params(RuneParam, HoldersAfterParam, LimitParam),
     responses(
         (status = 200, description = "The page", body = Answer<RunesRuneHolders>),
         (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
@@ -650,9 +666,12 @@ pub async fn rune_holders(
     State(tables): State<RunesTables>,
     JsQuery(query): JsQuery,
 ) -> Result<Reply, ApiError> {
-    let (rune, page) = match rune_param(&query)
-        .and_then(|rune| Ok((rune, KeyPage::from_query(&query, holders_cursor)?)))
-    {
+    let (rune, page) = match rune_param(&query).and_then(|rune| {
+        Ok((
+            rune,
+            KeyPage::from_query(&query, MAX_HOLDERS_CURSOR_LEN, holders_cursor)?,
+        ))
+    }) {
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply()),
     };
@@ -791,9 +810,12 @@ pub async fn wallet_balances(
     State(tables): State<RunesTables>,
     JsQuery(query): JsQuery,
 ) -> Result<Reply, ApiError> {
-    let (wallet, page) = match Wallet::from_query(&query)
-        .and_then(|wallet| Ok((wallet, KeyPage::from_query(&query, number_cursor)?)))
-    {
+    let (wallet, page) = match Wallet::from_query(&query).and_then(|wallet| {
+        Ok((
+            wallet,
+            KeyPage::from_query(&query, MAX_CURSOR_LEN, number_cursor)?,
+        ))
+    }) {
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply()),
     };
