@@ -9,6 +9,7 @@ async-trait = "0.1.92"
 bitcoin = "0.32.5"
 hex = "0.4.3"
 opi-core = { path = "../opi-core" }
+ordinals = "=0.0.17"
 reqwest = { version = "0.13.5", features = ["json"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -18,3 +19,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tracing-subscriber = "0.3"

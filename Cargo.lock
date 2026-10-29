@@ -5161,6 +5161,7 @@ dependencies = [
  "jiff",
  "jsonschema",
  "opi-core",
+ "opi-runes",
  "opi-runtime",
  "opi-sns",
  "serde_json",
@@ -5268,12 +5269,14 @@ dependencies = [
  "bitcoin",
  "hex",
  "opi-core",
+ "ordinals",
  "reqwest",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

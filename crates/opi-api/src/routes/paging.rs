@@ -44,6 +44,52 @@ pub const MAX_MODULES_LEN: usize = 64;
 /// The digits of the largest bitmap number, 2147483647.
 pub const MAX_PREFIX_DIGITS: usize = 10;
 
+/// The longest rune (an id or a spaced name) or rune name prefix a request
+/// may name, in bytes.
+pub const MAX_RUNE_LEN: usize = 128;
+
+/// The longest `after` cursor of a runes list, in bytes.
+pub const MAX_CURSOR_LEN: usize = 256;
+
+/// The longest `after` cursor of `/v1/runes/rune/holders`: a balance (at
+/// most 80 digits), `:` and a pkScript of at most [`MAX_PKSCRIPT_LEN`] hex
+/// digits.
+pub const MAX_HOLDERS_CURSOR_LEN: usize = MAX_PKSCRIPT_LEN + 81;
+
+/// The wallet a route lists: exactly one of `address` and `pkscript`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wallet {
+    Address(String),
+    PkScript(String),
+}
+
+impl Wallet {
+    /// Exactly one of `address` and `pkscript`; a pkScript is lowercased hex.
+    pub fn from_query(query: &JsObject) -> Result<Wallet, BadParam> {
+        let address = single(query, "address")?.filter(|value| !value.is_empty());
+        let pkscript = single(query, "pkscript")?.filter(|value| !value.is_empty());
+        match (address, pkscript) {
+            (None, None) => Err(BadParam("address or pkscript is required".into())),
+            (Some(_), Some(_)) => Err(BadParam("give address or pkscript, not both".into())),
+            (Some(address), None) => {
+                check_text("address", address, MAX_ADDRESS_LEN)?;
+                Ok(Wallet::Address(address.to_string()))
+            }
+            (None, Some(pkscript)) => {
+                if pkscript.len() > MAX_PKSCRIPT_LEN
+                    || pkscript.len() % 2 != 0
+                    || !pkscript.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    return Err(BadParam(format!(
+                        "pkscript must be hex of at most {MAX_PKSCRIPT_LEN} digits"
+                    )));
+                }
+                Ok(Wallet::PkScript(pkscript.to_ascii_lowercase()))
+            }
+        }
+    }
+}
+
 /// The page of `rows`, fetched as one more than `limit`, and whether more
 /// follow.
 pub fn split_page<T>(mut rows: Vec<T>, limit: i64) -> (Vec<T>, bool) {

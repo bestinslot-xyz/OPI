@@ -1,7 +1,9 @@
-//! The runes module's routes.
+//! The runes module's routes, including the rune, holder, wallet and feed
+//! routes of [`catalog`] and [`feeds`], which have no JavaScript
+//! counterpart.
 //!
-//! Each handler follows its JavaScript counterpart line by line, as the
-//! brc20 routes do. get_block_height_of_db answers -1 when its query fails.
+//! Each other handler follows its JavaScript counterpart line by line, as
+//! the brc20 routes do. get_block_height_of_db answers -1 when its query fails.
 //! numeric columns are cast to text under the column's own name and decoded
 //! with [`pg_json::text`]; numeric[] decodes to numbers, as node-pg's
 //! array parser reads it with parseFloat.
@@ -22,10 +24,63 @@ use {
     },
     axum::extract::State,
     utoipa::ToSchema,
-    utoipa_axum::routes,
+    utoipa_axum::{router::UtoipaMethodRouterExt, routes},
 };
 
-pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+mod catalog;
+mod feeds;
+
+/// The 503 answer of a rune route before the runes module built its API
+/// tables.
+pub const TABLES_NOT_BUILT: &str =
+    "the runes API tables are not built yet; start opi-indexer run once";
+
+/// The state of the rune routes of [`catalog`] and [`feeds`]: the database
+/// and whether the runes module's API tables and indexes
+/// ([`opi_runes::holders`]) exist there, which the module builds at its
+/// start. Until it first finds them all, each request checks with one query
+/// of a `to_regclass` lookup per relation; from then on the answer is cached.
+#[derive(Clone)]
+pub(super) struct RunesTables {
+    pub db: Db,
+    built: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RunesTables {
+    fn new(db: Db) -> Self {
+        RunesTables {
+            db,
+            built: Default::default(),
+        }
+    }
+
+    /// The 503 answer while the tables are missing, `None` once they exist.
+    pub async fn unbuilt(&self) -> Result<Option<Reply>, ApiError> {
+        use std::sync::atomic::Ordering;
+        if self.built.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let relations: Vec<String> = ["runes_current_balances", "runes_holders"]
+            .into_iter()
+            .chain(opi_runes::holders::INDEXES.iter().map(|(name, _)| *name))
+            .map(|name| format!("public.{name}"))
+            .collect();
+        let built = sqlx::query_scalar!(
+            r#"select bool_and(to_regclass(r) is not null) as "built!" from unnest($1::text[]) r;"#,
+            &relations,
+        )
+        .fetch_one(self.db.pool()?)
+        .await?;
+        if !built {
+            return Ok(Some(Reply::error(503, TABLES_NOT_BUILT)));
+        }
+        self.built.store(true, Ordering::Relaxed);
+        Ok(None)
+    }
+}
+
+pub fn routes(db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+    let tables = RunesTables::new(db.clone());
     ModuleRoutes::new()
         .routes(routes!(ip))
         .routes(routes!(block_height))
@@ -36,6 +91,12 @@ pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
         .routes(routes!(holders))
         .routes(routes!(get_hash_of_all_activity))
         .routes(routes!(event))
+        .routes(routes!(catalog::rune_info).with_state(tables.clone()))
+        .routes(routes!(catalog::runes).with_state(tables.clone()))
+        .routes(routes!(catalog::rune_holders).with_state(tables.clone()))
+        .routes(routes!(catalog::wallet_balances).with_state(tables.clone()))
+        .routes(routes!(feeds::rune_events).with_state(tables.clone()))
+        .routes(routes!(feeds::wallet_events).with_state(tables))
 }
 
 /// A runes route's answer: `error` null, the `result` and the database's

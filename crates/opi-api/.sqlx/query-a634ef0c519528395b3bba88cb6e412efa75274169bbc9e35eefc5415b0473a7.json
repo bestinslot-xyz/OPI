@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.wallet_addr as \"wallet_addr?\", c.pkscript, c.balance::text as \"balance!\"\n            from runes_current_balances c\n            where c.rune_id = $1\n              and ($2::text is null or (c.balance, c.pkscript) < ($2::text::numeric, $3::text))\n            order by c.balance desc, c.pkscript desc\n            limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wallet_addr?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_current_balances",
+            "name": "wallet_addr"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pkscript",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_current_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "a634ef0c519528395b3bba88cb6e412efa75274169bbc9e35eefc5415b0473a7"
+}

@@ -57,8 +57,8 @@ use {
         pg_json::{self, oid},
         reply::{ApiError, Reply},
         routes::paging::{
-            BadParam, DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_LIMIT, MAX_PKSCRIPT_LEN,
-            MAX_TYPE_LEN, integer, optional_text, single, split_page,
+            BadParam, DEFAULT_LIMIT, MAX_BEFORE_ID, MAX_LIMIT, MAX_TYPE_LEN, Wallet, integer,
+            optional_text, single, split_page,
         },
     },
     axum::extract::State,
@@ -197,44 +197,6 @@ impl FeedRequest {
             before_id,
             event_type,
         })
-    }
-}
-
-/// The wallet a feed lists.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Wallet {
-    Address(String),
-    PkScript(String),
-}
-
-impl Wallet {
-    /// Exactly one of `address` and `pkscript`; a pkScript is lowercased hex.
-    pub fn from_query(query: &JsObject) -> Result<Wallet, BadParam> {
-        let address = single(query, "address")?.filter(|value| !value.is_empty());
-        let pkscript = single(query, "pkscript")?.filter(|value| !value.is_empty());
-        match (address, pkscript) {
-            (None, None) => Err(BadParam("address or pkscript is required".into())),
-            (Some(_), Some(_)) => Err(BadParam("give address or pkscript, not both".into())),
-            (Some(address), None) => {
-                if address.len() > MAX_ADDRESS_LEN || address.contains('\0') {
-                    return Err(BadParam(format!(
-                        "address must be at most {MAX_ADDRESS_LEN} bytes without NUL"
-                    )));
-                }
-                Ok(Wallet::Address(address.to_string()))
-            }
-            (None, Some(pkscript)) => {
-                if pkscript.len() > MAX_PKSCRIPT_LEN
-                    || pkscript.len() % 2 != 0
-                    || !pkscript.bytes().all(|b| b.is_ascii_hexdigit())
-                {
-                    return Err(BadParam(format!(
-                        "pkscript must be hex of at most {MAX_PKSCRIPT_LEN} digits"
-                    )));
-                }
-                Ok(Wallet::PkScript(pkscript.to_ascii_lowercase()))
-            }
-        }
     }
 }
 

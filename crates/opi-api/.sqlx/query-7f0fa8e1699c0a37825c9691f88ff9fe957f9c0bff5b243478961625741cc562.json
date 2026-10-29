@@ -1,0 +1,245 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.rune_id, e.rune_name, e.spacers, e.\"number\"::text as \"number!\",\n                e.divisibility, e.symbol, e.etching, e.genesis_height,\n                extract(epoch from e.\"timestamp\")::int8 as \"timestamp!\", e.turbo,\n                e.premine::text as \"premine!\", e.mints::text as \"mints!\",\n                e.burned::text as \"burned!\",\n                (e.premine + e.mints * coalesce(e.terms_amount, 0))::text as \"supply!\",\n                (e.premine + coalesce(e.terms_cap, 0) * coalesce(e.terms_amount, 0))::text as \"max_supply!\",\n                e.terms_amount::text as terms_amount, e.terms_cap::text as terms_cap,\n                e.terms_height_l, e.terms_height_h, e.terms_offset_l, e.terms_offset_h,\n                case when e.terms_cap > 0 then (e.mints / e.terms_cap)::float8 end as mint_progress,\n                coalesce(h.holders, 0) as \"holders!\",\n                null::text as sort_key\n            from runes_id_to_entry e\n            left join runes_holders h on h.rune_id = e.rune_id\n            where ($1::text is null or e.rune_id = $1)\n              and ($2::text is null or e.rune_name = $2);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rune_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rune_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "spacers",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "spacers"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "number!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "divisibility",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "divisibility"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "symbol",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "symbol"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "etching",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "etching"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "genesis_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "genesis_height"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "timestamp!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "turbo",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "turbo"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "premine!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "mints!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "burned!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "supply!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "max_supply!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "terms_amount",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "terms_cap",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "terms_height_l",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "terms_height_l"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "terms_height_h",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "terms_height_h"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "terms_offset_l",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "terms_offset_l"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "terms_offset_h",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "terms_offset_h"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "mint_progress",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 22,
+        "name": "holders!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 23,
+        "name": "sort_key",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      true,
+      false,
+      false,
+      null,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      true,
+      true,
+      true,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7f0fa8e1699c0a37825c9691f88ff9fe957f9c0bff5b243478961625741cc562"
+}

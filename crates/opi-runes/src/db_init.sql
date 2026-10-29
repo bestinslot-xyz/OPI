@@ -27,6 +27,7 @@ CREATE INDEX runes_id_to_entry_genesis_height_idx ON public.runes_id_to_entry US
 CREATE INDEX runes_id_to_entry_last_updated_block_height_idx ON public.runes_id_to_entry USING btree (last_updated_block_height);
 CREATE UNIQUE INDEX runes_id_to_entry_rune_id_idx ON public.runes_id_to_entry USING btree (rune_id);
 CREATE UNIQUE INDEX runes_id_to_entry_rune_name_idx ON public.runes_id_to_entry USING btree (rune_name);
+CREATE INDEX IF NOT EXISTS runes_id_to_entry_rune_name_pattern_idx ON public.runes_id_to_entry USING btree (rune_name text_pattern_ops);
 
 CREATE TABLE public.runes_id_to_entry_changes (
 	id bigserial NOT NULL,
@@ -74,9 +75,9 @@ CREATE INDEX runes_events_block_height_idx ON public.runes_events USING btree (b
 CREATE INDEX runes_events_event_type_idx ON public.runes_events USING btree (event_type);
 CREATE INDEX runes_events_txid_idx ON public.runes_events USING btree (txid);
 CREATE INDEX runes_events_outpoint_idx ON public.runes_events USING btree (outpoint);
-CREATE INDEX runes_events_pkscript_idx ON public.runes_events USING btree (pkscript);
-CREATE INDEX runes_events_wallet_addr_idx ON public.runes_events USING btree (wallet_addr);
-CREATE INDEX runes_events_rune_id_idx ON public.runes_events USING btree (rune_id);
+CREATE INDEX IF NOT EXISTS runes_events_rune_id_id_idx ON public.runes_events USING btree (rune_id, id);
+CREATE INDEX IF NOT EXISTS runes_events_wallet_addr_id_idx ON public.runes_events USING btree (wallet_addr, id);
+CREATE INDEX IF NOT EXISTS runes_events_pkscript_id_idx ON public.runes_events USING btree (pkscript, id);
 
 CREATE TABLE public.runes_event_types (
 	id bigserial NOT NULL,
@@ -148,3 +149,18 @@ CREATE TABLE public.runes_indexer_version (
 	CONSTRAINT runes_indexer_version_pk PRIMARY KEY (id)
 );
 INSERT INTO public.runes_indexer_version (indexer_version, db_version) VALUES ('OPI-runes-alpha V0.4.2', 6);
+
+CREATE TABLE IF NOT EXISTS public.runes_current_balances (
+	rune_id text NOT NULL,
+	pkscript text NOT NULL,
+	wallet_addr text NULL,
+	balance numeric(40) NOT NULL,
+	CONSTRAINT runes_current_balances_pk PRIMARY KEY (pkscript, rune_id)
+);
+CREATE TABLE IF NOT EXISTS public.runes_holders (
+	rune_id text NOT NULL,
+	holders int8 NOT NULL DEFAULT 0,
+	CONSTRAINT runes_holders_pk PRIMARY KEY (rune_id)
+);
+CREATE INDEX IF NOT EXISTS runes_current_balances_rune_id_balance_idx ON public.runes_current_balances USING btree (rune_id, balance, pkscript);
+CREATE INDEX IF NOT EXISTS runes_current_balances_wallet_addr_idx ON public.runes_current_balances USING btree (wallet_addr);
