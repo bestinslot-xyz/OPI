@@ -5,10 +5,12 @@ mod reader;
 mod reorg;
 mod runes;
 mod schema;
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub use {
     finalize::{ChainData, EmissionOrderError, FINALIZE_BATCH, finalize_range, is_json_body},
-    prune::{PRUNE_BATCH, Pruned},
+    prune::{PRUNE_BATCH, PRUNE_STEP_ROWS, PruneStep, Pruned},
     reader::JournalReader,
     reorg::reorg_check,
     runes::RuneModelError,
@@ -131,6 +133,20 @@ pub(crate) fn sync_parent(path: &Path) -> Result<()> {
     std::fs::File::open(parent)
         .and_then(|dir| dir.sync_all())
         .with_context(|| format!("syncing {}", parent.display()))
+}
+
+/// Whether `err` reports a journal another open holds: redb locks the file
+/// exclusively while a database is open.
+pub fn is_in_use(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<redb::DatabaseError>(),
+            Some(redb::DatabaseError::DatabaseAlreadyOpen)
+        ) || matches!(
+            cause.downcast_ref::<redb::Error>(),
+            Some(redb::Error::DatabaseAlreadyOpen)
+        )
+    })
 }
 
 /// Definition of the journal table called `name`.

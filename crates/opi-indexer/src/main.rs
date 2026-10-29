@@ -60,7 +60,9 @@ enum Command {
     /// Reads the env file OPI_ENV_FILE names, or `.env`.
     Api,
     /// Rewrite the journal file without the space pruning freed. Needs `run`
-    /// stopped. Reads OPI_JOURNAL_DIR.
+    /// stopped. Reads OPI_JOURNAL_DIR. With OPI_PRUNE set, it first prunes
+    /// the journal to that window, from the heights in the enabled modules'
+    /// databases, and reads `run`'s whole configuration.
     CompactJournal,
 }
 
@@ -116,7 +118,44 @@ fn run() -> Result<()> {
     // Serves from here on, answering "starting" until the modules run, and
     // stops when `run` returns.
     let metrics = start_metrics(MetricsConfig::from_env()?)?;
+    let result = match config.prune {
+        Some(keep) => prune_then_index(&config, module_configs, keep),
+        None => index(&config, module_configs),
+    };
+    if let Some(metrics) = metrics {
+        metrics.stop();
+    }
+    result
+}
 
+/// `run` with OPI_PRUNE set: prunes the journal to the window before
+/// anything takes it for writing, then indexes. The prune reads the module
+/// heights from their databases and stops between two steps on SIGINT or
+/// SIGTERM, which then ends `run` with success.
+fn prune_then_index(config: &Config, module_configs: ModuleConfigs, keep: u32) -> Result<()> {
+    prune::watch_signals()?;
+    let lowest = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(prune::lowest_height_or_warn(&prune::module_dbs(
+            &module_configs,
+        )?));
+    // `None` is a signal during the catch-up, which ends `run` with success.
+    prune::catch_up_then(
+        &config.source.journal_path(),
+        config.source.chain,
+        config.source.runes,
+        lowest,
+        keep,
+        &prune::signalled,
+        || index(config, module_configs),
+    )
+    .map(|_| ())
+}
+
+/// Starts the brc20 engine, the source and the modules, and runs until a
+/// signal or a failure.
+fn index(config: &Config, module_configs: ModuleConfigs) -> Result<()> {
     // The engine and its Bitcoin RPC source open once, before anything
     // starts; module restarts reuse them.
     let brc20_engine = module_configs
@@ -177,9 +216,6 @@ fn run() -> Result<()> {
     // last.
     handle.shutdown();
     let joined = handle.join();
-    if let Some(metrics) = metrics {
-        metrics.stop();
-    }
     match exit {
         Ok(Exit::Signal) => joined,
         Ok(Exit::SourceEnded) => {
@@ -229,13 +265,33 @@ fn api() -> Result<()> {
         })
 }
 
-/// Compacts the journal under OPI_JOURNAL_DIR.
+/// Compacts the journal under OPI_JOURNAL_DIR. With OPI_PRUNE set it prunes
+/// the journal to the window first, from the heights in the databases of
+/// the modules OPI_MODULES enables, reading `run`'s whole configuration.
 fn compact_journal() -> Result<()> {
+    if std::env::var("OPI_PRUNE").is_ok_and(|keep| !keep.is_empty()) {
+        let config = Config::from_env()?;
+        let keep = config.prune.context("OPI_PRUNE is set")?;
+        let modules = prune::module_dbs(&ModuleConfigs::load(&config)?)?;
+        prune::watch_signals()?;
+        let offline = prune::OfflinePrune {
+            chain: config.source.chain,
+            runes: config.source.runes,
+            keep,
+            modules: &modules,
+        };
+        return prune::compact_command(
+            &config.source.journal_path(),
+            Some(offline),
+            &prune::signalled,
+        );
+    }
     let dir = std::env::var("OPI_JOURNAL_DIR")
         .ok()
         .filter(|dir| !dir.is_empty())
         .context("OPI_JOURNAL_DIR is not set")?;
-    prune::compact_journal(&std::path::Path::new(&dir).join(opi_source::driver::JOURNAL_FILE))
+    let path = std::path::Path::new(&dir).join(opi_source::driver::JOURNAL_FILE);
+    prune::compact_command(&path, None, &|| false)
 }
 
 /// Runs the enabled modules over the journal until a signal arrives or the
@@ -295,6 +351,12 @@ async fn supervise(
         }
         _ = sigterm.recv() => {
             tracing::info!("SIGTERM received, shutting down");
+            Exit::Signal
+        }
+        // A signal during start-up, after the journal catch-up installed its
+        // handlers and before the two above listened.
+        _ = prune::wait_signalled() => {
+            tracing::info!("signal received during start-up, shutting down");
             Exit::Signal
         }
         _ = source_finished(handle) => {
