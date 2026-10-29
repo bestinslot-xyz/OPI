@@ -5,6 +5,6 @@ mod scheduler;
 mod supervisor;
 
 pub use {
-    scheduler::MAX_ROLLBACK_DEPTH,
+    opi_core::MAX_ROLLBACK_DEPTH,
     supervisor::{ModuleFactory, Runtime, RuntimeOptions},
 };
