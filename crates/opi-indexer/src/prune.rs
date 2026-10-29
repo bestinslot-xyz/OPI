@@ -84,12 +84,15 @@ fn lowest_module_height(modules: &[&'static str]) -> Option<u32> {
 }
 
 /// Rewrites the journal file at `path` without the pages pruning freed.
-pub(crate) fn compact_journal(path: &std::path::Path) -> Result<()> {
+pub(crate) fn compact_journal(
+    path: &std::path::Path,
+    options: &opi_source::journal::JournalOptions,
+) -> Result<()> {
     let before = std::fs::metadata(path)
         .with_context(|| format!("reading {}", path.display()))?
         .len();
     tracing::info!(path = %path.display(), bytes = before, "compacting the journal");
-    Journal::compact(path).with_context(|| format!("compacting {}", path.display()))?;
+    Journal::compact(path, options).with_context(|| format!("compacting {}", path.display()))?;
     let after = std::fs::metadata(path)?.len();
     tracing::info!(
         bytes = after,

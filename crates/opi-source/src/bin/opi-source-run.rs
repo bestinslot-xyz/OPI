@@ -61,6 +61,7 @@ fn config() -> Result<SourceConfig> {
             None => DEFAULT_CHUNK,
         },
         runes: !matches.get_flag("no-runes"),
+        journal: Default::default(),
     })
 }
 
