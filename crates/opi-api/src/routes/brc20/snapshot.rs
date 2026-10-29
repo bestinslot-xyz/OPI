@@ -29,6 +29,11 @@
 //! connection while it streams; one that ends without committing closes the
 //! connection, which ends its Postgres transaction. At most [`cap`]
 //! snapshots run at once; another answers 503 until one ends.
+//!
+//! A snapshot at least [`MAX_ROLLBACK_DEPTH`] blocks below the tip is past
+//! any rollback the indexer makes, so it never changes: its answer is sent
+//! with [`SETTLED`], which lets a shared cache keep it. Every other answer,
+//! refusals and failures included, is sent with [`NO_STORE`].
 
 use {
     super::tickers::{
@@ -50,6 +55,7 @@ use {
         response::{IntoResponse, Response},
     },
     futures::StreamExt,
+    opi_runtime::MAX_ROLLBACK_DEPTH,
     sqlx::{PgPool, Postgres, pool::PoolConnection},
     std::{fmt::Write, sync::Arc, time::Duration},
     tokio::{
@@ -93,6 +99,17 @@ pub const CSV_COLUMNS: [&str; 7] = [
 ];
 
 pub const CSV: &str = "text/csv; charset=utf-8";
+
+/// The `Cache-Control` of a snapshot no rollback can change: a day, shared.
+pub const SETTLED: &str = "public, max-age=86400, immutable";
+
+/// The `Cache-Control` of every other answer.
+pub const NO_STORE: &str = "no-store";
+
+/// Whether the snapshot at `block_height` is past any rollback from `tip`.
+pub fn settled(block_height: i32, tip: i32) -> bool {
+    i64::from(tip) - i64::from(block_height) >= i64::from(MAX_ROLLBACK_DEPTH)
+}
 
 /// The route's state: the database, the permits of running snapshots and
 /// how long one may stream.
@@ -239,6 +256,8 @@ struct Plan {
     block_height: i32,
     ticker_decimals: i32,
     format: Format,
+    /// The snapshot is [`settled`].
+    settled: bool,
 }
 
 /// Every holder of a ticker at the end of a block, streamed.
@@ -249,7 +268,10 @@ struct Plan {
 /// (`address,evm_address,pkscript,brc20_balance,brc20_available_balance,prog_balance,total_balance`)
 /// and one row per holder, CRLF line ends and RFC 4180 quoting, as the
 /// attachment `<ticker>-<block_height>.csv`. A failure partway through, or
-/// API_SNAPSHOT_TIMEOUT_MS passing, aborts the transfer.
+/// API_SNAPSHOT_TIMEOUT_MS passing, aborts the transfer. A snapshot at least
+/// 1000 blocks (the indexer's deepest rollback) below the tip never changes
+/// and is sent with `Cache-Control: public, max-age=86400, immutable`; every
+/// other answer with `Cache-Control: no-store`.
 #[utoipa::path(
     get,
     path = "/v1/brc20/ticker/holders/snapshot",
@@ -263,17 +285,28 @@ struct Plan {
                 (Answer<Brc20Snapshot> = "application/json"),
                 (String = "text/csv"),
             ),
-            headers(("Content-Disposition" = String, description = "`attachment; filename=\"<ticker>-<block_height>.csv\"` on a CSV answer")),
+            headers(
+                ("Content-Disposition" = String, description = "`attachment; filename=\"<ticker>-<block_height>.csv\"` on a CSV answer"),
+                ("Cache-Control" = String, description = "`public, max-age=86400, immutable` for a snapshot at least 1000 blocks below the tip, `no-store` otherwise"),
+            ),
         ),
         (status = 400, description = "A missing or invalid parameter, or a `block_height` above the indexed tip or below the ticker's deploy height", body = ErrorBody),
         (status = 404, description = "`ticker not found`", body = ErrorBody),
         (status = 503, description = "`too many snapshots running, retry later` while the most snapshots stream, or `snapshot timed out` when the snapshot cannot start within API_SNAPSHOT_TIMEOUT_MS", body = ErrorBody),
     ),
 )]
-pub async fn snapshot(
-    State(snapshots): State<Snapshots>,
-    JsQuery(query): JsQuery,
-) -> Result<Response, ApiError> {
+pub async fn snapshot(State(snapshots): State<Snapshots>, JsQuery(query): JsQuery) -> Response {
+    let mut response = answer(snapshots, query)
+        .await
+        .unwrap_or_else(IntoResponse::into_response);
+    response
+        .headers_mut()
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static(NO_STORE));
+    response
+}
+
+async fn answer(snapshots: Snapshots, query: JsObject) -> Result<Response, ApiError> {
     let request = match SnapshotRequest::from_query(&query) {
         Ok(request) => request,
         Err(bad) => return Ok(bad.reply().into_response()),
@@ -343,9 +376,9 @@ async fn check(
     )
     .fetch_one(&mut *read.conn)
     .await?;
-    let block_height = match (request.block_height, tip) {
-        (Some(height), Some(tip)) if height <= tip => height,
-        (None, Some(tip)) => tip,
+    let (block_height, tip) = match (request.block_height, tip) {
+        (Some(height), Some(tip)) if height <= tip => (height, tip),
+        (None, Some(tip)) => (tip, tip),
         _ => {
             return Ok(Err(Reply::error(
                 400,
@@ -373,11 +406,12 @@ async fn check(
         block_height,
         ticker_decimals: ticker.decimals,
         format: request.format,
+        settled: settled(block_height, tip),
     }))
 }
 
 fn headers(plan: &Plan) -> Vec<(header::HeaderName, HeaderValue)> {
-    match plan.format {
+    let mut headers = match plan.format {
         Format::Json => vec![(header::CONTENT_TYPE, HeaderValue::from_static(reply::JSON))],
         Format::Csv => vec![
             (header::CONTENT_TYPE, HeaderValue::from_static(CSV)),
@@ -386,7 +420,13 @@ fn headers(plan: &Plan) -> Vec<(header::HeaderName, HeaderValue)> {
                 content_disposition(&format!("{}-{}.csv", plan.tick, plan.block_height)),
             ),
         ],
-    }
+    };
+    let cache_control = if plan.settled { SETTLED } else { NO_STORE };
+    headers.push((
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    ));
+    headers
 }
 
 /// `attachment; filename="<name>"`. A name with a character outside

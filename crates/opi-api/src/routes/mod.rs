@@ -15,6 +15,7 @@ pub mod paging;
 mod registry;
 mod runes;
 mod sns;
+mod tip_cache;
 
 pub use registry::ModuleRoutes;
 

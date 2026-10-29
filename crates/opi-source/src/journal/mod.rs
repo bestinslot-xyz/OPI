@@ -138,7 +138,39 @@ pub fn table(name: &'static str) -> TableDefinition<'static, &'static [u8], &'st
     TableDefinition::new(name)
 }
 
+/// How a journal database is opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalOptions {
+    /// Size of redb's page cache in bytes.
+    pub cache_bytes: usize,
+}
+
+/// redb's own default page cache size.
+pub const DEFAULT_CACHE_BYTES: usize = 1024 * 1024 * 1024;
+
+impl Default for JournalOptions {
+    fn default() -> Self {
+        JournalOptions {
+            cache_bytes: DEFAULT_CACHE_BYTES,
+        }
+    }
+}
+
+impl JournalOptions {
+    /// A builder for a database whose page cache holds `cache_bytes`.
+    pub(crate) fn builder(&self) -> redb::Builder {
+        let mut builder = Database::builder();
+        builder.set_cache_size(self.cache_bytes);
+        builder
+    }
+}
+
 impl Journal {
+    /// [`Journal::open_with`] with the default options, for tests and tools.
+    pub fn open(path: &Path, chain: Chain, runes: bool) -> Result<Journal> {
+        Journal::open_with(path, chain, runes, &JournalOptions::default())
+    }
+
     /// Opens the journal at `path`, creating it for `chain` when absent, with
     /// rune records when `runes` is set. Fails when an existing journal
     /// belongs to another chain or schema, was built with the other `runes`
@@ -150,20 +182,27 @@ impl Journal {
     ///
     /// A new journal is built at `<path>.init` and renamed into place once
     /// complete, so a crash during creation leaves no half-made journal.
-    pub fn open(path: &Path, chain: Chain, runes: bool) -> Result<Journal> {
+    pub fn open_with(
+        path: &Path,
+        chain: Chain,
+        runes: bool,
+        options: &JournalOptions,
+    ) -> Result<Journal> {
         let init = init_path(path);
         let created = if path.exists() {
             remove_if_exists(&init)?;
             false
         } else {
             remove_if_exists(&init)?;
-            Self::initialize(&init, chain, runes)?;
+            Self::initialize(&init, chain, runes, options)?;
             std::fs::rename(&init, path)
                 .with_context(|| format!("renaming {} into place", init.display()))?;
             sync_parent(path)?;
             true
         };
-        let db = Database::create(path)
+        let db = options
+            .builder()
+            .create(path)
             .with_context(|| format!("opening journal at {}", path.display()))?;
         let chain = chain.to_string();
 
@@ -256,8 +295,10 @@ impl Journal {
 
     /// Creates the journal file at `path` with its tables and the meta rows
     /// in one durable transaction.
-    fn initialize(path: &Path, chain: Chain, runes: bool) -> Result<()> {
-        let db = Database::create(path)
+    fn initialize(path: &Path, chain: Chain, runes: bool, options: &JournalOptions) -> Result<()> {
+        let db = options
+            .builder()
+            .create(path)
             .with_context(|| format!("creating journal at {}", path.display()))?;
         let tx = db.begin_write()?;
         {

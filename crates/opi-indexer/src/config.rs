@@ -9,6 +9,7 @@ use {
     opi_sns::SnsConfig,
     opi_source::{
         driver::{DEFAULT_CHUNK, SourceConfig},
+        journal::JournalOptions,
         proxy::UpstreamAuth,
     },
     ord::Chain,
@@ -87,6 +88,7 @@ impl Config {
                 bitcoin_auth,
                 chunk,
                 runes: modules.contains(&ModuleKind::Runes),
+                journal: journal_options(&get)?,
             },
             modules,
             prune,
@@ -279,6 +281,34 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
     Ok(modules)
 }
 
+/// Smallest and largest `OPI_JOURNAL_CACHE_MB`.
+const JOURNAL_CACHE_MB: std::ops::RangeInclusive<usize> = 64..=65536;
+
+/// The journal's open options from `OPI_JOURNAL_CACHE_MB`, the redb page cache
+/// in MiB (default 1024).
+pub(crate) fn journal_options(get: &impl Fn(&str) -> Option<String>) -> Result<JournalOptions> {
+    match get("OPI_JOURNAL_CACHE_MB").filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let mb = value
+                .parse::<usize>()
+                .ok()
+                .filter(|mb| JOURNAL_CACHE_MB.contains(mb))
+                .with_context(|| {
+                    format!(
+                        "OPI_JOURNAL_CACHE_MB must be an integer from {} to {} (MiB), got \
+                         `{value}`",
+                        JOURNAL_CACHE_MB.start(),
+                        JOURNAL_CACHE_MB.end()
+                    )
+                })?;
+            Ok(JournalOptions {
+                cache_bytes: mb * 1024 * 1024,
+            })
+        }
+        None => Ok(JournalOptions::default()),
+    }
+}
+
 fn parse_chain(value: &str) -> Result<Chain> {
     match value {
         "mainnet" => Ok(Chain::Mainnet),
@@ -306,6 +336,34 @@ mod tests {
 
     fn load(vars: &HashMap<&'static str, &'static str>) -> Result<Config> {
         Config::from_lookup(|key| vars.get(key).map(|value| value.to_string()))
+    }
+
+    #[test]
+    fn journal_cache_setting() {
+        let mut vars = base();
+        assert_eq!(
+            load(&vars).unwrap().source.journal.cache_bytes,
+            1024 * 1024 * 1024
+        );
+        vars.insert("OPI_JOURNAL_CACHE_MB", "");
+        assert_eq!(
+            load(&vars).unwrap().source.journal.cache_bytes,
+            1024 * 1024 * 1024
+        );
+        vars.insert("OPI_JOURNAL_CACHE_MB", "4096");
+        assert_eq!(
+            load(&vars).unwrap().source.journal.cache_bytes,
+            4096 * 1024 * 1024
+        );
+        for ok in ["64", "65536"] {
+            vars.insert("OPI_JOURNAL_CACHE_MB", ok);
+            load(&vars).unwrap();
+        }
+        for bad in ["63", "65537", "0", "-1", "4g", "1.5", "abc"] {
+            vars.insert("OPI_JOURNAL_CACHE_MB", bad);
+            let err = load(&vars).unwrap_err();
+            assert!(err.to_string().contains("OPI_JOURNAL_CACHE_MB"), "{err}");
+        }
     }
 
     #[test]
