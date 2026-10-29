@@ -180,7 +180,12 @@ pub const EVENT_STREAM: &str = "text/event-stream";
 /// event stream's body is not read (it does not end): the answer's body is
 /// empty, and dropping it closes the stream; [`Sse`] reads one.
 pub async fn get(app: &Router, uri: &str) -> Answer {
-    let response = request(app, uri, &[]).await;
+    get_with(app, uri, &[]).await
+}
+
+/// [`get`] with the request headers `headers`.
+pub async fn get_with(app: &Router, uri: &str, headers: &[(&str, &str)]) -> Answer {
+    let response = request(app, uri, headers).await;
     let status = response.status().as_u16();
     let content_type = response
         .headers()

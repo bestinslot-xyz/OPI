@@ -1001,24 +1001,28 @@ registered), each in its lookup route's form. runes is not on the stream yet.
 | `confirmations` | block H is sent once its module's indexed tip reaches H + `confirmations` - 1, so `1` sends each block as soon as it is indexed; from 1 to `STREAM_MAX_CONFIRMATIONS`, default `STREAM_DEFAULT_CONFIRMATIONS` |
 | `from_height` | replay the stored blocks from this height on, in order; below a module's oldest kept block it answers 400 with that height. Left out, each module starts with its first block not yet due |
 
-The header `Last-Event-ID` (which an `EventSource` sends when it reconnects)
-resumes after the block it names, and wins over `from_height`. Every module
-indexes the same chain, so the named block stands for each module's at its
-height: the modules up to the named one resume after it, the later ones at
-it, and each module whose blocks up to it were replaced gets a rollback
-first.
-
 | Event | `id` | Data |
 | --- | --- | --- |
-| `block` | `<module>:<height>:<hash>` | `{"module","height","hash","block_time","events":[...]}`; brc20's block adds `"decimals":18`, the fractional digits of its raw amounts, and bitmap's and sns's `block_time` is null |
-| `rollback` | `<module>:<height>:<hash>` of the kept block, none when no block is stored there | `{"module","height"}`: the module's blocks above `height`, the last block kept, were replaced; the replacement blocks follow |
+| `block` | the stream's position | `{"module","height","hash","block_time","events":[...]}`; brc20's block adds `"decimals":18`, the fractional digits of its raw amounts, and bitmap's and sns's `block_time` is null |
+| `rollback` | the stream's position | `{"module","height"}`: the module's blocks above `height`, the last block kept, were replaced; the replacement blocks follow |
 | `heartbeat` | | `{"tips":{"<module>":<height>}}`, each module's indexed tip, every `STREAM_HEARTBEAT_SECS` while no block is due |
 | `error` | | `{"error"}`, the last event of a stream that ends early, sent between events |
 
-A frame's `id` line comes last, so a block cut off by a dropped connection
-carries no id, and a resume sends that block again. A resume after a
-rollback's id may send the other modules' blocks above the kept height
-again.
+A block or rollback event's id is the client's position after it in every
+module of the stream: `<module>:<height>:<hash>` per module, comma-separated
+in module name order, such as `bitmap:328270:00…ab,brc20:328270:00…ab,sns:328269:00…cd`.
+The height is the last one the client holds; the hash is empty for a module
+that has sent no block at or below it yet (a stream that started above it).
+The header `Last-Event-ID` (which an `EventSource` sends when it reconnects)
+resumes each module it names after its position, checked against that
+module's own database: a module whose block there was replaced gets a
+rollback first, and one whose database has not reached that height yet (a
+node further behind) waits for it. A module of the stream the id leaves
+out starts at `from_height`, or with its first block not yet due. The id
+takes precedence over `from_height`; a position below a module's oldest
+kept block answers 400. One module's `<module>:<height>:<hash>` is a valid
+id of its own. A frame's `id` line comes last, so a block cut off by a
+dropped connection carries no id, and a resume sends that block again.
 
 One `block` event comes per block and module, with every event of the block,
 however many; it is read and sent in pages. The blocks of a stream's modules
@@ -1033,9 +1037,11 @@ sent, then the new blocks. A block is due once the block-hash row
 `confirmations` - 1 above it is stored, read with the block itself. Each
 poller remembers the hashes reorgs replaced, so a rollback below the
 blocks a stream sent, such as one for a `Last-Event-ID` taken before a
-reorg, names the fork exactly when this process saw the reorg. Past what
-it saw (the process started after the reorg), the stream rolls back 1000
-blocks, the deepest rollback the indexer walks, and replays from there.
+reorg, names the fork exactly when this process saw the reorg; while the
+module's poller has not read a reorg yet, the stream waits for it. Past
+what the poller saw (the process started after the reorg), the stream rolls
+back 1000 blocks, the deepest rollback the indexer walks, and replays from
+there.
 
 The API learns of new blocks by polling: one poller per module and process,
 whatever the number of subscribers, reads the module's highest block-hash row
@@ -1064,22 +1070,22 @@ pruned bitmap or sns database keeps the block hashes of at least the last
 $ curl -N 'http://127.0.0.1:8000/v1/stream?modules=brc20,sns&confirmations=3&from_height=328270'
 event: block
 data: {"module":"brc20","height":328270,"hash":"000000b1…","block_time":1761700000,"decimals":18,"events":[{"id":5120001,"block_height":328270,"block_time":1761700000,"inscription_id":"…i0","event_type":"mint-inscribe","ticker_decimals":18,"event":{…}}]}
-id: brc20:328270:000000b1…
+id: brc20:328270:000000b1…,sns:328269:
 
 event: block
 data: {"module":"sns","height":328270,"hash":"000000b1…","block_time":null,"events":[]}
-id: sns:328270:000000b1…
+id: brc20:328270:000000b1…,sns:328270:000000b1…
 
 event: heartbeat
 data: {"tips":{"brc20":328275,"sns":328275}}
 
 event: rollback
 data: {"module":"brc20","height":328272}
-id: brc20:328272:000000a7…
+id: brc20:328272:000000a7…,sns:328273:000000d2…
 
 event: block
 data: {"module":"brc20","height":328273,"hash":"000000c4…","block_time":1761701800,"decimals":18,"events":[]}
-id: brc20:328273:000000c4…
+id: brc20:328273:000000c4…,sns:328273:000000d2…
 ```
 
 ### API configuration

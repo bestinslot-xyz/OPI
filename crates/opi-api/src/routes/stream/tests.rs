@@ -56,14 +56,17 @@ fn bad_parameters_are_refused() {
         refused("from_height=-1", None),
         "from_height must be an integer from 0 to 2147483647"
     );
-    let id = "Last-Event-ID must be <module>:<height>:<hash> of a module of the stream";
+    let id = "Last-Event-ID must be <module>:<height>:<hash> entries, comma-separated, of modules of the stream";
     for bad in [
+        "",
         "brc20",
         "brc20:1",
         "brc20:x:h",
-        "brc20:1:",
         "runes:1:h",
         "brc20:-1:h",
+        "brc20:1:h h",
+        "brc20:1:h,brc20:2:h",
+        "brc20:1:h,",
     ] {
         assert_eq!(refused("", Some(bad)), id, "{bad}");
     }
@@ -107,13 +110,30 @@ fn a_disabled_module_is_refused() {
 }
 
 #[test]
-fn a_last_event_id_names_a_block() {
+fn a_last_event_id_names_each_module_s_position() {
+    let position = |provider, height, hash: Option<&str>| Position {
+        provider,
+        height,
+        hash: hash.map(str::to_string),
+    };
     let start = start("from_height=5", Some("bitmap:100:00ab:cd")).unwrap();
     assert_eq!(
         start.resume,
-        Some((Provider::Bitmap, 100, "00ab:cd".to_string()))
+        Some(vec![position(Provider::Bitmap, 100, Some("00ab:cd"))])
     );
     assert_eq!(start.from_height, Some(5));
+    let id = "bitmap:7:aa,brc20:9:bb,sns:6:";
+    let positions = vec![
+        position(Provider::Bitmap, 7, Some("aa")),
+        position(Provider::Brc20, 9, Some("bb")),
+        position(Provider::Sns, 6, None),
+    ];
+    assert_eq!(start_resume(id), positions);
+    assert_eq!(format_id(&positions), id);
+}
+
+fn start_resume(id: &str) -> Vec<Position> {
+    start("", Some(id)).unwrap().resume.unwrap()
 }
 
 #[test]

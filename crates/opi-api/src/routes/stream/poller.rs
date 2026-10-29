@@ -98,6 +98,12 @@ impl History {
         self.window = self.window.split_off(&low);
     }
 
+    /// Whether the window holds `hash` at `height`: the poller has not read
+    /// a reorg that replaced it.
+    pub fn holds(&self, height: i32, hash: &str) -> bool {
+        self.window.get(&height).is_some_and(|held| held == hash)
+    }
+
     /// The block kept by the reorg that replaced `hash` at `height`, if
     /// this poller saw it.
     pub fn kept(&self, height: i32, hash: &str) -> Option<Kept> {

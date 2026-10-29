@@ -222,7 +222,8 @@ struct StreamSnsBlock {
 
 /// The data of a `rollback` event: a reorg replaced the module's blocks
 /// above `height`, the last block kept; the replacement blocks follow. The
-/// event's SSE id is the kept block's, `<module>:<height>:<hash>`.
+/// event's SSE id is the client's position after it, with this module at
+/// the kept block.
 #[derive(ToSchema)]
 #[allow(dead_code)]
 struct StreamRollback {
@@ -324,8 +325,80 @@ struct Start {
     modules: Vec<Provider>,
     confirmations: i32,
     from_height: Option<i32>,
-    /// The `Last-Event-ID`: module, height and hash.
-    resume: Option<(Provider, i32, String)>,
+    /// The `Last-Event-ID`: each module's position.
+    resume: Option<Vec<Position>>,
+}
+
+/// A module's position in a stream's id: the last height the client holds
+/// and its block hash, or no hash for a module whose stream has sent no
+/// block at or below that height yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Position {
+    pub provider: Provider,
+    pub height: i32,
+    pub hash: Option<String>,
+}
+
+/// The longest `Last-Event-ID` a request may send, in bytes.
+const MAX_ID_LEN: usize = 1024;
+
+/// A stream id, `<module>:<height>:<hash>` for each module of the stream
+/// that has a position, comma-separated in module name order.
+pub fn format_id(positions: &[Position]) -> String {
+    positions
+        .iter()
+        .map(|p| {
+            format!(
+                "{}:{}:{}",
+                p.provider.name(),
+                p.height,
+                p.hash.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The positions of a `Last-Event-ID` (`None`: not valid text), each of a
+/// module of `modules`, at most one per module.
+fn parse_id(value: Option<&str>, modules: &[Provider]) -> Result<Vec<Position>, BadParam> {
+    let bad = || {
+        BadParam(
+            "Last-Event-ID must be <module>:<height>:<hash> entries, comma-separated, of modules of the stream"
+                .into(),
+        )
+    };
+    let value = value
+        .filter(|v| !v.is_empty() && v.len() <= MAX_ID_LEN)
+        .ok_or_else(bad)?;
+    let mut positions: Vec<Position> = Vec::new();
+    for entry in value.split(',') {
+        let mut parts = entry.splitn(3, ':');
+        let (Some(name), Some(height), Some(hash)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(bad());
+        };
+        let provider = modules
+            .iter()
+            .copied()
+            .find(|provider| provider.name() == name)
+            .ok_or_else(bad)?;
+        if positions.iter().any(|p| p.provider == provider)
+            || height.is_empty()
+            || height.len() > 10
+            || !height.bytes().all(|b| b.is_ascii_digit())
+            || !hash.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(bad());
+        }
+        let height: i32 = height.parse().map_err(|_| bad())?;
+        positions.push(Position {
+            provider,
+            height,
+            hash: (!hash.is_empty()).then(|| hash.to_string()),
+        });
+    }
+    Ok(positions)
 }
 
 fn parse(
@@ -378,34 +451,7 @@ fn parse(
     };
     let resume = match headers.get("last-event-id") {
         None => None,
-        Some(value) => {
-            let bad = || {
-                BadParam(
-                    "Last-Event-ID must be <module>:<height>:<hash> of a module of the stream"
-                        .into(),
-                )
-            };
-            let value = value.to_str().map_err(|_| bad())?;
-            let mut parts = value.splitn(3, ':');
-            let (Some(name), Some(height), Some(hash)) = (parts.next(), parts.next(), parts.next())
-            else {
-                return Err(bad());
-            };
-            let provider = modules
-                .iter()
-                .copied()
-                .find(|provider| provider.name() == name)
-                .ok_or_else(bad)?;
-            if height.is_empty() || height.len() > 10 || !height.bytes().all(|b| b.is_ascii_digit())
-            {
-                return Err(bad());
-            }
-            let height: i32 = height.parse().map_err(|_| bad())?;
-            if hash.is_empty() || hash.contains('\0') {
-                return Err(bad());
-            }
-            Some((provider, height, hash.to_string()))
-        }
+        Some(value) => Some(parse_id(value.to_str().ok(), &modules)?),
     };
     Ok(Start {
         modules,
@@ -419,7 +465,7 @@ fn parse(
 ///
 /// One `block` event per block and module,
 /// `{"module","height","hash","block_time","events":[...]}` (schema
-/// `StreamBlock`), with the SSE id `<module>:<height>:<hash>`. brc20's
+/// `StreamBlock`). brc20's
 /// events take the event feeds' form, with raw amounts of `decimals`
 /// fractional digits; bitmap's are the bitmaps the block registered and
 /// sns's the names. A block is sent once its module's indexed tip reaches
@@ -428,30 +474,33 @@ fn parse(
 /// others holds them back.
 ///
 /// When a reorg replaces a block the stream has sent, a `rollback` event
-/// `{"module","height"}` (`StreamRollback`) names the last block kept, with
-/// that block's id `<module>:<height>:<hash>`, and the replacement blocks
-/// follow. A `heartbeat` event `{"tips":{...}}`
+/// `{"module","height"}` (`StreamRollback`) names the last block kept, and
+/// the replacement blocks follow. A `heartbeat` event `{"tips":{...}}`
 /// (`StreamHeartbeat`) comes every STREAM_HEARTBEAT_SECS while no block is
 /// due. A stream whose client cannot take a message for that long ends with
 /// an `error` event `{"error"}` (`StreamError`); so does one whose query
 /// fails.
 ///
-/// The `Last-Event-ID` header resumes after the block it names, and sends a
-/// rollback first for each module of the stream whose blocks up to it are
-/// no longer stored. It takes precedence over `from_height`. A resume after
-/// a rollback's id may send the other modules' blocks above the kept one
-/// again.
+/// Block and rollback events carry the SSE id of the client's position
+/// after them: `<module>:<height>:<hash>` for each module of the stream
+/// with a position, comma-separated in module name order, where the hash
+/// is empty for a module that has sent no block at or below that height.
+/// The `Last-Event-ID` header resumes each module it names after its
+/// position, with a rollback first when its block there is no longer
+/// stored, and takes precedence over `from_height`. A module of the stream
+/// the id does not name starts at `from_height`, or at its first block not
+/// yet due.
 #[utoipa::path(
     get,
     path = "/v1/stream",
     tag = "stream",
     params(
         StreamParams,
-        ("Last-Event-ID" = Option<String>, Header, description = "The id of the last block received, `<module>:<height>:<hash>`: the stream resumes after it. Left out, the stream starts at `from_height`."),
+        ("Last-Event-ID" = Option<String>, Header, description = "The id of the last event received, `<module>:<height>:<hash>` per module, comma-separated: each module it names resumes after its position. Left out, the stream starts at `from_height`."),
     ),
     responses(
-        (status = 200, description = "The stream: `block` events (data: `StreamBlock`), `rollback` events (`StreamRollback`), `heartbeat` events (`StreamHeartbeat`) and a last `error` event (`StreamError`) on an early end between events. The SSE id of a block, and of a rollback's kept block, is `<module>:<height>:<hash>`.", content_type = "text/event-stream", body = String),
-        (status = 400, description = "An invalid parameter or `Last-Event-ID`, a module that is unknown, disabled or not on the stream, or a start below a module's oldest kept block", body = ErrorBody),
+        (status = 200, description = "The stream: `block` events (data: `StreamBlock`), `rollback` events (`StreamRollback`), `heartbeat` events (`StreamHeartbeat`) and a last `error` event (`StreamError`) on an early end between events. A block or rollback event's SSE id is the client's position after it: `<module>:<height>:<hash>` for each module with a position, comma-separated in module name order, the hash empty for a module that has sent no block at or below that height.", content_type = "text/event-stream", body = String),
+        (status = 400, description = "An invalid parameter or `Last-Event-ID`, a module that is unknown, disabled or not on the stream, or a `from_height` or `Last-Event-ID` position below a module's oldest kept block", body = ErrorBody),
         (status = 503, description = "`too many stream subscribers`: STREAM_MAX_SUBSCRIBERS streams are open", body = ErrorBody),
     ),
 )]
@@ -483,32 +532,45 @@ pub(super) async fn stream(
         let (db, reads) = db_of(provider.module());
         // subscribe first, so no change after the reads below is missed
         let watch = inner.pollers.watch(provider, &db);
-        let tip = provider.tip(&db).await?.map(|(height, _)| height);
-        let oldest = provider.oldest(&db).await?;
-        // Every module indexes the same chain, so the block a Last-Event-ID
-        // names stands for each module's: the modules up to the named one
-        // have received it, and the later ones the block below it, which
-        // the named hash checks once their tip reaches it.
-        let (next, held, pending) = match &start.resume {
-            Some((module, height, hash)) if provider <= *module => {
-                (Some(height + 1), Some((*height, hash.clone())), None)
-            }
-            Some((_, height, hash)) => (Some(*height), None, Some((*height, hash.clone()))),
+        let (tip, oldest) = {
+            let _permit = reads
+                .acquire()
+                .await
+                .expect("the readers' semaphore stays open");
+            (
+                provider.tip(&db).await?.map(|(height, _)| height),
+                provider.oldest(&db).await?,
+            )
+        };
+        // A module the id names resumes after its own position; any other
+        // starts as a stream without an id does.
+        let position = start
+            .resume
+            .iter()
+            .flatten()
+            .find(|position| position.provider == provider);
+        let (next, held) = match position {
+            Some(position) => (
+                Some(position.height + 1),
+                position.hash.clone().map(|hash| (position.height, hash)),
+            ),
             None => match start.from_height {
-                Some(from) => (Some(from), None, None),
+                Some(from) => (Some(from), None),
                 None => (
                     tip.map(|tip| (tip - start.confirmations + 2).max(oldest.unwrap_or(0))),
-                    None,
                     None,
                 ),
             },
         };
-        if let (Some(next), Some(oldest)) = (next, oldest)
-            && next < oldest
-            && held.is_none()
-            && pending.is_none()
+        // a held block is checked against its stored row, so it must be kept
+        let first_needed = match &held {
+            Some((height, _)) => Some(*height),
+            None => next,
+        };
+        if let (Some(first), Some(oldest)) = (first_needed, oldest)
+            && first < oldest
         {
-            let what = if start.resume.is_some() {
+            let what = if position.is_some() {
                 "Last-Event-ID"
             } else {
                 "from_height"
@@ -529,7 +591,6 @@ pub(super) async fn stream(
             reads,
             next,
             ring: held.into_iter().collect(),
-            pending,
             dirty: true,
         });
     }
