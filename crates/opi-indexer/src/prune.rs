@@ -35,8 +35,19 @@ const STEP_PAUSE: Duration = Duration::from_millis(50);
 /// How often the catch-up logs its progress.
 const PROGRESS_EVERY: Duration = Duration::from_secs(10);
 
-/// How long reading one module's height may take.
-const HEIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+/// A background step that holds the journal longer than this is logged at
+/// warn.
+const SLOW_STEP: Duration = Duration::from_secs(2);
+
+/// How long one read of a module's height may take.
+const HEIGHT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Reads of a module's height `run` makes before it fails its start.
+const HEIGHT_ATTEMPTS: u32 = 5;
+
+/// The wait before `run`'s second read of a module's height, doubling after
+/// each failed read: 4 + 8 + 16 + 32 s between the five reads.
+const HEIGHT_RETRY: Duration = Duration::from_secs(4);
 
 /// The metrics fill the catch-up runs as, so readiness answers 503 and
 /// `/metrics` shows its progress.
@@ -118,7 +129,7 @@ fn remaining(journal: &Journal, window: Window) -> Result<(u32, u32)> {
     let raw = window
         .raw
         .saturating_sub(journal.raw_floor()?.unwrap_or(window.raw));
-    let records = window.records.saturating_sub(journal.pruned_below()?);
+    let records = window.records.saturating_sub(journal.records_floor()?);
     Ok((raw, records))
 }
 
@@ -133,7 +144,7 @@ pub(crate) enum CatchUp {
 }
 
 /// Prunes `journal` to `window` in steps of at most `max_rows` rows per
-/// table, each committing on its own, until done or until `stop` returns
+/// transaction, each committing on its own, until done or until `stop` returns
 /// true between two steps. It runs as the [`FILL`] fill and logs the heights
 /// done and remaining per table every [`PROGRESS_EVERY`] at info.
 pub(crate) fn catch_up(
@@ -229,9 +240,9 @@ fn in_use(err: anyhow::Error, path: &Path) -> anyhow::Error {
 /// `run`'s catch-up: prunes the journal at `path` to the window of `keep`
 /// blocks below its final tip and below `lowest`, closes it, and only then
 /// calls `start`, which starts ord and the modules. Nothing else holds the
-/// journal while it prunes. `None` when a signal stopped the catch-up;
-/// `start` has not run then. A journal that does not exist yet has nothing
-/// to prune.
+/// journal while it prunes. `None` when `stop` held during the catch-up or
+/// right after it; `start` has not run then. A journal that does not exist
+/// yet has nothing to prune.
 pub(crate) fn catch_up_then<T>(
     path: &Path,
     chain: Chain,
@@ -248,6 +259,9 @@ pub(crate) fn catch_up_then<T>(
         {
             return Ok(None);
         }
+    }
+    if stop() {
+        return Ok(None);
     }
     start().map(Some)
 }
@@ -299,42 +313,75 @@ pub(crate) async fn prune_journal(journal: Journal, modules: Vec<&'static str>, 
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
-        if let Err(err) = prune_once(&journal, &modules, keep).await {
+        if let Err(err) = prune_once(&journal, &modules, keep, PRUNE_STEP_ROWS).await {
             tracing::warn!("pruning the journal failed, retrying later: {err:#}");
         }
     }
 }
 
-/// Prunes in steps of [`Journal::prune_step`] until caught up, each on the
-/// blocking pool, so a cancel lands between steps. After each step it pauses
-/// for as long as the step took, at least [`STEP_PAUSE`], so the stager's
-/// writes, which ord's commits wait on, hold the journal at least half the
-/// time.
-async fn prune_once(journal: &Journal, modules: &[&'static str], keep: u32) -> Result<()> {
+/// What one [`prune_once`] did.
+#[derive(Debug, Default, Clone, Copy)]
+struct PruneRun {
+    steps: u32,
+    /// Time spent in steps.
+    busy: Duration,
+    /// The longest step.
+    longest: Duration,
+    /// Time spent in the pauses between steps.
+    paused: Duration,
+}
+
+/// Prunes in steps of `max_rows` rows until caught up, each on the blocking
+/// pool, so a cancel lands between steps. After each step it pauses for as
+/// long as the step took, at least [`STEP_PAUSE`], so the stager's writes,
+/// which ord's commits wait on, hold the journal at least half the time. A
+/// step over [`SLOW_STEP`] is logged at warn with its row counts.
+async fn prune_once(
+    journal: &Journal,
+    modules: &[&'static str],
+    keep: u32,
+    max_rows: u64,
+) -> Result<PruneRun> {
+    let mut run = PruneRun::default();
     loop {
         let Some(window) = window(journal, lowest_module_height(modules), keep)? else {
-            return Ok(());
+            return Ok(run);
         };
         let worker = journal.clone();
         let started = Instant::now();
         let step = tokio::task::spawn_blocking(move || {
-            worker.prune_step(window.raw, window.records, PRUNE_STEP_ROWS)
+            worker.prune_step(window.raw, window.records, max_rows)
         })
         .await
         .context("pruning task panicked")??;
         let took = started.elapsed();
-        if !step.pruned.is_empty() {
+        run.steps += 1;
+        run.busy += took;
+        run.longest = run.longest.max(took);
+        if took > SLOW_STEP {
+            tracing::warn!(
+                took_ms = took.as_millis(),
+                raw_events = step.pruned.raw_events,
+                transfers = step.pruned.transfers,
+                infos = step.pruned.infos,
+                rune_rows = step.pruned.rune_rows,
+                "a journal prune step held the journal for long"
+            );
+        } else if !step.pruned.is_empty() {
             tracing::debug!(
                 raw_below = window.raw,
                 records_below = window.records,
+                took_ms = took.as_millis(),
                 pruned = ?step.pruned,
                 "pruned"
             );
         }
         if step.done {
-            return Ok(());
+            return Ok(run);
         }
+        let pause = Instant::now();
         tokio::time::sleep(took.max(STEP_PAUSE)).await;
+        run.paused += pause.elapsed();
     }
 }
 
@@ -474,39 +521,95 @@ pub(crate) fn module_dbs(configs: &ModuleConfigs) -> Result<Vec<ModuleDb>> {
     Ok(dbs)
 }
 
-/// The lowest height of `modules`, read from their databases. Fails, naming
-/// the module and the reason, when a module's height cannot be read or it
-/// has stored no block.
+/// Reads `module`'s height up to `attempts` times, waiting `retry` after the
+/// first failed read and twice as long after each next one. Fails, naming
+/// the module and its table, with the last read's error.
+async fn read_height(module: &ModuleDb, attempts: u32, retry: Duration) -> Result<Option<u32>> {
+    let table = module.block_hashes_table();
+    let mut wait = retry;
+    let mut attempt = 1;
+    loop {
+        match module.height().await {
+            Ok(height) => return Ok(height),
+            Err(err) if attempt < attempts => {
+                tracing::warn!(
+                    "reading {}'s height from {table} failed (read {attempt} of {attempts}), \
+                     retrying in {wait:?}: {err:#}",
+                    module.name
+                );
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+                attempt += 1;
+            }
+            Err(err) => {
+                return Err(err.context(format!("reading {}'s height from {table}", module.name)));
+            }
+        }
+    }
+}
+
+/// Every module's height, read from the databases at once, each read made
+/// up to `attempts` times. Fails with the first module whose height cannot
+/// be read.
+async fn heights(
+    modules: &[ModuleDb],
+    attempts: u32,
+    retry: Duration,
+) -> Result<Vec<(&'static str, Option<u32>)>> {
+    let reads = modules
+        .iter()
+        .map(|module| read_height(module, attempts, retry));
+    futures::future::join_all(reads)
+        .await
+        .into_iter()
+        .zip(modules)
+        .map(|(height, module)| Ok((module.name, height?)))
+        .collect()
+}
+
+/// The lowest height of `modules`, read from their databases once each.
+/// Fails, naming the module and the reason, when a module's height cannot
+/// be read or it has stored no block.
 pub(crate) async fn lowest_height(modules: &[ModuleDb]) -> Result<u32> {
     let mut lowest = None::<u32>;
-    for module in modules {
-        let table = module.block_hashes_table();
-        let height = module
-            .height()
-            .await
-            .with_context(|| format!("reading {}'s height from {table}", module.name))?
-            .with_context(|| {
-                format!(
-                    "{} has no height: {table} holds no block, so it needs the whole journal",
-                    module.name
-                )
-            })?;
+    for (name, height) in heights(modules, 1, Duration::ZERO).await? {
+        let height = height.with_context(|| {
+            format!(
+                "{name} has no height: {name}_block_hashes holds no block, so it needs the \
+                 whole journal"
+            )
+        })?;
         lowest = Some(lowest.map_or(height, |lowest| lowest.min(height)));
     }
     lowest.context("no module is enabled")
 }
 
-/// [`lowest_height`] for `run`'s catch-up: `None`, after a warning, when it
-/// fails, so the catch-up prunes raw events only and the background pruner
-/// prunes the records once every module runs.
-pub(crate) async fn lowest_height_or_warn(modules: &[ModuleDb]) -> Option<u32> {
-    match lowest_height(modules).await {
-        Ok(lowest) => Some(lowest),
-        Err(err) => {
-            tracing::warn!("the journal catch-up prunes raw events only: {err:#}");
-            None
-        }
+/// The lowest height of `modules` for `run`'s catch-up, retrying each read
+/// [`HEIGHT_ATTEMPTS`] times over about a minute. `None`, after a warning,
+/// when a module has stored no block yet (a fresh module), so the catch-up
+/// prunes raw events only and the background task prunes the records once
+/// every module runs. Fails, failing the start, when a height cannot be
+/// read.
+pub(crate) async fn run_lowest_height(modules: &[ModuleDb]) -> Result<Option<u32>> {
+    run_lowest_height_with(modules, HEIGHT_ATTEMPTS, HEIGHT_RETRY).await
+}
+
+async fn run_lowest_height_with(
+    modules: &[ModuleDb],
+    attempts: u32,
+    retry: Duration,
+) -> Result<Option<u32>> {
+    let mut lowest = None::<u32>;
+    for (name, height) in heights(modules, attempts, retry).await? {
+        let Some(height) = height else {
+            tracing::warn!(
+                "{name} has stored no block yet; the journal catch-up prunes raw events only"
+            );
+            return Ok(None);
+        };
+        lowest = Some(lowest.map_or(height, |lowest| lowest.min(height)));
     }
+    Ok(lowest)
 }
 
 /// Rewrites the journal file at `path` without the pages pruning freed.
@@ -514,7 +617,11 @@ pub(crate) fn compact_journal(path: &Path) -> Result<()> {
     let before = std::fs::metadata(path)
         .with_context(|| format!("reading {}", path.display()))?
         .len();
-    tracing::info!(path = %path.display(), bytes = before, "compacting the journal");
+    tracing::info!(
+        path = %path.display(),
+        bytes = before,
+        "compacting the journal; this cannot be interrupted"
+    );
     Journal::compact(path)
         .map_err(|err| in_use(err, path))
         .with_context(|| format!("compacting {}", path.display()))?;
@@ -639,14 +746,25 @@ mod tests {
     fn run_prunes_the_journal_before_it_starts_the_source() {
         let tmp = tempfile::tempdir().unwrap();
         let path = journal_in(tmp.path());
-        let started = Cell::new(false);
+        let (started, held) = (Cell::new(false), Cell::new(0));
+        // The catch-up checks `stop` between its steps, while it holds the
+        // journal, and once more after closing it.
+        let stop = || {
+            if !started.get()
+                && let Err(err) = Journal::open(&path, Chain::Regtest, false)
+            {
+                assert!(is_in_use(&err), "{err:#}");
+                held.set(held.get() + 1);
+            }
+            false
+        };
         let out = catch_up_then(
             &path,
             Chain::Regtest,
             false,
             Some(LOWEST),
             KEEP,
-            &|| false,
+            &stop,
             || {
                 assert_pruned_to_window(&path);
                 started.set(true);
@@ -656,6 +774,36 @@ mod tests {
         .unwrap();
         assert_eq!(out, Some(7));
         assert!(started.get());
+        assert!(held.get() > 0, "the catch-up held the journal");
+    }
+
+    /// A background pass pauses after each step for at least as long as the
+    /// step took.
+    #[tokio::test]
+    async fn the_background_pruner_pauses_as_long_as_each_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = journal_in(tmp.path());
+        let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+        let run = prune_once(&journal, &[], KEEP, 50).await.unwrap();
+        assert!(run.steps > 10, "{run:?}");
+        assert!(run.paused + run.longest >= run.busy, "{run:?}");
+        assert!(run.paused >= STEP_PAUSE * (run.steps - 1), "{run:?}");
+        assert_eq!(journal.raw_floor().unwrap(), Some(RAW_BELOW));
+    }
+
+    /// `run` fails its start when a module's height cannot be read after its
+    /// retries, naming the module.
+    #[tokio::test]
+    async fn run_fails_its_start_on_an_unreachable_module_database() {
+        let started = Instant::now();
+        let err = run_lowest_height_with(&[unreachable("sns")], 3, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("reading sns's height from sns_block_hashes"),
+            "{err:#}"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(60));
     }
 
     /// With no module height, `run`'s catch-up prunes raw events only.
@@ -706,10 +854,12 @@ mod tests {
                 rows_at(&journal, cf::TRANSFERS, floor),
                 u64::from(DENSITY.creations + DENSITY.transfers)
             );
-            // A raw height pruned in part keeps its tag, so its rest goes
+            // A raw height pruned in part has lost its tag; its rest goes
             // on the next start.
             let raw_floor = journal.raw_floor().unwrap().unwrap();
-            assert_eq!(rows_at(&journal, cf::RAW_HEIGHTS, raw_floor), 1);
+            if rows_at(&journal, cf::RAW_EVENTS, raw_floor) < u64::from(DENSITY.raw_events) {
+                assert_eq!(rows_at(&journal, cf::RAW_HEIGHTS, raw_floor), 0);
+            }
         }
 
         let stopped = catch_up_then(
@@ -867,6 +1017,17 @@ mod tests {
             let db = |module, index: usize| ModuleDb::new(module, admin().database(&names[index]));
             let tmp = tempfile::tempdir().unwrap();
             let path = journal_in(tmp.path());
+
+            // `run` prunes raw events only while a module is fresh, and reads
+            // the lowest height otherwise.
+            let reads = tokio::runtime::Runtime::new().unwrap();
+            let fresh = [db("brc20", 0), db("sns", 2)];
+            let lowest = reads.block_on(run_lowest_height_with(&fresh, 1, Duration::ZERO));
+            assert_eq!(lowest.unwrap(), None);
+            let indexed = [db("brc20", 0), db("bitmap", 1)];
+            let lowest = reads.block_on(run_lowest_height_with(&indexed, 1, Duration::ZERO));
+            assert_eq!(lowest.unwrap(), Some(LOWEST));
+            drop(reads);
 
             let modules = [db("brc20", 0), db("bitmap", 1), db("sns", 2)];
             let prune = OfflinePrune {

@@ -130,16 +130,26 @@ fn run() -> Result<()> {
 
 /// `run` with OPI_PRUNE set: prunes the journal to the window before
 /// anything takes it for writing, then indexes. The prune reads the module
-/// heights from their databases and stops between two steps on SIGINT or
-/// SIGTERM, which then ends `run` with success.
+/// heights from their databases, and an unreadable one fails the start. It
+/// stops on SIGINT or SIGTERM, during the height reads or between two
+/// steps, which then ends `run` with success.
 fn prune_then_index(config: &Config, module_configs: ModuleConfigs, keep: u32) -> Result<()> {
     prune::watch_signals()?;
-    let lowest = tokio::runtime::Builder::new_current_thread()
+    let modules = prune::module_dbs(&module_configs)?;
+    let read = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(prune::lowest_height_or_warn(&prune::module_dbs(
-            &module_configs,
-        )?));
+        .block_on(async {
+            tokio::select! {
+                lowest = prune::run_lowest_height(&modules) => Some(lowest),
+                () = prune::wait_signalled() => None,
+            }
+        });
+    let Some(lowest) = read else {
+        tracing::info!("signal received while reading the module heights, shutting down");
+        return Ok(());
+    };
+    let lowest = lowest.context("the journal catch-up needs every enabled module's height")?;
     // `None` is a signal during the catch-up, which ends `run` with success.
     prune::catch_up_then(
         &config.source.journal_path(),

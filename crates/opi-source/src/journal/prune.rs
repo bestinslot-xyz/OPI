@@ -21,11 +21,11 @@ use {
 /// Most heights one prune transaction covers.
 pub const PRUNE_BATCH: u32 = 1000;
 
-/// Row budget of one prune transaction. A raw event transaction deletes at
-/// most this many events. A records transaction keeps whole heights, since
-/// the pruned floor is a height: it ends at the first height boundary past
-/// this many rows of any table it deletes from, so it deletes at most this
-/// many rows plus one height's rows per table, and one height always fits.
+/// Row budget of one prune transaction: a raw event transaction deletes at
+/// most this many events, and a records transaction at most this many
+/// transfer records, consumed info rows and per-block rune rows together.
+/// Either may stop inside a height; the height then fails closed (see
+/// [`Journal::prune_step`]).
 /// The budget keeps each write transaction to about a second, well within
 /// ord's 15 s bitcoind read timeout, since ord's commit barrier waits on the
 /// stager's journal writes. It also bounds the pages a transaction holds
@@ -64,7 +64,9 @@ pub struct PruneStep {
 
 impl Journal {
     /// Lowest height whose transfer records and per-block rune rows the
-    /// journal still holds; 0 when nothing was pruned.
+    /// journal serves; 0 when nothing was pruned. Rows of lower heights that
+    /// a stopped step left behind stay unread until the next step deletes
+    /// them.
     pub fn pruned_below(&self) -> Result<u32> {
         Ok(meta_u32_in(&self.db.begin_read()?, META_PRUNED_BELOW, "pruned_below")?.unwrap_or(0))
     }
@@ -85,11 +87,15 @@ impl Journal {
     }
 
     /// One step of [`Journal::prune`]: at most one transaction for the raw
-    /// events, deleting at most `max_rows` of them, and one for the records,
-    /// ending at the first height boundary past `max_rows` rows of a table,
-    /// each within [`PRUNE_BATCH`] heights. Both bounds must be at most one
-    /// above the final tip. A bound at or below what was already pruned
-    /// deletes nothing for it.
+    /// events and one for the records, each deleting at most `max_rows` rows
+    /// within [`PRUNE_BATCH`] heights. Both bounds must be at most one above
+    /// the final tip. A bound at or below what was already pruned deletes
+    /// nothing for it.
+    ///
+    /// A transaction that stops inside a height makes that height fail
+    /// closed in the same commit: a raw height loses its tag, so finalize
+    /// refuses it, and a records height goes below the pruned floor, so the
+    /// reader refuses it. The next step resumes from the lowest row left.
     pub fn prune_step(
         &self,
         raw_below: u32,
@@ -112,17 +118,46 @@ impl Journal {
         } else {
             true
         };
-        let records_from = self.pruned_below()?;
+        let records_from = self.records_floor()?;
         let records_done = if records_from < records_below {
             let to = records_below.min(records_from.saturating_add(PRUNE_BATCH));
-            let (pruned, end) = self.prune_records(records_from, to, max_rows)?;
+            let (pruned, whole) = self.prune_records(to, max_rows)?;
             step.pruned.add(pruned);
-            end >= records_below
+            whole && to >= records_below
         } else {
             true
         };
         step.done = raw_done && records_done;
         Ok(step)
+    }
+
+    /// The tables holding a height's records, all keyed by height (`u32` BE)
+    /// first.
+    fn record_tables(&self) -> &'static [&'static str] {
+        if self.runes {
+            &[
+                cf::TRANSFERS,
+                cf::RUNE_EVENTS,
+                cf::RUNE_ETCHINGS,
+                cf::RUNE_COUNTER_LOG,
+            ]
+        } else {
+            &[cf::TRANSFERS]
+        }
+    }
+
+    /// Lowest height a records step starts from: the pruned floor, or the
+    /// lowest record row below it that a stopped step left.
+    pub fn records_floor(&self) -> Result<u32> {
+        let floor = self.pruned_below()?;
+        let tx = self.db.begin_read()?;
+        let mut lowest = floor;
+        for name in self.record_tables() {
+            if let Some((key, _)) = tx.open_table(table(name))?.first()? {
+                lowest = lowest.min(u32::from_be_bytes(key.value()[..4].try_into()?));
+            }
+        }
+        Ok(lowest)
     }
 
     /// Lowest height with a raw event or height tag, if any.
@@ -139,12 +174,11 @@ impl Journal {
     }
 
     /// Deletes at most `max_rows` raw events of `from..to`, lowest first, and
-    /// the height tags of the heights it empties, in one transaction. A
-    /// height whose events it deletes only in part keeps the rest and its
-    /// tag, so the raw floor stays at that height and the next step resumes
-    /// there; only finalize reads raw events, and only above the final tip.
-    /// Returns the events deleted and the height below which nothing is
-    /// left, `to` when it deleted all of `from..to`.
+    /// the height tags of `from` up to the height it stops in, in one
+    /// transaction. A height whose events it deletes only in part keeps the
+    /// rest without its tag, so finalize refuses it and the raw floor stays
+    /// at it for the next step. Returns the events deleted and the height
+    /// below which nothing is left, `to` when it deleted all of `from..to`.
     fn prune_raw(&self, from: u32, to: u32, max_rows: u64) -> Result<(u64, u32)> {
         let tx = self.begin_write()?;
         let mut deleted = 0;
@@ -165,92 +199,124 @@ impl Journal {
             })?;
             let end = u32::from_be_bytes(cut[..4].try_into()?);
             let mut heights = tx.open_table(table(cf::RAW_HEIGHTS))?;
-            let (first, end) = (from.to_be_bytes(), end.to_be_bytes());
-            heights.retain_in::<&[u8], _>(first.as_slice()..end.as_slice(), |_, _| false)?;
-            u32::from_be_bytes(end)
+            let first = from.to_be_bytes();
+            if end < to {
+                let last = end.to_be_bytes();
+                heights.retain_in::<&[u8], _>(first.as_slice()..=last.as_slice(), |_, _| false)?;
+            } else {
+                let last = to.to_be_bytes();
+                heights.retain_in::<&[u8], _>(first.as_slice()..last.as_slice(), |_, _| false)?;
+            }
+            end
         };
         tx.commit()?;
         Ok((deleted, end))
     }
 
-    /// Deletes the transfer records and per-block rune rows of `from..end`,
-    /// and the info rows of the inscriptions whose first transfer they
-    /// record, and sets the pruned floor to `end`, in one transaction. `end`
-    /// is at most `to` and ends the range at the first height boundary past
-    /// `max_rows` rows of any of those tables. Returns what was deleted and
-    /// `end`.
-    fn prune_records(&self, from: u32, to: u32, max_rows: u64) -> Result<(Pruned, u32)> {
+    /// Deletes, lowest first, the record rows of every height below `to`:
+    /// transfer records with the info rows of the inscriptions whose first
+    /// transfer they record, then the per-block rune rows, at most
+    /// `max_rows` rows in all, in one transaction. It raises the pruned
+    /// floor in the same commit: to `to` when no record row below `to` is
+    /// left, else to one above the highest height it deleted from, so a
+    /// height it left in part is already below the floor. Returns what was
+    /// deleted and whether no record row below `to` is left.
+    fn prune_records(&self, to: u32, max_rows: u64) -> Result<(Pruned, bool)> {
         let tx = self.begin_write()?;
         let mut pruned = Pruned::default();
-        let to = {
-            let mut transfers = tx.open_table(table(cf::TRANSFERS))?;
-            let mut infos = tx.open_table(table(cf::INFO))?;
-            let mut to = rows_end(&transfers, from, to, max_rows)?;
-            if self.runes {
-                for name in [cf::RUNE_EVENTS, cf::RUNE_ETCHINGS, cf::RUNE_COUNTER_LOG] {
-                    to = rows_end(&tx.open_table(table(name))?, from, to, max_rows)?;
-                }
+        let mut budget = max_rows;
+        let mut highest = None::<u32>;
+        let mut whole = true;
+        let end = to.to_be_bytes();
+        for &name in self.record_tables() {
+            if budget == 0 {
+                whole = false;
+                break;
             }
-            let (first, end) = (transfer_key(from, 0), transfer_key(to, 0));
+            let mut rows = tx.open_table(table(name))?;
+            // The key of the first row this transaction keeps, if any.
+            let mut cut = None::<Vec<u8>>;
             let mut consumed = Vec::new();
-            for row in transfers.range::<&[u8]>(first.as_slice()..end.as_slice())? {
+            let mut taken = 0u64;
+            for row in rows.range::<&[u8]>(..end.as_slice())? {
                 let (key, value) = row?;
-                let record = decode_transfer(key.value(), value.value())?;
-                if record.old_satpoint.is_some() {
-                    consumed.push(info_key(&record.inscription_id)?);
+                // A first transfer consumes its inscription's info row.
+                let info = if name == cf::TRANSFERS {
+                    let record = decode_transfer(key.value(), value.value())?;
+                    record
+                        .old_satpoint
+                        .map(|_| info_key(&record.inscription_id))
+                        .transpose()?
+                } else {
+                    None
+                };
+                let cost = 1 + u64::from(info.is_some());
+                // The first row always fits, so every step makes progress.
+                if taken > 0 && taken + cost > budget {
+                    cut = Some(key.value().to_vec());
+                    break;
                 }
-                pruned.transfers += 1;
+                consumed.extend(info);
+                taken += cost;
+                let height = u32::from_be_bytes(key.value()[..4].try_into()?);
+                highest = Some(highest.map_or(height, |highest| highest.max(height)));
             }
-            for id in consumed {
-                if infos.remove(id.as_slice())?.is_some() {
-                    pruned.infos += 1;
+            budget = budget.saturating_sub(taken);
+            let mut deleted = 0;
+            match &cut {
+                Some(cut) => rows.retain_in::<&[u8], _>(..cut.as_slice(), |_, _| {
+                    deleted += 1;
+                    false
+                })?,
+                None => rows.retain_in::<&[u8], _>(..end.as_slice(), |_, _| {
+                    deleted += 1;
+                    false
+                })?,
+            }
+            drop(rows);
+            if name == cf::TRANSFERS {
+                pruned.transfers += deleted;
+                let mut infos = tx.open_table(table(cf::INFO))?;
+                for id in consumed {
+                    if infos.remove(id.as_slice())?.is_some() {
+                        pruned.infos += 1;
+                    }
                 }
+            } else {
+                pruned.rune_rows += deleted;
             }
-            transfers.retain_in::<&[u8], _>(first.as_slice()..end.as_slice(), |_, _| false)?;
-
-            if self.runes {
-                for name in [cf::RUNE_EVENTS, cf::RUNE_ETCHINGS, cf::RUNE_COUNTER_LOG] {
-                    let mut rows = tx.open_table(table(name))?;
-                    let (first, end) = (from.to_be_bytes(), to.to_be_bytes());
-                    rows.retain_in::<&[u8], _>(first.as_slice()..end.as_slice(), |_, _| {
-                        pruned.rune_rows += 1;
-                        false
-                    })?;
-                }
+            if cut.is_some() {
+                whole = false;
+                break;
             }
-
-            tx.open_table(table(cf::META))?
-                .insert(META_PRUNED_BELOW, to.to_be_bytes().as_slice())?;
+        }
+        let floor = if whole {
             to
+        } else {
+            highest.map_or(0, |highest| highest + 1)
         };
+        {
+            let mut meta = tx.open_table(table(cf::META))?;
+            let current = meta_u32_in_table(&meta)?;
+            if floor > current {
+                meta.insert(META_PRUNED_BELOW, floor.to_be_bytes().as_slice())?;
+            }
+        }
         tx.commit()?;
-        Ok((pruned, to))
+        Ok((pruned, whole))
     }
 }
 
-/// The end of a prune range over `rows`, a table keyed by height (`u32` BE)
-/// first: `to`, or the first height above `from` at which the rows of
-/// `from..` reach `max_rows`, whichever is lower. Every height below it is
-/// whole, and the first height is always inside.
-fn rows_end(
-    rows: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    from: u32,
-    to: u32,
-    max_rows: u64,
-) -> Result<u32> {
-    let (first, end) = (from.to_be_bytes(), to.to_be_bytes());
-    let mut current = None;
-    for (counted, row) in (0u64..).zip(rows.range::<&[u8]>(first.as_slice()..end.as_slice())?) {
-        let (key, _) = row?;
-        let height = u32::from_be_bytes(key.value()[..4].try_into()?);
-        if current != Some(height) {
-            if counted >= max_rows {
-                return Ok(height);
-            }
-            current = Some(height);
-        }
-    }
-    Ok(to)
+/// The pruned floor as `meta` holds it; 0 when nothing was pruned.
+fn meta_u32_in_table(meta: &impl ReadableTable<&'static [u8], &'static [u8]>) -> Result<u32> {
+    let Some(raw) = meta.get(META_PRUNED_BELOW)? else {
+        return Ok(0);
+    };
+    let bytes: [u8; 4] = raw
+        .value()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("pruned_below is {} bytes, expected 4", raw.value().len()))?;
+    Ok(u32::from_be_bytes(bytes))
 }
 
 impl Journal {

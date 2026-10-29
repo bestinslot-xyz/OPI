@@ -118,9 +118,8 @@ fn rows(journal: &Journal, name: &'static str) -> u64 {
     tx.open_table(table(name)).unwrap().len().unwrap()
 }
 
-/// Each step deletes at most its row budget of raw events, and at most its
-/// budget plus one height's rows of records, ending them on a height
-/// boundary; the steps together prune exactly to the bounds.
+/// Each step deletes at most its row budget of raw events and at most its
+/// budget of records; the steps together prune exactly to the bounds.
 #[test]
 fn prune_steps_stay_within_the_row_budget() {
     let tmp = tempfile::tempdir().unwrap();
@@ -145,20 +144,24 @@ fn prune_steps_stay_within_the_row_budget() {
         steps += 1;
         assert!(step.pruned.raw_events <= budget, "{step:?}");
         assert!(
-            step.pruned.transfers <= budget + per_height_records,
+            step.pruned.transfers + step.pruned.infos <= budget,
             "{step:?}"
         );
-        // A records step ends on a height boundary: the floor height is
-        // whole.
+        // Every height from the floor up is whole; a height left in part is
+        // already below it.
         let floor = journal.pruned_below().unwrap();
-        assert_eq!(rows_below(&journal, cf::TRANSFERS, floor), 0);
-        if floor < records_below {
+        let records_floor = journal.records_floor().unwrap();
+        assert!(records_floor <= floor && floor - records_floor <= 1);
+        assert_eq!(rows_below(&journal, cf::TRANSFERS, records_floor), 0);
+        if (11..records_below).contains(&floor) {
             assert_eq!(rows_at(&journal, cf::TRANSFERS, floor), per_height_records);
         }
         let raw_floor = journal.raw_floor().unwrap().unwrap();
         assert_eq!(rows_below(&journal, cf::RAW_EVENTS, raw_floor), 0);
-        assert_eq!(rows_at(&journal, cf::RAW_HEIGHTS, raw_floor), 1);
-        assert_eq!(step.done, floor == records_below && raw_floor == raw_below);
+        assert_eq!(
+            step.done,
+            records_floor == records_below && raw_floor == raw_below
+        );
         if step.done {
             break;
         }
@@ -187,10 +190,11 @@ fn prune_steps_stay_within_the_row_budget() {
 }
 
 /// A height with more raw events than the budget is pruned over several
-/// steps: each deletes at most the budget, and the height keeps its tag, and
-/// so the raw floor, until its last event goes.
+/// steps: each deletes at most the budget, the first already drops the
+/// height's tag so nothing reads the rest as its block's log, and the raw
+/// floor stays at the height until its last event goes.
 #[test]
-fn a_height_larger_than_the_budget_prunes_over_several_steps() {
+fn a_raw_height_larger_than_the_budget_prunes_over_several_steps() {
     let tmp = tempfile::tempdir().unwrap();
     let journal =
         Journal::open(&tmp.path().join("journal.redb"), ord::Chain::Regtest, false).unwrap();
@@ -206,7 +210,8 @@ fn a_height_larger_than_the_budget_prunes_over_several_steps() {
     assert!(!step.done);
     assert_eq!(journal.raw_floor().unwrap(), Some(0));
     assert_eq!(rows_at(&journal, cf::RAW_EVENTS, 0), 1500);
-    assert_eq!(rows_at(&journal, cf::RAW_HEIGHTS, 0), 1);
+    assert_eq!(rows_at(&journal, cf::RAW_HEIGHTS, 0), 0);
+    assert_eq!(rows_at(&journal, cf::RAW_HEIGHTS, 1), 1);
 
     let mut steps = 1;
     while !journal.prune_step(3, 0, 1000).unwrap().done {
@@ -220,6 +225,77 @@ fn a_height_larger_than_the_budget_prunes_over_several_steps() {
     assert_eq!(rows(&journal, cf::RAW_EVENTS), 2 * 2500);
     assert_eq!(rows(&journal, cf::RAW_HEIGHTS), 2);
     assert!(journal.prune_step(3, 0, 0).is_err());
+}
+
+/// A height with more records than the budget is pruned over several
+/// transactions. The first that leaves it in part already puts it below the
+/// pruned floor, so the reader refuses it; a later step resumes from its
+/// lowest row left, deletes each consumed info row with its transfer, and
+/// ends at the bounds, keeping every height at or above them whole.
+#[test]
+fn a_records_height_larger_than_the_budget_prunes_over_several_steps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let journal =
+        Journal::open(&tmp.path().join("journal.redb"), ord::Chain::Regtest, false).unwrap();
+    let density = Density {
+        raw_events: 1,
+        creations: 1500,
+        transfers: 1000,
+        content: 8,
+    };
+    testing::fill(&journal, 0..5, density).unwrap();
+    let reader = opi_source::journal::JournalReader::new(journal.clone());
+    let per_height = u64::from(density.creations + density.transfers);
+    assert_eq!(
+        reader.inscription_records(1).unwrap().len() as u64,
+        per_height
+    );
+
+    // Height 0 holds 1500 creations; height 1 holds 1500 creations, then
+    // 1000 first transfers that each consume an info row of height 0.
+    let step = journal.prune_step(0, 3, 1000).unwrap();
+    assert!(!step.done);
+    assert_eq!(step.pruned.transfers, 1000);
+    assert_eq!(
+        journal.pruned_below().unwrap(),
+        1,
+        "height 0 is left in part"
+    );
+    assert_eq!(journal.records_floor().unwrap(), 0);
+    assert_eq!(rows_at(&journal, cf::TRANSFERS, 0), 500);
+    let err = reader.inscription_records(0).unwrap_err();
+    assert!(format!("{err:#}").contains("pruned floor"), "{err:#}");
+
+    let mut steps = 1;
+    loop {
+        let step = journal.prune_step(0, 3, 1000).unwrap();
+        assert!(
+            step.pruned.transfers + step.pruned.infos <= 1000,
+            "{step:?}"
+        );
+        let floor = journal.pruned_below().unwrap();
+        assert!(reader.inscription_records(floor.saturating_sub(1)).is_err() || floor == 0);
+        steps += 1;
+        if step.done {
+            break;
+        }
+    }
+    assert!(steps >= 6, "{steps} steps");
+    assert_eq!(journal.pruned_below().unwrap(), 3);
+    assert_eq!(journal.records_floor().unwrap(), 3);
+    assert_eq!(rows_below(&journal, cf::TRANSFERS, 3), 0);
+    for height in 3..5 {
+        assert_eq!(rows_at(&journal, cf::TRANSFERS, height), per_height);
+        assert_eq!(
+            reader.inscription_records(height).unwrap().len() as u64,
+            per_height
+        );
+    }
+    // Content first transferred below the floor went with its transfer;
+    // content transferred at the floor, or never, stays.
+    assert!(!has_info_str(&journal, &testing::inscription_id(1, 0)));
+    assert!(has_info_str(&journal, &testing::inscription_id(2, 0)));
+    assert!(has_info_str(&journal, &testing::inscription_id(1, 1499)));
 }
 
 fn has_info_str(journal: &Journal, id: &str) -> bool {
