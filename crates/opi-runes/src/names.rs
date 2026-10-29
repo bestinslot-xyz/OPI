@@ -69,8 +69,9 @@ pub fn name_prefix(text: &str) -> Option<NamePrefix> {
                 if letters.is_empty() || trailing {
                     return None;
                 }
-                let bit = 1u64.checked_shl(letters.len() as u32 - 1)?;
-                spacers |= bit;
+                // a spacer past letter 63 lies beyond any rune name (28
+                // letters at most), whose letters already match nothing
+                spacers |= 1u64.checked_shl(letters.len() as u32 - 1).unwrap_or(0);
                 trailing = true;
             }
             _ => return None,
@@ -174,7 +175,10 @@ mod tests {
             assert_eq!(name_prefix(bad), None, "{bad}");
         }
         assert!(name_prefix(&"A".repeat(100)).is_some());
-        assert!(name_prefix(&"A.".repeat(70)).is_none());
+        // longer than any rune name: a prefix that matches nothing, not an
+        // error
+        assert!(name_prefix(&"A.".repeat(70)).is_some());
+        assert!(name_prefix(&format!("{}.B", "A".repeat(70))).is_some());
     }
 
     #[test]

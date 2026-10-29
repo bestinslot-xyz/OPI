@@ -945,6 +945,96 @@ async fn holders_follow_blocks_and_rollbacks() {
     .await;
 }
 
+/// The log lines written while it is held, captured for assertions.
+#[derive(Clone, Default)]
+struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Captured {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+/// A balance or count that a block's deltas take below zero (the tables
+/// drifted) is logged as an error and deleted; the block commits.
+#[tokio::test(flavor = "current_thread")]
+async fn drift_below_zero_is_logged_and_the_block_goes_on() {
+    with_database("holders_drift", |name| async move {
+        use RuneEventKind::*;
+        let logs = Captured::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        for block in blocks() {
+            module.apply(&block).await.unwrap();
+        }
+        let mut conn = connect(&name).await;
+        // p2 truly holds 650 of 1:1 and 5 of 3:1, and 3:1 has 2 holders
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "UPDATE runes_current_balances SET balance = 10 \
+             WHERE rune_id = '1:1' AND pkscript = '{}'; \
+             UPDATE runes_holders SET holders = 0 WHERE rune_id = '3:1';",
+            hex::encode(pk2())
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let sweep = view(
+            4,
+            RuneFeed {
+                events: vec![
+                    located(Input, "h0", outpoint("d0", 0), pk2(), "1:1", 650),
+                    located(Input, "h0", outpoint("d0", 0), pk2(), "3:1", 5),
+                    located(Output, "h0", outpoint("h0", 0), pk1(), "1:1", 650),
+                    located(Output, "h0", outpoint("h0", 0), pk1(), "3:1", 5),
+                ],
+                etchings: Vec::new(),
+                counters: Vec::new(),
+            },
+        );
+        module.apply(&sweep).await.unwrap();
+        assert_eq!(module.cursor().await.unwrap().unwrap().height, 4);
+
+        let text = logs.text();
+        assert!(
+            text.contains(&format!(
+                "runes_current_balances drifted: rune 1:1 pkscript {} balance -640",
+                hex::encode(pk2())
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains("runes_holders drifted: rune 3:1 holders -1"),
+            "{text}"
+        );
+        assert!(text.contains("ERROR"), "{text}");
+        let (balances, holders) = holder_state(&mut conn).await;
+        assert!(
+            !balances.iter().any(|b| b.starts_with("1:1 p2")),
+            "{balances:?}"
+        );
+        assert!(!holders.iter().any(|h| h.starts_with("3:1")), "{holders:?}");
+    })
+    .await;
+}
+
 /// A xorshift generator, so the random blocks repeat from a seed.
 struct Random(u64);
 
@@ -960,27 +1050,37 @@ impl Random {
 /// A block of random transfers, burns and mints over the unspent outpoints
 /// the database holds: each transfer spends up to three outpoints into one
 /// to three outputs of six owners, sometimes splitting a rune across two
-/// outputs or burning it, so balances appear, move, empty and vanish.
+/// outputs or burning it, so balances appear, move, empty and vanish. A
+/// later transaction often spends an output an earlier one of the same block
+/// created.
 async fn random_block(conn: &mut PgConnection, random: &mut Random, height: u32) -> BlockView {
     use RuneEventKind::*;
+    type Outpoint = (String, String, Vec<String>, Vec<String>);
     let owner = |i: u64| hex::decode(format!("0014{i:040x}")).unwrap();
-    let mut unspent: Vec<(String, String, Vec<String>, Vec<String>)> = sqlx::query_as(
+    let mut unspent: Vec<Outpoint> = sqlx::query_as(
         "SELECT outpoint, pkscript, rune_ids, balances::text[] FROM runes_outpoint_to_balances \
          WHERE NOT spent ORDER BY id",
     )
     .fetch_all(&mut *conn)
     .await
     .unwrap();
+    // the outputs of this block's earlier transactions
+    let mut fresh: Vec<Outpoint> = Vec::new();
     let mut events = Vec::new();
-    for tx_index in 0..random.below(4) {
+    for tx_index in 0..random.below(6) {
         let txid = format!("{:064x}", u64::from(height) * 100 + tx_index);
         let mut totals: std::collections::BTreeMap<String, u128> = Default::default();
         for _ in 0..=random.below(3) {
-            if unspent.is_empty() {
+            let pool = if !fresh.is_empty() && random.below(2) == 0 {
+                &mut fresh
+            } else {
+                &mut unspent
+            };
+            if pool.is_empty() {
                 break;
             }
             let (outpoint, pkscript, runes, balances) =
-                unspent.remove(random.below(unspent.len() as u64) as usize);
+                pool.remove(random.below(pool.len() as u64) as usize);
             for (rune, amount) in runes.iter().zip(&balances) {
                 let amount: u128 = amount.parse().unwrap();
                 events.push(RuneEvent {
@@ -1027,11 +1127,18 @@ async fn random_block(conn: &mut PgConnection, random: &mut Random, height: u32)
             for (rune, amount) in runes {
                 *merged.entry(rune).or_default() += amount;
             }
+            let outpoint = format!("{txid}:{vout}");
+            fresh.push((
+                outpoint.clone(),
+                hex::encode(&pkscript),
+                merged.keys().cloned().collect(),
+                merged.values().map(u128::to_string).collect(),
+            ));
             for (rune, amount) in merged {
                 events.push(RuneEvent {
                     kind: Output,
                     txid: txid.clone(),
-                    outpoint: Some(format!("{txid}:{vout}")),
+                    outpoint: Some(outpoint.clone()),
                     pkscript: Some(pkscript.clone()),
                     rune_id: rune,
                     amount,
@@ -1098,6 +1205,14 @@ async fn delta_counts_match_a_recount_after_random_blocks_and_reorgs() {
             module.apply(&block).await.unwrap();
             assert_eq!(holder_mismatches(&mut conn).await, 0, "block {height}");
         }
+        // outputs that a later transaction of the same block spent
+        let same_block: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM runes_outpoint_to_balances WHERE spent_block_height = block_height",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert!(same_block >= 10, "{same_block}");
         let empty: i64 =
             sqlx::query_scalar("SELECT count(*) FROM runes_holders WHERE holders <= 0")
                 .fetch_one(&mut conn)

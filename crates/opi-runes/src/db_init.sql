@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS public.runes_current_balances (
 	pkscript text NOT NULL,
 	wallet_addr text NULL,
 	balance numeric(40) NOT NULL,
-	CONSTRAINT runes_current_balances_pk PRIMARY KEY (rune_id, pkscript)
+	CONSTRAINT runes_current_balances_pk PRIMARY KEY (pkscript, rune_id)
 );
 CREATE TABLE IF NOT EXISTS public.runes_holders (
 	rune_id text NOT NULL,
@@ -163,5 +163,4 @@ CREATE TABLE IF NOT EXISTS public.runes_holders (
 	CONSTRAINT runes_holders_pk PRIMARY KEY (rune_id)
 );
 CREATE INDEX IF NOT EXISTS runes_current_balances_rune_id_balance_idx ON public.runes_current_balances USING btree (rune_id, balance, pkscript);
-CREATE INDEX IF NOT EXISTS runes_current_balances_pkscript_idx ON public.runes_current_balances USING btree (pkscript);
 CREATE INDEX IF NOT EXISTS runes_current_balances_wallet_addr_idx ON public.runes_current_balances USING btree (wallet_addr);

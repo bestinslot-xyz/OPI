@@ -30,7 +30,7 @@ pub const TABLES_SQL: &str = "CREATE TABLE IF NOT EXISTS public.runes_current_ba
 	pkscript text NOT NULL,
 	wallet_addr text NULL,
 	balance numeric(40) NOT NULL,
-	CONSTRAINT runes_current_balances_pk PRIMARY KEY (rune_id, pkscript)
+	CONSTRAINT runes_current_balances_pk PRIMARY KEY (pkscript, rune_id)
 );
 CREATE TABLE IF NOT EXISTS public.runes_holders (
 	rune_id text NOT NULL,
@@ -44,19 +44,15 @@ CREATE TABLE IF NOT EXISTS public.runes_holders (
 ///
 /// - `(rune_id, balance, pkscript)` serves a rune's holders by balance,
 ///   walked backwards from a cursor.
-/// - `pkscript` and `wallet_addr` serve a wallet's balances (and a
-///   rollback's recompute, by pkScript).
+/// - `wallet_addr` serves a wallet's balances by address; the primary key,
+///   `(pkscript, rune_id)`, serves them by pkScript.
 /// - `rune_name text_pattern_ops` serves the name prefix search.
 /// - `(rune_id, id)`, `(wallet_addr, id)` and `(pkscript, id)` on
 ///   `runes_events` serve the rune and wallet event feeds, newest first.
-pub const INDEXES: [(&str, &str); 7] = [
+pub const INDEXES: [(&str, &str); 6] = [
     (
         "runes_current_balances_rune_id_balance_idx",
         "CREATE INDEX IF NOT EXISTS runes_current_balances_rune_id_balance_idx ON public.runes_current_balances USING btree (rune_id, balance, pkscript)",
-    ),
-    (
-        "runes_current_balances_pkscript_idx",
-        "CREATE INDEX IF NOT EXISTS runes_current_balances_pkscript_idx ON public.runes_current_balances USING btree (pkscript)",
     ),
     (
         "runes_current_balances_wallet_addr_idx",
@@ -144,10 +140,21 @@ pub async fn create_if_missing(pool: &PgPool) -> Result<bool, sqlx::Error> {
         tx.commit().await?;
     }
     // The lookup comes first, so a start that finds the index never waits
-    // on the table lock.
-    let mut announced = false;
+    // on the table lock. The builds share one connection with a larger
+    // maintenance_work_mem, which a sort of every event needs.
+    let mut missing_indexes = Vec::new();
     for (name, sql) in INDEXES {
         if !index_exists(pool, name).await? {
+            missing_indexes.push((name, sql));
+        }
+    }
+    if !missing_indexes.is_empty() {
+        let mut conn = pool.acquire().await?;
+        sqlx::query("SET maintenance_work_mem = '1GB'")
+            .execute(&mut *conn)
+            .await?;
+        let mut announced = false;
+        for (name, sql) in missing_indexes {
             if name.starts_with("runes_events_") && !announced {
                 tracing::info!(
                     "building runes event indexes, this can take minutes (once, on the first start of this version)"
@@ -155,14 +162,19 @@ pub async fn create_if_missing(pool: &PgPool) -> Result<bool, sqlx::Error> {
                 announced = true;
             }
             tracing::info!("Creating index {name}");
-            sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await?;
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .execute(&mut *conn)
+                .await?;
         }
+        sqlx::query("RESET maintenance_work_mem")
+            .execute(&mut *conn)
+            .await?;
     }
     for name in SUPERSEDED {
         if index_exists(pool, name).await? {
             tracing::info!("Dropping index {name}");
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DROP INDEX IF EXISTS public.{name}"
+                "DROP INDEX CONCURRENTLY IF EXISTS public.{name}"
             )))
             .execute(pool)
             .await?;
@@ -178,7 +190,8 @@ pub async fn create_if_missing(pool: &PgPool) -> Result<bool, sqlx::Error> {
 /// upsert answers each new balance, and the old one is the new less the
 /// delta (0 for an inserted row), so no statement looks balances up.
 /// It answers the pairs and runes left at zero or below, which the caller
-/// deletes: `('b', rune_id, pkscript)` and `('h', rune_id, '')`.
+/// deletes: `('b', rune_id, pkscript, balance)` and
+/// `('h', rune_id, '', holders)`.
 macro_rules! apply_deltas {
     ($changed:literal) => {
         concat!(
@@ -190,7 +203,7 @@ macro_rules! apply_deltas {
              ), balances AS ( \
                  INSERT INTO runes_current_balances AS c (rune_id, pkscript, wallet_addr, balance) \
                  SELECT rune_id, pkscript, wallet_addr, delta FROM net \
-                 ON CONFLICT (rune_id, pkscript) DO UPDATE SET balance = c.balance + excluded.balance \
+                 ON CONFLICT (pkscript, rune_id) DO UPDATE SET balance = c.balance + excluded.balance \
                  RETURNING c.rune_id, c.pkscript, c.balance \
              ), moves AS ( \
                  SELECT b.rune_id, \
@@ -205,22 +218,36 @@ macro_rules! apply_deltas {
                  ON CONFLICT (rune_id) DO UPDATE SET holders = h.holders + excluded.holders \
                  RETURNING h.rune_id, h.holders \
              ) \
-             SELECT 'b'::text, rune_id, pkscript FROM balances WHERE balance <= 0 \
+             SELECT 'b'::text, rune_id, pkscript, balance::text FROM balances WHERE balance <= 0 \
              UNION ALL \
-             SELECT 'h'::text, rune_id, ''::text FROM counts WHERE holders <= 0"
+             SELECT 'h'::text, rune_id, ''::text, holders::text FROM counts WHERE holders <= 0"
         )
     };
 }
 
 /// Deletes the balances and counts [`apply_deltas`] left at zero or below.
+/// One below zero means the tables drifted from the outpoints (a balance
+/// subtracted that was never added): it is logged as an error and deleted
+/// like the rest. The block goes on, since these tables only serve the API.
 async fn drop_emptied(
     tx: &mut Transaction<'_, Postgres>,
-    emptied: Vec<(String, String, String)>,
+    emptied: Vec<(String, String, String, String)>,
 ) -> Result<(), sqlx::Error> {
     let mut runes = Vec::new();
     let mut pkscripts = Vec::new();
     let mut counted = Vec::new();
-    for (kind, rune_id, pkscript) in emptied {
+    for (kind, rune_id, pkscript, value) in emptied {
+        if value.starts_with('-') {
+            if kind == "b" {
+                tracing::error!(
+                    "runes_current_balances drifted: rune {rune_id} pkscript {pkscript} balance {value}; the row is deleted"
+                );
+            } else {
+                tracing::error!(
+                    "runes_holders drifted: rune {rune_id} holders {value}; the row is deleted"
+                );
+            }
+        }
         if kind == "b" {
             runes.push(rune_id);
             pkscripts.push(pkscript);

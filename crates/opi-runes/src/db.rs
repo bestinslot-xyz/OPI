@@ -29,7 +29,9 @@ impl Db {
     /// requires `runes_indexer_version.db_version` and `runes_network_type` to
     /// match otherwise. A database that holds blocks under another
     /// `indexer_version` is refused; otherwise the stored `indexer_version` is
-    /// set to the reported `INDEXER_VERSION`.
+    /// set to the reported `INDEXER_VERSION`. It then creates and fills the
+    /// holder tables and builds the API indexes when they are missing
+    /// ([`holders::create_if_missing`]).
     pub async fn connect(config: &RunesConfig) -> anyhow::Result<Db> {
         let mut options = PgConnectOptions::new()
             .host(&config.db_host)
