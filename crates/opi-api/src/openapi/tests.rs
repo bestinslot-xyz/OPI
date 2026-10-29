@@ -296,10 +296,11 @@ fn parameter_bounds_are_the_routes_rules() {
     );
 }
 
-/// `ModuleRoutes` and the app's merge refuse a schema name two different
-/// schemas take, so building every module checks them all.
+/// `ModuleRoutes` and the app's merge panic on a schema name two different
+/// schemas take, so the build itself is the assertion that component names
+/// are unique across every module's routes.
 #[test]
-fn component_names_are_unique_across_the_routes() {
+fn every_module_builds_into_one_document() {
     let document = app(&MODULES).1;
     assert!(document.components.unwrap().schemas.len() > 50);
 }

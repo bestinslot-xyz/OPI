@@ -367,8 +367,8 @@ resolve. It does not publish the image.
 
 `.github/workflows/rust.yml` runs on the same events: `cargo fmt --all
 --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`
-and `cargo test --workspace --locked`, with `SQLX_OFFLINE=true`. No database is set, so
-the Postgres tests skip; the OpenAPI drift tests run.
+and `cargo test --workspace --locked`, with `SQLX_OFFLINE=true`. No
+database is set, so the Postgres tests skip; the OpenAPI tests run.
 
 ### Subcommands
 
@@ -744,15 +744,16 @@ A module registers its routes through `ModuleRoutes`, which takes nothing
 but `routes!`, so a route without an operation does not compile. Unit tests
 fail when the document does not validate against the OpenAPI 3.1 schema and
 when the tables below differ from it, and every route test checks its
-answer's status, content type and JSON body against the document. The tables are generated
-from the document; after a route change, rewrite them with
+answer's status, content type and JSON body against the document. The
+tables are generated from the document; after a route change, rewrite them
+with
 `OPI_UPDATE_README=1 cargo test -p opi-api readme`. A parameter in bold is
 required: the route needs it for a useful answer, and the document says
 what the route answers without it.
 
 The Node API's routes answer byte for byte as the Node API does, so their
-schemas describe node-pg's value forms: an int8 count or a numeric amount is a string, a
-missing column value is null, and a route that echoes a query parameter
+schemas describe node-pg's value forms: an int8 count or a numeric amount
+is a string, a missing column value is null, and a route that echoes a query parameter
 echoes it as given (a string, or an array or object for a repeated or
 bracketed parameter).
 

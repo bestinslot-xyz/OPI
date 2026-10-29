@@ -60,15 +60,32 @@ fn path_template(path: &str) -> Option<&'static str> {
 
 /// Checks `answer` to a GET of `uri` against the OpenAPI document: the
 /// operation lists its status and content type, and a JSON body validates
-/// against that answer's schema. A path the document has no template for
-/// (an unknown route) is not checked.
-fn check_against_document(uri: &str, answer: &Answer) {
+/// against that answer's schema. Two 404s are not checked: a path the
+/// document has no template for (an unknown route) and a disabled module's
+/// `"<module> is not enabled on this node"`, which the document leaves out
+/// since it lists only the enabled modules. Any other answer on a path
+/// without a template fails, so a mistyped test URI cannot skip the check.
+pub fn check_against_document(uri: &str, answer: &Answer) {
+    if answer.status == 404 {
+        let disabled = serde_json::from_str::<Value>(&answer.body).is_ok_and(|body| {
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.ends_with("is not enabled on this node"))
+        });
+        if disabled {
+            return;
+        }
+    }
     let path = uri.split('?').next().unwrap().to_ascii_lowercase();
     let path = match path.strip_suffix('/') {
         Some(stripped) if !stripped.is_empty() => stripped.to_string(),
         _ => path,
     };
     let Some(template) = path_template(&path) else {
+        assert_eq!(
+            answer.status, 404,
+            "{uri}: no path of the OpenAPI document matches it"
+        );
         return;
     };
     let status = answer.status.to_string();
