@@ -174,8 +174,9 @@ pub async fn create_if_missing(pool: &PgPool) -> Result<bool, sqlx::Error> {
 /// The statement that applies the balance changes a `changed` CTE lists as
 /// `(rune_id, pkscript, wallet_addr, delta)`. It nets them per rune and
 /// pkScript, upserts each balance, and moves each rune's count by +1 for a
-/// balance that turns positive and -1 for one that reaches zero (all CTEs
-/// read the snapshot before the upsert, so `prior` holds the old balance).
+/// balance that turns positive and -1 for one that reaches zero. The
+/// upsert answers each new balance, and the old one is the new less the
+/// delta (0 for an inserted row), so no statement looks balances up.
 /// It answers the pairs and runes left at zero or below, which the caller
 /// deletes: `('b', rune_id, pkscript)` and `('h', rune_id, '')`.
 macro_rules! apply_deltas {
@@ -186,22 +187,18 @@ macro_rules! apply_deltas {
             "), net AS ( \
                  SELECT rune_id, pkscript, max(wallet_addr) AS wallet_addr, sum(delta) AS delta \
                  FROM changed GROUP BY rune_id, pkscript HAVING sum(delta) <> 0 \
-             ), prior AS ( \
-                 SELECT n.rune_id, n.pkscript, n.wallet_addr, n.delta, \
-                        coalesce(c.balance, 0) AS before \
-                 FROM net n LEFT JOIN runes_current_balances c \
-                 ON c.rune_id = n.rune_id AND c.pkscript = n.pkscript \
              ), balances AS ( \
                  INSERT INTO runes_current_balances AS c (rune_id, pkscript, wallet_addr, balance) \
-                 SELECT rune_id, pkscript, wallet_addr, delta FROM prior \
+                 SELECT rune_id, pkscript, wallet_addr, delta FROM net \
                  ON CONFLICT (rune_id, pkscript) DO UPDATE SET balance = c.balance + excluded.balance \
                  RETURNING c.rune_id, c.pkscript, c.balance \
              ), moves AS ( \
-                 SELECT rune_id, \
-                        sum(CASE WHEN before <= 0 AND before + delta > 0 THEN 1 \
-                                 WHEN before > 0 AND before + delta <= 0 THEN -1 \
+                 SELECT b.rune_id, \
+                        sum(CASE WHEN b.balance - n.delta <= 0 AND b.balance > 0 THEN 1 \
+                                 WHEN b.balance - n.delta > 0 AND b.balance <= 0 THEN -1 \
                                  ELSE 0 END)::int8 AS moved \
-                 FROM prior GROUP BY rune_id \
+                 FROM balances b JOIN net n ON n.rune_id = b.rune_id AND n.pkscript = b.pkscript \
+                 GROUP BY b.rune_id \
              ), counts AS ( \
                  INSERT INTO runes_holders AS h (rune_id, holders) \
                  SELECT rune_id, moved FROM moves WHERE moved <> 0 \
