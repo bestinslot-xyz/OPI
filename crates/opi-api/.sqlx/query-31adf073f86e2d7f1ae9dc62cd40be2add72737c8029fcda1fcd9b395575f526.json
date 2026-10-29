@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.rune_id, e.rune_name, e.spacers, e.\"number\"::text as \"number!\",\n                e.divisibility, e.symbol, c.balance::text as \"balance!\"\n            from runes_current_balances c\n            join runes_id_to_entry e on e.rune_id = c.rune_id\n            where ($1::text is null or c.pkscript = $1)\n              and ($2::text is null or c.wallet_addr = $2)\n              and ($3::text is null or e.\"number\" > $3::text::numeric)\n            order by e.\"number\" asc\n            limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rune_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_current_balances",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rune_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "spacers",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "spacers"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "number!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "divisibility",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "divisibility"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "symbol",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "symbol"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "31adf073f86e2d7f1ae9dc62cd40be2add72737c8029fcda1fcd9b395575f526"
+}

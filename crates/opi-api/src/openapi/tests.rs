@@ -10,9 +10,9 @@ use {
         routes::{
             self,
             paging::{
-                DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT,
-                MAX_NAME_LEN, MAX_OFFSET, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_TICKER_LEN,
-                MAX_TYPE_LEN,
+                DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CURSOR_LEN,
+                MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN, MAX_OFFSET, MAX_PKSCRIPT_LEN,
+                MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN, MAX_TYPE_LEN,
             },
         },
     },
@@ -264,9 +264,20 @@ fn parameter_bounds_are_the_routes_rules() {
                 ("/v1/sns/search", "prefix") => json!({"minLength": 1, "maxLength": MAX_NAME_LEN}),
                 ("/v1/sns/search", "namespace" | "after") => json!({"maxLength": MAX_NAME_LEN}),
                 (_, "ticker") if bounded => json!({"minLength": 1, "maxLength": MAX_TICKER_LEN}),
+                (_, "rune") if bounded => json!({"minLength": 1, "maxLength": MAX_RUNE_LEN}),
+                ("/v1/runes/runes", "search") => json!({"maxLength": MAX_RUNE_LEN}),
                 (_, "search") => json!({"maxLength": MAX_TICKER_LEN}),
                 (_, "type") => json!({"maxLength": MAX_TYPE_LEN}),
-                ("/v1/brc20/wallet/events", "address") => json!({"maxLength": MAX_ADDRESS_LEN}),
+                (
+                    "/v1/runes/runes" | "/v1/runes/rune/holders" | "/v1/runes/wallet/balances",
+                    "after",
+                ) => json!({"maxLength": MAX_CURSOR_LEN}),
+                (
+                    "/v1/brc20/wallet/events"
+                    | "/v1/runes/wallet/balances"
+                    | "/v1/runes/wallet/events",
+                    "address",
+                ) => json!({"maxLength": MAX_ADDRESS_LEN}),
                 (_, "address") if bounded => json!({"minLength": 1, "maxLength": MAX_ADDRESS_LEN}),
                 (_, "inscription_id") if bounded => {
                     json!({"minLength": 1, "maxLength": MAX_INSCRIPTION_ID_LEN})

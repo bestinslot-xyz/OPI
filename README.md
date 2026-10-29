@@ -672,6 +672,16 @@ set for `input` and `output` events and empty for `new_rune_allocation`,
 `cumulative_hash = sha256_hex(previous_cumulative_hash + block_event_hash)`.
 The first hashed block uses its `block_event_hash` as the cumulative hash.
 
+**API tables.** For the API's rune routes the module keeps
+`runes_current_balances` (per rune and pkScript, the sum of its unspent
+outpoints' balances) and `runes_holders` (the pkScripts with a positive
+balance per rune) in each block's transaction and on every rollback; they
+feed no event, hash or report. A database without them gets them filled
+from the unspent outpoints at start, and the indexes the routes read are
+created at start when missing (a few seconds on signet). The API reads these
+tables, so run the module once with this version before serving the routes
+from a database.
+
 **Versions.** Reports send `opi-runes-full-node v1.0.0` with `db_version` 6. A
 database with another `db_version` is refused and must be indexed from scratch.
 `RUNES_DB_DATABASE` names a new database: one that holds blocks written by
@@ -685,7 +695,7 @@ process. It reads the same `.env` as `run`.
 - **BRC-20** exposes activity on block (block events), balance of a wallet at the start of a given height, current balance of a wallet, block hash and cumulative hash at a given block and hash of all current balances, and tickers, holders, wallet balances and event feeds that merge BRC-20 and BRC2.0 (see [Ticker, wallet and lookup routes](#ticker-wallet-and-lookup-routes)).
 - **Bitmap** exposes block hash and cumulative hash at a given block, hash of all bitmaps and inscription_id of a given bitmap.
 - **SNS** exposes block hash and cumulative hash at a given block, hash of all registered names, id number and domain of a given name, id number and name tuples of a domain, and all registered namespaces endpoints.
-- **Runes** exposes activity on a block (`/v1/runes/activity_on_block`), the balance of a wallet at the start of a height (`/v1/runes/balance_on_block`), the current balance of a wallet (`/v1/runes/get_current_balance_of_wallet`), the unspent rune outpoints of a wallet (`/v1/runes/get_unspent_rune_outpoints_of_wallet`), the holders of a rune (`/v1/runes/holders`), and the block hash and cumulative hash at a height (`/v1/runes/get_hash_of_all_activity`).
+- **Runes** exposes activity on a block (`/v1/runes/activity_on_block`), the balance of a wallet at the start of a height (`/v1/runes/balance_on_block`), the current balance of a wallet (`/v1/runes/get_current_balance_of_wallet`), the unspent rune outpoints of a wallet (`/v1/runes/get_unspent_rune_outpoints_of_wallet`), the holders of a rune (`/v1/runes/holders`), and the block hash and cumulative hash at a height (`/v1/runes/get_hash_of_all_activity`), plus paged rune, holder, wallet balance and event feed routes (see [Rune, holder and wallet routes](#rune-holder-and-wallet-routes)).
 
 Each module's routes live under `/v1/<module>/`. A module outside `OPI_MODULES`
 answers `404 {"error":"<module> is not enabled on this node"}`. `/v1/status`
@@ -837,6 +847,12 @@ bracketed parameter).
 | `GET /v1/runes/get_unspent_rune_outpoints_of_wallet` | `address`, `pkscript` | Every unspent outpoint of a wallet that holds runes. |
 | `GET /v1/runes/holders` | `rune_name`, `rune_id` | Every holder of a rune, largest balance first. |
 | `GET /v1/runes/ip` |  | The client's IP address, as the API sees it through API_TRUSTED_PROXY_CNT proxies. |
+| `GET /v1/runes/rune` | **`rune`** | A rune's etching, supply, mint terms and progress, and holder count. |
+| `GET /v1/runes/rune/events` | **`rune`**, `type`, `before_id`, `limit` | A page of a rune's events, newest first. |
+| `GET /v1/runes/rune/holders` | **`rune`**, `after`, `limit` | A page of a rune's holders, largest balance first. |
+| `GET /v1/runes/runes` | `sort`, `order`, `search`, `after`, `limit` | A page of runes, by holders or another order. |
+| `GET /v1/runes/wallet/balances` | `address`, `pkscript`, `after`, `limit` | A page of the runes a wallet holds, with its balances. |
+| `GET /v1/runes/wallet/events` | `address`, `pkscript`, `type`, `before_id`, `limit` | A page of a wallet's runes events, newest first. |
 
 <!-- END route tables -->
 
@@ -976,6 +992,62 @@ SNS stores names (the result's `prefix` and `namespace` are those lowercase
 forms), and `%`, `_` and `\` match themselves. Both page by key:
 `after` is the previous page's `next_after`, `has_more` tells whether more
 follow and `next_after` is null on the last page.
+
+### Rune, holder and wallet routes
+
+The generic runes routes (`/v1/runes/rune`, `/v1/runes/runes`,
+`/v1/runes/rune/holders`, `/v1/runes/wallet/balances`,
+`/v1/runes/rune/events` and `/v1/runes/wallet/events`) answer
+`{"error":null,"result":...}` with the database's `block_height`, as the
+brc20 ticker routes do. A missing or invalid parameter answers
+`400 {"error":"<reason>","result":null}`, and an unknown rune answers
+`404 {"error":"rune not found","result":null}`. Lists take `limit` (default
+`100`, at most `500`). `rune` and `search` are at most 128 bytes and `after`
+at most 256; the other bounds are those of the ticker routes.
+
+**Runes.** `rune` names a rune by its id (`block:tx`) or its name, spaced
+(`•` or `.`) or not, in any case, read with ord's own parsers: `uncommongoods`,
+`UNCOMMON•GOODS` and `uncommon.goods` find the same rune. A spaced name must
+carry the rune's spacers. `/v1/runes/rune` answers `rune_id`, `rune_name`
+(the letters), `spaced_rune_name`, `number`, `divisibility`, `symbol`,
+`spacers`, `etching`, `etching_block_height`, `timestamp`, `turbo`,
+`premine`, `mints`, `burned`, `supply` (the premine plus `mints` times the
+mint amount), `max_supply` (the premine plus the mint cap times the mint
+amount), `terms` (`amount`, `cap`, `height_start`, `height_end`,
+`offset_start`, `offset_end`; null without mint terms), `mint_progress`
+(mints over the cap, null without a cap) and `holders`. Amounts are raw
+integers as strings with `divisibility` fractional digits.
+`/v1/runes/runes` lists the same objects. `sort` is `holders` (default),
+`supply`, `mint_progress` (runes without a cap sort below every other) or
+`etching_height`; `order` is `desc` (default) or `asc`; ties order by rune
+number in the same direction. `search` keeps the runes whose name starts
+with it: written without spacers it matches the letters (`UNCOMMONG` finds
+`UNCOMMON•GOODS`), with spacers the spaced name (`UNCOMMON•G` finds
+`UNCOMMON•GOODS`, not `UNCOMMONG•OODS`).
+
+**Holders and wallet balances.** A holder is a pkScript with a positive
+balance of the rune over its unspent outpoints, as
+`{"address","pkscript","balance"}` (`address` is null for a script without
+one). The runes module keeps these balances in `runes_current_balances` and
+their count per rune in `runes_holders`, in each block's transaction and on
+every rollback. `/v1/runes/rune/holders` orders by balance, largest first,
+then by pkScript, descending. `/v1/runes/wallet/balances` takes `address` or
+`pkscript` (hex) and answers one row per rune the wallet holds, by rune
+number: `{"rune_id","rune_name","spaced_rune_name","number","divisibility",
+"symbol","balance"}`. A wallet the database does not know answers an empty
+list. These lists and `/v1/runes/runes` page by key: `after` is the previous
+page's `next_after`, an opaque cursor, and a page holds the rows after it.
+
+**Event feeds.** An event is `{"id","block_height","block_time",
+"event_type","txid","outpoint","pkscript","address","rune_id","rune_name",
+"spaced_rune_name","divisibility","amount"}`. `block_time` is the block's
+time in seconds, null for a height whose block hash row pruning removed.
+`event_type` is the name from `runes_event_types` (`input`,
+`new-allocation`, `mint`, `output`, `burn`), and `type` keeps one of them.
+`outpoint`, `pkscript` and `address` are set for `input` and `output`
+events. A rune's feed lists the events of its id; a wallet's feed, by
+`address` or `pkscript`, lists the `input` and `output` events of its
+outpoints. Both page by `before_id`, as the brc20 feeds do.
 
 ### API configuration
 

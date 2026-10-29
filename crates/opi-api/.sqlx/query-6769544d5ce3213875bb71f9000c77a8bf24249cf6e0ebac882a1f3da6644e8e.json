@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select event_type_id from runes_event_types where event_type_name = $1 limit 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_event_types",
+            "name": "event_type_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6769544d5ce3213875bb71f9000c77a8bf24249cf6e0ebac882a1f3da6644e8e"
+}

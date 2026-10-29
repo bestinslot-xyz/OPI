@@ -1,7 +1,9 @@
-//! The runes module's routes.
+//! The runes module's routes, including the rune, holder, wallet and feed
+//! routes of [`catalog`] and [`feeds`], which have no JavaScript
+//! counterpart.
 //!
-//! Each handler follows its JavaScript counterpart line by line, as the
-//! brc20 routes do. get_block_height_of_db answers -1 when its query fails.
+//! Each other handler follows its JavaScript counterpart line by line, as
+//! the brc20 routes do. get_block_height_of_db answers -1 when its query fails.
 //! numeric columns are cast to text under the column's own name and decoded
 //! with [`pg_json::text`]; numeric[] decodes to numbers, as node-pg's
 //! array parser reads it with parseFloat.
@@ -25,6 +27,9 @@ use {
     utoipa_axum::routes,
 };
 
+mod catalog;
+mod feeds;
+
 pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
     ModuleRoutes::new()
         .routes(routes!(ip))
@@ -36,6 +41,12 @@ pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
         .routes(routes!(holders))
         .routes(routes!(get_hash_of_all_activity))
         .routes(routes!(event))
+        .routes(routes!(catalog::rune_info))
+        .routes(routes!(catalog::runes))
+        .routes(routes!(catalog::rune_holders))
+        .routes(routes!(catalog::wallet_balances))
+        .routes(routes!(feeds::rune_events))
+        .routes(routes!(feeds::wallet_events))
 }
 
 /// A runes route's answer: `error` null, the `result` and the database's

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select event_type_name from runes_event_types order by event_type_id;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_event_types",
+            "name": "event_type_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "af20f43409268aa72a71b233fd538fbd8b6ff97db820dc9a4ca5e4f69a8f32e8"
+}
