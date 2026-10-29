@@ -28,7 +28,8 @@ use {
 /// Blocks ord indexes per `update()` while catching up.
 pub const DEFAULT_CHUNK: u32 = 1000;
 
-const JOURNAL_FILE: &str = "journal.redb";
+/// The journal's file name inside the journal dir.
+pub const JOURNAL_FILE: &str = "journal.redb";
 const EVENT_BUFFER: usize = 10_000;
 const BLOCK_CACHE: usize = 32;
 const TIP_SLEEP: Duration = Duration::from_secs(2);

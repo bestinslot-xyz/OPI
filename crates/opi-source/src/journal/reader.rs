@@ -1,10 +1,11 @@
 use {
     super::{
-        Journal, RUNE_ID_LEN, cf, decode_info, decode_rune_counter_log, decode_rune_etching,
-        decode_rune_event, decode_transfer, decompress_info, final_tip_in, info_key,
-        rune_etching_key, rune_event_key, rune_id_string, table, transfer_key,
+        Journal, META_PRUNED_BELOW, RUNE_ID_LEN, cf, decode_info, decode_rune_counter_log,
+        decode_rune_etching, decode_rune_event, decode_transfer, decompress_info, final_tip_in,
+        info_key, meta_u32_in, rune_etching_key, rune_event_key, rune_id_string, table,
+        transfer_key,
     },
-    anyhow::{Result, anyhow},
+    anyhow::{Result, anyhow, bail},
     bitcoin::{block::Header, consensus},
     opi_core::{
         BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, InscriptionRecord,
@@ -42,6 +43,20 @@ fn block_info_in(tx: &ReadTransaction, height: u32) -> Result<Option<BlockInfo>>
         hash: header.block_hash().to_string(),
         time: header.time,
     }))
+}
+
+/// Fails for a height below the pruned floor, whose records are gone: a
+/// module that still needs it has to be rebuilt over a full journal.
+fn check_unpruned(tx: &ReadTransaction, height: u32) -> Result<()> {
+    let floor = meta_u32_in(tx, META_PRUNED_BELOW, "pruned_below")?.unwrap_or(0);
+    if height < floor {
+        bail!(
+            "height {height} is below the journal's pruned floor {floor}; a module that starts \
+             or resumes below it needs a journal and ord data dir indexed again from the start \
+             without OPI_PRUNE"
+        );
+    }
+    Ok(())
 }
 
 fn inscription_records_in(tx: &ReadTransaction, height: u32) -> Result<Vec<InscriptionRecord>> {
@@ -123,7 +138,9 @@ impl BlockSource for JournalReader {
     }
 
     fn inscription_records(&self, height: u32) -> Result<Vec<InscriptionRecord>> {
-        inscription_records_in(&self.journal.db().begin_read()?, height)
+        let tx = self.journal.db().begin_read()?;
+        check_unpruned(&tx, height)?;
+        inscription_records_in(&tx, height)
     }
 
     fn inscription_info(&self, inscription_id: &str) -> Result<Option<InscriptionInfo>> {
@@ -135,6 +152,7 @@ impl BlockSource for JournalReader {
         if final_tip_in(&tx)?.is_none_or(|tip| height > tip) {
             return Ok(None);
         }
+        check_unpruned(&tx, height)?;
         let Some(block) = block_info_in(&tx, height)? else {
             return Ok(None);
         };

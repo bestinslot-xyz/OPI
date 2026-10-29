@@ -665,6 +665,77 @@ async fn rollback_restores_entries_and_unspends() {
     .await;
 }
 
+/// Pruning below 4 keeps the latest entry change of each rune below 4 and
+/// the block hashes from 4 up, so a rollback to 3 restores the same totals,
+/// and keeps every row the API serves.
+#[tokio::test]
+async fn prune_keeps_what_a_rollback_reads() {
+    with_database("prune", |name| async move {
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        for block in blocks() {
+            module.apply(&block).await.unwrap();
+        }
+        module
+            .apply(&view(
+                4,
+                RuneFeed {
+                    counters: vec![counter("1:1", 400, 3)],
+                    ..RuneFeed::default()
+                },
+            ))
+            .await
+            .unwrap();
+        let mut conn = connect(&name).await;
+        let count = |table: &'static str| {
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT count(*) FROM {table}"
+            )))
+        };
+        let outpoints = outpoint_rows(&mut conn).await;
+
+        module.prune_below(4).await.unwrap();
+        let changes: Vec<(String, i32)> =
+            sqlx::query("SELECT rune_id, block_height FROM runes_id_to_entry_changes ORDER BY id")
+                .fetch_all(&mut conn)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| (r.get(0), r.get(1)))
+                .collect();
+        assert_eq!(changes, vec![(s("1:1"), 3), (s("3:1"), 3), (s("1:1"), 4)]);
+        let heights: Vec<i32> = sqlx::query_scalar("SELECT block_height FROM runes_block_hashes")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(heights, vec![4]);
+        assert_eq!(module.cursor().await.unwrap().unwrap().height, 4);
+        assert_eq!(
+            count("runes_events").fetch_one(&mut conn).await.unwrap(),
+            16
+        );
+        assert_eq!(
+            count("runes_cumulative_event_hashes")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap(),
+            4
+        );
+        assert_eq!(outpoint_rows(&mut conn).await, outpoints);
+
+        module.rollback_to(3).await.unwrap();
+        assert_eq!(
+            entry_totals(&mut conn).await,
+            vec![
+                (s("1:1"), s("400"), s("2"), 3),
+                (s("3:1"), s("0"), s("1"), 3),
+            ]
+        );
+    })
+    .await;
+}
+
 /// Height 1 creates aa:0, height 2 is empty and height 3 spends aa:0 into
 /// gg:0. Rolling back to 2 unspends aa:0 through height 3's input event.
 /// Without a block row and with start height 0, a new instance drops every

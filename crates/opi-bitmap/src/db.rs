@@ -141,6 +141,16 @@ impl Db {
         Ok(())
     }
 
+    /// Deletes the block hashes below `height`. The API reads only the
+    /// highest, and a rollback walks no deeper than the pruning window.
+    pub async fn prune_below(&self, height: u32) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM bitmap_block_hashes WHERE block_height < $1")
+            .bind(height as i32)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Writes the rows, event hashes and block hash of one block atomically.
     /// A number already stored, in this block or an earlier one, emits no
     /// event.

@@ -335,6 +335,28 @@ async fn round_trip(name: String) {
         .unwrap();
     assert_eq!(ids, vec![1, 2]);
 
+    // Pruning drops only the block hashes below its height: the cursor, the
+    // names and the event hashes stay.
+    module.prune_below(11).await.unwrap();
+    let heights: Vec<i32> = sqlx::query_scalar("SELECT block_height FROM sns_block_hashes")
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(heights, vec![11]);
+    assert_eq!(module.cursor().await.unwrap().unwrap().height, 11);
+    for (table, expected) in [
+        ("sns_names", 2),
+        ("sns_namespaces", 1),
+        ("sns_names_cumulative_event_hashes", 2),
+    ] {
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(count, expected, "{table}");
+    }
+
     // Rows above the cursor are residue of an interrupted run; a new
     // instance drops them.
     sqlx::query(

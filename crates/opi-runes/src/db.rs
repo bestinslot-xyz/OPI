@@ -228,6 +228,29 @@ impl Db {
         Ok(())
     }
 
+    /// Deletes, in one transaction, the block hashes below `height`, which
+    /// the API reads only the highest of, and every entry change below
+    /// `height` but the latest of its rune there, which is all a rollback to
+    /// `height` or above reads. No API route reads entry changes.
+    pub async fn prune_below(&self, height: u32) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for statement in [
+            "DELETE FROM runes_block_hashes WHERE block_height < $1",
+            "DELETE FROM runes_id_to_entry_changes c \
+             WHERE c.block_height < $1 AND EXISTS ( \
+                 SELECT 1 FROM runes_id_to_entry_changes later \
+                 WHERE later.rune_id = c.rune_id \
+                 AND later.block_height > c.block_height AND later.block_height < $1)",
+        ] {
+            sqlx::query(statement)
+                .bind(height as i32)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Writes one block atomically: etched entries, output outpoints, spends,
     /// counters, events, the event hashes when `hashed`, and the block hash.
     /// Returns the event hashes when `hashed`.

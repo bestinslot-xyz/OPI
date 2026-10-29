@@ -25,6 +25,9 @@ pub struct RuntimeOptions {
     pub max_backoff: Duration,
     /// A module that ran this long before failing restarts after `min_backoff`.
     pub healthy_reset: Duration,
+    /// Blocks of history each module keeps below its cursor; `None` keeps
+    /// everything.
+    pub prune: Option<u32>,
 }
 
 impl Default for RuntimeOptions {
@@ -34,6 +37,7 @@ impl Default for RuntimeOptions {
             min_backoff: Duration::from_secs(5),
             max_backoff: Duration::from_secs(300),
             healthy_reset: Duration::from_secs(600),
+            prune: None,
         }
     }
 }
@@ -114,7 +118,7 @@ async fn supervise(
     let mut backoff = options.min_backoff;
     loop {
         let started = Instant::now();
-        let outcome = AssertUnwindSafe(attempt(name, &factory, &source, options.poll))
+        let outcome = AssertUnwindSafe(attempt(name, &factory, &source, &options))
             .catch_unwind()
             .await;
         let err = match outcome {
@@ -138,11 +142,11 @@ async fn attempt(
     name: &'static str,
     factory: &ModuleFactory,
     source: &Arc<dyn BlockSource>,
-    poll: Duration,
+    options: &RuntimeOptions,
 ) -> Result<Infallible> {
     let mut module = factory().await.context("building the module")?;
     tracing::info!(module = name, "module started");
-    follow(name, module.as_mut(), source, poll).await
+    follow(name, module.as_mut(), source, options.poll, options.prune).await
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> String {

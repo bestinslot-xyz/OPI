@@ -249,6 +249,24 @@ async fn round_trip(name: String) {
         .unwrap();
     assert_eq!(reporting.cursor().await.unwrap().unwrap().height, 12);
 
+    // Pruning drops only the block hashes below its height: the cursor, the
+    // bitmaps and the event hashes stay.
+    module.prune_below(12).await.unwrap();
+    let heights: Vec<i32> = sqlx::query_scalar("SELECT block_height FROM bitmap_block_hashes")
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(heights, vec![12]);
+    assert_eq!(module.cursor().await.unwrap().unwrap().height, 12);
+    for (table, expected) in [("bitmaps", 3), ("bitmap_cumulative_event_hashes", 3)] {
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(count, expected, "{table}");
+    }
+
     // A second instance on the same database sees the existing version row.
     BitmapModule::new(config, Arc::new(Journal)).await.unwrap();
 }

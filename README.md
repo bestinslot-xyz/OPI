@@ -100,6 +100,7 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
 | `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) |
+| `OPI_PRUNE` | blocks of history to keep, at least `1000`; unset keeps everything (see [Pruning](#pruning)) |
 | `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE` and `RUNES_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
@@ -137,6 +138,39 @@ keep running. A panic in brc20 stops the process instead (see BRC2.0 engine).
 On shutdown `run` waits up to 150 seconds for brc20 to finish the block in
 flight. Log verbosity follows `RUST_LOG`. Logs go to stderr for every
 command.
+
+#### Pruning
+
+With `OPI_PRUNE=<blocks>`, `run` deletes the data that only indexing and
+rollbacks read once it is more than `<blocks>` deep. Every API route keeps
+answering as on a full node, for every height. `OPI_PRUNE` is at least 1000,
+the deepest rollback the scheduler walks.
+
+| Store | Pruned | Kept |
+| --- | --- | --- |
+| journal | raw events below the final tip minus `<blocks>`; transfer records, per-block rune rows and the content of inscriptions already transferred below the lowest module height minus `<blocks>` | block headers, first transfers, the content of inscriptions not yet transferred, current rune state |
+| brc20 | `brc20_logs`, which nothing reads | every table the API, the light clients and `validate` read |
+| bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
+| runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
+
+Each module prunes its tables every 100 blocks; a background task prunes the
+journal every minute, and only while every enabled module is running, in steps
+of 1000 heights. ord's index has no history to prune: `run` keeps ord at its
+defaults, without sat, address or transaction indexes.
+
+A pruned journal no longer holds the blocks a module needs to start from
+scratch. A module whose next block is below the journal's pruned floor (a new
+database, a module enabled later, or a `brc20 reorg` below the floor) fails with
+"below the journal's pruned floor" and keeps restarting; rebuilding it needs a
+new journal and ord data dir indexed from the start. brc20-prog's database is
+not pruned.
+
+redb reuses the freed pages but does not shrink its file. To return the space
+to the file system, stop `run` and compact the journal:
+
+```bash
+target/release/opi-indexer compact-journal
+```
 
 #### BRC2.0 engine
 
@@ -334,10 +368,13 @@ resolve. It does not publish the image.
 ### Subcommands
 
 ```
-opi-indexer [run | api | validate | brc20 <COMMAND>]
+opi-indexer [run | api | validate | compact-journal | brc20 <COMMAND>]
 ```
 
 `api` serves the HTTP API (see [API](#api)); it needs neither the journal nor ord.
+
+`compact-journal` rewrites the journal under `OPI_JOURNAL_DIR` without the
+space pruning freed (see [Pruning](#pruning)). It needs `run` stopped.
 
 `opi-indexer brc20` holds the BRC-20 light client and maintenance commands. It
 reads only brc20's environment, so it runs on light-client hosts.

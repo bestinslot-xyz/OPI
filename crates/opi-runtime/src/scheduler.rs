@@ -9,6 +9,10 @@ use {
 /// disagreement with the journal is an error.
 pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 
+/// With pruning on, a module prunes after applying every block whose height
+/// is a multiple of this.
+pub const PRUNE_EVERY: u32 = 100;
+
 /// Follows the journal with `module` block by block until an error.
 ///
 /// Every iteration reads the module's cursor, fetches the next block once the
@@ -30,11 +34,16 @@ pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 /// the process metrics, and each applied block its height and apply time.
 /// When `follow` ends, by an error, a panic or cancellation, the module's
 /// height becomes unknown, so the process is not ready while it is down.
+///
+/// With `prune` set, every [`PRUNE_EVERY`] heights the module prunes its
+/// history below `prune` blocks under the block it applied. A failed prune is
+/// logged and the module goes on.
 pub(crate) async fn follow(
     name: &'static str,
     module: &mut dyn Module,
     source: &Arc<dyn BlockSource>,
     poll: Duration,
+    prune: Option<u32>,
 ) -> Result<Infallible> {
     let metrics = ClearHeightOnExit(opi_core::metrics::global().module(name));
     let metrics = &metrics.0;
@@ -102,6 +111,12 @@ pub(crate) async fn follow(
                 metrics.observe_block(started.elapsed());
                 metrics.set_height(Some(next));
                 tracing::debug!(module = name, height = next, "applied");
+                if let Some(keep) = prune.filter(|_| next % PRUNE_EVERY == 0) {
+                    let below = (next + 1).saturating_sub(keep);
+                    if let Err(err) = module.prune_below(below).await {
+                        tracing::warn!(module = name, below, "pruning failed: {err:#}");
+                    }
+                }
             }
             None => tokio::time::sleep(poll).await,
         }
