@@ -151,7 +151,7 @@ struct StatusEntry;
 
 impl PartialSchema for StatusEntry {
     fn schema() -> RefOr<Schema> {
-        serde_json::from_value(json!({
+        openapi::json_schema(json!({
             "description": "A module's latest indexed height, or `{\"error\":\"unavailable\"}` when its height query fails (the cause is logged).",
             "oneOf": [
                 {
@@ -162,11 +162,10 @@ impl PartialSchema for StatusEntry {
                 {
                     "type": "object",
                     "required": ["error"],
-                    "properties": {"error": {"type": "string", "const": "unavailable"}},
+                    "properties": {"error": {"type": "string", "enum": ["unavailable"]}},
                 },
             ],
         }))
-        .expect("a valid schema")
     }
 }
 

@@ -59,8 +59,17 @@ use {
 pub struct ApiDoc;
 
 /// A schema written as JSON Schema, for a shape the derive cannot state.
+/// utoipa's `Schema` silently drops keywords it has no field for (`const`
+/// among them, so a single value is an `enum` of one), which the round trip
+/// refuses.
 pub fn json_schema(value: serde_json::Value) -> RefOr<Schema> {
-    serde_json::from_value(value).expect("a valid schema")
+    let schema: RefOr<Schema> = serde_json::from_value(value.clone()).expect("a valid schema");
+    assert_eq!(
+        serde_json::to_value(&schema).expect("a schema serializes"),
+        value,
+        "utoipa dropped a keyword"
+    );
+    schema
 }
 
 /// `T`'s schema with a `default`, for a query parameter of a schema type
@@ -221,7 +230,7 @@ pub fn finish(api: &mut openapi::OpenApi) {
             ContentBuilder::new()
                 .schema(Some(json_schema(json!({
                     "type": "string",
-                    "const": crate::rate_limit::MESSAGE,
+                    "enum": [crate::rate_limit::MESSAGE],
                 }))))
                 .build(),
         )

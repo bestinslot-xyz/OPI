@@ -375,6 +375,12 @@ fn parameter_bounds_are_the_routes_rules() {
 }
 
 #[test]
+#[should_panic(expected = "utoipa dropped a keyword")]
+fn a_written_schema_keeps_every_keyword() {
+    super::json_schema(json!({"type": "string", "const": "x"}));
+}
+
+#[test]
 fn parameter_defaults_match_their_schemas() {
     let document = document(&MODULES);
     let mut checked = 0;
