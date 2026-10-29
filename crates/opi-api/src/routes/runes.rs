@@ -7,42 +7,149 @@
 //! array parser reads it with parseFloat.
 
 use {
+    super::ModuleRoutes,
     super::no_row,
     crate::{
         config::Module,
         db::Db,
         extract::{ClientIp, JsQuery},
         js::{JsObject, JsValue, sort_by_number},
-        js_object, params,
+        js_object,
+        openapi::{Answer, DbHeight, ErrorBody, ListBlockHeight, Null, NumericText, QueryEcho},
+        params,
         pg_json::{self, ToJs, oid},
         reply::{ApiError, Reply},
     },
-    axum::{Router, extract::State, routing::get},
+    axum::extract::State,
+    utoipa::ToSchema,
+    utoipa_axum::routes,
 };
 
-pub fn routes(router: Router, db: Db, _settings: &super::RouteSettings) -> Router {
-    router.merge(
-        Router::new()
-            .route("/v1/runes/ip", get(ip))
-            .route("/v1/runes/block_height", get(block_height))
-            .route("/v1/runes/balance_on_block", get(balance_on_block))
-            .route("/v1/runes/activity_on_block", get(activity_on_block))
-            .route(
-                "/v1/runes/get_current_balance_of_wallet",
-                get(get_current_balance_of_wallet),
-            )
-            .route(
-                "/v1/runes/get_unspent_rune_outpoints_of_wallet",
-                get(get_unspent_rune_outpoints_of_wallet),
-            )
-            .route("/v1/runes/holders", get(holders))
-            .route(
-                "/v1/runes/get_hash_of_all_activity",
-                get(get_hash_of_all_activity),
-            )
-            .route("/v1/runes/event", get(event))
-            .with_state(db),
-    )
+pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+    ModuleRoutes::new()
+        .routes(routes!(ip))
+        .routes(routes!(block_height))
+        .routes(routes!(balance_on_block))
+        .routes(routes!(activity_on_block))
+        .routes(routes!(get_current_balance_of_wallet))
+        .routes(routes!(get_unspent_rune_outpoints_of_wallet))
+        .routes(routes!(holders))
+        .routes(routes!(get_hash_of_all_activity))
+        .routes(routes!(event))
+}
+
+/// A runes route's answer: `error` null, the `result` and the database's
+/// height.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesAnswer<T: ToSchema> {
+    error: Null,
+    result: T,
+    db_block_height: DbHeight,
+}
+
+/// A wallet's balance of a rune. The columns come from tables without
+/// NOT NULL constraints, so every field may be null.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesBalance {
+    #[schema(nullable)]
+    pkscript: String,
+    #[schema(nullable)]
+    wallet_addr: String,
+    #[schema(nullable)]
+    rune_id: String,
+    #[schema(nullable)]
+    rune_name: String,
+    /// The sum of the wallet's outpoints' balances of the rune.
+    #[schema(nullable)]
+    total_balance: NumericText,
+}
+
+/// A runes event of a block.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesBlockEvent {
+    /// The event type's name; absent for a type id `runes_event_types`
+    /// does not list.
+    #[schema(required = false)]
+    event_type: String,
+    #[schema(nullable)]
+    outpoint: String,
+    #[schema(nullable)]
+    pkscript: String,
+    #[schema(nullable)]
+    rune_id: String,
+    #[schema(nullable)]
+    amount: NumericText,
+}
+
+/// A runes event of a transaction.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesTxEvent {
+    /// The event type's name; absent for a type id `runes_event_types`
+    /// does not list.
+    #[schema(required = false)]
+    event_type: String,
+    #[schema(nullable)]
+    outpoint: String,
+    #[schema(nullable)]
+    pkscript: String,
+    #[schema(nullable)]
+    wallet_addr: String,
+    #[schema(nullable)]
+    rune_id: String,
+    #[schema(nullable)]
+    amount: NumericText,
+}
+
+/// An unspent outpoint holding runes.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesOutpoint {
+    #[schema(nullable)]
+    pkscript: String,
+    #[schema(nullable)]
+    wallet_addr: String,
+    #[schema(nullable)]
+    outpoint: String,
+    /// The outpoint's rune ids.
+    #[schema(nullable)]
+    rune_ids: Vec<String>,
+    /// The balance of each rune id, read as numbers (node-pg parses a
+    /// numeric[] with parseFloat, so a large balance loses precision).
+    #[schema(nullable)]
+    balances: Vec<f64>,
+}
+
+/// A holder of a rune.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesHolder {
+    #[schema(nullable)]
+    pkscript: String,
+    #[schema(nullable)]
+    wallet_addr: String,
+    #[schema(nullable)]
+    rune_id: String,
+    /// The sum of the holder's unspent outpoints' balances of the rune.
+    #[schema(nullable)]
+    total_balance: NumericText,
+    /// The rune's name: the `rune_name` parameter in upper case, or the
+    /// name of `rune_id`.
+    rune_name: String,
+}
+
+/// A block's event hashes.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesActivityHash {
+    cumulative_event_hash: String,
+    block_event_hash: String,
+    indexer_version: String,
+    /// The `block_height` parameter as given.
+    block_height: QueryEcho,
 }
 
 /// get_block_height_of_db: the latest indexed height (a number, or null for
@@ -96,10 +203,27 @@ fn balance_entry(
     .into())
 }
 
+/// The client's IP address, as the API sees it through
+/// API_TRUSTED_PROXY_CNT proxies.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/ip",
+    tag = "runes",
+    responses((status = 200, description = "The client's IP address", body = String, content_type = "text/html")),
+)]
 async fn ip(ClientIp(ip): ClientIp) -> Reply {
     Reply::send_str(ip)
 }
 
+/// The latest indexed block height.
+///
+/// `null` before the first block and `-1` when the query fails.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/block_height",
+    tag = "runes",
+    responses((status = 200, description = "The height as text, `null` or `-1`", body = String, content_type = "text/html")),
+)]
 async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     let height = block_height_of_db(&db).await;
     Ok(Reply::send_str(height.to_js_string()?))
@@ -107,6 +231,23 @@ async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
 
 /// Every rune balance of a pkscript or address at the start of a block
 /// height.
+///
+/// A non-empty `address` selects the wallet by address, otherwise by
+/// `pkscript`.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/balance_on_block",
+    tag = "runes",
+    params(
+        ("block_height" = Option<String>, Query, description = "The block height, an integer; the balances are those of the outpoints created below it and unspent at it. Text Postgres cannot read as an int4 answers 500. Left out, the list is empty."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the list is empty."),
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
+    ),
+    responses(
+        (status = 200, description = "The balances, in no set order", body = RunesAnswer<Vec<RunesBalance>>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip plus one", body = ErrorBody),
+    ),
+)]
 async fn balance_on_block(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -179,6 +320,18 @@ async fn balance_on_block(
 }
 
 /// Every runes event of a block height.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/activity_on_block",
+    tag = "runes",
+    params(
+        ListBlockHeight,
+    ),
+    responses(
+        (status = 200, description = "The block's events, by id", body = RunesAnswer<Vec<RunesBlockEvent>>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip", body = ErrorBody),
+    ),
+)]
 async fn activity_on_block(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -219,6 +372,20 @@ async fn activity_on_block(
     }))
 }
 
+/// Every current rune balance of a wallet.
+///
+/// A non-empty `address` selects the wallet by address, otherwise by
+/// `pkscript`.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/get_current_balance_of_wallet",
+    tag = "runes",
+    params(
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the list is empty."),
+    ),
+    responses((status = 200, description = "The balances, in no set order", body = RunesAnswer<Vec<RunesBalance>>)),
+)]
 async fn get_current_balance_of_wallet(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -301,6 +468,20 @@ fn outpoint_entry(
     .into())
 }
 
+/// Every unspent outpoint of a wallet that holds runes.
+///
+/// A non-empty `address` selects the wallet by address, otherwise by
+/// `pkscript`.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/get_unspent_rune_outpoints_of_wallet",
+    tag = "runes",
+    params(
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the list is empty."),
+    ),
+    responses((status = 200, description = "The outpoints, in no set order", body = RunesAnswer<Vec<RunesOutpoint>>)),
+)]
 async fn get_unspent_rune_outpoints_of_wallet(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -371,6 +552,23 @@ fn order_holders(rows: Vec<JsObject>) -> Result<Vec<JsObject>, ApiError> {
     Ok(keyed.into_iter().map(|(_, row)| row).collect())
 }
 
+/// Every holder of a rune, largest balance first.
+///
+/// The rune is named by `rune_name` or `rune_id`; the route looks up the
+/// other one.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/holders",
+    tag = "runes",
+    params(
+        ("rune_name" = Option<String>, Query, description = "The rune's name, matched in upper case. Left out or empty, the route reads `rune_id`."),
+        ("rune_id" = Option<String>, Query, description = "The rune's id; read when `rune_name` is empty. Both left out, no rune matches (400)."),
+    ),
+    responses(
+        (status = 200, description = "The holders", body = RunesAnswer<Vec<RunesHolder>>),
+        (status = 400, description = "`rune not found`", body = ErrorBody),
+    ),
+)]
 async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let mut rune_name = JsValue::from(query.get("rune_name").to_upper_case()?).or("".into());
     let mut rune_id = query.get("rune_id").clone().or("".into());
@@ -450,6 +648,19 @@ async fn indexer_version(db: &Db) -> Result<String, ApiError> {
         .ok_or_else(|| no_row("indexer_version"))?)
 }
 
+/// A block's event hashes, cumulative and its own.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/get_hash_of_all_activity",
+    tag = "runes",
+    params(
+        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500. Left out, no hash row matches (400 `block not indexed`)."),
+    ),
+    responses(
+        (status = 200, description = "The block's hashes", body = Answer<RunesActivityHash>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip, `block not indexed` for a height without a hash row", body = ErrorBody),
+    ),
+)]
 async fn get_hash_of_all_activity(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -487,6 +698,18 @@ async fn get_hash_of_all_activity(
 }
 
 /// Every runes event of a transaction id.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/event",
+    tag = "runes",
+    params(
+        ("transaction_id" = String, Query, description = "The transaction id. Left out or empty, the route answers 400."),
+    ),
+    responses(
+        (status = 200, description = "The transaction's events, by id", body = Answer<Vec<RunesTxEvent>>),
+        (status = 400, description = "`transaction_id is required` when it is left out or empty", body = ErrorBody),
+    ),
+)]
 async fn event(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let names = event_type_names(&db).await?;
 

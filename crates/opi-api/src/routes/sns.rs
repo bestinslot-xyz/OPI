@@ -34,11 +34,12 @@
 //! where two apply), and `namespace` is null when none was given.
 
 use {
+    super::ModuleRoutes,
     super::{
         no_row,
         paging::{
-            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, integer, optional_text,
-            prefix_pattern, split_page, text,
+            BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN, integer,
+            optional_text, prefix_pattern, split_page, text,
         },
     },
     crate::{
@@ -46,47 +47,132 @@ use {
         db::Db,
         extract::{ClientIp, JsQuery},
         js::{JsError, JsObject, JsValue},
-        js_object, params,
+        js_object,
+        openapi::{Answer, DbHeight, ErrorBody, HashBlockHeight, LimitParam, QueryEcho},
+        params,
         pg_json::ToJs,
         reply::{ApiError, Reply},
     },
-    axum::{Router, extract::State, routing::get},
+    axum::extract::State,
     opi_sns::unicode::to_lowercase,
     sha2::{Digest, Sha256},
+    utoipa::{IntoParams, ToSchema},
+    utoipa_axum::routes,
 };
 
 const EVENT_SEPARATOR: &str = "|";
 
-/// The longest name the indexer stores, in UTF-8 bytes; a longer prefix,
-/// namespace or cursor matches nothing and is refused.
-pub const MAX_NAME_LEN: usize = 2048;
+pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+    ModuleRoutes::new()
+        .routes(routes!(ip))
+        .routes(routes!(block_height))
+        .routes(routes!(get_hash_of_all_activity))
+        .routes(routes!(get_hash_of_all_registered_names))
+        .routes(routes!(get_info_of_sns))
+        .routes(routes!(get_inscriptions_of_domain))
+        .routes(routes!(get_registered_namespaces))
+        .routes(routes!(by_inscription))
+        .routes(routes!(search))
+}
 
-pub fn routes(router: Router, db: Db, _settings: &super::RouteSettings) -> Router {
-    router.merge(
-        Router::new()
-            .route("/v1/sns/ip", get(ip))
-            .route("/v1/sns/block_height", get(block_height))
-            .route(
-                "/v1/sns/get_hash_of_all_activity",
-                get(get_hash_of_all_activity),
-            )
-            .route(
-                "/v1/sns/get_hash_of_all_registered_names",
-                get(get_hash_of_all_registered_names),
-            )
-            .route("/v1/sns/get_info_of_sns", get(get_info_of_sns))
-            .route(
-                "/v1/sns/get_inscriptions_of_domain",
-                get(get_inscriptions_of_domain),
-            )
-            .route(
-                "/v1/sns/get_registered_namespaces",
-                get(get_registered_namespaces),
-            )
-            .route("/v1/sns/by_inscription", get(by_inscription))
-            .route("/v1/sns/search", get(search))
-            .with_state(db),
-    )
+/// A block's event hashes.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsActivityHash {
+    cumulative_event_hash: String,
+    block_event_hash: String,
+    indexer_version: String,
+    /// The `block_height` parameter as given.
+    block_height: QueryEcho,
+}
+
+/// The hash of every registered name.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsNamesHash {
+    /// The sha256 hex of `name;domain;inscription_id;inscription_number`
+    /// per name, by inscription number, joined by `|`.
+    current_sns_names_hash: String,
+    indexer_version: String,
+    block_height: DbHeight,
+}
+
+/// A registered name's inscription and namespace.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsNameInfo {
+    inscription_id: String,
+    inscription_number: i32,
+    /// The part of the name after its dot.
+    domain: String,
+    /// The `name` parameter as given.
+    sns_name: QueryEcho,
+}
+
+/// A name of a namespace.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsDomainName {
+    inscription_id: String,
+    inscription_number: i32,
+    sns_name: String,
+}
+
+/// A registered namespace.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsNamespace {
+    inscription_id: String,
+    inscription_number: i32,
+    namespace: String,
+}
+
+/// A registered name.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsName {
+    inscription_id: String,
+    inscription_number: i32,
+    name: String,
+    /// The part of the name after its dot.
+    namespace: String,
+    /// The block that registered the name.
+    block_height: i32,
+}
+
+/// The parameters of `/v1/sns/search`.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct SearchParams {
+    /// The names' start, lowercased as SNS stores names; `%`, `_` and `\`
+    /// match themselves.
+    #[param(min_length = 1, max_length = 2048)]
+    prefix: String,
+    /// Keeps the names of one namespace, lowercased the same way.
+    #[param(max_length = 2048)]
+    namespace: Option<String>,
+    /// The previous page's `next_after`: the page holds the names after it.
+    #[param(max_length = 2048)]
+    after: Option<String>,
+}
+
+/// A page of names by prefix.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsSearch {
+    /// The lowercase prefix the search used.
+    prefix: String,
+    /// The lowercase namespace the search used, null without one.
+    #[schema(nullable)]
+    namespace: String,
+    limit: i64,
+    has_more: bool,
+    /// The `after` of the next page, null on the last page.
+    #[schema(nullable)]
+    next_after: String,
+    /// Bytewise ascending by name.
+    names: Vec<SnsName>,
 }
 
 /// get_block_height_of_db: the latest indexed height (a number, or null for
@@ -105,15 +191,47 @@ async fn indexer_version(db: &Db) -> Result<String, ApiError> {
         .ok_or_else(|| no_row("indexer_version"))?)
 }
 
+/// The client's IP address, as the API sees it through
+/// API_TRUSTED_PROXY_CNT proxies.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/ip",
+    tag = "sns",
+    responses((status = 200, description = "The client's IP address", body = String, content_type = "text/html")),
+)]
 async fn ip(ClientIp(ip): ClientIp) -> Reply {
     Reply::send_str(ip)
 }
 
+/// The latest indexed block height.
+///
+/// `null` before the first block; a failed query answers 500.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/block_height",
+    tag = "sns",
+    responses((status = 200, description = "The height as text, or `null`", body = String, content_type = "text/html")),
+)]
 async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     let height = block_height_of_db(&db).await?;
     Ok(Reply::send_str(height.to_js_string()?))
 }
 
+/// A block's event hashes, cumulative and its own.
+///
+/// A height the hash table has no row for answers 500.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/get_hash_of_all_activity",
+    tag = "sns",
+    params(
+        HashBlockHeight,
+    ),
+    responses(
+        (status = 200, description = "The block's hashes", body = Answer<SnsActivityHash>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip", body = ErrorBody),
+    ),
+)]
 async fn get_hash_of_all_activity(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -186,6 +304,15 @@ fn registered_names_hash(rows: &[NameRow]) -> Result<String, JsError> {
     Ok(format!("{:x}", Sha256::digest(whole_str.as_bytes())))
 }
 
+/// The hash of every registered name.
+///
+/// The route reads and hashes the whole `sns_names` table.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/get_hash_of_all_registered_names",
+    tag = "sns",
+    responses((status = 200, description = "The hash", body = Answer<SnsNamesHash>)),
+)]
 async fn get_hash_of_all_registered_names(State(db): State<Db>) -> Result<Reply, ApiError> {
     let current_block_height = block_height_of_db(&db).await?;
     let rows = sqlx::query!(
@@ -218,6 +345,19 @@ async fn get_hash_of_all_registered_names(State(db): State<Db>) -> Result<Reply,
     }))
 }
 
+/// The inscription and namespace of a registered name.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/get_info_of_sns",
+    tag = "sns",
+    params(
+        ("name" = String, Query, description = "The name, matched as stored (lowercase). Left out, no name matches (400)."),
+    ),
+    responses(
+        (status = 200, description = "The name's inscription", body = Answer<SnsNameInfo>),
+        (status = 400, description = "`sns name not found`", body = ErrorBody),
+    ),
+)]
 async fn get_info_of_sns(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let name = query.get("name").clone();
 
@@ -244,6 +384,16 @@ async fn get_info_of_sns(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
     }))
 }
 
+/// Every name of a namespace, with its inscription.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/get_inscriptions_of_domain",
+    tag = "sns",
+    params(
+        ("domain" = String, Query, description = "The namespace, matched as stored (lowercase). Left out, the list is empty."),
+    ),
+    responses((status = 200, description = "The names, in no set order", body = Answer<Vec<SnsDomainName>>)),
+)]
 async fn get_inscriptions_of_domain(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -276,6 +426,13 @@ async fn get_inscriptions_of_domain(
     }))
 }
 
+/// Every registered namespace, with its inscription.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/get_registered_namespaces",
+    tag = "sns",
+    responses((status = 200, description = "The namespaces, in no set order", body = Answer<Vec<SnsNamespace>>)),
+)]
 async fn get_registered_namespaces(State(db): State<Db>) -> Result<Reply, ApiError> {
     let rows = sqlx::query!(
         r#"select inscription_id, inscription_number, "namespace"
@@ -322,8 +479,20 @@ impl SnsRow {
     }
 }
 
-/// `/v1/sns/by_inscription?inscription_id=`: the name an inscription
-/// registered.
+/// The name an inscription registered.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/by_inscription",
+    tag = "sns",
+    params(
+        ("inscription_id" = String, Query, description = "The inscription id", min_length = 1, max_length = 128),
+    ),
+    responses(
+        (status = 200, description = "The name", body = Answer<SnsName>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+        (status = 404, description = "`sns name not found`", body = ErrorBody),
+    ),
+)]
 async fn by_inscription(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let inscription_id = match text(&query, "inscription_id", MAX_INSCRIPTION_ID_LEN) {
         Ok(inscription_id) => inscription_id,
@@ -384,8 +553,22 @@ fn forms(first: String, second: String) -> Vec<String> {
     }
 }
 
-/// `/v1/sns/search?prefix=&namespace=&after=&limit=`: the names that start
-/// with `prefix`, ascending by name, of `namespace` when given.
+/// A page of the names that start with a prefix.
+///
+/// Bytewise ascending by name, of `namespace` when given. The prefix and
+/// namespace are lowercased as SNS stores names (`Sats` finds `sats.x`);
+/// the result's `prefix` and `namespace` are those lowercase forms. The
+/// list pages by key.
+#[utoipa::path(
+    get,
+    path = "/v1/sns/search",
+    tag = "sns",
+    params(SearchParams, LimitParam),
+    responses(
+        (status = 200, description = "The page", body = Answer<SnsSearch>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+    ),
+)]
 async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let request = (|| -> Result<_, BadParam> {
         let prefix = text(&query, "prefix", MAX_NAME_LEN)?;

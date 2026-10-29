@@ -352,6 +352,33 @@ async fn the_rate_limiter_counts_every_request_but_preflights() {
         assert_eq!(limited.header("ratelimit-remaining"), Some("0"));
         assert_eq!(limited.header("ratelimit-reset"), Some("60"));
         assert_eq!(limited.header("retry-after"), Some("60"));
+        // every header the 429 sends is one the document lists on it, but
+        // the body's own headers and CORS's, which every answer carries
+        let documented: Vec<String> = serde_json::to_value(
+            opi_api::routes::app(&[Module::Brc20], vec![], &Default::default()).1,
+        )
+        .unwrap()["paths"]["/v1/status"]["get"]["responses"]["429"]["headers"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        for name in limited.headers.keys() {
+            let name = name.as_str();
+            if [
+                "content-type",
+                "content-length",
+                "access-control-allow-origin",
+            ]
+            .contains(&name)
+            {
+                continue;
+            }
+            assert!(
+                documented.iter().any(|known| known == name),
+                "the 429 sends {name}, which the document does not list: {documented:?}"
+            );
+        }
     }
 
     // another client address has its own window

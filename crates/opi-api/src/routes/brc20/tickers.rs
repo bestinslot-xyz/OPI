@@ -42,9 +42,14 @@ use {
         extract::JsQuery,
         js::{JsObject, JsValue},
         js_object,
+        openapi::{Answer, DbHeight, ErrorBody, PageParams, with_default},
         reply::{ApiError, Reply},
     },
     axum::extract::State,
+    utoipa::{
+        IntoParams, ToSchema,
+        openapi::{RefOr, schema::Schema},
+    },
 };
 
 use crate::routes::paging::{
@@ -107,7 +112,10 @@ pub(super) fn ticker(query: &JsObject, key: &str) -> Result<String, BadParam> {
 }
 
 /// The order of `/v1/brc20/tickers`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Its schema names each order in snake case, as `TickerSort::name` does
+// (a unit test compares them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum TickerSort {
     Holders,
     ProgHolders,
@@ -177,6 +185,194 @@ impl TickersRequest {
     }
 }
 
+/// The `ticker` parameter.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+pub(super) struct TickerParam {
+    /// The ticker, matched in lowercase.
+    #[param(min_length = 1, max_length = 256)]
+    ticker: String,
+}
+
+/// A ticker: its supply, mint progress and holder counts. Amounts are raw
+/// integers as strings with `decimals` (18) fractional digits.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub(super) struct Brc20Ticker {
+    /// The ticker in lowercase.
+    tick: String,
+    /// The ticker as its deploy inscription spells it.
+    original_tick: String,
+    /// The fractional digits of every amount: always 18.
+    #[schema(minimum = 18, maximum = 18)]
+    decimals: i32,
+    /// The deploy precision: the most fractional digits an amount may have.
+    ticker_decimals: i32,
+    max_supply: String,
+    minted_supply: String,
+    remaining_supply: String,
+    burned_supply: String,
+    limit_per_mint: String,
+    is_self_mint: bool,
+    deploy_inscription_id: String,
+    deploy_block_height: i32,
+    /// The pkScripts with a positive BRC-20 balance, without the BRC2.0
+    /// module's pkScript.
+    holders: i64,
+    /// The EVM addresses with a positive BRC2.0 balance.
+    prog_holders: i64,
+}
+
+/// A ticker with its BRC2.0 token contract and the database's height.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20TickerInfo {
+    #[serde(flatten)]
+    ticker: Brc20Ticker,
+    /// The BRC2.0 token contract, null before the ticker's first deposit.
+    #[schema(nullable)]
+    prog_contract_address: String,
+    block_height: DbHeight,
+}
+
+/// The ticker of a BRC2.0 token contract.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ContractTicker {
+    #[serde(flatten)]
+    ticker: Brc20Ticker,
+    /// The queried contract, in lowercase.
+    prog_contract_address: String,
+    /// The ticker hash the contract's `BRC20Created` log registered.
+    prog_ticker_hash: String,
+    block_height: DbHeight,
+}
+
+/// A page of tickers.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20Tickers {
+    sort: TickerSort,
+    order: OrderName,
+    tickers: Vec<Brc20Ticker>,
+    offset: i64,
+    limit: i64,
+    has_more: bool,
+    block_height: DbHeight,
+}
+
+/// A list's direction.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+#[serde(rename_all = "snake_case")]
+enum OrderName {
+    Desc,
+    Asc,
+}
+
+fn sort_schema() -> RefOr<Schema> {
+    with_default::<TickerSort>("holders")
+}
+
+fn order_schema() -> RefOr<Schema> {
+    with_default::<OrderName>("desc")
+}
+
+/// The parameters of `/v1/brc20/tickers`.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct TickersParams {
+    /// The order: `holders`, `prog_holders`, `max_supply`, `mint_progress`
+    /// (minted over max supply) or `deploy_height`; ties order by ticker.
+    #[param(schema_with = sort_schema)]
+    sort: Option<TickerSort>,
+    /// The direction.
+    #[param(schema_with = order_schema)]
+    order: Option<OrderName>,
+    /// Keeps the tickers that start with it, in lowercase.
+    #[param(max_length = 256)]
+    search: Option<String>,
+}
+
+/// A holder of a ticker: a Bitcoin address with its BRC-20 balance and the
+/// BRC2.0 balance of its EVM address, a pkScript without an address, or an
+/// EVM address without a Bitcoin address.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub(super) struct Brc20TickerHolder {
+    /// The Bitcoin address; null for a pkScript without an address or an
+    /// EVM address `evm_addresses` does not map.
+    #[schema(nullable)]
+    address: String,
+    /// The pkScript of the BRC-20 balance, null without one.
+    #[schema(nullable)]
+    pkscript: String,
+    /// The EVM address of the BRC2.0 balance, null without one.
+    #[schema(nullable)]
+    evm_address: String,
+    /// The BRC-20 overall balance.
+    balance: String,
+    /// The BRC-20 available balance.
+    available_balance: String,
+    /// The BRC2.0 balance.
+    prog_balance: String,
+    /// `balance` plus `prog_balance`.
+    total_balance: String,
+}
+
+/// A page of a ticker's holders.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20TickerHolders {
+    /// The lowercase ticker.
+    ticker: String,
+    #[schema(minimum = 18, maximum = 18)]
+    decimals: i32,
+    ticker_decimals: i32,
+    holders: Vec<Brc20TickerHolder>,
+    offset: i64,
+    limit: i64,
+    has_more: bool,
+    block_height: DbHeight,
+}
+
+/// A wallet's balance of one ticker.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20WalletBalance {
+    tick: String,
+    #[schema(minimum = 18, maximum = 18)]
+    decimals: i32,
+    /// Null for a BRC2.0 balance of a ticker brc20 does not list.
+    #[schema(nullable)]
+    ticker_decimals: i32,
+    balance: String,
+    available_balance: String,
+    prog_balance: String,
+    total_balance: String,
+}
+
+/// A page of a wallet's balances.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20WalletBalances {
+    /// The Bitcoin address: the one asked for, or an EVM address's mapped
+    /// one (null when unmapped).
+    #[schema(nullable)]
+    address: String,
+    /// The EVM address: the one asked for in lowercase, or a Bitcoin
+    /// address's mapped one (null when unmapped).
+    #[schema(nullable)]
+    evm_address: String,
+    balances: Vec<Brc20WalletBalance>,
+    offset: i64,
+    limit: i64,
+    has_more: bool,
+    block_height: DbHeight,
+}
+
 /// A brc20_tickers row with its holder counts.
 struct TickerRow {
     tick: String,
@@ -239,8 +435,19 @@ async fn ticker_row(db: &Db, tick: &str) -> Result<Option<TickerRow>, ApiError> 
     .await?)
 }
 
-/// `/v1/brc20/ticker?ticker=`: a ticker's supply, mint progress, holder
-/// counts and BRC2.0 token contract (null before its first deposit).
+/// A ticker's supply, mint progress, holder counts and BRC2.0 token
+/// contract.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/ticker",
+    tag = "brc20",
+    params(TickerParam),
+    responses(
+        (status = 200, description = "The ticker", body = Answer<Brc20TickerInfo>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+        (status = 404, description = "`ticker not found`", body = ErrorBody),
+    ),
+)]
 pub async fn ticker_info(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let tick = match ticker(&query, "ticker") {
         Ok(tick) => tick,
@@ -279,10 +486,24 @@ pub(super) fn evm_address(query: &JsObject, key: &str) -> Result<String, BadPara
     Ok(address.to_lowercase())
 }
 
-/// `/v1/brc20/ticker/by_contract?contract_address=`: the ticker a BRC2.0
-/// token contract carries, as `/v1/brc20/ticker` answers it, with
-/// `prog_contract_address` the queried contract and `prog_ticker_hash` the
-/// ticker hash its `BRC20Created` log registered.
+/// The ticker a BRC2.0 token contract carries.
+///
+/// The ticker as `/v1/brc20/ticker` answers it, with `prog_contract_address`
+/// the queried contract and `prog_ticker_hash` the ticker hash its
+/// `BRC20Created` log registered.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/ticker/by_contract",
+    tag = "brc20",
+    params(
+        ("contract_address" = String, Query, description = "The token contract: `0x` and 40 hex digits, in any case", pattern = "^0[xX][0-9a-fA-F]{40}$"),
+    ),
+    responses(
+        (status = 200, description = "The ticker", body = Answer<Brc20ContractTicker>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+        (status = 404, description = "`contract not found`, or `ticker not found` for a contract of a ticker brc20 does not list", body = ErrorBody),
+    ),
+)]
 pub async fn ticker_by_contract(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -314,11 +535,22 @@ pub async fn ticker_by_contract(
     }))
 }
 
-/// `/v1/brc20/tickers?sort=&order=&search=&offset=&limit=`: tickers by
-/// `holders` (the default), `prog_holders`, `max_supply`, `mint_progress`
-/// (minted over max supply) or `deploy_height`, descending unless
-/// `order=asc`, then by ticker; `search` keeps the tickers that start with
-/// it.
+/// A page of tickers, by holders or another order.
+///
+/// Tickers by `holders` (the default), `prog_holders`, `max_supply`,
+/// `mint_progress` (minted over max supply) or `deploy_height`, descending
+/// unless `order=asc`, then by ticker; `search` keeps the tickers that
+/// start with it.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/tickers",
+    tag = "brc20",
+    params(TickersParams, PageParams),
+    responses(
+        (status = 200, description = "The page", body = Answer<Brc20Tickers>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+    ),
+)]
 pub async fn tickers(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let request = match TickersRequest::from_query(&query) {
         Ok(request) => request,
@@ -425,9 +657,21 @@ impl HolderRow {
     }
 }
 
-/// `/v1/brc20/ticker/holders?ticker=&offset=&limit=`: the holders of a
-/// ticker by their BRC-20 balance plus their BRC2.0 balance, largest first,
-/// then by holder.
+/// A page of a ticker's holders, BRC-20 and BRC2.0 balances merged.
+///
+/// The holders by their BRC-20 balance plus their BRC2.0 balance, largest
+/// first, then by holder. The BRC2.0 module's pkScript is left out.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/ticker/holders",
+    tag = "brc20",
+    params(TickerParam, PageParams),
+    responses(
+        (status = 200, description = "The page", body = Answer<Brc20TickerHolders>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+        (status = 404, description = "`ticker not found`", body = ErrorBody),
+    ),
+)]
 pub async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let (tick, page) =
         match ticker(&query, "ticker").and_then(|tick| Ok((tick, Page::from_query(&query)?))) {
@@ -506,11 +750,26 @@ pub fn is_evm_address(address: &str) -> bool {
         && address[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// `/v1/brc20/wallet/balances?address=&offset=&limit=`: every ticker a
-/// wallet holds, its BRC-20 and BRC2.0 balances side by side, by ticker.
+/// A page of a wallet's tickers, BRC-20 and BRC2.0 balances side by side.
+///
+/// One row per ticker with a positive balance on either side, by ticker.
 /// `address` is a Bitcoin address, whose EVM address comes from
 /// `evm_addresses`, or an EVM address, whose Bitcoin address comes from the
-/// same table when it has one.
+/// same table when it has one. A wallet the database does not know answers
+/// an empty list.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/wallet/balances",
+    tag = "brc20",
+    params(
+        ("address" = String, Query, description = "A Bitcoin address, or an EVM address (`0x` and 40 hex digits, in any case)", min_length = 1, max_length = 128),
+        PageParams,
+    ),
+    responses(
+        (status = 200, description = "The page", body = Answer<Brc20WalletBalances>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+    ),
+)]
 pub async fn wallet_balances(
     State(db): State<Db>,
     JsQuery(query): JsQuery,

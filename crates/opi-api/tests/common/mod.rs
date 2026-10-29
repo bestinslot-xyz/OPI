@@ -1,5 +1,6 @@
 //! Helpers the module route tests share: an app serving one module, a
-//! request, and the live-database gate.
+//! request (whose answer is checked against the OpenAPI document), and the
+//! live-database gate.
 
 #![allow(dead_code)]
 
@@ -11,18 +12,126 @@ use {
         http::Request,
     },
     opi_api::{
-        config::{Module, load_config},
+        config::{MODULES, Module, load_config},
         db::Db,
         js::JsValue,
         router,
     },
+    serde_json::{Value, json},
     sqlx::{
         PgPool,
         postgres::{PgConnectOptions, PgPoolOptions},
     },
-    std::{collections::HashMap, net::SocketAddr},
+    std::{
+        collections::HashMap,
+        net::SocketAddr,
+        sync::{Arc, LazyLock, Mutex},
+    },
     tower::ServiceExt,
 };
+
+/// The OpenAPI document of every module.
+static DOCUMENT: LazyLock<Value> = LazyLock::new(|| {
+    serde_json::to_value(opi_api::routes::app(&MODULES, vec![], &Default::default()).1).unwrap()
+});
+
+/// The validators of the answer schemas checked so far, by path template,
+/// status and media type.
+static VALIDATORS: LazyLock<Mutex<HashMap<String, Arc<jsonschema::Validator>>>> =
+    LazyLock::new(Default::default);
+
+/// The document's path template that `path` matches, if any: a `{name}`
+/// segment matches any non-empty segment.
+fn path_template(path: &str) -> Option<&'static str> {
+    let segments: Vec<&str> = path.split('/').collect();
+    DOCUMENT["paths"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .find(|template| {
+            let parts: Vec<&str> = template.split('/').collect();
+            parts.len() == segments.len()
+                && parts.iter().zip(&segments).all(|(part, segment)| {
+                    part == segment || (part.starts_with('{') && !segment.is_empty())
+                })
+        })
+}
+
+/// Checks `answer` to a GET of `uri` against the OpenAPI document: the
+/// operation lists its status and content type, and a JSON body validates
+/// against that answer's schema. Two 404s are not checked: a path the
+/// document has no template for (an unknown route) and a disabled module's
+/// `"<module> is not enabled on this node"`, which the document leaves out
+/// since it lists only the enabled modules. Any other answer on a path
+/// without a template fails, so a mistyped test URI cannot skip the check.
+pub fn check_against_document(uri: &str, answer: &Answer) {
+    if answer.status == 404 {
+        let disabled = serde_json::from_str::<Value>(&answer.body).is_ok_and(|body| {
+            body["error"]
+                .as_str()
+                .is_some_and(|error| error.ends_with("is not enabled on this node"))
+        });
+        if disabled {
+            return;
+        }
+    }
+    let path = uri.split('?').next().unwrap().to_ascii_lowercase();
+    let path = match path.strip_suffix('/') {
+        Some(stripped) if !stripped.is_empty() => stripped.to_string(),
+        _ => path,
+    };
+    let Some(template) = path_template(&path) else {
+        assert_eq!(
+            answer.status, 404,
+            "{uri}: no path of the OpenAPI document matches it"
+        );
+        return;
+    };
+    let status = answer.status.to_string();
+    let response = &DOCUMENT["paths"][template]["get"]["responses"][&status];
+    assert!(
+        response.is_object(),
+        "{uri}: the document lists no {status} answer for {template}"
+    );
+    let media = answer
+        .content_type
+        .as_deref()
+        .and_then(|value| value.split(';').next())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let schema = &response["content"][&media]["schema"];
+    assert!(
+        schema.is_object(),
+        "{uri}: the document lists no {media} body for {template} {status}"
+    );
+    if media != "application/json" {
+        return;
+    }
+    let key = format!("{template} {status} {media}");
+    let validator = VALIDATORS
+        .lock()
+        .unwrap()
+        .entry(key)
+        .or_insert_with(|| {
+            // the schema's `#/components/...` references resolve in this root
+            let root = json!({"allOf": [schema], "components": DOCUMENT["components"]});
+            Arc::new(jsonschema::validator_for(&root).unwrap())
+        })
+        .clone();
+    let body: Value = serde_json::from_str(&answer.body)
+        .unwrap_or_else(|error| panic!("{uri}: a JSON answer that does not parse: {error}"));
+    let errors: Vec<String> = validator
+        .iter_errors(&body)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{uri}: the {status} answer does not match the document's schema for {template}: {errors:#?}\n{}",
+        answer.body
+    );
+}
 
 pub const HTML: &str = "text/html; charset=utf-8";
 pub const JSON: &str = "application/json; charset=utf-8";
@@ -75,11 +184,13 @@ pub async fn get(app: &Router, uri: &str) -> Answer {
         .get("content-type")
         .map(|v| v.to_str().unwrap().to_string());
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    Answer {
+    let answer = Answer {
         status,
         content_type,
         body: String::from_utf8(body.to_vec()).unwrap(),
-    }
+    };
+    check_against_document(uri, &answer);
+    answer
 }
 
 pub async fn expect(app: &Router, uri: &str, status: u16, content_type: &str, body: &str) {

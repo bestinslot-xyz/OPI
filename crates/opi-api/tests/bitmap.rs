@@ -18,6 +18,28 @@ use {
 
 const BITMAP: Module = Module::Bitmap;
 
+#[test]
+#[should_panic(expected = "does not match the document's schema")]
+fn the_document_check_refuses_a_body_its_schema_does_not_allow() {
+    let answer = common::Answer {
+        status: 200,
+        content_type: Some(JSON.into()),
+        body: r#"{"error":null,"result":{"prefix":1}}"#.into(),
+    };
+    common::check_against_document("/v1/bitmap/search?prefix=1", &answer);
+}
+
+#[test]
+#[should_panic(expected = "no path of the OpenAPI document matches it")]
+fn the_document_check_refuses_an_unknown_path_that_answers() {
+    let answer = common::Answer {
+        status: 200,
+        content_type: Some(JSON.into()),
+        body: "{}".into(),
+    };
+    common::check_against_document("/v1/bitmap/serach", &answer);
+}
+
 #[tokio::test]
 async fn ip_and_height_are_text() {
     let app = height(BITMAP, 328209.into());
