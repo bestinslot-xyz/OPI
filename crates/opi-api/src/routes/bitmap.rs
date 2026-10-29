@@ -38,37 +38,90 @@ use {
         db::Db,
         extract::{ClientIp, JsQuery},
         js::{JsObject, JsValue},
-        js_object, params,
+        js_object,
+        openapi::{Answer, ErrorBody, LimitParam, QueryEcho},
+        params,
         reply::{ApiError, Reply},
     },
     anyhow::anyhow,
-    axum::{Router, extract::State, routing::get},
+    axum::extract::State,
+    utoipa::{IntoParams, ToSchema},
+    utoipa_axum::{router::OpenApiRouter, routes},
 };
 
 /// The digits of the largest bitmap number, 2147483647.
 pub const MAX_PREFIX_DIGITS: usize = 10;
 
-pub fn routes(router: Router, db: Db, _settings: &super::RouteSettings) -> Router {
-    router.merge(
-        Router::new()
-            .route("/v1/bitmap/ip", get(ip))
-            .route("/v1/bitmap/block_height", get(block_height))
-            .route(
-                "/v1/bitmap/get_hash_of_all_activity",
-                get(get_hash_of_all_activity),
-            )
-            .route(
-                "/v1/bitmap/get_hash_of_all_bitmaps",
-                get(get_hash_of_all_bitmaps),
-            )
-            .route(
-                "/v1/bitmap/get_inscription_id_of_bitmap",
-                get(get_inscription_id_of_bitmap),
-            )
-            .route("/v1/bitmap/by_inscription", get(by_inscription))
-            .route("/v1/bitmap/search", get(search))
-            .with_state(db),
-    )
+pub fn routes(db: Db, _settings: &super::RouteSettings) -> OpenApiRouter {
+    OpenApiRouter::default()
+        .routes(routes!(ip))
+        .routes(routes!(block_height))
+        .routes(routes!(get_hash_of_all_activity))
+        .routes(routes!(get_hash_of_all_bitmaps))
+        .routes(routes!(get_inscription_id_of_bitmap))
+        .routes(routes!(by_inscription))
+        .routes(routes!(search))
+        .with_state(db)
+}
+
+/// A block's event hashes.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct BitmapActivityHash {
+    cumulative_event_hash: String,
+    block_event_hash: String,
+    indexer_version: String,
+    /// The `block_height` parameter as given.
+    block_height: QueryEcho,
+}
+
+/// The inscription of a bitmap.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct BitmapInscription {
+    inscription_id: String,
+    /// The `bitmap_number` parameter as given.
+    bitmap_number: QueryEcho,
+}
+
+/// A bitmap.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Bitmap {
+    inscription_id: String,
+    inscription_number: i32,
+    bitmap_number: i32,
+    /// The block that registered the bitmap.
+    block_height: i32,
+}
+
+/// The parameters of `/v1/bitmap/search`.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct SearchParams {
+    /// 1 to 10 decimal digits: the bitmaps whose number starts with them.
+    #[param(pattern = "^[0-9]{1,10}$")]
+    prefix: String,
+    /// The previous page's `next_after`: the page holds the bitmaps with a
+    /// higher number.
+    #[param(minimum = 0, maximum = 2147483647)]
+    after: Option<i32>,
+}
+
+/// A page of bitmaps by number prefix.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct BitmapSearch {
+    /// The `prefix` parameter.
+    prefix: String,
+    limit: i64,
+    has_more: bool,
+    /// The `after` of the next page, null on the last page.
+    #[schema(nullable)]
+    next_after: i32,
+    /// Ascending by number.
+    bitmaps: Vec<Bitmap>,
 }
 
 /// get_block_height_of_db: the latest indexed height (a number, or null for
@@ -87,15 +140,47 @@ async fn indexer_version(db: &Db) -> Result<String, ApiError> {
         .ok_or_else(|| no_row("indexer_version"))?)
 }
 
+/// The client's IP address, as the API sees it through
+/// API_TRUSTED_PROXY_CNT proxies.
+#[utoipa::path(
+    get,
+    path = "/v1/bitmap/ip",
+    tag = "bitmap",
+    responses((status = 200, description = "The client's IP address", body = String, content_type = "text/html")),
+)]
 async fn ip(ClientIp(ip): ClientIp) -> Reply {
     Reply::send_str(ip)
 }
 
+/// The latest indexed block height.
+///
+/// `null` before the first block; a failed query answers 500.
+#[utoipa::path(
+    get,
+    path = "/v1/bitmap/block_height",
+    tag = "bitmap",
+    responses((status = 200, description = "The height as text, or `null`", body = String, content_type = "text/html")),
+)]
 async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     let height = block_height_of_db(&db).await?;
     Ok(Reply::send_str(height.to_js_string()?))
 }
 
+/// A block's event hashes, cumulative and its own.
+///
+/// A height the hash table has no row for answers 500.
+#[utoipa::path(
+    get,
+    path = "/v1/bitmap/get_hash_of_all_activity",
+    tag = "bitmap",
+    params(
+        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4, or a height without a hash row, answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The block's hashes", body = Answer<BitmapActivityHash>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip", body = ErrorBody),
+    ),
+)]
 async fn get_hash_of_all_activity(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -134,9 +219,17 @@ async fn get_hash_of_all_activity(
     }))
 }
 
+/// The hash of every bitmap; the route always fails.
+///
 /// The route reads the latest height and passes it as the only parameter of
 /// a query that has no `$1`. Postgres refuses that bind, so after the
 /// height query the route always fails with the 500 answer.
+#[utoipa::path(
+    get,
+    path = "/v1/bitmap/get_hash_of_all_bitmaps",
+    tag = "bitmap",
+    responses((status = 500, description = "Always: `{\"error\":\"internal error\",\"result\":null}`", body = ErrorBody)),
+)]
 async fn get_hash_of_all_bitmaps(State(db): State<Db>) -> Result<Reply, ApiError> {
     block_height_of_db(&db).await?;
     Err(
@@ -145,6 +238,19 @@ async fn get_hash_of_all_bitmaps(State(db): State<Db>) -> Result<Reply, ApiError
     )
 }
 
+/// The inscription id of a bitmap number.
+#[utoipa::path(
+    get,
+    path = "/v1/bitmap/get_inscription_id_of_bitmap",
+    tag = "bitmap",
+    params(
+        ("bitmap_number" = String, Query, description = "The bitmap number, an integer. Text Postgres cannot read as an int4 answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The bitmap's inscription", body = Answer<BitmapInscription>),
+        (status = 400, description = "`bitmap not found`", body = ErrorBody),
+    ),
+)]
 async fn get_inscription_id_of_bitmap(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -192,8 +298,20 @@ impl BitmapRow {
     }
 }
 
-/// `/v1/bitmap/by_inscription?inscription_id=`: the bitmap an inscription
-/// registered.
+/// The bitmap an inscription registered.
+#[utoipa::path(
+    get,
+    path = "/v1/bitmap/by_inscription",
+    tag = "bitmap",
+    params(
+        ("inscription_id" = String, Query, description = "The inscription id", min_length = 1, max_length = 128),
+    ),
+    responses(
+        (status = 200, description = "The bitmap", body = Answer<Bitmap>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+        (status = 404, description = "`bitmap not found`", body = ErrorBody),
+    ),
+)]
 async fn by_inscription(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let inscription_id = match text(&query, "inscription_id", MAX_INSCRIPTION_ID_LEN) {
         Ok(inscription_id) => inscription_id,
@@ -262,8 +380,21 @@ pub fn prefix_ranges(prefix: &str) -> Result<Vec<(i32, i32)>, BadParam> {
     Ok(ranges)
 }
 
-/// `/v1/bitmap/search?prefix=&after=&limit=`: the bitmaps whose number
-/// starts with `prefix`, ascending by number.
+/// A page of the bitmaps whose number starts with a prefix.
+///
+/// Ascending by number: `1` lists 1, 10 to 19, 100 to 199 and so on. A
+/// bitmap number has no leading zeros, so `0` lists bitmap 0 and a longer
+/// prefix starting with `0` lists nothing. The list pages by key.
+#[utoipa::path(
+    get,
+    path = "/v1/bitmap/search",
+    tag = "bitmap",
+    params(SearchParams, LimitParam),
+    responses(
+        (status = 200, description = "The page", body = Answer<BitmapSearch>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+    ),
+)]
 async fn search(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let request = (|| -> Result<_, BadParam> {
         let prefix = required(&query, "prefix")?;

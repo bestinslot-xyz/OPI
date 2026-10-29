@@ -18,15 +18,22 @@ use {
         db::Db,
         extract::{ClientIp, ExpressParams, JsQuery},
         js::{JsError, JsObject, JsValue, compare_strings, sort_by_number},
-        js_object, params,
+        js_object,
+        openapi::{Answer, DbHeight, ErrorBody, Null, NumericText, QueryEcho},
+        params,
         pg_json::{self, ToJs, oid},
         reply::{ApiError, Reply},
     },
-    axum::{Router, extract::State, routing::get},
+    axum::extract::State,
     sha2::{Digest, Sha256},
+    utoipa::ToSchema,
+    utoipa_axum::{
+        router::{OpenApiRouter, UtoipaMethodRouterExt},
+        routes,
+    },
 };
 
-mod events;
+pub(crate) mod events;
 mod snapshot;
 mod tickers;
 
@@ -38,74 +45,270 @@ const EVENT_SEPARATOR: &str = "|";
 /// The explorer's page size (EXPLORER_PAGE_SIZE).
 const EXPLORER_PAGE_SIZE: i64 = 50;
 
-pub fn routes(router: Router, db: Db, settings: &super::RouteSettings) -> Router {
-    router.merge(
-        Router::new()
-            .route("/v1/brc20/ip", get(ip))
-            .route("/v1/brc20/db_version", get(db_version))
-            .route("/v1/brc20/event_hash_version", get(event_hash_version))
-            .route("/v1/brc20/extras_block_height", get(extras_block_height))
-            .route("/v1/brc20/block_height", get(block_height))
-            .route("/v1/brc20/balance_on_block", get(balance_on_block))
-            .route("/v1/brc20/activity_on_block", get(activity_on_block))
-            .route(
-                "/v1/brc20/bitcoin_rpc_results_on_block",
-                get(bitcoin_rpc_results_on_block),
-            )
-            .route(
-                "/v1/brc20/get_current_balance_of_wallet",
-                get(get_current_balance_of_wallet),
-            )
-            .route(
-                "/v1/brc20/get_valid_tx_notes_of_wallet",
-                get(get_valid_tx_notes_of_wallet),
-            )
-            .route(
-                "/v1/brc20/get_valid_tx_notes_of_ticker",
-                get(get_valid_tx_notes_of_ticker),
-            )
-            .route("/v1/brc20/holders", get(holders))
-            .route(
-                "/v1/brc20/get_hash_of_all_activity",
-                get(get_hash_of_all_activity),
-            )
-            .route(
-                "/v1/brc20/get_hash_of_all_current_balances",
-                get(get_hash_of_all_current_balances),
-            )
-            .route("/v1/brc20/event", get(event))
-            .route(
-                "/v1/brc20/explorer/btc_address/{evm_address}",
-                get(explorer_btc_address),
-            )
-            .route(
-                "/v1/brc20/explorer/balances/{evm_address}",
-                get(explorer_balances),
-            )
-            .route(
-                "/v1/brc20/explorer/address_tabs_counters/{evm_address}",
-                get(explorer_address_tabs_counters),
-            )
-            .route("/v1/brc20/explorer/tokens", get(explorer_tokens))
-            .route("/v1/brc20/ticker", get(tickers::ticker_info))
-            .route(
-                "/v1/brc20/ticker/by_contract",
-                get(tickers::ticker_by_contract),
-            )
-            .route("/v1/brc20/tickers", get(tickers::tickers))
-            .route("/v1/brc20/ticker/holders", get(tickers::holders))
-            .route(
-                "/v1/brc20/ticker/holders/snapshot",
-                get(snapshot::snapshot).with_state(snapshot::Snapshots::new(
-                    db.clone(),
-                    settings.snapshot_timeout,
-                )),
-            )
-            .route("/v1/brc20/wallet/balances", get(tickers::wallet_balances))
-            .route("/v1/brc20/ticker/events", get(events::ticker_events))
-            .route("/v1/brc20/wallet/events", get(events::wallet_events))
-            .with_state(db),
-    )
+pub fn routes(db: Db, settings: &super::RouteSettings) -> OpenApiRouter {
+    OpenApiRouter::default()
+        .routes(routes!(ip))
+        .routes(routes!(db_version))
+        .routes(routes!(event_hash_version))
+        .routes(routes!(extras_block_height))
+        .routes(routes!(block_height))
+        .routes(routes!(balance_on_block))
+        .routes(routes!(activity_on_block))
+        .routes(routes!(bitcoin_rpc_results_on_block))
+        .routes(routes!(get_current_balance_of_wallet))
+        .routes(routes!(get_valid_tx_notes_of_wallet))
+        .routes(routes!(get_valid_tx_notes_of_ticker))
+        .routes(routes!(holders))
+        .routes(routes!(get_hash_of_all_activity))
+        .routes(routes!(get_hash_of_all_current_balances))
+        .routes(routes!(event))
+        .routes(routes!(explorer_btc_address))
+        .routes(routes!(explorer_balances))
+        .routes(routes!(explorer_address_tabs_counters))
+        .routes(routes!(explorer_tokens))
+        .routes(routes!(tickers::ticker_info))
+        .routes(routes!(tickers::ticker_by_contract))
+        .routes(routes!(tickers::tickers))
+        .routes(routes!(tickers::holders))
+        .routes(
+            routes!(snapshot::snapshot).with_state(snapshot::Snapshots::new(
+                db.clone(),
+                settings.snapshot_timeout,
+            )),
+        )
+        .routes(routes!(tickers::wallet_balances))
+        .routes(routes!(events::ticker_events))
+        .routes(routes!(events::wallet_events))
+        .with_state(db)
+}
+
+/// A brc20 event as the block and inscription routes list it: the stored
+/// event object (its fields depend on the event type), with `event_type`
+/// and `inscription_id` set on it.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20StoredEvent {
+    /// The event type's name; absent for a type id `brc20_event_types`
+    /// does not list.
+    #[schema(required = false)]
+    event_type: String,
+    inscription_id: String,
+}
+
+/// A BRC-20 balance: overall and available amounts.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20Balance {
+    overall_balance: NumericText,
+    available_balance: NumericText,
+}
+
+/// A BRC-20 balance with the database's height.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20CurrentBalance {
+    overall_balance: NumericText,
+    available_balance: NumericText,
+    block_height: DbHeight,
+}
+
+/// A cached bitcoin RPC call.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20RpcResult {
+    method: String,
+    /// The request's stored JSON.
+    request: serde_json::Value,
+    /// The response's stored JSON.
+    response: serde_json::Value,
+}
+
+/// An unused transfer inscription of a wallet. `brc20_unused_tx_inscrs` has
+/// no DDL in this repository, so every field may be null.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20WalletUnusedTx {
+    #[schema(nullable)]
+    tick: String,
+    #[schema(nullable)]
+    inscription_id: String,
+    #[schema(nullable)]
+    amount: NumericText,
+    #[schema(nullable)]
+    genesis_height: i32,
+}
+
+/// A wallet's unused transfer inscriptions.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20WalletUnusedTxes {
+    unused_txes: Vec<Brc20WalletUnusedTx>,
+    block_height: DbHeight,
+}
+
+/// An unused transfer inscription of a ticker. Every field may be null, as
+/// for a wallet's.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20TickerUnusedTx {
+    #[schema(nullable)]
+    current_holder_pkscript: String,
+    #[schema(nullable)]
+    current_holder_wallet: String,
+    #[schema(nullable)]
+    inscription_id: String,
+    #[schema(nullable)]
+    amount: NumericText,
+    #[schema(nullable)]
+    genesis_height: i32,
+}
+
+/// A ticker's unused transfer inscriptions.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20TickerUnusedTxes {
+    unused_txes: Vec<Brc20TickerUnusedTx>,
+    block_height: DbHeight,
+}
+
+/// A holder's current balance.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20Holder {
+    pkscript: String,
+    #[schema(nullable)]
+    wallet: String,
+    overall_balance: NumericText,
+    available_balance: NumericText,
+}
+
+/// A ticker's holders, under the key `unused_txes`.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20Holders {
+    /// The holders with a nonzero balance, largest first.
+    unused_txes: Vec<Brc20Holder>,
+    block_height: DbHeight,
+}
+
+/// A block's event hashes.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ActivityHash {
+    cumulative_event_hash: String,
+    block_event_hash: String,
+    cumulative_trace_hash: String,
+    block_trace_hash: String,
+    indexer_version: String,
+    /// The `block_height` parameter as given.
+    block_height: QueryEcho,
+}
+
+/// The hash of every current balance.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20BalancesHash {
+    /// The sha256 hex of every nonzero balance as
+    /// `pkscript;tick;overall;available`, in pkscript then tick order,
+    /// joined by `|`.
+    current_balances_hash: String,
+    indexer_version: String,
+    block_height: DbHeight,
+}
+
+/// The BTC address of an EVM address.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ExplorerBtcAddress {
+    /// Null for an EVM address `evm_addresses` does not map.
+    #[schema(nullable)]
+    btc_address: String,
+}
+
+/// A token balance as the explorer shows it.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ExplorerBalance {
+    /// The ticker.
+    external_token_name: String,
+    /// The overall balance.
+    external_value: NumericText,
+    /// The ticker's deploy precision as text, `"null"` for a ticker
+    /// `brc20_tickers` does not list.
+    external_decimals: String,
+}
+
+/// An EVM address's token balances.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ExplorerBalances {
+    /// Largest first; empty for an unmapped EVM address.
+    items: Vec<Brc20ExplorerBalance>,
+}
+
+/// The explorer's address tab counters; only `token_balances_count` counts.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ExplorerCounters {
+    #[schema(minimum = 0, maximum = 0)]
+    internal_transactions_count: i64,
+    #[schema(minimum = 0, maximum = 0)]
+    logs_count: i64,
+    /// The tickers with a positive balance.
+    token_balances_count: i64,
+    #[schema(minimum = 0, maximum = 0)]
+    token_transfers_count: i64,
+    #[schema(minimum = 0, maximum = 0)]
+    transactions_count: i64,
+    #[schema(minimum = 0, maximum = 0)]
+    validations_count: i64,
+    #[schema(minimum = 0, maximum = 0)]
+    withdrawals_count: i64,
+}
+
+/// A ticker as the explorer's token list shows it.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ExplorerToken {
+    /// Always empty.
+    address: String,
+    /// Always `ERC-20`.
+    r#type: String,
+    symbol: String,
+    name: String,
+    /// The ticker's deploy precision as text.
+    decimals: String,
+    /// The holders with a positive balance, as text.
+    holders: String,
+    exchange_rate: Null,
+    /// The minted supply as text.
+    total_supply: String,
+    icon_url: Null,
+    circulating_market_cap: Null,
+}
+
+/// The parameters of the explorer's next token page.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ExplorerNextPage {
+    /// The page's last holder count, as text.
+    #[schema(nullable)]
+    holder_count: String,
+    /// The next page's offset.
+    items_count: f64,
+    /// The page's last ticker.
+    name: String,
+    market_cap: Null,
+}
+
+/// A page of the explorer's token list.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20ExplorerTokens {
+    items: Vec<Brc20ExplorerToken>,
+    /// Null on the last page.
+    #[schema(nullable)]
+    next_page_params: Brc20ExplorerNextPage,
 }
 
 /// get_block_height_of_db: the latest indexed height (a number, or null for
@@ -188,10 +391,27 @@ fn event_entry(
     Ok(entry)
 }
 
+/// The client's IP address, as the API sees it through
+/// API_TRUSTED_PROXY_CNT proxies.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/ip",
+    tag = "brc20",
+    responses((status = 200, description = "The client's IP address", body = String, content_type = "text/html")),
+)]
 async fn ip(ClientIp(ip): ClientIp) -> Reply {
     Reply::send_str(ip)
 }
 
+/// The database's schema version.
+///
+/// A database without a `brc20_indexer_version` row answers 500.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/db_version",
+    tag = "brc20",
+    responses((status = 200, description = "The version number as text", body = String, content_type = "text/html")),
+)]
 async fn db_version(State(db): State<Db>) -> Result<Reply, ApiError> {
     let rows = sqlx::query_scalar!("SELECT db_version FROM brc20_indexer_version;")
         .fetch_all(db.pool()?)
@@ -203,6 +423,15 @@ async fn db_version(State(db): State<Db>) -> Result<Reply, ApiError> {
     Ok(Reply::send_str(version.to_js().to_js_string()?))
 }
 
+/// The version of the event hash format.
+///
+/// A database without a `brc20_indexer_version` row answers 500.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/event_hash_version",
+    tag = "brc20",
+    responses((status = 200, description = "The version number as text", body = String, content_type = "text/html")),
+)]
 async fn event_hash_version(State(db): State<Db>) -> Result<Reply, ApiError> {
     let rows = sqlx::query_scalar!("SELECT event_hash_version FROM brc20_indexer_version;")
         .fetch_all(db.pool()?)
@@ -214,17 +443,50 @@ async fn event_hash_version(State(db): State<Db>) -> Result<Reply, ApiError> {
     Ok(Reply::send_str(version.to_js().to_js_string()?))
 }
 
+/// The latest block height of `brc20_extras_block_hashes`.
+///
+/// `null` for an empty table and `-1` when the query fails (as while the
+/// table does not exist).
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/extras_block_height",
+    tag = "brc20",
+    responses((status = 200, description = "The height as text, `null` or `-1`", body = String, content_type = "text/html")),
+)]
 async fn extras_block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     let height = extras_block_height_of_db(&db).await;
     Ok(Reply::send_str(height.to_js_string()?))
 }
 
+/// The latest indexed block height.
+///
+/// `null` before the first block and `-1` when the query fails.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/block_height",
+    tag = "brc20",
+    responses((status = 200, description = "The height as text, `null` or `-1`", body = String, content_type = "text/html")),
+)]
 async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     let height = block_height_of_db(&db).await;
     Ok(Reply::send_str(height.to_js_string()?))
 }
 
 /// A ticker's balance of a pkscript at the start of a block height.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/balance_on_block",
+    tag = "brc20",
+    params(
+        ("block_height" = Option<String>, Query, description = "The block height, an integer; the balance is the latest one below it. Text Postgres cannot read as an int4 answers 500."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex"),
+        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The balance", body = Answer<Brc20Balance>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip plus one, `no balance found` when no balance row matches", body = ErrorBody),
+    ),
+)]
 async fn balance_on_block(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -266,6 +528,20 @@ async fn balance_on_block(
 }
 
 /// Every brc20 event of a block height.
+///
+/// The events of `brc20_events` and `brc20_light_events`, by id.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/activity_on_block",
+    tag = "brc20",
+    params(
+        ("block_height" = Option<String>, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The block's events", body = Answer<Vec<Brc20StoredEvent>>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip", body = ErrorBody),
+    ),
+)]
 async fn activity_on_block(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -310,6 +586,18 @@ async fn activity_on_block(
 }
 
 /// Every cached bitcoin RPC result of a block height.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/bitcoin_rpc_results_on_block",
+    tag = "brc20",
+    params(
+        ("block_height" = Option<String>, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The block's RPC results, by id", body = Answer<Vec<Brc20RpcResult>>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip", body = ErrorBody),
+    ),
+)]
 async fn bitcoin_rpc_results_on_block(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -346,6 +634,24 @@ async fn bitcoin_rpc_results_on_block(
     }))
 }
 
+/// A wallet's current balance of a ticker.
+///
+/// A non-empty `address` selects the wallet by address, otherwise by
+/// `pkscript`.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/get_current_balance_of_wallet",
+    tag = "brc20",
+    params(
+        ("address" = Option<String>, Query, description = "The wallet's address"),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty"),
+        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The balance", body = Answer<Brc20CurrentBalance>),
+        (status = 400, description = "`no balance found`", body = ErrorBody),
+    ),
+)]
 async fn get_current_balance_of_wallet(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -407,6 +713,25 @@ async fn get_current_balance_of_wallet(
 /// repository holds the table's DDL, so every column may be NULL.
 type UnusedTxRow = (Option<String>, Option<String>, Option<String>, Option<i32>);
 
+/// A wallet's unused transfer inscriptions.
+///
+/// A non-empty `address` selects the wallet by address, otherwise by
+/// `pkscript`. The route reads `brc20_unused_tx_inscrs`, which neither the
+/// indexer nor `brc20 reindex-extras` creates; it answers 500 until the
+/// table exists.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/get_valid_tx_notes_of_wallet",
+    tag = "brc20",
+    params(
+        ("address" = Option<String>, Query, description = "The wallet's address"),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty"),
+    ),
+    responses(
+        (status = 200, description = "The inscriptions, by ticker", body = Answer<Brc20WalletUnusedTxes>),
+        (status = 400, description = "`no unused tx found`", body = ErrorBody),
+    ),
+)]
 async fn get_valid_tx_notes_of_wallet(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -465,6 +790,22 @@ async fn get_valid_tx_notes_of_wallet(
     }))
 }
 
+/// A ticker's unused transfer inscriptions.
+///
+/// The route reads `brc20_unused_tx_inscrs`, which neither the indexer nor
+/// `brc20 reindex-extras` creates; it answers 500 until the table exists.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/get_valid_tx_notes_of_ticker",
+    tag = "brc20",
+    params(
+        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The inscriptions, by holder pkScript", body = Answer<Brc20TickerUnusedTxes>),
+        (status = 400, description = "`no unused tx found`", body = ErrorBody),
+    ),
+)]
 async fn get_valid_tx_notes_of_ticker(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -518,6 +859,22 @@ fn order_holders(rows: Vec<JsObject>) -> Result<Vec<JsObject>, JsError> {
         .collect())
 }
 
+/// A ticker's holders and their current balances.
+///
+/// The holders with a nonzero balance, largest first, listed under the key
+/// `unused_txes`. A ticker without balance rows answers 400.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/holders",
+    tag = "brc20",
+    params(
+        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The holders", body = Answer<Brc20Holders>),
+        (status = 400, description = "`no unused tx found` for a ticker without balance rows", body = ErrorBody),
+    ),
+)]
 async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let tick = JsValue::from(query.get("ticker").to_lower_case()?).or("".into());
 
@@ -570,6 +927,21 @@ async fn indexer_version(db: &Db) -> Result<String, ApiError> {
         .ok_or_else(|| no_row("indexer_version"))?)
 }
 
+/// A block's event and trace hashes, cumulative and its own.
+///
+/// A height the hash table has no row for answers 500.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/get_hash_of_all_activity",
+    tag = "brc20",
+    params(
+        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4, or a height without a hash row, answers 500."),
+    ),
+    responses(
+        (status = 200, description = "The block's hashes", body = Answer<Brc20ActivityHash>),
+        (status = 400, description = "`block not indexed yet` for a height above the indexed tip", body = ErrorBody),
+    ),
+)]
 async fn get_hash_of_all_activity(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -642,6 +1014,16 @@ fn current_balances_hash(mut rows: Vec<BalanceRow>) -> Result<String, JsError> {
     Ok(format!("{:x}", Sha256::digest(whole_str.as_bytes())))
 }
 
+/// The hash of every current balance.
+///
+/// The route reads, sorts and hashes the whole `brc20_current_balances`
+/// table.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/get_hash_of_all_current_balances",
+    tag = "brc20",
+    responses((status = 200, description = "The hash", body = Answer<Brc20BalancesHash>)),
+)]
 async fn get_hash_of_all_current_balances(State(db): State<Db>) -> Result<Reply, ApiError> {
     let current_block_height = block_height_of_db(&db).await;
     let rows = sqlx::query!(
@@ -675,6 +1057,20 @@ async fn get_hash_of_all_current_balances(State(db): State<Db>) -> Result<Reply,
 }
 
 /// Every event of an inscription id.
+///
+/// The events of `brc20_events` and `brc20_light_events`, by id.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/event",
+    tag = "brc20",
+    params(
+        ("inscription_id" = String, Query, description = "The inscription id"),
+    ),
+    responses(
+        (status = 200, description = "The inscription's events", body = Answer<Vec<Brc20StoredEvent>>),
+        (status = 400, description = "`inscription_id is required` when it is left out or empty", body = ErrorBody),
+    ),
+)]
 async fn event(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let names = event_type_names(&db).await?;
 
@@ -729,6 +1125,16 @@ async fn btc_address_of_evm_address(
     Ok(rows.into_iter().next().flatten())
 }
 
+/// The BTC address an EVM address maps to, for the BRC2.0 explorer.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/explorer/btc_address/{evm_address}",
+    tag = "brc20",
+    params(
+        ("evm_address" = String, Path, description = "The EVM address, matched in lowercase. A segment that does not percent-decode answers 500."),
+    ),
+    responses((status = 200, description = "The BTC address", body = Brc20ExplorerBtcAddress)),
+)]
 async fn explorer_btc_address(
     State(db): State<Db>,
     ExpressParams(path): ExpressParams,
@@ -739,6 +1145,17 @@ async fn explorer_btc_address(
     }))
 }
 
+/// The BRC-20 balances of an EVM address's BTC address, for the BRC2.0
+/// explorer.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/explorer/balances/{evm_address}",
+    tag = "brc20",
+    params(
+        ("evm_address" = String, Path, description = "The EVM address, matched in lowercase. A segment that does not percent-decode answers 500."),
+    ),
+    responses((status = 200, description = "The positive balances", body = Brc20ExplorerBalances)),
+)]
 async fn explorer_balances(
     State(db): State<Db>,
     ExpressParams(path): ExpressParams,
@@ -769,6 +1186,16 @@ async fn explorer_balances(
     Ok(Reply::send_json(js_object! { "items" => items }))
 }
 
+/// The address tab counters of an EVM address, for the BRC2.0 explorer.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/explorer/address_tabs_counters/{evm_address}",
+    tag = "brc20",
+    params(
+        ("evm_address" = String, Path, description = "The EVM address, matched in lowercase. A segment that does not percent-decode answers 500."),
+    ),
+    responses((status = 200, description = "The counters", body = Brc20ExplorerCounters)),
+)]
 async fn explorer_address_tabs_counters(
     State(db): State<Db>,
     ExpressParams(path): ExpressParams,
@@ -820,6 +1247,20 @@ fn explorer_tokens_page(query: &JsObject) -> Result<(String, f64, bool), JsError
     Ok((q, offset, ascending))
 }
 
+/// A page of tickers by holder count, for the BRC2.0 explorer.
+///
+/// Pages of 50 tickers with a positive balance, by holder count then ticker.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/explorer/tokens",
+    tag = "brc20",
+    params(
+        ("q" = Option<String>, Query, description = "Keeps the tickers that contain it, in any case"),
+        ("items_count" = Option<String>, Query, description = "The tickers to skip, read with parseInt; default 0"),
+        ("order" = Option<String>, Query, description = "`asc` (in any case) for the fewest holders first; anything else lists the most first"),
+    ),
+    responses((status = 200, description = "The page", body = Brc20ExplorerTokens)),
+)]
 async fn explorer_tokens(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
     let (q, offset, ascending) = explorer_tokens_page(&query)?;
     let rules = db.int_rules().await?;

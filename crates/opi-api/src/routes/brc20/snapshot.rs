@@ -31,11 +31,15 @@
 //! snapshots run at once; another answers 503 until one ends.
 
 use {
-    super::tickers::{AMOUNT_DECIMALS, BRC20_PROG_MODULE_PKSCRIPT, HolderRow, ticker},
+    super::tickers::{
+        AMOUNT_DECIMALS, BRC20_PROG_MODULE_PKSCRIPT, Brc20TickerHolder, HolderRow, TickerParam,
+        ticker,
+    },
     crate::{
         db::Db,
         extract::JsQuery,
         js::{JsObject, JsValue, json_stringify},
+        openapi::{Answer, ErrorBody, with_default},
         reply::{self, ApiError, Reply},
         routes::paging::{BadParam, integer, single},
     },
@@ -51,6 +55,10 @@ use {
     tokio::{
         sync::{OwnedSemaphorePermit, Semaphore, mpsc},
         time::{Instant, timeout_at},
+    },
+    utoipa::{
+        IntoParams, ToSchema,
+        openapi::{RefOr, schema::Schema},
     },
 };
 
@@ -157,10 +165,43 @@ impl Drop for ReadSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The answer's format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
     Json,
     Csv,
+}
+
+/// The parameters of a snapshot.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct SnapshotParams {
+    /// The block whose end the snapshot shows; default the indexed tip.
+    #[param(minimum = 0, maximum = 2147483647)]
+    block_height: Option<i32>,
+    /// `json` or `csv`.
+    #[param(schema_with = format_schema)]
+    format: Option<Format>,
+}
+
+fn format_schema() -> RefOr<Schema> {
+    with_default::<Format>("json")
+}
+
+/// A ticker's holders at the end of a block, unpaged.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20Snapshot {
+    /// The lowercase ticker.
+    ticker: String,
+    block_height: i32,
+    #[schema(minimum = 18, maximum = 18)]
+    decimals: i32,
+    ticker_decimals: i32,
+    /// Every holder, as `/v1/brc20/ticker/holders` lists them.
+    holders: Vec<Brc20TickerHolder>,
 }
 
 /// What a snapshot request names.
@@ -200,6 +241,35 @@ struct Plan {
     format: Format,
 }
 
+/// Every holder of a ticker at the end of a block, streamed.
+///
+/// A holder's balance at the height is its latest row at or below it; the
+/// rows merge and order as `/v1/brc20/ticker/holders` lists them, from one
+/// database snapshot. `format=csv` answers a header row
+/// (`address,evm_address,pkscript,brc20_balance,brc20_available_balance,prog_balance,total_balance`)
+/// and one row per holder, CRLF line ends and RFC 4180 quoting, as the
+/// attachment `<ticker>-<block_height>.csv`. A failure partway through, or
+/// API_SNAPSHOT_TIMEOUT_MS passing, aborts the transfer.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/ticker/holders/snapshot",
+    tag = "brc20",
+    params(TickerParam, SnapshotParams),
+    responses(
+        (
+            status = 200,
+            description = "The snapshot, as JSON or as CSV",
+            content(
+                (Answer<Brc20Snapshot> = "application/json"),
+                (String = "text/csv"),
+            ),
+            headers(("Content-Disposition" = String, description = "`attachment; filename=\"<ticker>-<block_height>.csv\"` on a CSV answer")),
+        ),
+        (status = 400, description = "A missing or invalid parameter, or a `block_height` above the indexed tip or below the ticker's deploy height", body = ErrorBody),
+        (status = 404, description = "`ticker not found`", body = ErrorBody),
+        (status = 503, description = "`too many snapshots running, retry later` while the most snapshots stream, or `snapshot timed out` when the snapshot cannot start within API_SNAPSHOT_TIMEOUT_MS", body = ErrorBody),
+    ),
+)]
 pub async fn snapshot(
     State(snapshots): State<Snapshots>,
     JsQuery(query): JsQuery,

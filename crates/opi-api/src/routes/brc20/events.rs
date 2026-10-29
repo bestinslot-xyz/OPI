@@ -46,13 +46,14 @@
 use {
     super::{
         block_height_of_db,
-        tickers::{AMOUNT_DECIMALS, is_evm_address, ticker, ticker_decimals},
+        tickers::{AMOUNT_DECIMALS, TickerParam, is_evm_address, ticker, ticker_decimals},
     },
     crate::{
         db::Db,
         extract::JsQuery,
         js::{JsObject, JsValue},
         js_object,
+        openapi::{Answer, DbHeight, ErrorBody, LimitParam},
         pg_json::{self, oid},
         reply::{ApiError, Reply},
         routes::paging::{
@@ -61,6 +62,7 @@ use {
         },
     },
     axum::extract::State,
+    utoipa::{IntoParams, ToSchema},
 };
 
 #[cfg(test)]
@@ -74,6 +76,108 @@ pub const MAX_TYPE_LEN: usize = 256;
 
 /// The longest `pkscript` a request may name, in hex digits.
 pub const MAX_PKSCRIPT_LEN: usize = 20_000;
+
+/// The paging and type filter of a feed.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct FeedParams {
+    /// Keeps one event type, by its `brc20_event_types` name.
+    #[param(max_length = 256)]
+    r#type: Option<String>,
+    /// The previous page's `next_before_id`: the page holds the events
+    /// with a lower id.
+    #[param(minimum = 1, maximum = 999999999999999999_i64)]
+    before_id: Option<i64>,
+}
+
+/// An event of a feed.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20FeedEvent {
+    /// The event's id, which orders the feed.
+    id: i64,
+    block_height: i32,
+    /// The block's time in seconds; null when the block's time is unknown.
+    #[schema(nullable)]
+    block_time: i64,
+    inscription_id: String,
+    /// The event type's name.
+    #[schema(nullable)]
+    event_type: String,
+    /// The deploy precision of the event's ticker; null for an event
+    /// without a ticker.
+    #[schema(nullable)]
+    ticker_decimals: i32,
+    /// The stored event object; its amounts are raw integers as strings
+    /// with 18 fractional digits.
+    #[schema(value_type = Object)]
+    event: serde_json::Value,
+}
+
+/// A page of a ticker's events.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20TickerEvents {
+    /// The lowercase ticker.
+    ticker: String,
+    #[schema(minimum = 18, maximum = 18)]
+    decimals: i32,
+    ticker_decimals: i32,
+    /// The `type` filter, null without one.
+    #[schema(nullable)]
+    event_type: String,
+    /// Newest first.
+    events: Vec<Brc20FeedEvent>,
+    limit: i64,
+    /// Whether older events exist.
+    has_more: bool,
+    /// The `before_id` of the next page, null on the last page.
+    #[schema(nullable)]
+    next_before_id: i64,
+    block_height: DbHeight,
+}
+
+/// A page of a wallet's events.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct Brc20WalletEvents {
+    /// The address asked for, or an EVM address's mapped Bitcoin address;
+    /// null for a `pkscript` request.
+    #[schema(nullable)]
+    address: String,
+    /// The lowercase pkScript asked for; null for an `address` request.
+    #[schema(nullable)]
+    pkscript: String,
+    #[schema(minimum = 18, maximum = 18)]
+    decimals: i32,
+    /// The `type` filter, null without one.
+    #[schema(nullable)]
+    event_type: String,
+    /// Newest first.
+    events: Vec<Brc20FeedEvent>,
+    limit: i64,
+    /// Whether older events exist.
+    has_more: bool,
+    /// The `before_id` of the next page, null on the last page.
+    #[schema(nullable)]
+    next_before_id: i64,
+    block_height: DbHeight,
+}
+
+/// The wallet of a wallet feed: exactly one of `address` and `pkscript`.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct WalletParams {
+    /// A Bitcoin address, or an EVM address that answers as its mapped
+    /// Bitcoin address.
+    #[param(max_length = 128)]
+    address: Option<String>,
+    /// A pkScript, hex.
+    #[param(max_length = 20000, pattern = "^([0-9a-fA-F]{2})*$")]
+    pkscript: Option<String>,
+}
 
 /// The paging and type filter of a feed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,8 +312,22 @@ fn page_fields(result: &mut JsObject, rows: Vec<FeedRow>, limit: i64) -> Result<
     Ok(())
 }
 
-/// `/v1/brc20/ticker/events?ticker=&type=&before_id=&limit=`: the events of
-/// a ticker, newest first.
+/// A page of a ticker's events, newest first.
+///
+/// The events whose event object has `tick` equal to the lowercased ticker.
+/// The feed pages by key, so pages neither repeat nor skip events as new
+/// ones arrive.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/ticker/events",
+    tag = "brc20",
+    params(TickerParam, FeedParams, LimitParam),
+    responses(
+        (status = 200, description = "The page", body = Answer<Brc20TickerEvents>),
+        (status = 400, description = "A missing or invalid parameter, or a `type` `brc20_event_types` does not list", body = ErrorBody),
+        (status = 404, description = "`ticker not found`", body = ErrorBody),
+    ),
+)]
 pub async fn ticker_events(
     State(db): State<Db>,
     JsQuery(query): JsQuery,
@@ -278,8 +396,22 @@ pub async fn ticker_events(
     }))
 }
 
-/// `/v1/brc20/wallet/events?address=|pkscript=&type=&before_id=&limit=`: the
-/// events a wallet takes part in, newest first.
+/// A page of the events a wallet takes part in, newest first.
+///
+/// The events where the wallet is any party: a `*_pkScript` or `*_wallet`
+/// field of the event object (`deployer`, `minted`, `source`, `spent`,
+/// `predeployer`). An unmapped EVM address has no events. The feed pages by
+/// key, as the ticker feed does.
+#[utoipa::path(
+    get,
+    path = "/v1/brc20/wallet/events",
+    tag = "brc20",
+    params(WalletParams, FeedParams, LimitParam),
+    responses(
+        (status = 200, description = "The page", body = Answer<Brc20WalletEvents>),
+        (status = 400, description = "A missing or invalid parameter, both or neither of `address` and `pkscript`, or a `type` `brc20_event_types` does not list", body = ErrorBody),
+    ),
+)]
 pub async fn wallet_events(
     State(db): State<Db>,
     JsQuery(query): JsQuery,

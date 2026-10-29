@@ -1,12 +1,17 @@
-//! The app's routes, registered in this order: `/v1/status`, then
-//! each module's routes when it is enabled, or a 404 for its whole prefix
-//! when it is not, then finalhandler's 404 for anything else.
+//! The app's routes, registered in this order: `/v1/status` and
+//! `/v1/openapi.json`, then each module's routes when it is enabled, or a
+//! 404 for its whole prefix when it is not, then finalhandler's 404 for
+//! anything else.
+//!
+//! Every route is registered with `.routes(routes!(handler))` on an
+//! [`OpenApiRouter`], which adds the handler's `#[utoipa::path]` operation to
+//! the OpenAPI document (see [`openapi`](crate::openapi)).
 
-mod bitmap;
-mod brc20;
+pub(crate) mod bitmap;
+pub(crate) mod brc20;
 pub mod paging;
 mod runes;
-mod sns;
+pub(crate) mod sns;
 
 use {
     crate::{
@@ -14,6 +19,7 @@ use {
         db::Db,
         js::{JsError, JsObject, JsValue},
         js_object,
+        openapi::{self, Answer, ApiDoc, DbHeight, SpecJson},
         reply::{Reply, not_found},
     },
     axum::{
@@ -21,10 +27,16 @@ use {
         extract::{OriginalUri, State},
         http::Method,
         response::Response,
-        routing::{any, get},
+        routing::any,
     },
     futures::{StreamExt, stream::FuturesUnordered},
-    std::{sync::Arc, time::Duration},
+    serde_json::json,
+    std::{collections::BTreeMap, sync::Arc, time::Duration},
+    utoipa::{OpenApi, PartialSchema, ToSchema, openapi::RefOr, openapi::schema::Schema},
+    utoipa_axum::{
+        router::{OpenApiRouter, UtoipaMethodRouterExt},
+        routes,
+    },
 };
 
 /// `TypeError: Cannot read properties of undefined (reading '<field>')`,
@@ -50,9 +62,9 @@ impl Default for RouteSettings {
     }
 }
 
-/// A module's route registration: adds the module's routes, which read
-/// from `db`, to `router`.
-pub type RouteModule = fn(router: Router, db: Db, settings: &RouteSettings) -> Router;
+/// A module's route registration: the module's routes, which read from
+/// `db`, with their operations.
+pub type RouteModule = fn(db: Db, settings: &RouteSettings) -> OpenApiRouter;
 
 /// The registration function of `module`.
 pub fn module_routes(module: Module) -> RouteModule {
@@ -68,6 +80,16 @@ pub fn module_routes(module: Module) -> RouteModule {
 /// `dbs`. An enabled module without an entry gets a database whose every
 /// query fails, as a missing pool makes every query throw in the app.
 pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>, settings: &RouteSettings) -> Router {
+    app(enabled, dbs, settings).0
+}
+
+/// The routes of [`routes`] and the OpenAPI document of their operations,
+/// which `/v1/openapi.json` serves.
+pub fn app(
+    enabled: &[Module],
+    dbs: Vec<(Module, Db)>,
+    settings: &RouteSettings,
+) -> (Router, utoipa::openapi::OpenApi) {
     let db_of = |module: Module| {
         dbs.iter()
             .find(|(m, _)| *m == module)
@@ -77,11 +99,13 @@ pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>, settings: &RouteSettin
             })
     };
     let status_dbs: Vec<(Module, Db)> = enabled.iter().map(|&m| (m, db_of(m))).collect();
-    let mut router =
-        Router::new().route("/v1/status", get(status).with_state(Arc::new(status_dbs)));
+    let spec = SpecJson::default();
+    let mut router = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .routes(routes!(status).with_state(Arc::new(status_dbs)))
+        .routes(routes!(openapi::openapi_json).with_state(spec.clone()));
     for module in MODULES {
         if enabled.contains(&module) {
-            router = module_routes(module)(router, db_of(module), settings);
+            router = router.merge(module_routes(module)(db_of(module), settings));
         } else {
             let prefix = format!("/v1/{}", module.name());
             let disabled = move || async move {
@@ -99,9 +123,14 @@ pub fn routes(enabled: &[Module], dbs: Vec<(Module, Db)>, settings: &RouteSettin
                 .route(&format!("{prefix}/{{*rest}}"), any(disabled));
         }
     }
-    router
+    let (router, mut api) = router.split_for_parts();
+    openapi::finish(&mut api);
+    spec.set(api.to_json().expect("the document serializes"))
+        .expect("the document is set once");
+    let router = router
         .fallback(express_404)
-        .method_not_allowed_fallback(express_404)
+        .method_not_allowed_fallback(express_404);
+    (router, api)
 }
 
 /// finalhandler's 404, naming the method and the path the client sent.
@@ -109,11 +138,52 @@ async fn express_404(method: Method, OriginalUri(uri): OriginalUri) -> Response 
     not_found(method.as_str(), uri.path())
 }
 
-/// `/v1/status`: each enabled module's latest indexed height, or
-/// `{"error":"unavailable"}` when its query fails. The modules are queried
-/// together and listed in the order their answers arrive, as the app's
-/// `Promise.all` callbacks assign them.
+/// The `/v1/status` result: an entry per enabled module, by name.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct StatusResult {
+    modules: BTreeMap<String, StatusEntry>,
+}
+
+/// A module's status: its latest indexed height, or
+/// `{"error":"unavailable"}` when the height query fails.
+struct StatusEntry;
+
+impl PartialSchema for StatusEntry {
+    fn schema() -> RefOr<Schema> {
+        serde_json::from_value(json!({
+            "description": "A module's latest indexed height, or `{\"error\":\"unavailable\"}` when its height query fails (the cause is logged).",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["block_height"],
+                    "properties": {"block_height": DbHeight::schema()},
+                },
+                {
+                    "type": "object",
+                    "required": ["error"],
+                    "properties": {"error": {"type": "string", "const": "unavailable"}},
+                },
+            ],
+        }))
+        .expect("a valid schema")
+    }
+}
+
+impl ToSchema for StatusEntry {}
+
+/// Each enabled module's latest indexed height.
+///
+/// The modules are listed in the order their height queries answer.
+#[utoipa::path(
+    get,
+    path = "/v1/status",
+    tag = "api",
+    responses((status = 200, description = "The enabled modules", body = Answer<StatusResult>)),
+)]
 async fn status(State(dbs): State<Arc<Vec<(Module, Db)>>>) -> Reply {
+    // The modules are queried together and listed in the order their
+    // answers arrive, as the app's `Promise.all` callbacks assign them.
     let mut pending: FuturesUnordered<_> = dbs
         .iter()
         .map(|(module, db)| async move { (*module, db.latest_block_height(*module).await) })
