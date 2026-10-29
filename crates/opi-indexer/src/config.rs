@@ -301,6 +301,29 @@ fn ord_cache_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<usize> {
     Ok(cache_bytes(get, "OPI_ORD_CACHE_MB")?.unwrap_or(DEFAULT_ORD_CACHE_BYTES))
 }
 
+/// Smallest and largest `MALLOC_ARENA_MAX`.
+const MALLOC_ARENAS: std::ops::RangeInclusive<usize> = 1..=1024;
+
+/// glibc's malloc arena limit from `MALLOC_ARENA_MAX` (default 2). glibc
+/// otherwise opens up to 8 arenas per core as threads contend, and each arena
+/// keeps the memory freed into it for its own threads.
+pub(crate) fn malloc_arena_max(get: &impl Fn(&str) -> Option<String>) -> Result<usize> {
+    let Some(value) = get("MALLOC_ARENA_MAX").filter(|value| !value.is_empty()) else {
+        return Ok(2);
+    };
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|arenas| MALLOC_ARENAS.contains(arenas))
+        .with_context(|| {
+            format!(
+                "MALLOC_ARENA_MAX must be an integer from {} to {}, got `{value}`",
+                MALLOC_ARENAS.start(),
+                MALLOC_ARENAS.end()
+            )
+        })
+}
+
 /// The cache size in bytes that `key` sets in MiB, `None` when unset or
 /// empty. Fails outside [`CACHE_MB`].
 fn cache_bytes(get: &impl Fn(&str) -> Option<String>, key: &str) -> Result<Option<usize>> {
@@ -375,6 +398,21 @@ mod tests {
             vars.insert("OPI_JOURNAL_CACHE_MB", bad);
             let err = load(&vars).unwrap_err();
             assert!(err.to_string().contains("OPI_JOURNAL_CACHE_MB"), "{err}");
+        }
+    }
+
+    #[test]
+    fn malloc_arena_setting() {
+        let lookup = |value: Option<&'static str>| {
+            move |key: &str| (key == "MALLOC_ARENA_MAX").then_some(value?.to_string())
+        };
+        assert_eq!(malloc_arena_max(&lookup(None)).unwrap(), 2);
+        assert_eq!(malloc_arena_max(&lookup(Some(""))).unwrap(), 2);
+        assert_eq!(malloc_arena_max(&lookup(Some("1"))).unwrap(), 1);
+        assert_eq!(malloc_arena_max(&lookup(Some("1024"))).unwrap(), 1024);
+        for bad in ["0", "1025", "-1", "two", "1.5"] {
+            let err = malloc_arena_max(&lookup(Some(bad))).unwrap_err();
+            assert!(err.to_string().contains("MALLOC_ARENA_MAX"), "{err}");
         }
     }
 
