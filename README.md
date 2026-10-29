@@ -158,20 +158,26 @@ prune: `run` keeps ord at its defaults, without sat, address or transaction
 indexes.
 
 The journal is pruned in steps of at most 1000 heights. A step deletes at most
-10,000 raw events in one write transaction, and the records of whole heights
-up to the first height past 10,000 rows per table in another. Each takes about
-a second, so ord's commits never wait on it for long.
+10,000 raw events in one write transaction, and at most 10,000 transfer
+records, consumed content rows and rune rows in another. Each takes about a
+second on NVMe, so ord's commits never wait on it for long. A step may stop
+inside a dense height; that height then fails closed in the same commit (it
+goes below the pruned floor, or loses its raw tag), and the next step
+deletes the rest.
 
 - **At start-up**, before it starts ord and the modules, `run` prunes the
   journal to the window. It reads each enabled module's height, the highest
   row of its `<module>_block_hashes` table, from the module's database over a
   read-only connection, and logs the heights done and left per table every 10
-  seconds. Meanwhile readiness answers 503 (`journal is running its
-  journal_prune fill`) and `/metrics` shows the fill's progress. SIGINT or
-  SIGTERM stops it between two steps and `run` exits 0; the journal stays
-  valid and the next start resumes where it stopped. When a module's height
-  cannot be read, this prune removes raw events only, and the background
-  task below removes the records once every module runs.
+  seconds. Meanwhile readiness answers 503 `starting`, and `/metrics` shows
+  `opi_fill_running{module="journal",fill="journal_prune"}` with its progress
+  and target. SIGINT or SIGTERM, during the height reads or between two
+  steps, stops it and `run` exits 0; the journal stays valid and the next
+  start resumes where it stopped. A module that has stored no block yet (a
+  fresh module) leaves the records alone: this prune removes raw events only,
+  and the background task below removes the records once every module runs.
+  A height that cannot be read is retried five times over about a minute,
+  then fails the start, naming the module and the error.
 - **While `run` indexes**, a background task prunes the new blocks every
   minute: raw events always, the records only while every enabled module is
   running. After each step it pauses for as long as the step took, so the
@@ -200,14 +206,14 @@ module's height cannot be read, for example an unreachable database or a
 module that has stored no block. So one offline command (stop `run`,
 `compact-journal`, start `run`) prunes and reclaims the space.
 
-redb frees a transaction's pages only once it commits, so the first prune of a
-large journal grows the file for a while before compaction shrinks it. The
-steps keep that growth small: a 7.0 GiB signet journal peaked at 8.0 GiB
-(1.17x) through its whole prune and compacted to under 0.5 GiB, and a dense
-test journal of 1 GiB stayed at 1 GiB (1.0x), where one unbounded transaction
-over 30 dense heights grew a 257 MiB journal to 4 GiB (16x). The file grows
-in 4 GiB redb regions, so keep at least 8 GiB free on the journal's disk for
-the first prune.
+redb frees a transaction's pages only once it commits, and it grows its file
+in 4 GiB regions that stay sparse until written, so a prune can raise the
+file's apparent size (`ls -l`) well above its disk usage (`du`). A large
+journal can then fill that gap with pages before compaction shrinks the file.
+Before the first prune, keep free at least the gap between the journal file's
+apparent size and its disk usage, plus 16 GiB. A 6.8 GiB signet journal went
+to 8.0 GiB apparent through its whole prune while its disk usage grew by
+16 MiB, and compacted to 0.2 GiB on disk.
 
 #### BRC2.0 engine
 
