@@ -52,6 +52,9 @@ pub struct SourceConfig {
     pub runes: bool,
     /// How the journal database is opened.
     pub journal: JournalOptions,
+    /// Size of the redb page cache of ord's index, in bytes;
+    /// [`crate::DEFAULT_ORD_CACHE_BYTES`] unless configured.
+    pub ord_cache_bytes: usize,
 }
 
 impl SourceConfig {
@@ -186,7 +189,14 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     let stager_task = runtime.spawn(stager.run());
 
     let started = (|| {
-        let settings = ord_settings(cfg.chain, &cfg.ord_data_dir, &proxy.url(), None, cfg.runes)?;
+        let settings = ord_settings(
+            cfg.chain,
+            &cfg.ord_data_dir,
+            &proxy.url(),
+            None,
+            cfg.runes,
+            cfg.ord_cache_bytes,
+        )?;
         check_ord_settings(&settings, cfg.runes)?;
         init_ord_index(&cfg, &proxy.url(), settings.index())?;
         let index = Arc::new(Index::open_with_event_sender(&settings, Some(events))?);
@@ -254,6 +264,7 @@ fn init_ord_index(cfg: &SourceConfig, rpc_url: &str, index: &Path) -> Result<()>
         rpc_url,
         Some(&init),
         cfg.runes,
+        cfg.ord_cache_bytes,
     )?;
     drop(Index::open_with_event_sender(&settings, None)?);
     std::fs::rename(&init, index)
@@ -405,10 +416,14 @@ impl Driver {
             }
             backoff = MIN_BACKOFF;
 
+            let count = self.index.block_count()?;
+            if count.saturating_sub(next) >= MEMORY_LOG_BLOCKS {
+                log_memory(count - 1);
+            }
             if self.stop.is_stopped() {
                 return Ok(());
             }
-            let at_tip = self.index.block_count()? > tip;
+            let at_tip = count > tip;
             if at_tip && self.stop.sleep(TIP_SLEEP) {
                 return Ok(());
             }
@@ -431,6 +446,46 @@ impl Driver {
         }
         Ok(())
     }
+}
+
+/// Fewest blocks an `update()` indexes for the driver to log the process's
+/// memory after finalizing them, so catch-up chunks log it and blocks at the
+/// tip do not.
+const MEMORY_LOG_BLOCKS: u32 = 100;
+
+/// Logs the process's resident and swapped memory, read from
+/// `/proc/self/status` on Linux.
+fn log_memory(height: u32) {
+    if let Some((rss, swap)) = process_memory() {
+        log::info!(
+            "memory after finalizing height {height}: resident {:.2} GiB, swapped {:.2} GiB",
+            gib(rss),
+            gib(swap)
+        );
+    }
+}
+
+/// Resident and swapped bytes of this process, `None` off Linux.
+fn process_memory() -> Option<(u64, u64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = |key: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .and_then(|rest| {
+                rest.trim()
+                    .trim_end_matches("kB")
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .map(|kib| kib * 1024)
+    };
+    Some((kib("VmRSS:")?, kib("VmSwap:").unwrap_or(0)))
+}
+
+fn gib(bytes: u64) -> f64 {
+    bytes as f64 / f64::from(1 << 30)
 }
 
 /// Whether a finalize error means ord's events break the model finalize

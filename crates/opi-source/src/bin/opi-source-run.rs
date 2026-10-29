@@ -62,6 +62,7 @@ fn config() -> Result<SourceConfig> {
         },
         runes: !matches.get_flag("no-runes"),
         journal: Default::default(),
+        ord_cache_bytes: opi_source::DEFAULT_ORD_CACHE_BYTES,
     })
 }
 

@@ -96,6 +96,7 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `OPI_ORD_DATA_DIR` | directory of ord's index database |
 | `OPI_JOURNAL_DIR` | directory of the journal |
 | `OPI_JOURNAL_CACHE_MB` | the journal's redb page cache in MiB, 64 to 65536, default `1024`; 4096-8192 speeds up indexing and pruning on large journals when the RAM is free, and the process's memory grows by up to that amount |
+| `OPI_ORD_CACHE_MB` | the redb page cache of ord's index in MiB, 64 to 65536, default `1024`. ord reads its index through the kernel's page cache, which holds the pages redb's cache would copy, so the RAM serves ord best left to the page cache; raise it only on a host whose page cache already holds the whole index |
 | `BITCOIN_RPC_URL` | bitcoind RPC URL |
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
@@ -155,8 +156,7 @@ the deepest rollback the scheduler walks.
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
 
 Each module prunes its tables every 100 blocks. ord's index has no history to
-prune: `run` keeps ord at its defaults, without sat, address or transaction
-indexes.
+prune: `run` builds it without sat, address or transaction indexes.
 
 The journal is pruned in steps of at most 1000 heights. A step deletes at most
 10,000 raw events in one write transaction, and at most 10,000 transfer
