@@ -3,3 +3,8 @@ Copyright 2023 - Best in Slot LLC FZ
 
 This product includes software developed at
 Best in Slot LLC FZ (http://bestinslot.xyz/).
+
+crates/opi-api/src/openapi/oas-3.1-schema.json is the OpenAPI 3.1 JSON
+Schema (https://spec.openapis.org/oas/3.1/schema/2022-10-07), Copyright
+The Linux Foundation, published by the OpenAPI Initiative under the
+Apache License, Version 2.0.
