@@ -20,7 +20,10 @@ use {
         extract::{ClientIp, ExpressParams, JsQuery},
         js::{JsError, JsObject, JsValue, compare_strings, sort_by_number},
         js_object,
-        openapi::{Answer, DbHeight, ErrorBody, Null, NumericText, QueryEcho},
+        openapi::{
+            Answer, DbHeight, ErrorBody, HashBlockHeight, ListBlockHeight, Null, NumericText,
+            ParityTicker, QueryEcho,
+        },
         params,
         pg_json::{self, ToJs, oid},
         reply::{ApiError, Reply},
@@ -475,9 +478,9 @@ async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     path = "/v1/brc20/balance_on_block",
     tag = "brc20",
     params(
-        ("block_height" = Option<String>, Query, description = "The block height, an integer; the balance is the latest one below it. Text Postgres cannot read as an int4 answers 500."),
-        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex"),
-        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+        ("block_height" = String, Query, description = "The block height, an integer; the balance is the latest one below it. Text Postgres cannot read as an int4 answers 500. Left out, no balance matches (400)."),
+        ("pkscript" = String, Query, description = "The wallet's pkScript, hex. Left out, no balance matches (400)."),
+        ParityTicker,
     ),
     responses(
         (status = 200, description = "The balance", body = Answer<Brc20Balance>),
@@ -532,7 +535,7 @@ async fn balance_on_block(
     path = "/v1/brc20/activity_on_block",
     tag = "brc20",
     params(
-        ("block_height" = Option<String>, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500."),
+        ListBlockHeight,
     ),
     responses(
         (status = 200, description = "The block's events", body = Answer<Vec<Brc20StoredEvent>>),
@@ -588,7 +591,7 @@ async fn activity_on_block(
     path = "/v1/brc20/bitcoin_rpc_results_on_block",
     tag = "brc20",
     params(
-        ("block_height" = Option<String>, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500."),
+        ListBlockHeight,
     ),
     responses(
         (status = 200, description = "The block's RPC results, by id", body = Answer<Vec<Brc20RpcResult>>),
@@ -640,9 +643,9 @@ async fn bitcoin_rpc_results_on_block(
     path = "/v1/brc20/get_current_balance_of_wallet",
     tag = "brc20",
     params(
-        ("address" = Option<String>, Query, description = "The wallet's address"),
-        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty"),
-        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the route matches the empty pkScript and answers 400."),
+        ParityTicker,
     ),
     responses(
         (status = 200, description = "The balance", body = Answer<Brc20CurrentBalance>),
@@ -721,8 +724,8 @@ type UnusedTxRow = (Option<String>, Option<String>, Option<String>, Option<i32>)
     path = "/v1/brc20/get_valid_tx_notes_of_wallet",
     tag = "brc20",
     params(
-        ("address" = Option<String>, Query, description = "The wallet's address"),
-        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty"),
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the route matches the empty pkScript and answers 400."),
     ),
     responses(
         (status = 200, description = "The inscriptions, by ticker", body = Answer<Brc20WalletUnusedTxes>),
@@ -796,7 +799,7 @@ async fn get_valid_tx_notes_of_wallet(
     path = "/v1/brc20/get_valid_tx_notes_of_ticker",
     tag = "brc20",
     params(
-        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+        ParityTicker,
     ),
     responses(
         (status = 200, description = "The inscriptions, by holder pkScript", body = Answer<Brc20TickerUnusedTxes>),
@@ -865,7 +868,7 @@ fn order_holders(rows: Vec<JsObject>) -> Result<Vec<JsObject>, JsError> {
     path = "/v1/brc20/holders",
     tag = "brc20",
     params(
-        ("ticker" = String, Query, description = "The ticker, matched in lowercase. Left out, the route answers 500."),
+        ParityTicker,
     ),
     responses(
         (status = 200, description = "The holders", body = Answer<Brc20Holders>),
@@ -932,7 +935,7 @@ async fn indexer_version(db: &Db) -> Result<String, ApiError> {
     path = "/v1/brc20/get_hash_of_all_activity",
     tag = "brc20",
     params(
-        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4, or a height without a hash row, answers 500."),
+        HashBlockHeight,
     ),
     responses(
         (status = 200, description = "The block's hashes", body = Answer<Brc20ActivityHash>),
@@ -1061,7 +1064,7 @@ async fn get_hash_of_all_current_balances(State(db): State<Db>) -> Result<Reply,
     path = "/v1/brc20/event",
     tag = "brc20",
     params(
-        ("inscription_id" = String, Query, description = "The inscription id"),
+        ("inscription_id" = String, Query, description = "The inscription id. Left out or empty, the route answers 400."),
     ),
     responses(
         (status = 200, description = "The inscription's events", body = Answer<Vec<Brc20StoredEvent>>),
@@ -1252,9 +1255,9 @@ fn explorer_tokens_page(query: &JsObject) -> Result<(String, f64, bool), JsError
     path = "/v1/brc20/explorer/tokens",
     tag = "brc20",
     params(
-        ("q" = Option<String>, Query, description = "Keeps the tickers that contain it, in any case"),
-        ("items_count" = Option<String>, Query, description = "The tickers to skip, read with parseInt; default 0"),
-        ("order" = Option<String>, Query, description = "`asc` (in any case) for the fewest holders first; anything else lists the most first"),
+        ("q" = Option<String>, Query, description = "Keeps the tickers that contain it, in any case. Left out, every ticker is listed."),
+        ("items_count" = Option<String>, Query, description = "The tickers to skip, read with parseInt; left out or unreadable, 0"),
+        ("order" = Option<String>, Query, description = "`asc` (in any case) for the fewest holders first; anything else, or the parameter left out, lists the most first"),
     ),
     responses((status = 200, description = "The page", body = Brc20ExplorerTokens)),
 )]

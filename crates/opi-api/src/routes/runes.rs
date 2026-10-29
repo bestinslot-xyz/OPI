@@ -15,7 +15,7 @@ use {
         extract::{ClientIp, JsQuery},
         js::{JsObject, JsValue, sort_by_number},
         js_object,
-        openapi::{Answer, DbHeight, ErrorBody, Null, NumericText, QueryEcho},
+        openapi::{Answer, DbHeight, ErrorBody, ListBlockHeight, Null, NumericText, QueryEcho},
         params,
         pg_json::{self, ToJs, oid},
         reply::{ApiError, Reply},
@@ -239,9 +239,9 @@ async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     path = "/v1/runes/balance_on_block",
     tag = "runes",
     params(
-        ("block_height" = Option<String>, Query, description = "The block height, an integer; the balances are those of the outpoints created below it and unspent at it. Text Postgres cannot read as an int4 answers 500."),
-        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty"),
-        ("address" = Option<String>, Query, description = "The wallet's address"),
+        ("block_height" = Option<String>, Query, description = "The block height, an integer; the balances are those of the outpoints created below it and unspent at it. Text Postgres cannot read as an int4 answers 500. Left out, the list is empty."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the list is empty."),
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
     ),
     responses(
         (status = 200, description = "The balances, in no set order", body = RunesAnswer<Vec<RunesBalance>>),
@@ -325,7 +325,7 @@ async fn balance_on_block(
     path = "/v1/runes/activity_on_block",
     tag = "runes",
     params(
-        ("block_height" = Option<String>, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500."),
+        ListBlockHeight,
     ),
     responses(
         (status = 200, description = "The block's events, by id", body = RunesAnswer<Vec<RunesBlockEvent>>),
@@ -381,8 +381,8 @@ async fn activity_on_block(
     path = "/v1/runes/get_current_balance_of_wallet",
     tag = "runes",
     params(
-        ("address" = Option<String>, Query, description = "The wallet's address"),
-        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty"),
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the list is empty."),
     ),
     responses((status = 200, description = "The balances, in no set order", body = RunesAnswer<Vec<RunesBalance>>)),
 )]
@@ -477,8 +477,8 @@ fn outpoint_entry(
     path = "/v1/runes/get_unspent_rune_outpoints_of_wallet",
     tag = "runes",
     params(
-        ("address" = Option<String>, Query, description = "The wallet's address"),
-        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty"),
+        ("address" = Option<String>, Query, description = "The wallet's address. Left out or empty, the route reads `pkscript`."),
+        ("pkscript" = Option<String>, Query, description = "The wallet's pkScript, hex; read when `address` is empty. Both left out, the list is empty."),
     ),
     responses((status = 200, description = "The outpoints, in no set order", body = RunesAnswer<Vec<RunesOutpoint>>)),
 )]
@@ -561,8 +561,8 @@ fn order_holders(rows: Vec<JsObject>) -> Result<Vec<JsObject>, ApiError> {
     path = "/v1/runes/holders",
     tag = "runes",
     params(
-        ("rune_name" = Option<String>, Query, description = "The rune's name, matched in upper case"),
-        ("rune_id" = Option<String>, Query, description = "The rune's id; read when `rune_name` is empty"),
+        ("rune_name" = Option<String>, Query, description = "The rune's name, matched in upper case. Left out or empty, the route reads `rune_id`."),
+        ("rune_id" = Option<String>, Query, description = "The rune's id; read when `rune_name` is empty. Both left out, no rune matches (400)."),
     ),
     responses(
         (status = 200, description = "The holders", body = RunesAnswer<Vec<RunesHolder>>),
@@ -654,7 +654,7 @@ async fn indexer_version(db: &Db) -> Result<String, ApiError> {
     path = "/v1/runes/get_hash_of_all_activity",
     tag = "runes",
     params(
-        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500."),
+        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4 answers 500. Left out, no hash row matches (400 `block not indexed`)."),
     ),
     responses(
         (status = 200, description = "The block's hashes", body = Answer<RunesActivityHash>),
@@ -703,7 +703,7 @@ async fn get_hash_of_all_activity(
     path = "/v1/runes/event",
     tag = "runes",
     params(
-        ("transaction_id" = String, Query, description = "The transaction id"),
+        ("transaction_id" = String, Query, description = "The transaction id. Left out or empty, the route answers 400."),
     ),
     responses(
         (status = 200, description = "The transaction's events, by id", body = Answer<Vec<RunesTxEvent>>),

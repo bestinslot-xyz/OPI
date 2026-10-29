@@ -186,6 +186,35 @@ pub struct LimitParam {
     limit: Option<i64>,
 }
 
+/// The `ticker` of a Node API route, which lowercases it unchecked.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+pub struct ParityTicker {
+    /// The ticker, matched in lowercase. Left out, the route answers 500.
+    ticker: String,
+}
+
+/// The `block_height` of a Node API hash route.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+pub struct HashBlockHeight {
+    /// The block height, an integer. Text Postgres cannot read as an int4,
+    /// a height without a hash row, or the parameter left out answers 500.
+    block_height: String,
+}
+
+/// The `block_height` of a Node API route that lists a block's rows.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+pub struct ListBlockHeight {
+    /// The block height, an integer. Text Postgres cannot read as an int4
+    /// answers 500. Left out, the list is empty.
+    block_height: Option<String>,
+}
+
 /// The document as `/v1/openapi.json` serves it, set once the router is
 /// built.
 pub type SpecJson = Arc<OnceLock<String>>;

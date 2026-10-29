@@ -48,7 +48,7 @@ use {
         extract::{ClientIp, JsQuery},
         js::{JsError, JsObject, JsValue},
         js_object,
-        openapi::{Answer, DbHeight, ErrorBody, LimitParam, QueryEcho},
+        openapi::{Answer, DbHeight, ErrorBody, HashBlockHeight, LimitParam, QueryEcho},
         params,
         pg_json::ToJs,
         reply::{ApiError, Reply},
@@ -229,7 +229,7 @@ async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     path = "/v1/sns/get_hash_of_all_activity",
     tag = "sns",
     params(
-        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4, or a height without a hash row, answers 500."),
+        HashBlockHeight,
     ),
     responses(
         (status = 200, description = "The block's hashes", body = Answer<SnsActivityHash>),
@@ -355,7 +355,7 @@ async fn get_hash_of_all_registered_names(State(db): State<Db>) -> Result<Reply,
     path = "/v1/sns/get_info_of_sns",
     tag = "sns",
     params(
-        ("name" = String, Query, description = "The name, matched as stored (lowercase)"),
+        ("name" = String, Query, description = "The name, matched as stored (lowercase). Left out, no name matches (400)."),
     ),
     responses(
         (status = 200, description = "The name's inscription", body = Answer<SnsNameInfo>),
@@ -394,7 +394,7 @@ async fn get_info_of_sns(State(db): State<Db>, JsQuery(query): JsQuery) -> Resul
     path = "/v1/sns/get_inscriptions_of_domain",
     tag = "sns",
     params(
-        ("domain" = String, Query, description = "The namespace, matched as stored (lowercase)"),
+        ("domain" = String, Query, description = "The namespace, matched as stored (lowercase). Left out, the list is empty."),
     ),
     responses((status = 200, description = "The names, in no set order", body = Answer<Vec<SnsDomainName>>)),
 )]

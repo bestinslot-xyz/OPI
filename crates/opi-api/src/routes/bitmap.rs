@@ -40,7 +40,7 @@ use {
         extract::{ClientIp, JsQuery},
         js::{JsObject, JsValue},
         js_object,
-        openapi::{Answer, ErrorBody, LimitParam, QueryEcho},
+        openapi::{Answer, ErrorBody, HashBlockHeight, LimitParam, QueryEcho},
         params,
         reply::{ApiError, Reply},
     },
@@ -174,7 +174,7 @@ async fn block_height(State(db): State<Db>) -> Result<Reply, ApiError> {
     path = "/v1/bitmap/get_hash_of_all_activity",
     tag = "bitmap",
     params(
-        ("block_height" = String, Query, description = "The block height, an integer. Text Postgres cannot read as an int4, or a height without a hash row, answers 500."),
+        HashBlockHeight,
     ),
     responses(
         (status = 200, description = "The block's hashes", body = Answer<BitmapActivityHash>),
@@ -244,7 +244,7 @@ async fn get_hash_of_all_bitmaps(State(db): State<Db>) -> Result<Reply, ApiError
     path = "/v1/bitmap/get_inscription_id_of_bitmap",
     tag = "bitmap",
     params(
-        ("bitmap_number" = String, Query, description = "The bitmap number, an integer. Text Postgres cannot read as an int4 answers 500."),
+        ("bitmap_number" = String, Query, description = "The bitmap number, an integer. Text Postgres cannot read as an int4 answers 500. Left out, no bitmap matches (400)."),
     ),
     responses(
         (status = 200, description = "The bitmap's inscription", body = Answer<BitmapInscription>),
