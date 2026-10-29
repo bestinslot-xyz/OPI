@@ -1017,7 +1017,10 @@ The header `Last-Event-ID` (which an `EventSource` sends when it reconnects)
 resumes each module it names after its position, checked against that
 module's own database: a module whose block there was replaced gets a
 rollback first, and one whose database has not reached that height yet (a
-node further behind) waits for it. A module of the stream the id leaves
+node further behind) waits for it. A position still waited for after
+`STREAM_RESUME_WAIT_SECS`, for its block or for its module's poller to read
+the reorg that replaced it, is taken as stale: the module rolls back 1000
+blocks, as for a reorg the process did not see, and the API logs it. A module of the stream the id leaves
 out starts at `from_height`, or with its first block not yet due. The id
 takes precedence over `from_height`; a position below a module's oldest
 kept block answers 400. One module's `<module>:<height>:<hash>` is a valid
@@ -1113,6 +1116,7 @@ win, and a missing file is ignored.
 | `STREAM_MAX_CONFIRMATIONS` | the most confirmations a stream may ask for, at most `1000`, default `100` |
 | `STREAM_MAX_SUBSCRIBERS` | the most streams open at once, default `100`; `0` refuses every stream |
 | `STREAM_HEARTBEAT_SECS` | the heartbeat interval, and how long a stream may be unable to queue a message before it ends, default `15` |
+| `STREAM_RESUME_WAIT_SECS` | how long a resumed module's position may wait for its block to be stored or its reorg to be read before it is taken as stale and rolled back 1000 blocks, from 1 to 86400, default `300` |
 | `STREAM_BUFFER` | the chunks (a block's head, a page of 100 events of up to about 60 KB, or a small event) a stream queues for its client, default `16`, about 1 MB at most |
 
 The `DB_*`, `BITMAP_DB_*`, `SNS_DB_*` and `RUNES_DB_*` variables are the same

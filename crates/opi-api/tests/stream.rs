@@ -578,6 +578,26 @@ async fn an_id_taken_between_modules_rollbacks_resumes_each_module() {
 }
 
 #[tokio::test]
+async fn a_position_waited_for_past_the_resume_wait_is_stale() {
+    with_chain("stream_stale_wait", 10, |pool| async move {
+        let app = stream_app(
+            &pool,
+            &[
+                ("STREAM_RESUME_WAIT_SECS", "2"),
+                ("STREAM_HEARTBEAT_SECS", "1"),
+            ],
+        );
+        // this node's brc20 never reaches the id's block
+        let mut sse = Sse::open(&app, "/v1/stream?modules=brc20", Some("brc20:12:b12")).await;
+        let quiet = tokio::time::timeout(Duration::from_millis(1500), sse.next_message()).await;
+        assert!(quiet.is_err(), "{quiet:?}");
+        expect_rollback(&mut sse, "brc20", 0, None).await;
+        expect_block(&mut sse, "brc20", 1, "b").await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn an_id_above_a_module_s_tip_waits_for_it() {
     with_chain("stream_ahead", 10, |pool| async move {
         let app = stream_app(&pool, &[]);

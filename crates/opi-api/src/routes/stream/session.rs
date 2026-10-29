@@ -68,6 +68,10 @@ pub struct Cursor {
     pub ring: VecDeque<(i32, String)>,
     /// Whether the cursor is to be checked against the stored hashes.
     pub dirty: bool,
+    /// Since when the last block the client holds has waited for its row
+    /// to be stored or its reorg to be read; past STREAM_RESUME_WAIT_SECS
+    /// it is taken as stale.
+    pub waiting_since: Option<Instant>,
 }
 
 /// Why a stream ends.
@@ -304,25 +308,41 @@ impl Session {
         let Some((height, hash)) = cursor.ring.back().cloned() else {
             return Ok(false);
         };
-        match cursor.stored(height).await? {
-            Some(stored) if stored == hash => return Ok(false),
-            Some(_) => {}
+        let kept = match cursor.stored(height).await? {
+            Some(stored) if stored == hash => {
+                self.cursors[index].waiting_since = None;
+                return Ok(false);
+            }
+            Some(_) => self.kept(index).await?,
+            None if cursor.top().await?.is_none_or(|top| top < height) => None,
+            None => self.kept(index).await?,
+        };
+        let kept = match kept {
+            Some(kept) => kept,
             None => {
-                if cursor.top().await?.is_none_or(|top| top < height) {
+                let cursor = &mut self.cursors[index];
+                let since = *cursor.waiting_since.get_or_insert_with(Instant::now);
+                if since.elapsed() < self.settings.resume_wait {
+                    // checked again on every wake, heartbeats included
+                    cursor.dirty = true;
                     return Ok(false);
                 }
+                let (front, _) = cursor
+                    .ring
+                    .front()
+                    .cloned()
+                    .expect("a block the client holds");
+                tracing::info!(
+                    "stream: {} block {height} was not stored or its reorg read within {:?}; rolling back as deep as a reorg goes",
+                    cursor.provider.name(),
+                    self.settings.resume_wait,
+                );
+                self.deepest(index, front).await?
             }
-        }
-        match self.kept(index).await? {
-            Some(kept) => {
-                self.rollback(index, kept).await?;
-                Ok(true)
-            }
-            None => {
-                self.cursors[index].dirty = true;
-                Ok(false)
-            }
-        }
+        };
+        self.cursors[index].waiting_since = None;
+        self.rollback(index, kept).await?;
+        Ok(true)
     }
 
     /// Delivers block `height` of the cursor at `index` when it is due.

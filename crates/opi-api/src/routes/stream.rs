@@ -592,6 +592,7 @@ pub(super) async fn stream(
             next,
             ring: held.into_iter().collect(),
             dirty: true,
+            waiting_since: None,
         });
     }
     let (chunks, receiver) = mpsc::channel(inner.settings.buffer);

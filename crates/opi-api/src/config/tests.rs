@@ -28,6 +28,7 @@ fn the_stream_settings_default_and_are_checked() {
         ("STREAM_MAX_SUBSCRIBERS", "0"),
         ("STREAM_HEARTBEAT_SECS", "5"),
         ("STREAM_BUFFER", "2"),
+        ("STREAM_RESUME_WAIT_SECS", "30"),
     ]))
     .unwrap();
     assert_eq!(
@@ -39,6 +40,7 @@ fn the_stream_settings_default_and_are_checked() {
             max_subscribers: 0,
             heartbeat: Duration::from_secs(5),
             buffer: 2,
+            resume_wait: Duration::from_secs(30),
         }
     );
     for (var, value, message) in [
@@ -71,6 +73,11 @@ fn the_stream_settings_default_and_are_checked() {
             "STREAM_MAX_SUBSCRIBERS",
             "-1",
             "STREAM_MAX_SUBSCRIBERS must be an integer from 0 to 1000000, got -1",
+        ),
+        (
+            "STREAM_RESUME_WAIT_SECS",
+            "0",
+            "STREAM_RESUME_WAIT_SECS must be an integer from 1 to 86400, got 0",
         ),
     ] {
         let config = load_config(env(&[("DB_DATABASE", "d"), (var, value)])).unwrap();

@@ -125,6 +125,7 @@ pub struct StreamVars {
     pub max_subscribers: f64,
     pub heartbeat_secs: f64,
     pub buffer: f64,
+    pub resume_wait_secs: f64,
 }
 
 /// The deepest `STREAM_MAX_CONFIRMATIONS`: the smallest `OPI_PRUNE`, so a
@@ -150,6 +151,10 @@ pub struct StreamSettings {
     pub heartbeat: Duration,
     /// The chunks a stream queues for its client (STREAM_BUFFER).
     pub buffer: usize,
+    /// How long a module's resumed position may wait for its database to
+    /// reach it, or for its poller to read the reorg that replaced it,
+    /// before it is taken as stale (STREAM_RESUME_WAIT_SECS).
+    pub resume_wait: Duration,
 }
 
 impl Default for StreamSettings {
@@ -161,6 +166,7 @@ impl Default for StreamSettings {
             max_subscribers: 100,
             heartbeat: Duration::from_secs(15),
             buffer: 16,
+            resume_wait: Duration::from_secs(300),
         }
     }
 }
@@ -204,6 +210,12 @@ impl StreamVars {
                 3600.0,
             )?),
             buffer: whole("STREAM_BUFFER", self.buffer, 1.0, 65536.0)? as usize,
+            resume_wait: Duration::from_secs(whole(
+                "STREAM_RESUME_WAIT_SECS",
+                self.resume_wait_secs,
+                1.0,
+                86400.0,
+            )?),
         })
     }
 }
@@ -358,6 +370,7 @@ pub fn load_config(get: impl Fn(&str) -> Option<String>) -> Result<Config> {
             max_subscribers: parse_int_str(&or("STREAM_MAX_SUBSCRIBERS", "100")),
             heartbeat_secs: parse_int_str(&or("STREAM_HEARTBEAT_SECS", "15")),
             buffer: parse_int_str(&or("STREAM_BUFFER", "16")),
+            resume_wait_secs: parse_int_str(&or("STREAM_RESUME_WAIT_SECS", "300")),
         },
         metrics_addr: get("API_METRICS_ADDR").filter(|addr| !addr.is_empty()),
     })
