@@ -23,7 +23,7 @@ CREATE UNIQUE INDEX brc20_historic_balances_event_id_idx ON public.brc20_histori
 CREATE INDEX brc20_historic_balances_block_height_idx ON public.brc20_historic_balances USING btree (block_height);
 CREATE INDEX brc20_historic_balances_pkscript_idx ON public.brc20_historic_balances USING btree (pkscript);
 CREATE INDEX brc20_historic_balances_pkscript_tick_block_height_idx ON public.brc20_historic_balances USING btree (pkscript, tick, block_height);
-CREATE INDEX brc20_historic_balances_tick_idx ON public.brc20_historic_balances USING btree (tick);
+CREATE INDEX IF NOT EXISTS brc20_historic_balances_tick_pkscript_block_height_id_idx ON public.brc20_historic_balances USING btree (tick, pkscript, block_height DESC, id DESC) INCLUDE (wallet, overall_balance, available_balance);
 CREATE INDEX brc20_historic_balances_wallet_idx ON public.brc20_historic_balances USING btree (wallet);
 
 CREATE TABLE public.brc20_events (
@@ -204,8 +204,8 @@ CREATE TABLE IF NOT EXISTS public.brc20_prog_historical_balances (
 	block_height int4 NOT NULL,
 	CONSTRAINT brc20_prog_historical_balances_pk PRIMARY KEY (wallet, ticker, block_height)
 );
-CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_ticker_idx ON public.brc20_prog_historical_balances USING btree (ticker);
 CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_block_height_idx ON public.brc20_prog_historical_balances USING btree (block_height);
+CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_ticker_wallet_block_height_idx ON public.brc20_prog_historical_balances USING btree (ticker, wallet, block_height DESC) INCLUDE (amount);
 
 CREATE TABLE IF NOT EXISTS public.brc20_ticker_holders (
 	tick text NOT NULL,

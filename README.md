@@ -954,7 +954,21 @@ brc20_available_balance,prog_balance,total_balance` (the row object's
 `brc20_available_balance`; a null is an empty field), CRLF line ends and RFC
 4180 quoting. Both formats stream from Postgres as the rows arrive. A
 failure partway through, or the time limit passing, aborts the transfer, so
-a complete download is a complete snapshot.
+a complete download is a complete snapshot. A snapshot at least 1000 blocks
+below the tip (the indexer's deepest rollback) never changes, and its answer
+carries `Cache-Control: public, max-age=86400, immutable`, so a shared cache
+in front of the API can serve repeats; every other answer, refusals
+included, carries `Cache-Control: no-store`. Each holder's latest row comes
+from an index-only scan of `(tick, pkscript, block_height DESC, id DESC)` on
+`brc20_historic_balances` and `(ticker, wallet, block_height DESC)` on
+`brc20_prog_historical_balances`, which a start builds concurrently on a
+database from before them while indexing goes on.
+
+**Whole-table hashes.** `/v1/brc20/get_hash_of_all_current_balances` and
+`/v1/sns/get_hash_of_all_registered_names` read and hash a whole table, so
+each is computed once per indexed block (its height and block hash) and
+served from memory until the tip moves. Requests that arrive while it is
+computed wait for that one computation.
 
 **Event feeds.** An event is `{"id","block_height","block_time",
 "inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the

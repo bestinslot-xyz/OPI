@@ -41,6 +41,7 @@ use {
             BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN, integer,
             optional_text, prefix_pattern, split_page, text,
         },
+        tip_cache::TipCache,
     },
     crate::{
         config::Module,
@@ -54,20 +55,28 @@ use {
         reply::{ApiError, Reply},
     },
     axum::extract::State,
+    futures::future::BoxFuture,
     opi_sns::unicode::to_lowercase,
     sha2::{Digest, Sha256},
+    sqlx::{PgConnection, PgExecutor},
     utoipa::{IntoParams, ToSchema},
-    utoipa_axum::routes,
+    utoipa_axum::{router::UtoipaMethodRouterExt, routes},
 };
 
 const EVENT_SEPARATOR: &str = "|";
 
-pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
+pub fn routes(db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
     ModuleRoutes::new()
         .routes(routes!(ip))
         .routes(routes!(block_height))
         .routes(routes!(get_hash_of_all_activity))
-        .routes(routes!(get_hash_of_all_registered_names))
+        .routes(
+            routes!(get_hash_of_all_registered_names).with_state(TipCache::new(
+                db.clone(),
+                Module::Sns,
+                registered_names_answer,
+            )),
+        )
         .routes(routes!(get_info_of_sns))
         .routes(routes!(get_inscriptions_of_domain))
         .routes(routes!(get_registered_namespaces))
@@ -181,9 +190,9 @@ async fn block_height_of_db(db: &Db) -> Result<JsValue, ApiError> {
     Ok(db.latest_block_height(Module::Sns).await?)
 }
 
-async fn indexer_version(db: &Db) -> Result<String, ApiError> {
+async fn indexer_version<'e>(executor: impl PgExecutor<'e>) -> Result<String, ApiError> {
     let rows = sqlx::query_scalar!("select indexer_version from sns_names_indexer_version;")
-        .fetch_all(db.pool()?)
+        .fetch_all(executor)
         .await?;
     Ok(rows
         .into_iter()
@@ -253,7 +262,7 @@ async fn get_hash_of_all_activity(
     .fetch_all(db.pool()?)
     .await?;
     // the version query runs before `res.rows[0]` is read
-    let indexer_version = indexer_version(&db).await?;
+    let indexer_version = indexer_version(db.pool()?).await?;
     let row = rows
         .into_iter()
         .next()
@@ -306,21 +315,42 @@ fn registered_names_hash(rows: &[NameRow]) -> Result<String, JsError> {
 
 /// The hash of every registered name.
 ///
-/// The route reads and hashes the whole `sns_names` table.
+/// The route reads and hashes the whole `sns_names` table once per indexed
+/// block and serves that answer until the tip moves.
 #[utoipa::path(
     get,
     path = "/v1/sns/get_hash_of_all_registered_names",
     tag = "sns",
     responses((status = 200, description = "The hash", body = Answer<SnsNamesHash>)),
 )]
-async fn get_hash_of_all_registered_names(State(db): State<Db>) -> Result<Reply, ApiError> {
-    let current_block_height = block_height_of_db(&db).await?;
+async fn get_hash_of_all_registered_names(
+    State(cache): State<TipCache>,
+) -> Result<Reply, ApiError> {
+    cache.answer().await
+}
+
+/// The hash answer at `height`. A block's names and its block hash commit
+/// together, so every answer is settled.
+fn registered_names_answer(
+    conn: &mut PgConnection,
+    height: Option<i32>,
+) -> BoxFuture<'_, Result<(Reply, bool), ApiError>> {
+    Box::pin(async move {
+        let reply = registered_names_reply(conn, height).await?;
+        Ok((reply, true))
+    })
+}
+
+async fn registered_names_reply(
+    conn: &mut PgConnection,
+    height: Option<i32>,
+) -> Result<Reply, ApiError> {
     let rows = sqlx::query!(
         r#"select "name", domain, inscription_id, inscription_number
             from sns_names
             order by inscription_number asc;"#
     )
-    .fetch_all(db.pool()?)
+    .fetch_all(&mut *conn)
     .await?;
     let rows: Vec<NameRow> = rows
         .into_iter()
@@ -333,14 +363,14 @@ async fn get_hash_of_all_registered_names(State(db): State<Db>) -> Result<Reply,
         .collect();
     // the whole table is joined and hashed in memory, off the async workers
     let hash_hex = tokio::task::spawn_blocking(move || registered_names_hash(&rows)).await??;
-    let indexer_version = indexer_version(&db).await?;
+    let indexer_version = indexer_version(&mut *conn).await?;
 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
         "result" => js_object! {
             "current_sns_names_hash" => hash_hex,
             "indexer_version" => indexer_version,
-            "block_height" => current_block_height,
+            "block_height" => height.to_js(),
         },
     }))
 }

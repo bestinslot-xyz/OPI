@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 
 use super::{
     bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer},
-    block_time, event_feed_indexes, evm_addresses, prog_balances, ticker_holders,
+    block_time, event_feed_indexes, evm_addresses, prog_balances, snapshot_indexes, ticker_holders,
 };
 use crate::{
     config::{
@@ -435,6 +435,15 @@ impl Brc20Database {
         event_feed_indexes::create_if_missing(&self.client)
             .await
             .map_err(|error| format!("event feed indexes: {error}"))?;
+
+        // A build reads a whole history table, which on an existing database
+        // takes long, so it runs beside the indexer.
+        let pool = self.client.clone();
+        tokio::spawn(async move {
+            if let Err(error) = snapshot_indexes::create_if_missing(&pool).await {
+                tracing::error!("snapshot indexes: {error}");
+            }
+        });
 
         self.fetch_current_event_id().await?;
 

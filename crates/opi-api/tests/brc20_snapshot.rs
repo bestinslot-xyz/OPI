@@ -405,6 +405,55 @@ async fn csv_has_a_header_quoted_fields_and_an_attachment_name() {
     .await;
 }
 
+/// The `Cache-Control` of the answer to `query`, and its status.
+async fn cache_control(app: &Router, query: &str) -> (u16, String) {
+    let response = send(app, &format!("{ROUTE}?{query}")).await;
+    let status = response.status().as_u16();
+    let value = response.headers()["cache-control"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, value)
+}
+
+#[tokio::test]
+async fn only_a_snapshot_past_any_rollback_is_cacheable() {
+    const SETTLED: &str = "public, max-age=86400, immutable";
+    with_history_pool("cache", 10, |app, pool| async move {
+        // The tip is 300, so no snapshot is past a 1000-block rollback.
+        for query in [
+            "ticker=ordi",
+            "ticker=ordi&block_height=100&format=csv",
+            "ticker=ordi&block_height=301",
+            "ticker=nope",
+        ] {
+            assert_eq!(cache_control(&app, query).await.1, "no-store", "{query}");
+        }
+        sqlx::query(
+            "INSERT INTO brc20_block_hashes (block_height, block_hash) VALUES (1300, 'h1300')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (query, status, expected) in [
+            ("ticker=ordi&block_height=300", 200, SETTLED),
+            ("ticker=ordi&block_height=100&format=csv", 200, SETTLED),
+            ("ticker=ordi&block_height=301", 200, "no-store"),
+            ("ticker=ordi", 200, "no-store"),
+            ("ticker=ordi&block_height=99", 400, "no-store"),
+            ("ticker=nope&block_height=100", 404, "no-store"),
+        ] {
+            assert_eq!(
+                cache_control(&app, query).await,
+                (status, expected.to_string()),
+                "{query}"
+            );
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn heights_out_of_range_and_unknown_tickers_are_refused() {
     with_history_pool("refused", 10, |app, pool| async move {

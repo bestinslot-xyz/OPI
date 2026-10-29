@@ -17,6 +17,7 @@ mod registry;
 mod runes;
 mod sns;
 mod stream;
+mod tip_cache;
 
 pub use {
     registry::ModuleRoutes,
