@@ -140,7 +140,8 @@ fn router_paths(router: &Router) -> BTreeSet<String> {
 }
 
 /// Whether `router` takes `method` on `path`: a request no route takes gets
-/// finalhandler's `Cannot METHOD /path` page.
+/// finalhandler's `Cannot METHOD /path` page. Only a 404's body is read,
+/// so a route that streams without end does not hold the test.
 async fn takes(router: &Router, method: &Method, path: &str) -> bool {
     let uri = path.replace(['{', '}'], "");
     let request = Request::builder()
@@ -149,10 +150,11 @@ async fn takes(router: &Router, method: &Method, path: &str) -> bool {
         .body(Body::empty())
         .unwrap();
     let response = router.clone().oneshot(request).await.unwrap();
-    let status = response.status().as_u16();
+    if response.status() != 404 {
+        return true;
+    }
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let page = String::from_utf8_lossy(&body).contains(&format!("<pre>Cannot {method} "));
-    !(status == 404 && page)
+    !String::from_utf8_lossy(&body).contains(&format!("<pre>Cannot {method} "))
 }
 
 #[tokio::test]
