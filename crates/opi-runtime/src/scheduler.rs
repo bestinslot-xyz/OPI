@@ -1,13 +1,9 @@
 use {
     anyhow::{Context, Result, bail},
-    opi_core::{BlockSource, BlockView, Module, metrics::ModuleMetrics},
+    opi_core::{BlockSource, BlockView, MAX_ROLLBACK_DEPTH, Module, metrics::ModuleMetrics},
     std::{convert::Infallible, sync::Arc, time::Duration},
     tokio::time::Instant,
 };
-
-/// Most blocks the scheduler rolls a module back in one step. A deeper
-/// disagreement with the journal is an error.
-pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 
 /// With pruning on, a module prunes after applying every block whose height
 /// is a multiple of this.

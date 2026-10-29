@@ -173,24 +173,184 @@ pub struct Answer {
     pub body: String,
 }
 
+/// The media type of server-sent events.
+pub const EVENT_STREAM: &str = "text/event-stream";
+
+/// The answer to a GET of `uri`, checked against the OpenAPI document. An
+/// event stream's body is not read (it does not end): the answer's body is
+/// empty, and dropping it closes the stream; [`Sse`] reads one.
 pub async fn get(app: &Router, uri: &str) -> Answer {
-    let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
-    let peer: SocketAddr = "127.0.0.1:50000".parse().unwrap();
-    request.extensions_mut().insert(ConnectInfo(peer));
-    let response = app.clone().oneshot(request).await.unwrap();
+    get_with(app, uri, &[]).await
+}
+
+/// [`get`] with the request headers `headers`.
+pub async fn get_with(app: &Router, uri: &str, headers: &[(&str, &str)]) -> Answer {
+    let response = request(app, uri, headers).await;
     let status = response.status().as_u16();
     let content_type = response
         .headers()
         .get("content-type")
         .map(|v| v.to_str().unwrap().to_string());
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if content_type.as_deref() == Some(EVENT_STREAM) {
+        String::new()
+    } else {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    };
     let answer = Answer {
         status,
         content_type,
-        body: String::from_utf8(body.to_vec()).unwrap(),
+        body,
     };
     check_against_document(uri, &answer);
     answer
+}
+
+async fn request(app: &Router, uri: &str, headers: &[(&str, &str)]) -> axum::response::Response {
+    let mut request = Request::builder().uri(uri);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let mut request = request.body(Body::empty()).unwrap();
+    let peer: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+    request.extensions_mut().insert(ConnectInfo(peer));
+    app.clone().oneshot(request).await.unwrap()
+}
+
+/// A frame of an event stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Frame {
+    pub event: String,
+    pub id: Option<String>,
+    pub data: Value,
+}
+
+/// An open event stream of `/v1/stream`, whose frames are checked against
+/// the document's schema of their event's data.
+pub struct Sse {
+    body: axum::body::BodyDataStream,
+    buffer: String,
+}
+
+/// The document's schema of an event's data, by event name.
+fn event_schema(event: &str) -> &'static str {
+    match event {
+        "block" => "StreamBlock",
+        "rollback" => "StreamRollback",
+        "heartbeat" => "StreamHeartbeat",
+        "error" => "StreamError",
+        other => panic!("an unknown stream event {other}"),
+    }
+}
+
+impl Sse {
+    /// Opens `uri` with the `Last-Event-ID` `last_event_id`; panics unless
+    /// it answers a 200 event stream.
+    pub async fn open(app: &Router, uri: &str, last_event_id: Option<&str>) -> Sse {
+        let headers: Vec<(&str, &str)> = last_event_id
+            .map(|id| ("last-event-id", id))
+            .into_iter()
+            .collect();
+        let response = request(app, uri, &headers).await;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_string());
+        if status != 200 {
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            panic!("{uri}: {status} {}", String::from_utf8_lossy(&body));
+        }
+        let answer = Answer {
+            status,
+            content_type: content_type.clone(),
+            body: String::new(),
+        };
+        check_against_document(uri, &answer);
+        assert_eq!(content_type.as_deref(), Some(EVENT_STREAM), "{uri}");
+        Sse {
+            body: response.into_body().into_data_stream(),
+            buffer: String::new(),
+        }
+    }
+
+    /// The next frame within `wait`; `None` when the stream has ended, and
+    /// a panic when no frame comes in time.
+    pub async fn next_within(&mut self, wait: std::time::Duration) -> Option<Frame> {
+        use futures::StreamExt;
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            if let Some(end) = self.buffer.find("\n\n") {
+                let text: String = self.buffer.drain(..end + 2).collect();
+                return Some(parse_frame(&text));
+            }
+            let chunk = tokio::time::timeout_at(deadline, self.body.next())
+                .await
+                .unwrap_or_else(|_| panic!("no frame within {wait:?}; buffered {:?}", self.buffer));
+            match chunk {
+                Some(chunk) => self
+                    .buffer
+                    .push_str(std::str::from_utf8(&chunk.unwrap()).unwrap()),
+                None => {
+                    assert!(self.buffer.is_empty(), "a cut frame {:?}", self.buffer);
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// The next frame within 10 seconds.
+    pub async fn next(&mut self) -> Option<Frame> {
+        self.next_within(std::time::Duration::from_secs(10)).await
+    }
+
+    /// The next frame that is not a heartbeat.
+    pub async fn next_message(&mut self) -> Option<Frame> {
+        loop {
+            let frame = self.next().await?;
+            if frame.event != "heartbeat" {
+                return Some(frame);
+            }
+        }
+    }
+}
+
+/// A frame's fields, its data checked against its event's schema.
+fn parse_frame(text: &str) -> Frame {
+    let (mut event, mut id, mut data) = (None, None, None);
+    for line in text.lines().filter(|line| !line.is_empty()) {
+        let (field, value) = line.split_once(": ").unwrap_or((line, ""));
+        match field {
+            "event" => event = Some(value.to_string()),
+            "id" => id = Some(value.to_string()),
+            "data" => data = Some(value.to_string()),
+            other => panic!("an unknown field {other} in {text:?}"),
+        }
+    }
+    let event = event.unwrap_or_else(|| panic!("a frame without event: {text:?}"));
+    let data: Value = serde_json::from_str(&data.expect("a frame with data")).unwrap();
+    let name = event_schema(&event);
+    let validator = VALIDATORS
+        .lock()
+        .unwrap()
+        .entry(format!("event {name}"))
+        .or_insert_with(|| {
+            let root = json!({
+                "$ref": format!("#/components/schemas/{name}"),
+                "components": DOCUMENT["components"],
+            });
+            Arc::new(jsonschema::validator_for(&root).unwrap())
+        })
+        .clone();
+    let errors: Vec<String> = validator
+        .iter_errors(&data)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a {event} frame that does not match {name}: {errors:#?}\n{data}"
+    );
+    Frame { event, id, data }
 }
 
 pub async fn expect(app: &Router, uri: &str, status: u16, content_type: &str, body: &str) {

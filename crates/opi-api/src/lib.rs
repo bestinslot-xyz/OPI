@@ -32,6 +32,7 @@ use {
     db::Db,
     opi_core::metrics::Phase,
     rate_limit::RateLimiter,
+    routes::StreamStop,
     std::{future::Future, sync::Arc},
 };
 
@@ -53,15 +54,23 @@ impl FrontDoor {
 /// in `dbs` (createApp). Every routed request counts in the process metrics
 /// (see [`metrics::instrument`]).
 pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
+    router_until(config, dbs, StreamStop::never())
+}
+
+/// [`router`], whose streams end when `stream_stop` fires.
+pub fn router_until(config: &Config, dbs: Vec<(Module, Db)>, stream_stop: StreamStop) -> Router {
+    let defaults = routes::RouteSettings::default();
     front_door(
         metrics::instrument(routes::routes(
             &config.modules,
             dbs,
             &routes::RouteSettings {
-                // `serve` refuses an invalid timeout before building the app
+                // `serve` refuses invalid settings before building the app
                 snapshot_timeout: config
                     .snapshot_timeout()
-                    .unwrap_or(routes::RouteSettings::default().snapshot_timeout),
+                    .unwrap_or(defaults.snapshot_timeout),
+                stream: config.stream.settings().unwrap_or(defaults.stream),
+                stream_stop,
             },
         )),
         FrontDoor::from_config(config),
@@ -152,12 +161,15 @@ pub async fn serve_listeners(
         (stop, task)
     });
     opi_core::metrics::global().set_phase(Phase::Running);
-    // Readiness answers 503 from the shutdown signal on.
+    // Readiness answers 503 from the shutdown signal on, and the streams
+    // end, so their connections close within the grace.
+    let (stream_stopper, stream_stop) = StreamStop::new();
     let shutdown = async move {
         shutdown.await;
         opi_core::metrics::global().set_phase(Phase::ShuttingDown);
+        stream_stopper.stop();
     };
-    let app = router(&config, dbs);
+    let app = router_until(&config, dbs, stream_stop);
     let names: Vec<&str> = config.modules.iter().map(|m| m.name()).collect();
     tracing::info!(
         "opi-api ({}) listening on {}",

@@ -53,6 +53,7 @@ use {
         (name = "bitmap", description = "Bitmap"),
         (name = "sns", description = "SNS names and namespaces"),
         (name = "runes", description = "Runes"),
+        (name = "stream", description = "The push feed of each block's events"),
     ),
     components(schemas(ErrorBody))
 )]
