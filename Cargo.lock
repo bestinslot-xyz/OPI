@@ -5264,6 +5264,7 @@ dependencies = [
  "bitcoin",
  "hex",
  "opi-core",
+ "ordinals",
  "reqwest",
  "serde_json",
  "sha2 0.10.9",

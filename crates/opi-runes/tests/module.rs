@@ -810,6 +810,259 @@ async fn rollback_unspends_through_input_events() {
     .await;
 }
 
+/// `<rune_id> <p1|p2> <balance> <address>` of every current balance, and
+/// `<rune_id> <holders>` of every holder count.
+async fn holder_state(conn: &mut PgConnection) -> (Vec<String>, Vec<String>) {
+    let h1 = hex::encode(pk1());
+    let balances: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT rune_id, pkscript, balance::text, wallet_addr FROM runes_current_balances \
+         ORDER BY rune_id, pkscript",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap();
+    let balances = balances
+        .into_iter()
+        .map(|(rune, pkscript, balance, address)| {
+            let (owner, pk) = if pkscript == h1 {
+                ("p1", pk1())
+            } else {
+                ("p2", pk2())
+            };
+            assert_eq!(address, wallet_addr(&pk, "regtest"));
+            format!("{rune} {owner} {balance}")
+        })
+        .collect();
+    let holders: Vec<String> =
+        sqlx::query_scalar("SELECT rune_id || ' ' || holders FROM runes_holders ORDER BY rune_id")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+    (balances, holders)
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|v| v.to_string()).collect()
+}
+
+/// The current balances and holder counts follow each block and rollback,
+/// and leave the event hashes as they are.
+#[tokio::test]
+async fn holders_follow_blocks_and_rollbacks() {
+    with_database("holders", |name| async move {
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        let mut conn = connect(&name).await;
+        let mut states = Vec::new();
+        for block in blocks() {
+            module.apply(&block).await.unwrap();
+            states.push(holder_state(&mut conn).await);
+        }
+        assert_eq!(states[0], (strings(&["1:1 p1 1000"]), strings(&["1:1 1"])));
+        assert_eq!(
+            states[1],
+            (strings(&["1:1 p1 600", "1:1 p2 50"]), strings(&["1:1 2"]))
+        );
+        assert_eq!(
+            states[2],
+            (
+                strings(&["1:1 p1 50", "1:1 p2 650", "3:1 p1 7", "3:1 p2 5"]),
+                strings(&["1:1 2", "3:1 2"])
+            )
+        );
+
+        // A block that empties a holder: p2 sends everything to p1.
+        use RuneEventKind::*;
+        let sweep = view(
+            4,
+            RuneFeed {
+                events: vec![
+                    located(Input, "h0", outpoint("d0", 0), pk2(), "1:1", 650),
+                    located(Input, "h0", outpoint("d0", 0), pk2(), "3:1", 5),
+                    located(Output, "h0", outpoint("h0", 0), pk1(), "1:1", 650),
+                    located(Output, "h0", outpoint("h0", 0), pk1(), "3:1", 5),
+                ],
+                etchings: Vec::new(),
+                counters: Vec::new(),
+            },
+        );
+        let hashes_before: Vec<String> = sqlx::query_scalar(
+            "SELECT cumulative_event_hash FROM runes_cumulative_event_hashes ORDER BY block_height",
+        )
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        module.apply(&sweep).await.unwrap();
+        assert_eq!(
+            holder_state(&mut conn).await,
+            (
+                strings(&["1:1 p1 700", "3:1 p1 12"]),
+                strings(&["1:1 1", "3:1 1"])
+            )
+        );
+        let hashes_after: Vec<String> = sqlx::query_scalar(
+            "SELECT cumulative_event_hash FROM runes_cumulative_event_hashes ORDER BY block_height",
+        )
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(hashes_after[..3], hashes_before[..]);
+
+        module.rollback_to(3).await.unwrap();
+        assert_eq!(holder_state(&mut conn).await, states[2]);
+        module.rollback_to(2).await.unwrap();
+        assert_eq!(holder_state(&mut conn).await, states[1]);
+        module.rollback_to(1).await.unwrap();
+        assert_eq!(holder_state(&mut conn).await, states[0]);
+        for block in blocks().into_iter().skip(1) {
+            module.apply(&block).await.unwrap();
+        }
+        assert_eq!(holder_state(&mut conn).await, states[2]);
+
+        // Residue above the cursor is rolled back at start, balances too.
+        sqlx::query("DELETE FROM runes_block_hashes WHERE block_height = 3")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        drop(module);
+        let module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        assert_eq!(holder_state(&mut conn).await, states[1]);
+        drop(module);
+
+        // Without a block row and with start height 0, every row goes.
+        sqlx::query("DELETE FROM runes_block_hashes")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        assert_eq!(holder_state(&mut conn).await, (vec![], vec![]));
+    })
+    .await;
+}
+
+/// A database without the holder tables or the API indexes gets them at
+/// start, filled from the unspent outpoints; the superseded event indexes
+/// are dropped.
+#[tokio::test]
+async fn holder_tables_and_indexes_are_created_at_start() {
+    with_database("holders_fill", |name| async move {
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        for block in blocks() {
+            module.apply(&block).await.unwrap();
+        }
+        drop(module);
+        let mut conn = connect(&name).await;
+        let indexed = holder_state(&mut conn).await;
+        let mut drops = String::from(
+            "DROP TABLE runes_current_balances; DROP TABLE runes_holders; \
+             CREATE INDEX runes_events_rune_id_idx ON runes_events (rune_id); \
+             CREATE INDEX runes_events_wallet_addr_idx ON runes_events (wallet_addr); \
+             CREATE INDEX runes_events_pkscript_idx ON runes_events (pkscript);",
+        );
+        for (index, _) in opi_runes::holders::INDEXES {
+            if !index.starts_with("runes_current_balances") {
+                drops.push_str(&format!("DROP INDEX {index};"));
+            }
+        }
+        sqlx::raw_sql(sqlx::AssertSqlSafe(drops))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        assert_eq!(holder_state(&mut conn).await, indexed);
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT indexname::text FROM pg_indexes WHERE tablename LIKE 'runes%' ORDER BY 1",
+        )
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        for (index, _) in opi_runes::holders::INDEXES {
+            assert!(names.iter().any(|n| n == index), "{index}");
+        }
+        for index in opi_runes::holders::SUPERSEDED {
+            assert!(!names.iter().any(|n| n == index), "{index}");
+        }
+
+        // Only one table missing refills both.
+        sqlx::raw_sql("DROP TABLE runes_holders; UPDATE runes_current_balances SET balance = 1;")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        assert_eq!(holder_state(&mut conn).await, indexed);
+    })
+    .await;
+}
+
+/// Opens the database OPI_RUNES_TEST_START_DB names with the runes module,
+/// which creates and fills the holder tables and indexes it lacks, and
+/// checks the counts against a recount, then rolls back 500 blocks and
+/// checks them again. It writes, so name a copy (`createdb -T`); skipped
+/// when unset.
+#[tokio::test]
+async fn start_on_a_database_copy_fills_the_holder_tables() {
+    let Ok(database) = std::env::var("OPI_RUNES_TEST_START_DB") else {
+        eprintln!("OPI_RUNES_TEST_START_DB is unset; skipping");
+        return;
+    };
+    let mut conn = connect(&database).await;
+    let network: String = sqlx::query_scalar("SELECT network_type FROM runes_network_type")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let mut module = RunesModule::new(config(&database, &network), journal())
+        .await
+        .unwrap();
+    eprintln!("start took {:?}", started.elapsed());
+    assert_eq!(holder_mismatches(&mut conn).await, 0);
+    let tip = module.cursor().await.unwrap().unwrap().height;
+    let started = std::time::Instant::now();
+    module.rollback_to(tip - 500).await.unwrap();
+    eprintln!("rollback of 500 blocks took {:?}", started.elapsed());
+    assert_eq!(holder_mismatches(&mut conn).await, 0);
+}
+
+/// The runes whose holder count differs from a recount of the unspent
+/// outpoints, plus the balance rows that differ from their sums.
+async fn holder_mismatches(conn: &mut PgConnection) -> i64 {
+    let balances: i64 = sqlx::query_scalar(
+        "WITH sums AS ( \
+             SELECT u.rune_id, o.pkscript, sum(u.balance) AS balance \
+             FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
+             WHERE NOT o.spent GROUP BY 1, 2 HAVING sum(u.balance) > 0) \
+         SELECT count(*) FROM sums s FULL JOIN runes_current_balances c \
+         ON c.rune_id = s.rune_id AND c.pkscript = s.pkscript \
+         WHERE s.balance IS DISTINCT FROM c.balance",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    let counts: i64 = sqlx::query_scalar(
+        "WITH recount AS ( \
+             SELECT u.rune_id, count(DISTINCT o.pkscript) AS holders \
+             FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
+             WHERE NOT o.spent AND u.balance > 0 GROUP BY u.rune_id) \
+         SELECT count(*) FROM recount r FULL JOIN runes_holders h ON h.rune_id = r.rune_id \
+         WHERE coalesce(r.holders, 0) <> coalesce(h.holders, 0)",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    balances + counts
+}
+
 /// A database from `db_init.sql` keeps the version string `index_runes.js`
 /// writes. With a block row it is refused; without one it is adopted.
 #[tokio::test]

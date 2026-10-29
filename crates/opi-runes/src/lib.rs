@@ -3,6 +3,8 @@
 //! cumulative event hashes to the OPI network.
 
 mod db;
+pub mod holders;
+pub mod names;
 mod report;
 mod rules;
 

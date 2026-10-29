@@ -4,6 +4,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::RunesConfig;
+use crate::holders;
 use crate::report::{DB_VERSION, INDEXER_VERSION};
 use crate::rules::{
     block_event_hash, cumulative_hash, event_str, js_safe, outpoint_rows, spent_outpoints,
@@ -50,6 +51,9 @@ impl Db {
             .context("connecting to the runes database")?;
         let db = Db { pool };
         db.ensure_schema(&config.network_type).await?;
+        holders::create_if_missing(&db.pool)
+            .await
+            .context("creating the runes holder tables and API indexes")?;
         Ok(db)
     }
 
@@ -178,12 +182,14 @@ impl Db {
 
     /// Drops every block above `height` in one transaction, or every block
     /// when `height` is `None`: rows created above it are deleted, outpoints
-    /// that input events above it spend are unspent, and each entry updated
+    /// that input events above it spend are unspent, each entry updated
     /// above it gets the totals of its latest change at or below `height` (0,
-    /// 0 and its genesis height without one).
+    /// 0 and its genesis height without one), and the current balances and
+    /// holder counts follow the outpoints.
     pub async fn rollback_to(&self, height: Option<u32>) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         let height = height.map_or(-1, i64::from);
+        let pkscripts = holders::rollback_pkscripts(&mut tx, height).await?;
         for statement in [
             "DELETE FROM runes_outpoint_to_balances WHERE block_height > $1",
             "UPDATE runes_outpoint_to_balances SET spent = false, spent_block_height = NULL \
@@ -223,6 +229,11 @@ impl Db {
             "SELECT setval('runes_block_hashes_id_seq', max(id)) FROM runes_block_hashes",
         ] {
             sqlx::query(reset_sequence).execute(&mut *tx).await?;
+        }
+        if height < 0 {
+            holders::clear(&mut tx).await?;
+        } else {
+            holders::rollback(&mut tx, &pkscripts).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -264,7 +275,8 @@ impl Db {
         let mut tx = self.pool.begin().await?;
         insert_entries(&mut tx, block).await?;
         insert_outpoints(&mut tx, block, network).await?;
-        spend_outpoints(&mut tx, block).await?;
+        let spent = spend_outpoints(&mut tx, block).await?;
+        holders::apply_block(&mut tx, height, &spent).await?;
         apply_counters(&mut tx, block).await?;
         insert_events(&mut tx, block, network).await?;
 
@@ -450,13 +462,14 @@ async fn insert_outpoints(
 
 /// Marks the outpoints the block's inputs spend. Each must be stored and
 /// unspent; outputs of the same block are inserted before this runs.
+/// Returns the spent outpoints.
 async fn spend_outpoints(
     tx: &mut Transaction<'_, Postgres>,
     block: &BlockView,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<String>> {
     let spent = spent_outpoints(&block.runes.events)?;
     if spent.is_empty() {
-        return Ok(());
+        return Ok(spent);
     }
     let updated = sqlx::query(
         "UPDATE runes_outpoint_to_balances SET spent = true, spent_block_height = $1 \
@@ -475,7 +488,7 @@ async fn spend_outpoints(
             updated
         );
     }
-    Ok(())
+    Ok(spent)
 }
 
 /// Records each counter in `runes_id_to_entry_changes` and sets the entry's
