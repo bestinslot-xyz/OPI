@@ -58,7 +58,7 @@ OPI_MODULES=brc20,bitmap,sns
 ```
 
 ord then builds no rune tables and does no rune work per block, and the
-journal has no rune tables, so both ord's index and the journal need less disk.
+journal has no rune rows, so both ord's index and the journal need less disk.
 
 The choice is fixed per ord data dir and journal: ord records it in its index
 when it creates the index, and the journal records it in its `runes` meta row.
@@ -66,7 +66,7 @@ A start whose `OPI_MODULES` disagrees with either is refused with a message
 naming the dirs to rebuild. The journal is checked first, for example:
 
 ```text
-opening the journal of ord's data dir /data/ord: journal at /data/journal/journal.redb was built with rune indexing, but runes is disabled; start with runes enabled again, or delete the journal and ord's data dir and index again
+opening the journal of ord's data dir /data/ord: journal at /data/journal was built with rune indexing, but runes is disabled; start with runes enabled again, or delete the journal and ord's data dir and index again
 ```
 
 To switch, either put `OPI_MODULES` back as it was, or delete `OPI_ORD_DATA_DIR`
@@ -116,8 +116,9 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | --- | --- |
 | `OPI_CHAIN` | `mainnet`, `signet`, `testnet4` or `regtest` |
 | `OPI_ORD_DATA_DIR` | directory of ord's index database |
-| `OPI_JOURNAL_DIR` | directory of the journal |
-| `OPI_JOURNAL_CACHE_MB` | the journal's redb page cache in MiB, 64 to 65536, default `1024`; 4096-8192 speeds up indexing and pruning on large journals when the RAM is free, and the process's memory grows by up to that amount |
+| `OPI_JOURNAL_DIR` | directory of the journal (see [Journal](#journal)) |
+| `OPI_JOURNAL_CACHE_MB` | the redb page cache the journal's files share, in MiB, 64 to 65536, default `1024`: a quarter goes to `tracked.redb` and the rest is split among the three segments open at once. The process's memory grows by up to that amount |
+| `OPI_JOURNAL_SEGMENT` | heights per journal segment file, 100 to 100000, default `1000`; fixed when the journal is created |
 | `OPI_ORD_CACHE_MB` | the redb page cache of ord's index in MiB, 64 to 65536, default `1024`. ord reads its index through the kernel's page cache, which holds the pages redb's cache would copy, so the RAM serves ord best left to the page cache; raise it only on a host whose page cache already holds the whole index |
 | `MALLOC_ARENA_MAX` | glibc's malloc arenas, 1 to 1024, default `2`. glibc otherwise opens up to 8 arenas per core, and each keeps the memory freed into it: on a signet catch-up 90 arenas held 3.6 of the process's 4.6 GiB, and 2 arenas brought its peak to 3.1 GiB. Read from the `.env` too |
 | `BITCOIN_RPC_URL` | bitcoind RPC URL |
@@ -164,6 +165,41 @@ On shutdown `run` waits up to 150 seconds for brc20 to finish the block in
 flight. Log verbosity follows `RUST_LOG`. Logs go to stderr for every
 command.
 
+#### Journal
+
+The journal holds ord's raw events and the records finalize makes of them,
+for the blocks the modules have yet to read and those a reorg may roll back.
+It keeps no state of its own: ord's index holds the chain and inscription
+state, and each module's database holds the module's.
+
+`OPI_JOURNAL_DIR` holds:
+
+| File | Holds |
+| --- | --- |
+| `seg-<height>.redb` | raw events, records, inscription infos, rune events, headers and inscription moves of `OPI_JOURNAL_SEGMENT` heights from `<height>` |
+| `meta.redb` | chain, schema, the `runes`, `inscriptions` and segment settings, and the gate limit |
+| `tracked.redb` | the bound text and JSON inscriptions whose first transfer the journal has yet to record |
+
+The fork records a bound text or JSON inscription's creation and its first
+transfer, and that choice numbers every record of the block after it. ord's
+index keeps no content type, so `tracked.redb` keeps one small row per such
+inscription until its first transfer. Only brc20 reads a transfer's content,
+and only for a BRC-20 `transfer`, a brc20-module `withdraw` or a BRC2.0
+`deploy`, `call` or `transact`, so the row of such an inscription also keeps
+the info its creation recorded, which its first transfer's record carries
+again; the first transfer of any other inscription carries none. Most of
+these are BRC-20 transfer inscriptions, moved within a few blocks, so the
+kept infos stay few. A rune transaction's records list the outpoints it spends:
+the runes module, which keeps every unspent rune outpoint and every rune's
+totals, makes the input events and the counter rows from them, so the block
+event hashes are those the journal reported before.
+
+Every write commits one segment at a time, and each segment records its own
+final tip, so a finalize, rollback or raw-event write that spans two segments
+is consistent after a crash at any point. A journal built in the single-file
+layout (`journal.redb`) is refused with a message: delete it and the ord data
+dir and index again.
+
 #### Pruning
 
 With `OPI_PRUNE=<blocks>`, `run` deletes the data that only indexing and
@@ -173,7 +209,7 @@ the deepest rollback the scheduler walks.
 
 | Store | Pruned | Kept |
 | --- | --- | --- |
-| journal | raw events below the final tip minus `<blocks>`; transfer records, inscription moves, per-block rune rows and the content of inscriptions already transferred below the lowest module height minus `<blocks>` | block headers, first transfers, the content of inscriptions not yet transferred, current rune state |
+| journal | segment files whose heights are all below both the final tip and the lowest module height minus `<blocks>`; tracked inscriptions transferred below the window | the window's segments; the tracked inscriptions not yet transferred |
 | brc20 | `brc20_logs`, which nothing reads | every table the API, the light clients and `validate` read |
 | bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
@@ -182,34 +218,19 @@ the deepest rollback the scheduler walks.
 Each module prunes its tables every 100 blocks. ord's index has no history to
 prune: `run` builds it without sat, address or transaction indexes.
 
-The journal is pruned in steps of at most 1000 heights. A step deletes at most
-10,000 raw events in one write transaction, and at most 10,000 transfer
-records, consumed content rows and rune rows in another. Each takes about a
-second on NVMe, so ord's commits never wait on it for long. A step may stop
-inside a dense height; that height then fails closed in the same commit (it
-goes below the pruned floor, or loses its raw tag), and the next step
-deletes the rest.
+The journal prunes by deleting whole files, so its disk use follows from the
+window: it holds at most `<blocks> / OPI_JOURNAL_SEGMENT + 2` segments (the
+window's, the one being written, and the one the window starts in), plus
+`meta.redb` and `tracked.redb`. A background task deletes the segments below
+the window every minute, while every enabled module is running and has
+reported its height; a deletion takes milliseconds and needs no compaction.
+A module or API read that holds a segment keeps reading it, and the file
+system frees the file's space when the read ends.
 
-- **At start-up**, before it starts ord and the modules, `run` prunes the
-  journal to the window. It reads each enabled module's height, the highest
-  row of its `<module>_block_hashes` table, from the module's database over a
-  read-only connection, and logs the heights done and left per table every 10
-  seconds. Meanwhile readiness answers 503 `starting`, and `/metrics` shows
-  `opi_fill_running{module="journal",fill="journal_prune"}` with its progress
-  and target. SIGINT or SIGTERM, during the height reads or between two
-  steps, stops it and `run` exits 0; the journal stays valid and the next
-  start resumes where it stopped. A fresh module, one whose
-  `<module>_block_hashes` table does not exist yet or holds no block, leaves
-  the records alone: this prune removes raw events only, and the background
-  task below removes the records once every module runs. A height that
-  cannot be read for another reason is retried five times over about one to
-  two minutes, then fails the start, naming the module and the error. With
-  no journal yet, `run` reads no heights.
-- **While `run` indexes**, a background task prunes the new blocks every
-  minute: raw events always, the records only while every enabled module is
-  running. After each step it pauses for as long as the step took, so the
-  journal writes ord's commits wait on get the journal at least half the
-  time.
+redb grows a file by doubling it until the file fills its first 4 GiB
+region, so a segment file can be up to twice the size of what it holds. On
+mainnet at the 2023-2024 inscription peak a 1000-height segment holds a few
+GB; a smaller `OPI_JOURNAL_SEGMENT` makes each file, and so the slack, smaller.
 
 A pruned journal no longer holds the blocks a module needs to start from
 scratch. A module whose next block is below the journal's pruned floor (a new
@@ -217,30 +238,6 @@ database, a module enabled later, or a `brc20 reorg` below the floor) fails with
 "below the journal's pruned floor" and keeps restarting; rebuilding it needs a
 new journal and ord data dir indexed from the start. brc20-prog's database is
 not pruned.
-
-redb reuses the freed pages but does not shrink its file. To return the space
-to the file system, stop `run` and compact the journal:
-
-```bash
-target/release/opi-indexer compact-journal
-```
-
-With `OPI_PRUNE` set, `compact-journal` first prunes the journal to the window,
-in the same steps and with the same progress log, from the module heights in
-the databases, then compacts it. It reads the whole `run` configuration from
-the same `.env`. It refuses, naming the module and the reason, when an enabled
-module's height cannot be read, for example an unreachable database or a
-module that has stored no block. So one offline command (stop `run`,
-`compact-journal`, start `run`) prunes and reclaims the space.
-
-redb frees a transaction's pages only once it commits, and it grows its file
-in 4 GiB regions that stay sparse until written, so a prune can raise the
-file's apparent size (`ls -l`) well above its disk usage (`du`). A large
-journal can then fill that gap with pages before compaction shrinks the file.
-Before the first prune, keep free at least the gap between the journal file's
-apparent size and its disk usage, plus 16 GiB. A 6.8 GiB signet journal went
-to 8.0 GiB apparent through its whole prune while its disk usage grew by
-16 MiB, and compacted to 0.2 GiB on disk.
 
 #### BRC2.0 engine
 
@@ -443,16 +440,10 @@ database is set, so the Postgres tests skip; the OpenAPI tests run.
 ### Subcommands
 
 ```
-opi-indexer [run | api | validate | compact-journal | brc20 <COMMAND>]
+opi-indexer [run | api | validate | brc20 <COMMAND>]
 ```
 
 `api` serves the HTTP API (see [API](#api)); it needs neither the journal nor ord.
-
-`compact-journal` rewrites the journal under `OPI_JOURNAL_DIR` without the
-space pruning freed (see [Pruning](#pruning)). It needs `run` stopped and
-refuses while `run` holds the journal. With `OPI_PRUNE` set it first prunes
-the journal to that window, from the heights in the enabled modules'
-databases, and refuses when one cannot be read.
 
 `opi-indexer brc20` holds the BRC-20 light client and maintenance commands. It
 reads only brc20's environment, so it runs on light-client hosts.
@@ -1308,25 +1299,16 @@ there.
 The API learns of new blocks by polling: one poller per module and process,
 whatever the number of subscribers, reads the module's highest block-hash row
 every `STREAM_POLL_MS`, and the new rows when it changes. A subscriber holds
-no database connection while it waits for a block. A block's events are read
-once for every stream that delivers it: the streams share each block's
-rendered frame, keeping the most recent 64 MB of them. The streams read a module
+no database connection while it waits for a block. The streams read a module
 database with at most as many connections at once as the holders snapshots
 may take (4, and at most half of `DB_MAX_CONNECTIONS`), so replaying streams
 leave connections to the other routes. A stream that cannot queue a message
 for its client for `STREAM_HEARTBEAT_SECS` ends with an `error` event; the
-client resumes with its `Last-Event-ID`. A client IP holds at most
-`STREAM_MAX_PER_CLIENT` streams: one more ends the client's oldest stream
-with an `error` event and takes its place, so a client that reconnects
-while its old connection still looks open is served at once. Beyond
-`STREAM_MAX_SUBSCRIBERS` open streams, a request from a client below its
-own cap answers
-`503 {"error":"too many stream subscribers","result":null}`. The client IP
-is the one `API_TRUSTED_PROXY_CNT` gives: behind nginx or another proxy,
-set it to the number of proxies, or every client counts as the proxy's IP
-and shares its `STREAM_MAX_PER_CLIENT` streams. Every connection has TCP
-keepalive and, on Linux, a TCP user timeout, so a peer that vanished
-without closing frees its stream's place within about a minute. A stream's buffer holds `STREAM_BUFFER` chunks, a brc20 page
+client resumes with its `Last-Event-ID`. Beyond `STREAM_MAX_SUBSCRIBERS`
+open streams, a request answers
+`503 {"error":"too many stream subscribers","result":null}`; the cap counts
+every client together, so one client can take every place the rate limit
+lets it open. A stream's buffer holds `STREAM_BUFFER` chunks, a brc20 page
 of 100 events being about 60 KB, so at most about 1 MB per stream with the
 default. On
 shutdown every stream ends at once, so its connection closes within the
@@ -1374,7 +1356,7 @@ win, and a missing file is ignored.
 | `DB_MAX_CONNECTIONS` | maximum connections per module database pool, default `10` |
 | `API_HOST` | listen address, default `127.0.0.1` |
 | `API_PORT` | listen port, default `8000` |
-| `API_TRUSTED_PROXY_CNT` | number of trusted proxies (such as nginx) in front of the API, default `0`; the rate limiter and `STREAM_MAX_PER_CLIENT` key on the client IP it gives, so set it to `1` behind one nginx |
+| `API_TRUSTED_PROXY_CNT` | number of trusted proxies (such as nginx) in front of the API, default `0` |
 | `RATE_LIMIT_ENABLE` | `true` turns the rate limiter on, default `false` |
 | `RATE_LIMIT_WINDOW_MS` | rate limit window in milliseconds, default `900000` |
 | `RATE_LIMIT_MAX` | requests per client per window, default `100` |
@@ -1382,8 +1364,7 @@ win, and a missing file is ignored.
 | `STREAM_POLL_MS` | how often each module's block hashes are read for the push feed, in milliseconds, from 10, default `1000` |
 | `STREAM_DEFAULT_CONFIRMATIONS` | the confirmations of a stream that names none, default `1` |
 | `STREAM_MAX_CONFIRMATIONS` | the most confirmations a stream may ask for, at most `1000`, default `100` |
-| `STREAM_MAX_SUBSCRIBERS` | the most streams open at once, default `1000`; `0` refuses every stream |
-| `STREAM_MAX_PER_CLIENT` | the most streams one client IP holds open, from 1, default `5`; a newer stream ends the client's oldest. Needs `API_TRUSTED_PROXY_CNT` behind a proxy |
+| `STREAM_MAX_SUBSCRIBERS` | the most streams open at once, default `100`; `0` refuses every stream |
 | `STREAM_HEARTBEAT_SECS` | the heartbeat interval, and how long a stream may be unable to queue a message before it ends, default `15` |
 | `STREAM_RESUME_WAIT_SECS` | how long a resumed module's position may wait for its block to be stored or its reorg to be read before it is taken as stale and rolled back 1000 blocks, from 1 to 86400, default `300` |
 | `STREAM_BUFFER` | the chunks (a block's head, a page of 100 events of up to about 60 KB, or a small event) a stream queues for its client, default `16`, about 1 MB at most |
@@ -1521,9 +1502,7 @@ An ord index has a schema version: ord 0.29.1 (schema 34) refuses an index
 written by an older ord, and redb 3 refuses a file written in redb 2's format.
 An ord data dir or journal written by ord 0.23.2 (schema 30) or by redb 2 does
 not open; delete both and index again. A new ord release with a new schema
-likewise needs a fresh ord data dir and journal. A journal that has finalized
-blocks but no rune tables does not open; delete it and the ord data dir and
-index again.
+likewise needs a fresh ord data dir and journal.
 
 ## Dependency notes
 

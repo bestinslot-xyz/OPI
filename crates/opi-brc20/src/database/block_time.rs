@@ -101,7 +101,7 @@ impl Brc20Database {
 #[cfg(test)]
 mod tests {
     use bitcoin::Network;
-    use opi_core::{BlockInfo, BlockView, InscriptionInfo, InscriptionRecord};
+    use opi_core::{BlockInfo, BlockView, InscriptionRecord};
     use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 
     use super::*;
@@ -210,10 +210,6 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-            Ok(None)
-        }
-
         fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
             Ok(None)
         }
@@ -270,6 +266,27 @@ mod tests {
                 times(&database).await,
                 vec![(10, Some(1_700_000_010)), (11, None)]
             );
+        })
+        .await;
+    }
+
+    /// A block's report reads its hash and time from brc20's own table,
+    /// which keeps them for every height brc20 indexed.
+    #[tokio::test]
+    async fn stored_hash_and_time_are_read_back() {
+        with_database("hash_time", |name| async move {
+            let database = database(&name, false).await;
+            insert_block(&database, 7, Some(1_700_000_007)).await;
+            insert_block(&database, 8, None).await;
+            assert_eq!(
+                database.get_block_hash_and_time(7).await.unwrap(),
+                Some(("hash7".to_string(), Some(1_700_000_007)))
+            );
+            assert_eq!(
+                database.get_block_hash_and_time(8).await.unwrap(),
+                Some(("hash8".to_string(), None))
+            );
+            assert_eq!(database.get_block_hash_and_time(9).await.unwrap(), None);
         })
         .await;
     }
@@ -359,10 +376,6 @@ mod tests {
 
         fn inscription_records(&self, height: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
             Journal { tip: 4 }.inscription_records(height)
-        }
-
-        fn inscription_info(&self, id: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-            Journal { tip: 4 }.inscription_info(id)
         }
 
         fn block_view(&self, height: u32) -> anyhow::Result<Option<BlockView>> {

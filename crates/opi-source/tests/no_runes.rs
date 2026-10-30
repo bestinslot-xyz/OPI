@@ -1,5 +1,5 @@
 //! A source run without rune indexing: ord indexes no runes, the journal has
-//! no rune tables and every block view carries an empty rune feed. An ord
+//! no rune rows and every block view carries an empty rune feed. An ord
 //! index or journal built with the other setting is refused at startup.
 
 mod support;
@@ -9,14 +9,13 @@ use {
     opi_source::{
         DEFAULT_ORD_CACHE_BYTES,
         driver::{SourceConfig, SourceHandle, spawn_source},
-        journal::{JournalReader, cf},
+        journal::{JournalReader, META_FILE, cf, tracked},
         ord_settings,
     },
     ord::{Chain, Index},
     ordinals::{Etching, Runestone},
-    redb::{ReadableDatabase, TableHandle},
     std::path::Path,
-    support::{Harness, dump_tables, envelope, source_config, wait_for_tip},
+    support::{Harness, dump_tables, envelope, segment_rows, source_config, wait_for_tip},
 };
 
 const JSON: &[u8] = br#"{"p":"brc-20","op":"deploy","tick":"ordi","max":"21000000"}"#;
@@ -52,21 +51,24 @@ fn etching() -> Runestone {
     }
 }
 
-fn table_names(reader: &JournalReader) -> Vec<String> {
-    reader
-        .journal()
-        .db()
-        .begin_read()
-        .unwrap()
-        .list_tables()
-        .unwrap()
-        .map(|handle| handle.name().to_string())
-        .collect()
+/// The inscription rows of `reader`'s journal: records, infos and headers
+/// table by table, then the tracked set.
+fn inscription_rows(reader: &JournalReader) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
+    let mut rows = Vec::new();
+    for name in [cf::TRANSFERS, cf::INFO, cf::HEADERS] {
+        rows.extend(
+            segment_rows(reader.journal(), name)
+                .into_iter()
+                .map(|(key, value)| (name, key, value)),
+        );
+    }
+    rows.extend(dump_tables(reader.journal().tracked_db(), &tracked::TABLES));
+    rows
 }
 
 /// The same chain synced with and without runes gives the same inscription
-/// records, info rows, headers and first-transfer entries, and the same
-/// block views apart from the rune feed.
+/// records, info rows, headers and tracked set, and the same block views
+/// apart from the rune feed.
 #[test]
 fn inscription_records_match_with_and_without_runes() {
     let harness = Harness::new();
@@ -89,20 +91,19 @@ fn inscription_records_match_with_and_without_runes() {
     );
     harness.mine(2);
 
-    let tables = [cf::TRANSFERS, cf::INFO, cf::HEADERS, cf::FIRST_TRANSFER];
     let with_dir = tempfile::tempdir().unwrap();
     let without_dir = tempfile::tempdir().unwrap();
     let (with_source, with) = synced(&harness, with_dir.path(), true);
     let (without_source, without) = synced(&harness, without_dir.path(), false);
 
-    let rows = dump_tables(with.journal().db(), &tables);
-    for table in tables {
+    let rows = inscription_rows(&with);
+    for table in [cf::TRANSFERS, cf::INFO, cf::HEADERS, tracked::TABLES[0]] {
         assert!(
             rows.iter().any(|(name, _, _)| *name == table),
             "the chain leaves {table} empty"
         );
     }
-    assert_eq!(dump_tables(without.journal().db(), &tables), rows);
+    assert_eq!(inscription_rows(&without), rows);
 
     for height in 0..=harness.height() {
         let a = with.block_view(height).unwrap().unwrap();
@@ -151,11 +152,9 @@ fn source_without_runes_finalizes_inscriptions_and_no_rune_records() {
         view.inscriptions.records[0].inscription_id,
         inscription.to_string()
     );
-    assert!(
-        !table_names(&reader)
-            .iter()
-            .any(|name| name == cf::RUNE_EVENTS)
-    );
+    for name in [cf::RUNE_EVENTS, cf::RUNE_ETCHINGS, cf::RUNE_SPENT] {
+        assert_eq!(segment_rows(reader.journal(), name), [], "{name}");
+    }
     stop(source);
 
     let settings = ord_settings(
@@ -197,7 +196,7 @@ fn source_without_runes_rolls_back_a_reorg() {
     let records = reader.inscription_records(height).unwrap();
     assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0].inscription_id, b.to_string());
-    assert_eq!(reader.inscription_info(&a.to_string()).unwrap(), None);
+    assert_eq!(reader.journal().tracked(a).unwrap(), None);
     stop(source);
 }
 
@@ -216,7 +215,7 @@ fn startup_refuses_a_journal_built_with_the_other_setting() {
         stop(source);
 
         let config = config(&harness, tmp.path(), !built_with);
-        let journal_path = config.journal_path();
+        let journal_dir = config.journal_dir.clone();
         let ord_data_dir = config.ord_data_dir.clone();
         let err = spawn_source(config).err().expect("startup refuses");
         let message = format!("{err:#}");
@@ -227,14 +226,14 @@ fn startup_refuses_a_journal_built_with_the_other_setting() {
         };
         assert!(message.contains(expected), "{message}");
         assert!(
-            message.contains(&journal_path.display().to_string()),
+            message.contains(&journal_dir.display().to_string()),
             "{message}"
         );
         assert!(
             message.contains(&ord_data_dir.display().to_string()),
             "{message}"
         );
-        assert!(journal_path.exists());
+        assert!(journal_dir.join(META_FILE).exists());
 
         let (source, reader) = synced(&harness, tmp.path(), built_with);
         assert_eq!(reader.journal().runes(), built_with);
@@ -258,7 +257,7 @@ fn startup_refuses_an_ord_index_built_with_the_other_setting() {
 
         let config = config(&harness, tmp.path(), !built_with);
         std::fs::remove_dir_all(&config.journal_dir).unwrap();
-        let journal_path = config.journal_path();
+        let journal_path = config.journal_dir.join(META_FILE);
         let ord_data_dir = config.ord_data_dir.clone();
         let err = spawn_source(config).err().expect("startup refuses");
         let message = format!("{err:#}");

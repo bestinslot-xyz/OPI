@@ -4,8 +4,8 @@
 
 use {
     opi_core::{
-        BlockInfo, BlockRef, BlockSource, BlockView, InscriptionFeed, InscriptionInfo,
-        InscriptionRecord, Module, RuneFeed,
+        BlockInfo, BlockRef, BlockSource, BlockView, InscriptionFeed, InscriptionRecord, Module,
+        RuneFeed,
         metrics::{Phase, ReadyLimits},
     },
     opi_runtime::{ModuleFactory, Runtime, RuntimeOptions},
@@ -46,10 +46,6 @@ impl BlockSource for Journal {
 
     fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
         Ok(Vec::new())
-    }
-
-    fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-        Ok(None)
     }
 
     fn block_view(&self, height: u32) -> anyhow::Result<Option<BlockView>> {

@@ -1,15 +1,14 @@
 use {
     super::{
-        Journal, META_PRUNED_BELOW, RUNE_ID_LEN, cf, decode_info, decode_inscription_move,
-        decode_rune_counter_log, decode_rune_etching, decode_rune_event, decode_transfer,
-        decompress_info, final_tip_in, info_key, inscription_move_key, meta_u32_in,
-        rune_etching_key, rune_event_key, rune_id_string, table, transfer_key,
+        INSCRIPTION_ID_LEN, Journal, cf, decode_info, decode_inscription_move, decode_rune_etching,
+        decode_rune_event, decode_rune_spend, decode_transfer, decompress_info, segment_tip_in,
+        table,
     },
-    anyhow::{Result, anyhow, bail},
+    anyhow::{Result, bail},
     bitcoin::{block::Header, consensus},
     opi_core::{
-        BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, InscriptionMove,
-        InscriptionRecord, RuneCounter, RuneFeed,
+        BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionMove, InscriptionRecord,
+        RuneFeed,
     },
     redb::{ReadTransaction, ReadableDatabase},
     std::collections::BTreeMap,
@@ -30,6 +29,49 @@ impl JournalReader {
     pub fn journal(&self) -> &Journal {
         &self.journal
     }
+
+    /// A read transaction on the segment holding `height`, `None` when the
+    /// segment has no finalized height at or above `height`. Fails for a
+    /// height below the pruned floor.
+    fn snapshot(&self, height: u32) -> Result<Option<ReadTransaction>> {
+        let floor = self.journal.pruned_below()?;
+        if height < floor {
+            bail!(
+                "height {height} is below the journal's pruned floor {floor}; a module that \
+                 starts or resumes below it needs a journal and ord data dir indexed again \
+                 from the start without OPI_PRUNE"
+            );
+        }
+        let Some(segment) = self.journal.segment(height)? else {
+            return Ok(None);
+        };
+        let tx = segment.begin_read()?;
+        if segment_tip_in(&tx)?.is_none_or(|tip| height > tip) {
+            return Ok(None);
+        }
+        Ok(Some(tx))
+    }
+}
+
+/// The rows of `height` in table `name`, in key order.
+fn height_rows<T>(
+    tx: &ReadTransaction,
+    name: &'static str,
+    height: u32,
+    mut decode: impl FnMut(&[u8], &[u8]) -> Result<T>,
+) -> Result<Vec<T>> {
+    let first = height.to_be_bytes();
+    let next = height.checked_add(1).map(u32::to_be_bytes);
+    let table = tx.open_table(table(name))?;
+    let rows = match &next {
+        Some(next) => table.range::<&[u8]>(first.as_slice()..next.as_slice())?,
+        None => table.range::<&[u8]>(first.as_slice()..)?,
+    };
+    rows.map(|row| {
+        let (key, value) = row?;
+        decode(key.value(), value.value())
+    })
+    .collect()
 }
 
 fn block_info_in(tx: &ReadTransaction, height: u32) -> Result<Option<BlockInfo>> {
@@ -45,97 +87,31 @@ fn block_info_in(tx: &ReadTransaction, height: u32) -> Result<Option<BlockInfo>>
     }))
 }
 
-/// Fails for a height below the pruned floor, whose records are gone: a
-/// module that still needs it has to be rebuilt over a full journal.
-fn check_unpruned(tx: &ReadTransaction, height: u32) -> Result<()> {
-    let floor = meta_u32_in(tx, META_PRUNED_BELOW, "pruned_below")?.unwrap_or(0);
-    if height < floor {
-        bail!(
-            "height {height} is below the journal's pruned floor {floor}; a module that starts \
-             or resumes below it needs a journal and ord data dir indexed again from the start \
-             without OPI_PRUNE"
-        );
-    }
-    Ok(())
-}
-
 fn inscription_records_in(tx: &ReadTransaction, height: u32) -> Result<Vec<InscriptionRecord>> {
-    let transfers = tx.open_table(table(cf::TRANSFERS))?;
-    let first = transfer_key(height, 0);
-    let last = transfer_key(height, u32::MAX);
-    transfers
-        .range::<&[u8]>(first.as_slice()..=last.as_slice())?
-        .map(|row| {
-            let (key, value) = row?;
-            decode_transfer(key.value(), value.value())
-        })
-        .collect()
+    height_rows(tx, cf::TRANSFERS, height, decode_transfer)
 }
 
-/// Rune events, etchings and counter rows (after-totals) of `height`, each
-/// in key order.
+/// Rune events but the inputs, etchings and spends of `height`, each in key
+/// order.
 fn rune_feed_in(tx: &ReadTransaction, height: u32) -> Result<RuneFeed> {
-    let events = tx
-        .open_table(table(cf::RUNE_EVENTS))?
-        .range::<&[u8]>(
-            rune_event_key(height, 0).as_slice()..=rune_event_key(height, u32::MAX).as_slice(),
-        )?
-        .map(|row| decode_rune_event(row?.1.value()))
-        .collect::<Result<_>>()?;
-    let etchings = tx
-        .open_table(table(cf::RUNE_ETCHINGS))?
-        .range::<&[u8]>(
-            rune_etching_key(height, 0).as_slice()..=rune_etching_key(height, u32::MAX).as_slice(),
-        )?
-        .map(|row| decode_rune_etching(row?.1.value()))
-        .collect::<Result<_>>()?;
-
-    let mut first = [0; 4 + RUNE_ID_LEN];
-    first[..4].copy_from_slice(&height.to_be_bytes());
-    let mut last = [0xff; 4 + RUNE_ID_LEN];
-    last[..4].copy_from_slice(&height.to_be_bytes());
-    let counters = tx
-        .open_table(table(cf::RUNE_COUNTER_LOG))?
-        .range::<&[u8]>(first.as_slice()..=last.as_slice())?
-        .map(|row| {
-            let (key, value) = row?;
-            let (_, (burned, mints)) = decode_rune_counter_log(value.value())?;
-            Ok(RuneCounter {
-                rune_id: rune_id_string(&key.value()[4..]),
-                burned,
-                mints,
-            })
-        })
-        .collect::<Result<_>>()?;
     Ok(RuneFeed {
-        events,
-        etchings,
-        counters,
+        events: height_rows(tx, cf::RUNE_EVENTS, height, |_, value| {
+            decode_rune_event(value)
+        })?,
+        etchings: height_rows(tx, cf::RUNE_ETCHINGS, height, |_, value| {
+            decode_rune_etching(value)
+        })?,
+        spent: height_rows(tx, cf::RUNE_SPENT, height, |_, value| {
+            decode_rune_spend(value)
+        })?,
     })
 }
 
 /// Inscription moves of `height` in emission order.
 fn inscription_moves_in(tx: &ReadTransaction, height: u32) -> Result<Vec<InscriptionMove>> {
-    let first = inscription_move_key(height, 0);
-    let last = inscription_move_key(height, u32::MAX);
-    tx.open_table(table(cf::INSCRIPTION_MOVES))?
-        .range::<&[u8]>(first.as_slice()..=last.as_slice())?
-        .map(|row| decode_inscription_move(row?.1.value()))
-        .collect()
-}
-
-fn inscription_info_in(
-    tx: &ReadTransaction,
-    inscription_id: &str,
-) -> Result<Option<InscriptionInfo>> {
-    let infos = tx.open_table(table(cf::INFO))?;
-    let Some(stored) = infos.get(info_key(inscription_id)?.as_slice())? else {
-        return Ok(None);
-    };
-    Ok(Some(decode_info(
-        inscription_id,
-        &decompress_info(stored.value())?,
-    )?))
+    height_rows(tx, cf::INSCRIPTION_MOVES, height, |_, value| {
+        decode_inscription_move(value)
+    })
 }
 
 impl BlockSource for JournalReader {
@@ -144,41 +120,45 @@ impl BlockSource for JournalReader {
     }
 
     fn block_info(&self, height: u32) -> Result<Option<BlockInfo>> {
-        block_info_in(&self.journal.db().begin_read()?, height)
+        if height < self.journal.pruned_below()? {
+            return Ok(None);
+        }
+        match self.journal.segment(height)? {
+            Some(segment) => block_info_in(&segment.begin_read()?, height),
+            None => Ok(None),
+        }
     }
 
     fn inscription_records(&self, height: u32) -> Result<Vec<InscriptionRecord>> {
-        let tx = self.journal.db().begin_read()?;
-        check_unpruned(&tx, height)?;
-        inscription_records_in(&tx, height)
-    }
-
-    fn inscription_info(&self, inscription_id: &str) -> Result<Option<InscriptionInfo>> {
-        inscription_info_in(&self.journal.db().begin_read()?, inscription_id)
+        match self.snapshot(height)? {
+            Some(tx) => inscription_records_in(&tx, height),
+            None => Ok(Vec::new()),
+        }
     }
 
     fn block_view(&self, height: u32) -> Result<Option<BlockView>> {
-        let tx = self.journal.db().begin_read()?;
-        if final_tip_in(&tx)?.is_none_or(|tip| height > tip) {
+        let Some(tx) = self.snapshot(height)? else {
             return Ok(None);
-        }
-        check_unpruned(&tx, height)?;
+        };
         let Some(block) = block_info_in(&tx, height)? else {
             return Ok(None);
         };
         let records = inscription_records_in(&tx, height)?;
-        let mut infos = BTreeMap::new();
-        for record in &records {
-            if infos.contains_key(&record.inscription_id) {
-                continue;
-            }
-            let info = inscription_info_in(&tx, &record.inscription_id)?.ok_or_else(|| {
-                anyhow!(
-                    "inscription {} of height {height} has no info row",
-                    record.inscription_id
-                )
-            })?;
-            infos.insert(record.inscription_id.clone(), info);
+        let infos = height_rows(&tx, cf::INFO, height, |key, value| {
+            let id = decode_inscription_id_key(&key[4..])?;
+            Ok((id.clone(), decode_info(&id, &decompress_info(value)?)?))
+        })?
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        // Every creation carries its info; a first transfer only when the
+        // brc20 module acts on it.
+        if let Some(record) = records.iter().find(|record| {
+            record.old_satpoint.is_none() && !infos.contains_key(&record.inscription_id)
+        }) {
+            bail!(
+                "inscription {} created at height {height} has no info row",
+                record.inscription_id
+            );
         }
         Ok(Some(BlockView {
             height,
@@ -197,4 +177,17 @@ impl BlockSource for JournalReader {
             },
         }))
     }
+}
+
+/// The `txidi<index>` form of a stored inscription id.
+fn decode_inscription_id_key(raw: &[u8]) -> Result<String> {
+    anyhow::ensure!(
+        raw.len() == INSCRIPTION_ID_LEN,
+        "inscription id is {} bytes",
+        raw.len()
+    );
+    let mut txid = raw[..32].to_vec();
+    txid.reverse();
+    let index = u32::from_be_bytes(raw[32..].try_into()?);
+    Ok(format!("{}i{index}", hex::encode(txid)))
 }

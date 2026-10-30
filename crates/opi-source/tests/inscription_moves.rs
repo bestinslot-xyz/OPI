@@ -193,7 +193,7 @@ fn startup_refuses_a_journal_built_with_the_other_setting() {
         stop(source);
 
         let config = config(&harness, tmp.path(), !built_with);
-        let journal_path = config.journal_path();
+        let journal_path = config.journal_dir.clone();
         let err = spawn_source(config).err().expect("startup refuses");
         let message = format!("{err:#}");
         let expected = if built_with {

@@ -28,5 +28,6 @@ testing = []
 [dev-dependencies]
 opi-source = { path = ".", features = ["testing"] }
 mockcore = { git = "https://github.com/ordinals/ord", tag = "0.29.1" }
+opi-runes = { path = "../opi-runes" }
 rand = "0.10"
 tempfile = "3"

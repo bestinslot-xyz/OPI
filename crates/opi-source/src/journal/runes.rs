@@ -1,19 +1,22 @@
 //! Rune finalize: turns one block's rune events into rune event records in
-//! the canonical order, etchings, outpoint balances and counter rows.
+//! the canonical order, etchings, and the outpoints each transaction with
+//! rune events spends.
+//!
+//! What a spent outpoint held is the runes module's own state: it keeps every
+//! unspent rune outpoint, so it makes the input events from the spends, and
+//! the counter rows from the mint and burn events.
 
 use {
     super::{
-        decode_rune_balance_row, decode_rune_counter, encode_rune_balance_row, encode_rune_counter,
-        encode_rune_counter_log, encode_rune_etching, encode_rune_event, finalize::RawTable,
-        rune_counter_log_key, rune_etching_key, rune_event_key, rune_id_key, rune_outpoint_key,
+        encode_rune_etching, encode_rune_event, encode_rune_spend, finalize::RawTable,
+        rune_etching_key, rune_event_key,
     },
     crate::raw_event::RawEvent,
     anyhow::{Result, bail, ensure},
     bitcoin::{Block, OutPoint, Transaction, Txid},
-    opi_core::{RuneEtching, RuneEvent, RuneEventKind, RuneTerms},
+    opi_core::{RuneEtching, RuneEvent, RuneEventKind, RuneSpend, RuneTerms},
     ord::{Index, RuneEntry},
     ordinals::{Artifact, RuneId, Runestone},
-    redb::ReadableTable,
     std::collections::{BTreeMap, HashMap},
 };
 
@@ -30,15 +33,6 @@ impl std::fmt::Display for RuneModelError {
 
 impl std::error::Error for RuneModelError {}
 
-/// The tables rune finalize writes.
-pub(super) struct RuneTables<'a, 'txn> {
-    pub events: &'a mut RawTable<'txn>,
-    pub etchings: &'a mut RawTable<'txn>,
-    pub balances: &'a mut RawTable<'txn>,
-    pub counters: &'a mut RawTable<'txn>,
-    pub counter_log: &'a mut RawTable<'txn>,
-}
-
 /// ord's rune events of one transaction, in emission order.
 #[derive(Default)]
 struct TxRunes {
@@ -48,25 +42,18 @@ struct TxRunes {
     burns: Vec<(RuneId, u128)>,
 }
 
-/// Burned amount and mint count a block adds to a rune.
-#[derive(Default)]
-struct CounterDelta {
-    burned: u128,
-    mints: u128,
-}
-
 /// Writes the rune records of `block` at `height` from its logged `events`:
-/// per transaction in block order, its input, allocation, mint, output and
-/// burn events, its etching, and its spent and created outpoint balances;
-/// then one counter row per rune burned or minted in the block, in rune id
-/// order.
+/// per transaction in block order, its allocation, mint, output and burn
+/// events, its etching, and the outpoints it spends.
 ///
 /// ord emits an output or burn event for every rune a transaction's inputs
 /// hold, so a transaction without rune events spends no rune outpoint and is
 /// skipped.
 pub(super) fn finalize_runes(
     index: &Index,
-    tables: RuneTables,
+    event_table: &mut RawTable,
+    etchings: &mut RawTable,
+    spent: &mut RawTable,
     block: &Block,
     height: u32,
     events: &[RawEvent],
@@ -133,30 +120,17 @@ pub(super) fn finalize_runes(
         )));
     }
 
-    let RuneTables {
-        events: event_table,
-        etchings,
-        balances,
-        counters,
-        counter_log,
-    } = tables;
     let time = u64::from(block.header.time);
     let mut records = Vec::new();
     let mut etching_seq = 0;
-    let mut deltas = BTreeMap::<RuneId, CounterDelta>::new();
 
+    let mut spend_seq = 0;
     for (tx, txid, runes) in ordered.into_values() {
         let etching = runes
             .etched
             .map(|id| etching(index, id, txid, time))
             .transpose()?;
-        records.extend(transaction_events(
-            balances,
-            tx,
-            txid,
-            &runes,
-            etching.as_ref(),
-        )?);
+        let events = transaction_events(tx, txid, &runes, etching.as_ref())?;
         if let Some(etching) = etching {
             etchings.insert(
                 rune_etching_key(height, etching_seq).as_slice(),
@@ -164,17 +138,25 @@ pub(super) fn finalize_runes(
             )?;
             etching_seq += 1;
         }
-        for (id, _) in &runes.mints {
-            deltas.entry(*id).or_default().mints += 1;
+        // An etching with nothing to allocate has no events and spends no
+        // rune outpoint.
+        if events.is_empty() {
+            continue;
         }
-        for (id, amount) in &runes.burns {
-            let delta = deltas.entry(*id).or_default();
-            delta.burned = delta.burned.checked_add(*amount).ok_or_else(|| {
-                RuneModelError(format!(
-                    "burned amount of rune {id} in block {height} overflows"
-                ))
-            })?;
-        }
+        records.extend(events);
+        let spend = RuneSpend {
+            txid: txid.to_string(),
+            outpoints: tx
+                .input
+                .iter()
+                .map(|input| input.previous_output.to_string())
+                .collect(),
+        };
+        spent.insert(
+            rune_event_key(height, spend_seq).as_slice(),
+            encode_rune_spend(&spend)?.as_slice(),
+        )?;
+        spend_seq += 1;
     }
 
     for (seq, record) in records.iter().enumerate() {
@@ -183,38 +165,13 @@ pub(super) fn finalize_runes(
             encode_rune_event(record)?.as_slice(),
         )?;
     }
-
-    for (id, delta) in deltas {
-        let id = id.to_string();
-        let key = rune_id_key(&id)?;
-        let before = counters
-            .get(key.as_slice())?
-            .map(|totals| decode_rune_counter(totals.value()))
-            .transpose()?;
-        let (burned, mints) = before.unwrap_or_default();
-        let after = (
-            burned
-                .checked_add(delta.burned)
-                .ok_or_else(|| RuneModelError(format!("burned total of rune {id} overflows")))?,
-            mints
-                .checked_add(delta.mints)
-                .ok_or_else(|| RuneModelError(format!("mint total of rune {id} overflows")))?,
-        );
-        counters.insert(key.as_slice(), encode_rune_counter(after).as_slice())?;
-        counter_log.insert(
-            rune_counter_log_key(height, &id)?.as_slice(),
-            encode_rune_counter_log(before, after).as_slice(),
-        )?;
-    }
     Ok(())
 }
 
-/// The events of one transaction in canonical order, spending its rune
-/// inputs from `balances` and storing its rune outputs there. Fails when the
-/// events break rune conservation, which means ord emitted something this
-/// model does not expect.
+/// The events of one transaction in canonical order but its inputs:
+/// allocation, mints, outputs and burns. Fails when ord's outputs are out of
+/// vout and rune id order or name an output the transaction lacks.
 fn transaction_events(
-    balances: &mut RawTable,
     tx: &Transaction,
     txid: Txid,
     runes: &TxRunes,
@@ -230,41 +187,10 @@ fn transaction_events(
         amount,
     };
     let mut events = Vec::new();
-    // Per rune: amount in (inputs, allocation, mints), amount out (outputs,
-    // burns).
-    let mut flow = BTreeMap::<String, (u128, u128)>::new();
-    let mut add = |rune_id: &str, amount: u128, incoming: bool| -> Result<()> {
-        let (into, out) = flow.entry(rune_id.to_owned()).or_default();
-        let side = if incoming { into } else { out };
-        *side = side
-            .checked_add(amount)
-            .ok_or_else(|| RuneModelError(format!("rune {rune_id} amounts of {txid} overflow")))?;
-        Ok(())
-    };
-
-    for input in &tx.input {
-        let spent = input.previous_output;
-        let Some(row) = balances.remove(rune_outpoint_key(&spent.to_string())?.as_slice())? else {
-            continue;
-        };
-        let (pkscript, held) = decode_rune_balance_row(row.value())?;
-        drop(row);
-        for (rune_id, amount) in held {
-            add(&rune_id, amount, true)?;
-            events.push(event(
-                RuneEventKind::Input,
-                Some(spent),
-                Some(pkscript.clone()),
-                rune_id,
-                amount,
-            ));
-        }
-    }
 
     if let Some(etching) = etching
         && matches!(Runestone::decipher(tx), Some(Artifact::Runestone(_)))
     {
-        add(&etching.rune_id, etching.premine, true)?;
         events.push(event(
             RuneEventKind::NewAllocation,
             None,
@@ -275,12 +201,15 @@ fn transaction_events(
     }
 
     for (id, amount) in &runes.mints {
-        let rune_id = id.to_string();
-        add(&rune_id, *amount, true)?;
-        events.push(event(RuneEventKind::Mint, None, None, rune_id, *amount));
+        events.push(event(
+            RuneEventKind::Mint,
+            None,
+            None,
+            id.to_string(),
+            *amount,
+        ));
     }
 
-    let mut rows = Vec::<(OutPoint, Vec<u8>, Vec<(String, u128)>)>::new();
     let mut last = None;
     for (outpoint, id, amount) in &runes.transfers {
         ensure!(
@@ -296,42 +225,25 @@ fn transaction_events(
             .ok_or_else(|| RuneModelError(format!("{txid} has no output {}", outpoint.vout)))?
             .script_pubkey
             .to_bytes();
-        let rune_id = id.to_string();
-        add(&rune_id, *amount, false)?;
         events.push(event(
             RuneEventKind::Output,
             Some(*outpoint),
-            Some(pkscript.clone()),
-            rune_id.clone(),
+            Some(pkscript),
+            id.to_string(),
             *amount,
         ));
-        match rows.last_mut() {
-            Some((row_outpoint, _, held)) if row_outpoint == outpoint => {
-                held.push((rune_id, *amount));
-            }
-            _ => rows.push((*outpoint, pkscript, vec![(rune_id, *amount)])),
-        }
     }
 
     let mut burns = runes.burns.clone();
     burns.sort_unstable_by_key(|(id, _)| *id);
     for (id, amount) in burns {
-        let rune_id = id.to_string();
-        add(&rune_id, amount, false)?;
-        events.push(event(RuneEventKind::Burn, None, None, rune_id, amount));
-    }
-
-    if let Some((rune_id, (into, out))) = flow.iter().find(|(_, (into, out))| into != out) {
-        bail!(RuneModelError(format!(
-            "rune {rune_id} of {txid}: {into} in, {out} out"
-        )));
-    }
-
-    for (outpoint, pkscript, held) in rows {
-        balances.insert(
-            rune_outpoint_key(&outpoint.to_string())?.as_slice(),
-            encode_rune_balance_row(&pkscript, &held)?.as_slice(),
-        )?;
+        events.push(event(
+            RuneEventKind::Burn,
+            None,
+            None,
+            id.to_string(),
+            amount,
+        ));
     }
     Ok(events)
 }
@@ -395,9 +307,7 @@ fn etching_record(
 mod tests {
     use {
         super::*,
-        crate::journal::{cf, table},
         bitcoin::{Amount, ScriptBuf, TxOut, absolute::LockTime, transaction::Version},
-        redb::{Database, backends::InMemoryBackend},
     };
 
     const RUNE: RuneId = RuneId { block: 1, tx: 0 };
@@ -417,15 +327,10 @@ mod tests {
     }
 
     /// Runs [`transaction_events`] for `runes` of a `outputs`-output
-    /// transaction against an empty balances table.
+    /// transaction.
     fn events_of(outputs: usize, runes: TxRunes) -> Result<Vec<RuneEvent>> {
-        let db = Database::builder()
-            .create_with_backend(InMemoryBackend::new())
-            .unwrap();
-        let wtx = db.begin_write().unwrap();
-        let mut balances = wtx.open_table(table(cf::RUNE_BALANCES)).unwrap();
         let tx = transaction(outputs);
-        transaction_events(&mut balances, &tx, tx.compute_txid(), &runes, None)
+        transaction_events(&tx, tx.compute_txid(), &runes, None)
     }
 
     fn is_model_error(result: Result<Vec<RuneEvent>>) -> bool {
@@ -433,15 +338,6 @@ mod tests {
             .unwrap_err()
             .chain()
             .any(|cause| cause.is::<RuneModelError>())
-    }
-
-    #[test]
-    fn unbalanced_transaction_is_a_model_error() {
-        let runes = TxRunes {
-            mints: vec![(RUNE, 5)],
-            ..TxRunes::default()
-        };
-        assert!(is_model_error(events_of(1, runes)));
     }
 
     #[test]
@@ -470,15 +366,6 @@ mod tests {
     }
 
     #[test]
-    fn amount_overflow_is_a_model_error() {
-        let runes = TxRunes {
-            mints: vec![(RUNE, u128::MAX), (RUNE, 1)],
-            ..TxRunes::default()
-        };
-        assert!(is_model_error(events_of(1, runes)));
-    }
-
-    #[test]
     fn missing_entry_is_a_model_error() {
         let txid = transaction(1).compute_txid();
         let error = etching_record(RUNE, txid, 0, None).unwrap_err();
@@ -486,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn balanced_transaction_passes() {
+    fn mint_and_output_events_follow_canonical_order() {
         let txid = transaction(1).compute_txid();
         let runes = TxRunes {
             mints: vec![(RUNE, 3)],

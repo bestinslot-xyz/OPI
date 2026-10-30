@@ -11,7 +11,7 @@ use {
     anyhow::{Context, Result, bail, ensure},
     opi_core::{
         InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord, RuneEtching,
-        RuneEvent, RuneEventKind, RuneTerms,
+        RuneEvent, RuneEventKind, RuneSpend, RuneTerms,
     },
 };
 
@@ -274,14 +274,6 @@ pub fn rune_id_string(raw: &[u8]) -> String {
     format!("{block}:{tx}")
 }
 
-/// `rune_counter_log` key: height (`u32` BE) ++ rune id.
-pub fn rune_counter_log_key(height: u32, rune_id: &str) -> Result<[u8; 4 + RUNE_ID_LEN]> {
-    let mut out = [0; 4 + RUNE_ID_LEN];
-    out[..4].copy_from_slice(&height.to_be_bytes());
-    out[4..].copy_from_slice(&rune_id_key(rune_id)?);
-    Ok(out)
-}
-
 /// Store form of an outpoint in `txid:vout` form.
 pub fn rune_outpoint_key(outpoint: &str) -> Result<[u8; OUTPOINT_LEN]> {
     let (txid, vout) = outpoint
@@ -523,78 +515,31 @@ pub fn decode_rune_etching(value: &[u8]) -> Result<RuneEtching> {
     })
 }
 
-/// `rune_outpoint_balances` value: length-prefixed pkscript ++ entry count
-/// (`u32` BE) ++ entries of rune id ++ amount (`u128` BE).
-pub fn encode_rune_balance_row(pkscript: &[u8], balances: &[(String, u128)]) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    push_prefixed(&mut out, pkscript)?;
+/// `rune_spent` value: txid ++ outpoint count (`u32` BE) ++ outpoints.
+pub fn encode_rune_spend(spend: &RuneSpend) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(TXID_LEN + 4 + spend.outpoints.len() * OUTPOINT_LEN);
+    out.extend(txid_bytes(&spend.txid)?);
     out.extend(
-        u32::try_from(balances.len())
-            .context("too many balances")?
+        u32::try_from(spend.outpoints.len())
+            .context("too many outpoints")?
             .to_be_bytes(),
     );
-    for (rune_id, amount) in balances {
-        out.extend(rune_id_key(rune_id)?);
-        out.extend(amount.to_be_bytes());
+    for outpoint in &spend.outpoints {
+        out.extend(rune_outpoint_key(outpoint)?);
     }
     Ok(out)
 }
 
-/// Pkscript and `(rune id, amount)` entries of a balance row.
-pub type RuneBalanceRow = (Vec<u8>, Vec<(String, u128)>);
-
-pub fn decode_rune_balance_row(value: &[u8]) -> Result<RuneBalanceRow> {
-    let mut c = Cursor::new(value, "rune balance row");
-    let pkscript = c.prefixed()?.to_vec();
+pub fn decode_rune_spend(value: &[u8]) -> Result<RuneSpend> {
+    let mut c = Cursor::new(value, "rune spend");
+    let txid = txid_string(c.take(TXID_LEN)?);
     let count = c.u32()?;
-    let mut balances = Vec::new();
+    let mut outpoints = Vec::new();
     for _ in 0..count {
-        let rune_id = rune_id_string(c.take(RUNE_ID_LEN)?);
-        balances.push((rune_id, c.u128()?));
+        outpoints.push(outpoint_string(c.take(OUTPOINT_LEN)?));
     }
     c.finish()?;
-    Ok((pkscript, balances))
-}
-
-/// Burned and mint totals of a rune.
-pub type RuneTotals = (u128, u128);
-
-/// `rune_counters` value: burned ++ mints (`u128` BE each).
-pub fn encode_rune_counter(totals: RuneTotals) -> Vec<u8> {
-    let mut out = Vec::with_capacity(32);
-    out.extend(totals.0.to_be_bytes());
-    out.extend(totals.1.to_be_bytes());
-    out
-}
-
-pub fn decode_rune_counter(value: &[u8]) -> Result<RuneTotals> {
-    let mut c = Cursor::new(value, "rune counter");
-    let totals = (c.u128()?, c.u128()?);
-    c.finish()?;
-    Ok(totals)
-}
-
-/// `rune_counter_log` value: optional totals before the block (flag byte,
-/// then burned ++ mints) ++ totals after it.
-pub fn encode_rune_counter_log(before: Option<RuneTotals>, after: RuneTotals) -> Vec<u8> {
-    let mut out = vec![u8::from(before.is_some())];
-    if let Some(before) = before {
-        out.extend(encode_rune_counter(before));
-    }
-    out.extend(encode_rune_counter(after));
-    out
-}
-
-pub fn decode_rune_counter_log(value: &[u8]) -> Result<(Option<RuneTotals>, RuneTotals)> {
-    let mut c = Cursor::new(value, "rune counter log");
-    let before = if c.flag()? {
-        Some((c.u128()?, c.u128()?))
-    } else {
-        None
-    };
-    let after = (c.u128()?, c.u128()?);
-    c.finish()?;
-    Ok((before, after))
+    Ok(RuneSpend { txid, outpoints })
 }
 
 /// Key of an inscription move: height (`u32` BE) ++ position among the

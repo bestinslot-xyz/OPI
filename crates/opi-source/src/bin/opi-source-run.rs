@@ -8,6 +8,7 @@ use {
     opi_core::BlockSource,
     opi_source::{
         driver::{DEFAULT_CHUNK, SourceConfig, spawn_source},
+        journal::{DEFAULT_SEGMENT, JournalOptions},
         proxy::UpstreamAuth,
     },
     std::{io::Write, path::PathBuf, time::Duration},
@@ -34,6 +35,7 @@ fn config() -> Result<SourceConfig> {
                 .conflicts_with("rpc-user"),
         )
         .arg(Arg::new("chunk").long("chunk"))
+        .arg(Arg::new("journal-segment").long("journal-segment"))
         .arg(
             Arg::new("no-runes")
                 .long("no-runes")
@@ -61,7 +63,13 @@ fn config() -> Result<SourceConfig> {
             None => DEFAULT_CHUNK,
         },
         runes: !matches.get_flag("no-runes"),
-        journal: Default::default(),
+        journal: JournalOptions {
+            segment: match get("journal-segment") {
+                Some(segment) => segment.parse().context("invalid --journal-segment")?,
+                None => DEFAULT_SEGMENT,
+            },
+            ..Default::default()
+        },
         ord_cache_bytes: opi_source::DEFAULT_ORD_CACHE_BYTES,
     })
 }

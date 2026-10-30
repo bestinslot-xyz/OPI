@@ -11,7 +11,7 @@ use {
     opi_source::{
         DEFAULT_ORD_CACHE_BYTES,
         driver::{DEFAULT_CHUNK, SourceConfig},
-        journal::JournalOptions,
+        journal::{JournalOptions, SEGMENT_RANGE},
         proxy::UpstreamAuth,
     },
     ord::Chain,
@@ -302,14 +302,28 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
 const CACHE_MB: std::ops::RangeInclusive<usize> = 64..=65536;
 
 /// The journal's open options from `OPI_JOURNAL_CACHE_MB`, the redb page cache
-/// in MiB (default 1024).
+/// in MiB that the journal's files share (default 1024), and
+/// `OPI_JOURNAL_SEGMENT`, the heights per segment file (default 1000).
 pub(crate) fn journal_options(get: &impl Fn(&str) -> Option<String>) -> Result<JournalOptions> {
-    Ok(match cache_bytes(get, "OPI_JOURNAL_CACHE_MB")? {
-        Some(cache_bytes) => JournalOptions {
-            cache_bytes,
-            ..JournalOptions::default()
-        },
-        None => JournalOptions::default(),
+    let defaults = JournalOptions::default();
+    let segment = match get("OPI_JOURNAL_SEGMENT").filter(|value| !value.is_empty()) {
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|segment| SEGMENT_RANGE.contains(segment))
+            .with_context(|| {
+                format!(
+                    "OPI_JOURNAL_SEGMENT must be a block count from {} to {}, got `{value}`",
+                    SEGMENT_RANGE.start(),
+                    SEGMENT_RANGE.end()
+                )
+            })?,
+        None => defaults.segment,
+    };
+    Ok(JournalOptions {
+        cache_bytes: cache_bytes(get, "OPI_JOURNAL_CACHE_MB")?.unwrap_or(defaults.cache_bytes),
+        segment,
+        ..defaults
     })
 }
 
@@ -416,6 +430,23 @@ mod tests {
             vars.insert("OPI_JOURNAL_CACHE_MB", bad);
             let err = load(&vars).unwrap_err();
             assert!(err.to_string().contains("OPI_JOURNAL_CACHE_MB"), "{err}");
+        }
+    }
+
+    #[test]
+    fn journal_segment_setting() {
+        let mut vars = base();
+        assert_eq!(load(&vars).unwrap().source.journal.segment, 1000);
+        vars.insert("OPI_JOURNAL_SEGMENT", "");
+        assert_eq!(load(&vars).unwrap().source.journal.segment, 1000);
+        for (ok, segment) in [("100", 100), ("2500", 2500), ("100000", 100_000)] {
+            vars.insert("OPI_JOURNAL_SEGMENT", ok);
+            assert_eq!(load(&vars).unwrap().source.journal.segment, segment);
+        }
+        for bad in ["99", "100001", "0", "-1", "1k", "abc"] {
+            vars.insert("OPI_JOURNAL_SEGMENT", bad);
+            let err = load(&vars).unwrap_err();
+            assert!(err.to_string().contains("OPI_JOURNAL_SEGMENT"), "{err}");
         }
     }
 

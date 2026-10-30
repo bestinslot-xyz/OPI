@@ -28,8 +28,6 @@ use {
 /// Blocks ord indexes per `update()` while catching up.
 pub const DEFAULT_CHUNK: u32 = 1000;
 
-/// The journal's file name inside the journal dir.
-pub const JOURNAL_FILE: &str = "journal.redb";
 const EVENT_BUFFER: usize = 10_000;
 const BLOCK_CACHE: usize = 32;
 const TIP_SLEEP: Duration = Duration::from_secs(2);
@@ -55,13 +53,6 @@ pub struct SourceConfig {
     /// Size of the redb page cache of ord's index, in bytes;
     /// [`crate::DEFAULT_ORD_CACHE_BYTES`] unless configured.
     pub ord_cache_bytes: usize,
-}
-
-impl SourceConfig {
-    /// The journal file inside `journal_dir`.
-    pub fn journal_path(&self) -> PathBuf {
-        self.journal_dir.join(JOURNAL_FILE)
-    }
 }
 
 /// A running source. Dropping it shuts it down and waits for the driver.
@@ -148,10 +139,7 @@ impl Drop for SourceHandle {
 /// context; async callers use `tokio::task::spawn_blocking`.
 pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
     ensure!(cfg.chunk > 0, "chunk must be positive");
-    std::fs::create_dir_all(&cfg.journal_dir)
-        .with_context(|| format!("creating {}", cfg.journal_dir.display()))?;
-    let journal_path = cfg.journal_path();
-    let journal = Journal::open_with(&journal_path, cfg.chain, cfg.runes, &cfg.journal)
+    let journal = Journal::open_with(&cfg.journal_dir, cfg.chain, cfg.runes, &cfg.journal)
         .with_context(|| {
             format!(
                 "opening the journal of ord's data dir {}",
@@ -215,7 +203,7 @@ pub fn spawn_source(cfg: SourceConfig) -> Result<SourceHandle> {
             runtime.shutdown_background();
             if journal.created() {
                 drop(journal);
-                std::fs::remove_file(&journal_path).ok();
+                Journal::remove_files(&cfg.journal_dir).ok();
             }
             return Err(err);
         }

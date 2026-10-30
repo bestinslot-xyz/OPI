@@ -19,7 +19,7 @@ use {
     opi_core::BlockSource,
     opi_source::{
         driver::{SourceConfig, SourceHandle, spawn_source},
-        journal::{Journal, JournalReader, cf, table},
+        journal::{Journal, JournalReader, cf, table, tracked},
         proxy::UpstreamAuth,
     },
     ord::{Chain, InscriptionId},
@@ -350,42 +350,61 @@ pub fn wait_for_tip(reader: &JournalReader, height: u32) {
     }
 }
 
-/// The rune tables of the journal.
-pub const RUNE_TABLES: [&str; 5] = [
-    cf::RUNE_EVENTS,
-    cf::RUNE_ETCHINGS,
-    cf::RUNE_COUNTERS,
-    cf::RUNE_COUNTER_LOG,
-    cf::RUNE_BALANCES,
-];
+/// The rune tables of a segment.
+pub const RUNE_TABLES: [&str; 3] = [cf::RUNE_EVENTS, cf::RUNE_ETCHINGS, cf::RUNE_SPENT];
 
-/// The tables holding finalized state: everything but the raw event log and
-/// the meta rows.
-pub const FINALIZED_TABLES: [&str; 9] = [
+/// The tables of a segment holding finalized rows: everything but the raw
+/// event log and the segment's final tip.
+pub const FINALIZED_TABLES: [&str; 7] = [
     cf::TRANSFERS,
     cf::INFO,
     cf::HEADERS,
-    cf::FIRST_TRANSFER,
     cf::RUNE_EVENTS,
     cf::RUNE_ETCHINGS,
-    cf::RUNE_COUNTERS,
-    cf::RUNE_COUNTER_LOG,
-    cf::RUNE_BALANCES,
+    cf::RUNE_SPENT,
+    cf::INSCRIPTION_MOVES,
 ];
 
-/// Every finalized row of the journal at `path`, which keeps rune records.
-pub fn dump(path: &Path) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
-    dump_with(path, true)
+/// Every finalized row of the journal in `dir`, which keeps rune records.
+pub fn dump(dir: &Path) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
+    dump_with(dir, true, opi_source::journal::DEFAULT_SEGMENT)
 }
 
-/// Every finalized row of the journal at `path`, built with `runes`.
-pub fn dump_with(path: &Path, runes: bool) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
-    let journal = Journal::open(path, Chain::Regtest, runes).unwrap();
-    let tables = FINALIZED_TABLES
-        .into_iter()
-        .filter(|name| runes || !RUNE_TABLES.contains(name))
-        .collect::<Vec<_>>();
-    dump_tables(journal.db(), &tables)
+/// Every finalized row of the journal in `dir`, built with `runes` and
+/// segments of `segment` heights: each segment's finalized tables, then the
+/// tracked set.
+pub fn dump_with(dir: &Path, runes: bool, segment: u32) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
+    let options = opi_source::journal::JournalOptions {
+        segment,
+        ..Default::default()
+    };
+    let journal = Journal::open_with(dir, Chain::Regtest, runes, &options).unwrap();
+    dump_journal(&journal)
+}
+
+/// Every finalized row of `journal`.
+pub fn dump_journal(journal: &Journal) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
+    let mut rows = Vec::new();
+    for start in journal.segment_starts() {
+        let segment = journal.segment(start).unwrap().unwrap();
+        rows.extend(dump_tables(&segment, &FINALIZED_TABLES));
+    }
+    rows.extend(dump_tables(journal.tracked_db(), &tracked::TABLES));
+    rows
+}
+
+/// The rows of table `name` in every segment of `journal`.
+pub fn segment_rows(journal: &Journal, name: &'static str) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut rows = Vec::new();
+    for start in journal.segment_starts() {
+        let segment = journal.segment(start).unwrap().unwrap();
+        rows.extend(
+            dump_tables(&segment, &[name])
+                .into_iter()
+                .map(|(_, key, value)| (key, value)),
+        );
+    }
+    rows
 }
 
 /// Every row of the `tables` of the journal database `db`, table by table.

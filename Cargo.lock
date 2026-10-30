@@ -1856,9 +1856,9 @@ dependencies = [
 
 [[package]]
 name = "brc20-prog"
-version = "0.16.7"
+version = "0.16.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea9a2ec5aa3cd44fad80dc715bc8ece56d09abe0c90b2d4980c17becdff7bd9c"
+checksum = "7cc02f1e01d874477bd47189986b8b259e0fd5bb7acc3285eaaa4500ca70a941"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -5166,7 +5166,6 @@ dependencies = [
  "opi-sns",
  "serde_json",
  "sha2 0.10.9",
- "socket2 0.6.5",
  "sqlx",
  "tokio",
  "tower",
@@ -5229,6 +5228,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "prometheus-client",
+ "serde_json",
 ]
 
 [[package]]
@@ -5337,6 +5337,7 @@ dependencies = [
  "log",
  "mockcore",
  "opi-core",
+ "opi-runes",
  "opi-source",
  "ord",
  "ordinals",

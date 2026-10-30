@@ -1,18 +1,19 @@
 use {
     opi_core::{
         InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord, RuneEtching,
-        RuneEvent, RuneEventKind, RuneTerms,
+        RuneEvent, RuneEventKind, RuneSpend, RuneTerms,
     },
     opi_source::journal::{
-        Journal, JournalOptions, cf, compress_info, decode_info, decode_inscription_move,
-        decode_rune_balance_row, decode_rune_counter_log, decode_rune_etching, decode_rune_event,
-        decode_transfer, decompress_info, encode_info, encode_inscription_move,
-        encode_rune_balance_row, encode_rune_counter_log, encode_rune_etching, encode_rune_event,
-        encode_transfer, inscription_move_key, rune_counter_log_key, rune_id_key, rune_id_string,
-        rune_outpoint_key, table, transfer_key,
+        DEFAULT_SEGMENT, Journal, JournalOptions, LEGACY_FILE, META_FILE, begin_write, cf,
+        compress_info, decode_info, decode_inscription_move, decode_rune_etching,
+        decode_rune_event, decode_rune_spend, decode_transfer, decompress_info, encode_info,
+        encode_inscription_move, encode_rune_etching, encode_rune_event, encode_rune_spend,
+        encode_transfer, inscription_move_key, rune_id_key, rune_id_string, rune_outpoint_key,
+        table, tracked, transfer_key,
     },
     ord::Chain,
     redb::{ReadableDatabase, TableHandle},
+    std::path::Path,
 };
 
 const TXID_A: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -260,32 +261,21 @@ fn rune_etching_round_trips() {
 }
 
 #[test]
-fn rune_balance_row_round_trips() {
-    let balances = vec![
-        ("1:0".to_owned(), 5u128),
-        ("840000:12".to_owned(), u128::MAX),
-    ];
-    let value = encode_rune_balance_row(&[0x51, 0x20, 0xaa], &balances).unwrap();
-    let (pkscript, decoded) = decode_rune_balance_row(&value).unwrap();
-    assert_eq!(pkscript, vec![0x51, 0x20, 0xaa]);
-    assert_eq!(decoded, balances);
-
-    let value = encode_rune_balance_row(&[], &[]).unwrap();
-    assert_eq!(
-        decode_rune_balance_row(&value).unwrap(),
-        (Vec::new(), Vec::new())
-    );
-    assert!(decode_rune_balance_row(&value[..value.len() - 1]).is_err());
-}
-
-#[test]
-fn rune_counter_log_round_trips() {
-    for before in [None, Some((1u128, 2u128))] {
-        let value = encode_rune_counter_log(before, (u128::MAX, 7));
-        assert_eq!(
-            decode_rune_counter_log(&value).unwrap(),
-            (before, (u128::MAX, 7))
-        );
+fn rune_spend_round_trips() {
+    for spend in [
+        RuneSpend {
+            txid: TXID_A.to_owned(),
+            outpoints: vec![format!("{TXID_B}:0"), format!("{TXID_C}:4294967295")],
+        },
+        RuneSpend {
+            txid: TXID_C.to_owned(),
+            outpoints: Vec::new(),
+        },
+    ] {
+        let value = encode_rune_spend(&spend).unwrap();
+        assert_eq!(&value[..32], reversed(&spend.txid).as_slice());
+        assert_eq!(decode_rune_spend(&value).unwrap(), spend);
+        assert!(decode_rune_spend(&value[..value.len() - 1]).is_err());
     }
 }
 
@@ -302,55 +292,69 @@ fn rune_keys_sort_numerically() {
         rune_id_string(&rune_id_key("840000:12").unwrap()),
         "840000:12"
     );
-    let key = rune_counter_log_key(5, "1:2").unwrap();
-    assert_eq!(&key[..4], 5u32.to_be_bytes());
-    assert_eq!(&key[4..], rune_id_key("1:2").unwrap());
     let outpoint = rune_outpoint_key(&format!("{TXID_B}:7")).unwrap();
     assert_eq!(&outpoint[..32], reversed(TXID_B).as_slice());
     assert_eq!(&outpoint[32..], 7u32.to_le_bytes());
 }
 
-#[test]
-fn open_creates_rune_tables() {
-    let dir = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&dir.path().join("journal"), Chain::Regtest, true).unwrap();
-    let tx = journal.db().begin_read().unwrap();
-    for name in [
-        cf::RUNE_EVENTS,
-        cf::RUNE_ETCHINGS,
-        cf::RUNE_COUNTERS,
-        cf::RUNE_COUNTER_LOG,
-        cf::RUNE_BALANCES,
-    ] {
-        tx.open_table(table(name)).expect(name);
-    }
-}
-
-fn put_meta(journal: &Journal, key: &[u8], value: &[u8]) {
-    let mut tx = journal.db().begin_write().unwrap();
-    tx.set_durability(redb::Durability::Immediate).unwrap();
-    {
-        let mut table = tx.open_table(table(cf::META)).unwrap();
-        table.insert(key, value).unwrap();
-    }
+/// Writes `value` under `key` in the meta file of the closed journal in
+/// `dir`.
+fn put_meta(dir: &Path, key: &[u8], value: &[u8]) {
+    let db = redb::Database::create(dir.join(META_FILE)).unwrap();
+    let tx = begin_write(&db).unwrap();
+    tx.open_table(table(cf::META))
+        .unwrap()
+        .insert(key, value)
+        .unwrap();
     tx.commit().unwrap();
 }
 
-fn get_meta(journal: &Journal, key: &[u8]) -> Option<Vec<u8>> {
-    let tx = journal.db().begin_read().unwrap();
+/// The value under `key` in the meta file of the closed journal in `dir`.
+fn get_meta(dir: &Path, key: &[u8]) -> Option<Vec<u8>> {
+    let db = redb::Database::create(dir.join(META_FILE)).unwrap();
+    let tx = db.begin_read().unwrap();
     let table = tx.open_table(table(cf::META)).unwrap();
     table.get(key).unwrap().map(|v| v.value().to_vec())
 }
 
 #[test]
-fn open_creates_tables_and_meta() {
+fn open_creates_meta_and_tracked_files() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
+    assert!(journal.created());
     assert_eq!(journal.final_tip().unwrap(), None);
-    assert_eq!(get_meta(&journal, b"chain").unwrap(), b"regtest");
-    assert_eq!(get_meta(&journal, b"schema").unwrap(), 1u32.to_be_bytes());
-    let tx = journal.db().begin_read().unwrap();
+    assert_eq!(journal.segment_starts(), Vec::<u32>::new());
+    assert!(path.join(tracked::TRACKED_FILE).exists());
+    drop(journal);
+    assert_eq!(get_meta(&path, b"chain").unwrap(), b"regtest");
+    assert_eq!(get_meta(&path, b"schema").unwrap(), 2u32.to_be_bytes());
+    assert_eq!(
+        get_meta(&path, b"segment").unwrap(),
+        DEFAULT_SEGMENT.to_be_bytes()
+    );
+    assert!(
+        !Journal::open(&path, Chain::Regtest, true)
+            .unwrap()
+            .created()
+    );
+}
+
+/// A segment file holds every table, named after its first height.
+#[test]
+fn segments_hold_every_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+    let segment = journal.segment_mut(824_731).unwrap();
+    assert_eq!(journal.segment_starts(), [824_000]);
+    assert!(path.join("seg-000824000.redb").exists());
+    let tx = segment.begin_read().unwrap();
+    let names = tx
+        .list_tables()
+        .unwrap()
+        .map(|handle| handle.name().to_string())
+        .collect::<Vec<_>>();
     for name in [
         cf::TRANSFERS,
         cf::INFO,
@@ -358,9 +362,34 @@ fn open_creates_tables_and_meta() {
         cf::RAW_EVENTS,
         cf::RAW_HEIGHTS,
         cf::META,
+        cf::RUNE_EVENTS,
+        cf::RUNE_ETCHINGS,
+        cf::RUNE_SPENT,
+        cf::INSCRIPTION_MOVES,
     ] {
-        tx.open_table(table(name)).expect(name);
+        assert!(names.iter().any(|have| have == name), "{name}");
     }
+    assert!(journal.segment(825_000).unwrap().is_none());
+}
+
+/// A segment the registry let go while a writer still holds it comes back
+/// as the same handle: redb opens a file only once.
+#[test]
+fn a_held_segment_is_shared_after_the_registry_lets_it_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(&dir.path().join("journal"), Chain::Regtest, false).unwrap();
+    let held = journal.segment_mut(0).unwrap();
+    for height in [1000, 2000, 3000, 4000] {
+        journal.segment_mut(height).unwrap();
+    }
+    let again = journal.segment(10).unwrap().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&held, &again));
+    drop((held, again));
+    for height in [1000, 2000, 3000] {
+        journal.segment(height).unwrap();
+    }
+    // Nothing holds it now, so it opens again.
+    journal.segment(10).unwrap().unwrap();
 }
 
 #[test]
@@ -376,8 +405,6 @@ fn reopen_rejects_chain_mismatch() {
     journal.set_gate_limit(7).unwrap();
     assert_eq!(journal.gate_limit().unwrap(), Some(7));
     drop(journal);
-    assert!(Journal::compact(&path, &small).is_ok());
-    drop(Journal::open(&path, Chain::Regtest, true).unwrap());
     let err = Journal::open(&path, Chain::Signet, true).err().unwrap();
     assert!(err.to_string().contains("chain"), "{err}");
 }
@@ -386,98 +413,58 @@ fn reopen_rejects_chain_mismatch() {
 fn reopen_rejects_schema_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
-    {
-        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-        put_meta(&journal, b"schema", &2u32.to_be_bytes());
-    }
+    drop(Journal::open(&path, Chain::Regtest, true).unwrap());
+    put_meta(&path, b"schema", &3u32.to_be_bytes());
     let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
     assert!(err.to_string().contains("schema"), "{err}");
 }
 
-/// A journal with a finalized tip and without the rune tables is refused; one
-/// with the rune tables opens.
+/// The segment length is fixed when the journal is created.
 #[test]
-fn reopen_rejects_finalized_journal_without_rune_tables() {
+fn reopen_rejects_another_segment_length() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
-    {
-        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-        put_meta(&journal, b"final_tip", &10u32.to_be_bytes());
-    }
-    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-    assert_eq!(journal.final_tip().unwrap(), Some(10));
-    {
-        let mut tx = journal.db().begin_write().unwrap();
-        tx.set_durability(redb::Durability::Immediate).unwrap();
-        for name in [cf::RUNE_COUNTER_LOG, cf::RUNE_BALANCES] {
-            assert!(tx.delete_table(table(name)).unwrap(), "{name}");
-        }
-        tx.commit().unwrap();
-    }
-    drop(journal);
+    drop(Journal::open(&path, Chain::Regtest, true).unwrap());
+    let other = JournalOptions {
+        segment: 2000,
+        ..JournalOptions::default()
+    };
+    let err = Journal::open_with(&path, Chain::Regtest, true, &other)
+        .err()
+        .unwrap();
+    let message = format!("{err:#}");
+    assert!(message.contains("OPI_JOURNAL_SEGMENT"), "{message}");
+    assert!(message.contains("1000"), "{message}");
+}
+
+/// A directory holding a single-file journal is refused, and left as it is.
+#[test]
+fn open_refuses_the_single_file_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal");
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join(LEGACY_FILE), b"old").unwrap();
     let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
-    assert!(err.to_string().contains("predates rune indexing"), "{err}");
+    let message = format!("{err:#}");
+    assert!(message.contains("single-file journal"), "{message}");
+    assert!(!path.join(META_FILE).exists());
+    assert_eq!(std::fs::read(path.join(LEGACY_FILE)).unwrap(), b"old");
 }
 
-/// Without a finalized tip, a journal missing the rune tables gains them.
-#[test]
-fn reopen_adds_rune_tables_before_any_finalize() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("journal");
-    {
-        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-        let mut tx = journal.db().begin_write().unwrap();
-        tx.set_durability(redb::Durability::Immediate).unwrap();
-        assert!(tx.delete_table(table(cf::RUNE_BALANCES)).unwrap());
-        tx.commit().unwrap();
-    }
-    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-    let tx = journal.db().begin_read().unwrap();
-    tx.open_table(table(cf::RUNE_BALANCES)).unwrap();
-}
-
-fn table_names(journal: &Journal) -> Vec<String> {
-    journal
-        .db()
-        .begin_read()
-        .unwrap()
-        .list_tables()
-        .unwrap()
-        .map(|handle| handle.name().to_string())
-        .collect()
-}
-
-fn remove_meta(journal: &Journal, key: &[u8]) {
-    let mut tx = journal.db().begin_write().unwrap();
-    tx.set_durability(redb::Durability::Immediate).unwrap();
-    tx.open_table(table(cf::META)).unwrap().remove(key).unwrap();
-    tx.commit().unwrap();
-}
-
-/// A journal created without runes records the setting and has no rune
-/// tables; one created with runes records it and has them.
+/// A journal records the runes setting it was created with.
 #[test]
 fn open_records_the_runes_setting() {
     let dir = tempfile::tempdir().unwrap();
-    let without = Journal::open(&dir.path().join("without"), Chain::Regtest, false).unwrap();
-    assert!(!without.runes());
+    let without = dir.path().join("without");
+    assert!(
+        !Journal::open(&without, Chain::Regtest, false)
+            .unwrap()
+            .runes()
+    );
     assert_eq!(get_meta(&without, b"runes").unwrap(), [0]);
-    let names = table_names(&without);
-    for name in [
-        cf::RUNE_EVENTS,
-        cf::RUNE_ETCHINGS,
-        cf::RUNE_COUNTERS,
-        cf::RUNE_COUNTER_LOG,
-        cf::RUNE_BALANCES,
-    ] {
-        assert!(!names.iter().any(|have| have == name), "{name}");
-    }
-    for name in [cf::TRANSFERS, cf::INFO, cf::HEADERS, cf::RAW_EVENTS] {
-        assert!(names.iter().any(|have| have == name), "{name}");
-    }
 
-    let with = Journal::open(&dir.path().join("with"), Chain::Regtest, true).unwrap();
-    assert!(with.runes());
+    let with = dir.path().join("with");
+    assert!(Journal::open(&with, Chain::Regtest, true).unwrap().runes());
     assert_eq!(get_meta(&with, b"runes").unwrap(), [1]);
 }
 
@@ -502,12 +489,7 @@ fn reopen_with_runes_refuses_a_journal_built_without() {
     assert!(message.contains(&path.display().to_string()), "{message}");
     assert!(message.contains("ord's data dir"), "{message}");
     // The refused open changes nothing.
-    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
-    assert!(
-        !table_names(&journal)
-            .iter()
-            .any(|have| have == cf::RUNE_EVENTS)
-    );
+    assert!(!Journal::open(&path, Chain::Regtest, false).unwrap().runes());
 }
 
 #[test]
@@ -519,42 +501,6 @@ fn reopen_without_runes_refuses_a_journal_built_with() {
     let message = format!("{err:#}");
     assert!(message.contains("built with rune indexing"), "{message}");
     assert!(message.contains(&path.display().to_string()), "{message}");
-}
-
-/// A finalized journal without the runes meta row counts as built with runes
-/// when it has the rune tables, and gains the row on a runes open.
-#[test]
-fn journal_without_the_runes_row_follows_its_rune_tables() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("journal");
-    {
-        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-        put_meta(&journal, b"final_tip", &10u32.to_be_bytes());
-        remove_meta(&journal, b"runes");
-    }
-    let err = Journal::open(&path, Chain::Regtest, false).err().unwrap();
-    assert!(
-        format!("{err:#}").contains("built with rune indexing"),
-        "{err:#}"
-    );
-    let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-    assert!(journal.runes());
-    assert_eq!(get_meta(&journal, b"runes").unwrap(), [1]);
-}
-
-/// A journal without the runes meta row and without finalized blocks takes
-/// the setting it is opened with.
-#[test]
-fn unfinalized_journal_without_the_runes_row_takes_the_setting() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("journal");
-    {
-        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-        remove_meta(&journal, b"runes");
-    }
-    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
-    assert!(!journal.runes());
-    assert_eq!(get_meta(&journal, b"runes").unwrap(), [0]);
 }
 
 fn with_moves() -> JournalOptions {
@@ -609,22 +555,16 @@ fn moves_base() -> InscriptionMove {
     }
 }
 
-/// A journal records the inscriptions setting it was created with and has
-/// the moves table only when it keeps moves; an open with the other setting
-/// is refused.
+/// A journal records the inscriptions setting it was created with; an open
+/// with the other setting is refused.
 #[test]
 fn open_records_the_inscriptions_setting() {
     let dir = tempfile::tempdir().unwrap();
     let without = dir.path().join("without");
     let journal = Journal::open(&without, Chain::Regtest, false).unwrap();
     assert!(!journal.inscriptions());
-    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [0]);
-    assert!(
-        !table_names(&journal)
-            .iter()
-            .any(|name| name == cf::INSCRIPTION_MOVES)
-    );
     drop(journal);
+    assert_eq!(get_meta(&without, b"inscriptions").unwrap(), [0]);
     let err = Journal::open_with(&without, Chain::Regtest, false, &with_moves())
         .err()
         .unwrap();
@@ -636,13 +576,8 @@ fn open_records_the_inscriptions_setting() {
     let with = dir.path().join("with");
     let journal = Journal::open_with(&with, Chain::Regtest, false, &with_moves()).unwrap();
     assert!(journal.inscriptions());
-    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [1]);
-    assert!(
-        table_names(&journal)
-            .iter()
-            .any(|name| name == cf::INSCRIPTION_MOVES)
-    );
     drop(journal);
+    assert_eq!(get_meta(&with, b"inscriptions").unwrap(), [1]);
     let err = Journal::open(&with, Chain::Regtest, false).err().unwrap();
     assert!(
         format!("{err:#}").contains("built with the inscription moves"),
@@ -650,38 +585,30 @@ fn open_records_the_inscriptions_setting() {
     );
 }
 
-/// A finalized journal without the inscriptions meta row keeps no moves, so
-/// an open that wants them is refused; an unfinalized one takes the setting.
+/// The final tip is the highest one any segment records, read when the
+/// journal opens.
 #[test]
-fn journal_without_the_inscriptions_row_keeps_no_moves_once_finalized() {
-    let dir = tempfile::tempdir().unwrap();
-    let finalized = dir.path().join("finalized");
-    {
-        let journal = Journal::open(&finalized, Chain::Regtest, false).unwrap();
-        put_meta(&journal, b"final_tip", &10u32.to_be_bytes());
-        remove_meta(&journal, b"inscriptions");
-    }
-    assert!(Journal::open_with(&finalized, Chain::Regtest, false, &with_moves()).is_err());
-    let journal = Journal::open(&finalized, Chain::Regtest, false).unwrap();
-    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [0]);
-
-    let fresh = dir.path().join("fresh");
-    {
-        let journal = Journal::open(&fresh, Chain::Regtest, false).unwrap();
-        remove_meta(&journal, b"inscriptions");
-    }
-    let journal = Journal::open_with(&fresh, Chain::Regtest, false, &with_moves()).unwrap();
-    assert!(journal.inscriptions());
-    assert_eq!(get_meta(&journal, b"inscriptions").unwrap(), [1]);
-}
-
-#[test]
-fn final_tip_reads_meta() {
+fn final_tip_is_the_highest_segment_tip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
+    {
+        let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
+        for (height, tip) in [(839_000, Some(839_999u32)), (840_000, Some(840_017))] {
+            let segment = journal.segment_mut(height).unwrap();
+            let tx = begin_write(&segment).unwrap();
+            if let Some(tip) = tip {
+                tx.open_table(table(cf::META))
+                    .unwrap()
+                    .insert(b"final_tip".as_slice(), tip.to_be_bytes().as_slice())
+                    .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        // A segment above the tip holding only raw events.
+        journal.segment_mut(841_000).unwrap();
+    }
     let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-    put_meta(&journal, b"final_tip", &840_000u32.to_be_bytes());
-    assert_eq!(journal.final_tip().unwrap(), Some(840_000));
+    assert_eq!(journal.final_tip().unwrap(), Some(840_017));
 }
 
 #[test]

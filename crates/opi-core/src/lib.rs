@@ -1,3 +1,4 @@
+pub mod brc20;
 pub mod metrics;
 
 use std::collections::BTreeMap;
@@ -167,13 +168,25 @@ pub struct RuneCounter {
     pub mints: u128,
 }
 
-/// The rune events, etchings and counter rows of one block, in the order
-/// the journal stores them.
+/// Every outpoint a transaction with rune events spends, in input order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuneSpend {
+    pub txid: String,
+    pub outpoints: Vec<String>,
+}
+
+/// The rune records of one block, in the order the journal stores them.
+///
+/// `events` holds every event but the inputs, which name what a spent
+/// outpoint carried: the runes module reads that from its own outpoint
+/// balances, for the outpoints `spent` lists, and puts the input events at
+/// the head of each transaction's events. The block's counter rows follow
+/// from its mint and burn events and the module's running totals.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuneFeed {
     pub events: Vec<RuneEvent>,
     pub etchings: Vec<RuneEtching>,
-    pub counters: Vec<RuneCounter>,
+    pub spent: Vec<RuneSpend>,
 }
 
 /// Everything a module needs to index one finalized block, read from a single
@@ -223,7 +236,6 @@ pub trait BlockSource: Send + Sync {
     fn block_info(&self, height: u32) -> anyhow::Result<Option<BlockInfo>>;
     /// Records of `height` in idx order.
     fn inscription_records(&self, height: u32) -> anyhow::Result<Vec<InscriptionRecord>>;
-    fn inscription_info(&self, inscription_id: &str) -> anyhow::Result<Option<InscriptionInfo>>;
     /// Header, records and referenced infos of `height` from one snapshot.
     /// `None` above the final tip.
     fn block_view(&self, height: u32) -> anyhow::Result<Option<BlockView>>;
@@ -252,13 +264,6 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn inscription_info(
-            &self,
-            _inscription_id: &str,
-        ) -> anyhow::Result<Option<InscriptionInfo>> {
-            Ok(None)
-        }
-
         fn block_view(&self, _height: u32) -> anyhow::Result<Option<BlockView>> {
             Ok(None)
         }
@@ -270,6 +275,5 @@ mod tests {
         assert_eq!(source.tip().unwrap(), Some(840_000));
         assert_eq!(source.block_info(7).unwrap().unwrap().height, 7);
         assert!(source.inscription_records(7).unwrap().is_empty());
-        assert!(source.inscription_info("x").unwrap().is_none());
     }
 }

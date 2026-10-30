@@ -8,6 +8,10 @@ use {
     serde_json::{Value, json},
 };
 
+/// Longest a call may take before it fails and its caller retries; a
+/// `getblock` verbosity 3 of a full block is the slowest.
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 pub(crate) struct BitcoinRpc {
     url: String,
     auth: UpstreamAuth,
@@ -21,6 +25,7 @@ impl BitcoinRpc {
             auth,
             client: reqwest::Client::builder()
                 .no_proxy()
+                .timeout(CALL_TIMEOUT)
                 .build()
                 .context("building bitcoind client")?,
         })

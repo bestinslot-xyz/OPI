@@ -20,9 +20,6 @@ impl BlockSource for Journal {
     fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
         Ok(Vec::new())
     }
-    fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-        Ok(None)
-    }
     fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
         Ok(None)
     }
@@ -39,9 +36,6 @@ impl BlockSource for FailingTip {
     }
     fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
         Ok(Vec::new())
-    }
-    fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-        Ok(None)
     }
     fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
         Ok(None)

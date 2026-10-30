@@ -1,23 +1,123 @@
 mod support;
 
 use {
-    bitcoin::{OutPoint, Txid, hashes::Hash as _},
-    opi_core::{BlockSource, BlockView, RuneCounter, RuneEtching, RuneEvent, RuneEventKind},
+    bitcoin::{OutPoint, Txid},
+    opi_core::{BlockSource, RuneCounter, RuneEtching, RuneEvent, RuneEventKind},
     opi_source::{
         DEFAULT_ORD_CACHE_BYTES,
         driver::{SourceHandle, spawn_source},
-        journal::{
-            JournalReader, RuneBalanceRow, RuneTotals, cf, decode_rune_balance_row,
-            decode_rune_counter, rune_id_string, table,
-        },
+        journal::JournalReader,
         ord_settings,
     },
     ord::{Chain, Index},
     ordinals::{Edict, Etching, Rune, RuneId, Runestone, Terms},
-    redb::{ReadableDatabase, ReadableTable},
-    std::{collections::BTreeMap, path::Path},
-    support::{Harness, RUNE_TABLES, dump_tables, envelope, source_config, start, wait_for_tip},
+    std::{
+        collections::{BTreeMap, HashMap},
+        path::Path,
+    },
+    support::{Harness, RUNE_TABLES, envelope, segment_rows, source_config, start, wait_for_tip},
 };
+
+/// Pkscript and `(rune id, amount)` balances of an outpoint.
+type RuneBalanceRow = (Vec<u8>, Vec<(String, u128)>);
+
+/// Burned and mint totals of a rune.
+type RuneTotals = (u128, u128);
+
+/// A block's rune records as the runes module completes them from the
+/// journal's feed: every event with the inputs, the etchings and the
+/// counter rows.
+struct Completed {
+    events: Vec<RuneEvent>,
+    etchings: Vec<RuneEtching>,
+    counters: Vec<RuneCounter>,
+}
+
+/// One finalized block with its completed rune records.
+struct View {
+    time: u32,
+    runes: Completed,
+    inscriptions: opi_core::InscriptionFeed,
+}
+
+/// The runes module's state as it reads it to complete a block: unspent
+/// rune outpoints and rune totals.
+#[derive(Default)]
+struct Model {
+    held: HashMap<String, RuneBalanceRow>,
+    totals: HashMap<String, RuneTotals>,
+}
+
+impl Model {
+    /// Completes the journal's feed of `height` and applies it.
+    fn apply(&mut self, reader: &JournalReader, height: u32) -> View {
+        let view = reader.block_view(height).unwrap().unwrap();
+        let feed = view.runes;
+        let mut held = self.held.clone();
+        for event in feed
+            .events
+            .iter()
+            .filter(|e| e.kind == RuneEventKind::Output)
+        {
+            let outpoint = event.outpoint.clone().unwrap();
+            let row = held
+                .entry(outpoint)
+                .or_insert_with(|| (event.pkscript.clone().unwrap(), Vec::new()));
+            row.1.push((event.rune_id.clone(), event.amount));
+        }
+        let events = opi_runes::complete_events(&feed.events, &feed.spent, &held).unwrap();
+        let counters = opi_runes::counters(&events, &self.totals).unwrap();
+        for event in events.iter().filter(|e| e.kind == RuneEventKind::Input) {
+            held.remove(event.outpoint.as_deref().unwrap());
+        }
+        self.held = held;
+        for counter in &counters {
+            self.totals
+                .insert(counter.rune_id.clone(), (counter.burned, counter.mints));
+        }
+        View {
+            time: view.time,
+            runes: Completed {
+                events,
+                etchings: feed.etchings,
+                counters,
+            },
+            inscriptions: view.inscriptions,
+        }
+    }
+
+    /// The module's state after the journal's blocks up to `height`.
+    fn through(reader: &JournalReader, height: u32) -> (Model, Option<View>) {
+        let mut model = Model::default();
+        let mut last = None;
+        for at in 0..=height {
+            last = Some(model.apply(reader, at));
+        }
+        (model, last)
+    }
+}
+
+/// The completed block at `height`.
+fn view(reader: &JournalReader, height: u32) -> View {
+    Model::through(reader, height).1.unwrap()
+}
+
+/// The module's unspent rune outpoints after the journal's final tip.
+fn journal_balances(reader: &JournalReader) -> BTreeMap<OutPoint, RuneBalanceRow> {
+    let tip = reader.tip().unwrap().unwrap();
+    Model::through(reader, tip)
+        .0
+        .held
+        .into_iter()
+        .map(|(outpoint, row)| (outpoint.parse().unwrap(), row))
+        .collect()
+}
+
+/// The module's rune totals after the journal's final tip.
+fn journal_counters(reader: &JournalReader) -> BTreeMap<String, RuneTotals> {
+    let tip = reader.tip().unwrap().unwrap();
+    Model::through(reader, tip).0.totals.into_iter().collect()
+}
 
 const JSON: &[u8] = br#"{"p":"brc-20","op":"deploy","tick":"ordi","max":"21000000"}"#;
 
@@ -45,10 +145,6 @@ fn ord_index(harness: &Harness, dir: &Path) -> Index {
     )
     .unwrap();
     Index::open(&settings).unwrap()
-}
-
-fn view(reader: &JournalReader, height: u32) -> BlockView {
-    reader.block_view(height).unwrap().unwrap()
 }
 
 /// The rune id a mined `txid` etches.
@@ -162,39 +258,11 @@ fn counter(id: RuneId, burned: u128, mints: u128) -> RuneCounter {
     }
 }
 
-/// Every `rune_outpoint_balances` row of the journal, by outpoint.
-fn journal_balances(reader: &JournalReader) -> BTreeMap<OutPoint, RuneBalanceRow> {
-    let tx = reader.journal().db().begin_read().unwrap();
-    tx.open_table(table(cf::RUNE_BALANCES))
-        .unwrap()
+/// The rune rows of `reader`'s journal, table by table.
+fn rune_rows(reader: &JournalReader) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
+    RUNE_TABLES
         .iter()
-        .unwrap()
-        .map(|row| {
-            let (key, value) = row.unwrap();
-            let key = key.value();
-            let outpoint = OutPoint {
-                txid: Txid::from_slice(&key[..32]).unwrap(),
-                vout: u32::from_le_bytes(key[32..].try_into().unwrap()),
-            };
-            (outpoint, decode_rune_balance_row(value.value()).unwrap())
-        })
-        .collect()
-}
-
-/// Every `rune_counters` row of the journal, by rune id.
-fn journal_counters(reader: &JournalReader) -> BTreeMap<String, RuneTotals> {
-    let tx = reader.journal().db().begin_read().unwrap();
-    tx.open_table(table(cf::RUNE_COUNTERS))
-        .unwrap()
-        .iter()
-        .unwrap()
-        .map(|row| {
-            let (key, value) = row.unwrap();
-            (
-                rune_id_string(key.value()),
-                decode_rune_counter(value.value()).unwrap(),
-            )
-        })
+        .map(|name| segment_rows(reader.journal(), name))
         .collect()
 }
 
@@ -204,9 +272,9 @@ fn assert_runes_match_fresh_run(harness: &Harness, reader: &JournalReader) {
     let tmp = tempfile::tempdir().unwrap();
     let (source, fresh) = synced(harness, tmp.path());
     stop(source);
-    let expected = dump_tables(fresh.journal().db(), &RUNE_TABLES);
-    assert!(!expected.is_empty());
-    assert_eq!(dump_tables(reader.journal().db(), &RUNE_TABLES), expected);
+    let expected = rune_rows(&fresh);
+    assert!(expected.iter().any(|rows| !rows.is_empty()));
+    assert_eq!(rune_rows(reader), expected);
 }
 
 #[test]
