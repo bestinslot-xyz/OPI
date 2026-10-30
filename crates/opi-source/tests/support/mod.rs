@@ -325,6 +325,7 @@ pub fn source_config(dir: &Path, url: String, chunk: u32) -> SourceConfig {
         chunk,
         runes: true,
         journal: Default::default(),
+        ord_cache_bytes: opi_source::DEFAULT_ORD_CACHE_BYTES,
     }
 }
 

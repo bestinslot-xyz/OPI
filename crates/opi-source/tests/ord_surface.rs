@@ -1,7 +1,7 @@
 mod support;
 
 use {
-    opi_source::ord_settings,
+    opi_source::{DEFAULT_ORD_CACHE_BYTES, ord_settings},
     ord::{Chain, Index, ParsedEnvelope, index::event::Event},
     support::Harness,
 };
@@ -12,8 +12,15 @@ fn ord_index_emits_creation_and_exposes_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
 
-    let settings =
-        ord_settings(Chain::Regtest, tmp.path(), &harness.core.url(), None, true).unwrap();
+    let settings = ord_settings(
+        Chain::Regtest,
+        tmp.path(),
+        &harness.core.url(),
+        None,
+        true,
+        DEFAULT_ORD_CACHE_BYTES,
+    )
+    .unwrap();
     let index = Index::open_with_event_sender(&settings, Some(tx)).unwrap();
 
     let id = harness.inscribe(b"{\"p\":\"brc-20\"}", "text/plain");

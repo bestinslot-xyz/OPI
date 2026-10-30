@@ -4,6 +4,7 @@ use {
     bitcoin::{OutPoint, Txid, hashes::Hash as _},
     opi_core::{BlockSource, BlockView, RuneCounter, RuneEtching, RuneEvent, RuneEventKind},
     opi_source::{
+        DEFAULT_ORD_CACHE_BYTES,
         driver::{SourceHandle, spawn_source},
         journal::{
             JournalReader, RuneBalanceRow, RuneTotals, cf, decode_rune_balance_row,
@@ -40,6 +41,7 @@ fn ord_index(harness: &Harness, dir: &Path) -> Index {
         &harness.core.url(),
         None,
         true,
+        DEFAULT_ORD_CACHE_BYTES,
     )
     .unwrap();
     Index::open(&settings).unwrap()
