@@ -16,7 +16,8 @@ use opi_core::{BlockRef, BlockSource, BlockView, Module};
 
 pub use report::{DB_VERSION, EVENT_HASH_VERSION, INDEXER_VERSION};
 pub use rules::{
-    block_event_hash, cumulative_hash, event_str, sha256_hex, symbol_hex, wallet_addr,
+    Held, block_event_hash, complete_events, counters, cumulative_hash, event_str, sha256_hex,
+    symbol_hex, wallet_addr,
 };
 
 use db::{BlockHashes, Db};

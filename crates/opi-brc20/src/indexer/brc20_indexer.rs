@@ -2871,7 +2871,7 @@ mod tests {
         publish_opi_tip(&metrics, 902);
         assert_eq!(metrics.indexer_readiness(ReadyLimits::default()), Ok(()));
     }
-    use opi_core::{BlockInfo, BlockView, InscriptionInfo, InscriptionRecord};
+    use opi_core::{BlockInfo, BlockView, InscriptionRecord};
 
     const FIRST: i32 = 112_402;
     const PHASE_ONE: i32 = 230_000;
@@ -2957,10 +2957,6 @@ mod tests {
 
         fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
             Ok(Vec::new())
-        }
-
-        fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-            Ok(None)
         }
 
         fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {

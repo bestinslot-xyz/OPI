@@ -1,14 +1,14 @@
 use {
     bitcoin::{BlockHash, Network, Txid, hashes::Hash},
     opi_source::{
-        journal::{Journal, cf, table},
+        journal::{DEFAULT_SEGMENT, Journal, JournalOptions, begin_write, cf, table},
         proxy::{BarrierRequest, GateProxy, ProxyConfig, UpstreamAuth},
         raw_event::RawEvent,
         stager::{Stager, truncate_raw_above},
     },
     ord::{Chain, index::event::Event},
     ordinals::RuneId,
-    redb::{Database, ReadableDatabase, ReadableTable},
+    redb::{ReadableDatabase, ReadableTable},
     serde_json::json,
     std::{
         sync::{
@@ -26,7 +26,7 @@ use {
 struct Setup {
     core: Option<mockcore::Handle>,
     _tmp: tempfile::TempDir,
-    db: Arc<Database>,
+    db: Journal,
     proxy: GateProxy,
     events: mpsc::Sender<Event>,
     barriers: mpsc::Sender<BarrierRequest>,
@@ -36,6 +36,11 @@ struct Setup {
 /// A stager over a fresh journal, behind a proxy that has served the hashes
 /// of heights `0..=blocks` of a mock bitcoind.
 async fn setup(blocks: u64, event_capacity: usize) -> Setup {
+    setup_segmented(blocks, event_capacity, DEFAULT_SEGMENT).await
+}
+
+/// [`setup`] over a journal of `segment` heights per segment.
+async fn setup_segmented(blocks: u64, event_capacity: usize, segment: u32) -> Setup {
     let core = std::thread::spawn(move || {
         let core = mockcore::builder().network(Network::Regtest).build();
         core.mine_blocks(blocks);
@@ -75,8 +80,13 @@ async fn setup(blocks: u64, event_capacity: usize) -> Setup {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&tmp.path().join("journal.redb"), Chain::Regtest, true).unwrap();
-    let db = journal.db().clone();
+    let options = JournalOptions {
+        segment,
+        ..JournalOptions::default()
+    };
+    let journal =
+        Journal::open_with(&tmp.path().join("journal"), Chain::Regtest, true, &options).unwrap();
+    let db = journal.clone();
     let (events, events_rx) = mpsc::channel(event_capacity);
     let (barriers, barriers_rx) = mpsc::channel(1);
     let stager = Stager::new(journal, events_rx, barriers_rx, proxy.clone());
@@ -133,35 +143,40 @@ fn event(height: u32, tx: u32) -> Event {
     }
 }
 
-fn raw_rows(db: &Database) -> Vec<(u32, u32, RawEvent)> {
-    let tx = db.begin_read().unwrap();
-    let table = tx.open_table(table(cf::RAW_EVENTS)).unwrap();
-    table
-        .iter()
-        .unwrap()
-        .map(|row| {
+/// Every row of table `name` across the journal's segments.
+fn segment_rows(journal: &Journal, name: &'static str) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut rows = Vec::new();
+    for start in journal.segment_starts() {
+        let segment = journal.segment(start).unwrap().unwrap();
+        let tx = segment.begin_read().unwrap();
+        for row in tx.open_table(table(name)).unwrap().iter().unwrap() {
             let (key, value) = row.unwrap();
-            let key = key.value();
+            rows.push((key.value().to_vec(), value.value().to_vec()));
+        }
+    }
+    rows
+}
+
+fn raw_rows(journal: &Journal) -> Vec<(u32, u32, RawEvent)> {
+    segment_rows(journal, cf::RAW_EVENTS)
+        .into_iter()
+        .map(|(key, value)| {
             (
                 u32::from_be_bytes(key[..4].try_into().unwrap()),
                 u32::from_be_bytes(key[4..].try_into().unwrap()),
-                RawEvent::decode(value.value()).unwrap(),
+                RawEvent::decode(&value).unwrap(),
             )
         })
         .collect()
 }
 
-fn raw_heights(db: &Database) -> Vec<(u32, BlockHash)> {
-    let tx = db.begin_read().unwrap();
-    let table = tx.open_table(table(cf::RAW_HEIGHTS)).unwrap();
-    table
-        .iter()
-        .unwrap()
-        .map(|row| {
-            let (key, value) = row.unwrap();
+fn raw_heights(journal: &Journal) -> Vec<(u32, BlockHash)> {
+    segment_rows(journal, cf::RAW_HEIGHTS)
+        .into_iter()
+        .map(|(key, value)| {
             (
-                u32::from_be_bytes(key.value().try_into().unwrap()),
-                BlockHash::from_slice(value.value()).unwrap(),
+                u32::from_be_bytes(key.as_slice().try_into().unwrap()),
+                BlockHash::from_slice(&value).unwrap(),
             )
         })
         .collect()
@@ -244,6 +259,39 @@ async fn rewind_deletes_higher_heights() {
     );
 }
 
+/// A sync spanning several segments writes each height to its own segment,
+/// one transaction per segment, and a rewind deletes the heights above it
+/// from every segment, the rewound height's and those above.
+#[tokio::test]
+async fn sync_and_rewind_span_segments() {
+    let mut s = setup_segmented(7, 32, 2).await;
+    let staged_tip = s.stager.as_ref().unwrap().staged_tip();
+    let _run = s.run();
+
+    s.send((1..=7).map(|height| event(height, 0))).await;
+    s.barrier().await;
+    assert_eq!(s.db.segment_starts(), [0, 2, 4, 6]);
+    assert_eq!(raw_rows(&s.db), rows((1..=7).map(|h| (h, 0, event(h, 0)))));
+    assert_eq!(staged_tip.load(Ordering::SeqCst), 7);
+
+    // A replay from height 3 drops 3 to 7 from three segments.
+    s.send([event(3, 9)]).await;
+    s.barrier().await;
+    assert_eq!(
+        raw_rows(&s.db),
+        rows([
+            (1, 0, event(1, 0)),
+            (2, 0, event(2, 0)),
+            (3, 0, event(3, 9))
+        ])
+    );
+    assert_eq!(
+        raw_heights(&s.db),
+        [(1, s.hash(1)), (2, s.hash(2)), (3, s.hash(3))]
+    );
+    assert_eq!(staged_tip.load(Ordering::SeqCst), 3);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stager_drains_more_events_than_channel_capacity() {
     let mut s = setup(10, 4).await;
@@ -302,8 +350,8 @@ async fn discard_pending_drops_partial_block_before_retry() {
 #[tokio::test]
 async fn truncate_raw_above_removes_rows_and_heights() {
     let tmp = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&tmp.path().join("journal.redb"), Chain::Regtest, true).unwrap();
-    let tx = journal.begin_write().unwrap();
+    let journal = Journal::open(&tmp.path().join("journal"), Chain::Regtest, true).unwrap();
+    let tx = begin_write(&journal.segment_mut(1).unwrap()).unwrap();
     {
         let mut events = tx.open_table(table(cf::RAW_EVENTS)).unwrap();
         let mut heights = tx.open_table(table(cf::RAW_HEIGHTS)).unwrap();
@@ -331,15 +379,15 @@ async fn truncate_raw_above_removes_rows_and_heights() {
     truncate_raw_above(&journal, Some(1)).unwrap();
 
     assert_eq!(
-        raw_rows(journal.db()),
+        raw_rows(&journal),
         rows([(1, 0, event(1, 0)), (1, 1, event(1, 1))])
     );
-    assert_eq!(raw_heights(journal.db()), [(1, BlockHash::all_zeros())]);
+    assert_eq!(raw_heights(&journal), [(1, BlockHash::all_zeros())]);
 
     truncate_raw_above(&journal, None).unwrap();
 
-    assert_eq!(raw_rows(journal.db()), []);
-    assert_eq!(raw_heights(journal.db()), []);
+    assert_eq!(raw_rows(&journal), []);
+    assert_eq!(raw_heights(&journal), []);
 }
 
 #[tokio::test]

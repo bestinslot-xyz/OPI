@@ -2,12 +2,12 @@ mod support;
 
 use {
     opi_core::{
-        BlockSource, BlockView, InscriptionFeed, RuneCounter, RuneEtching, RuneEvent,
-        RuneEventKind, RuneFeed,
+        BlockSource, BlockView, InscriptionFeed, RuneEtching, RuneEvent, RuneEventKind, RuneFeed,
+        RuneSpend,
     },
     opi_source::journal::{
-        JournalReader, cf, encode_rune_counter_log, encode_rune_etching, encode_rune_event,
-        rune_counter_log_key, rune_etching_key, rune_event_key, table,
+        JournalReader, begin_write, cf, encode_rune_etching, encode_rune_event, encode_rune_spend,
+        rune_etching_key, rune_event_key, table,
     },
     support::{Harness, start, wait_for_tip},
 };
@@ -44,18 +44,17 @@ fn block_view_matches_individual_reads() {
         let view = reader.block_view(height).unwrap().unwrap();
         let block = reader.block_info(height).unwrap().unwrap();
         let records = reader.inscription_records(height).unwrap();
-        let infos = records
-            .iter()
-            .map(|record| {
-                (
-                    record.inscription_id.clone(),
-                    reader
-                        .inscription_info(&record.inscription_id)
-                        .unwrap()
-                        .unwrap(),
-                )
-            })
-            .collect();
+        // The view carries one info per inscription its records name.
+        let infos = view.inscriptions.infos.clone();
+        assert_eq!(
+            infos.keys().collect::<Vec<_>>(),
+            records
+                .iter()
+                .map(|record| &record.inscription_id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
         checked += records.len();
         assert_eq!(
             view,
@@ -112,22 +111,27 @@ fn block_view_reads_rune_feed_in_key_order() {
     let height = harness.height();
 
     let events = [
-        event(RuneEventKind::Input, "9:1", 3),
+        event(RuneEventKind::Mint, "9:1", 3),
         event(RuneEventKind::Output, "2:0", 4),
         event(RuneEventKind::Burn, "2:0", u128::MAX),
     ];
     let etchings = [etching("9:1", 0), etching("2:0", 1)];
-    // Counter rows are inserted out of rune id order and reflect the after totals.
-    let counters = [
-        ("9:1", None, (5u128, 6u128)),
-        ("2:10", Some((1, 1)), (2, 3)),
-        ("2:9", None, (0, 1)),
+    let spent = [
+        RuneSpend {
+            txid: TXID.to_owned(),
+            outpoints: vec![format!("{TXID}:0"), format!("{TXID}:7")],
+        },
+        RuneSpend {
+            txid: TXID.replace("00", "ff"),
+            outpoints: Vec::new(),
+        },
     ];
-    let tx = reader.journal().begin_write().unwrap();
+    let segment = reader.journal().segment_mut(height).unwrap();
+    let tx = begin_write(&segment).unwrap();
     {
         let mut table_events = tx.open_table(table(cf::RUNE_EVENTS)).unwrap();
         let mut table_etchings = tx.open_table(table(cf::RUNE_ETCHINGS)).unwrap();
-        let mut log = tx.open_table(table(cf::RUNE_COUNTER_LOG)).unwrap();
+        let mut table_spent = tx.open_table(table(cf::RUNE_SPENT)).unwrap();
         // Neighbouring heights must not leak into the view.
         for other in [height - 1, height + 1] {
             table_events
@@ -138,11 +142,12 @@ fn block_view_reads_rune_feed_in_key_order() {
                         .as_slice(),
                 )
                 .unwrap();
-            log.insert(
-                rune_counter_log_key(other, "7:7").unwrap().as_slice(),
-                encode_rune_counter_log(None, (1, 1)).as_slice(),
-            )
-            .unwrap();
+            table_spent
+                .insert(
+                    rune_event_key(other, 0).as_slice(),
+                    encode_rune_spend(&spent[0]).unwrap().as_slice(),
+                )
+                .unwrap();
         }
         for (seq, e) in events.iter().enumerate().rev() {
             table_events
@@ -160,12 +165,13 @@ fn block_view_reads_rune_feed_in_key_order() {
                 )
                 .unwrap();
         }
-        for (rune_id, before, after) in counters {
-            log.insert(
-                rune_counter_log_key(height, rune_id).unwrap().as_slice(),
-                encode_rune_counter_log(before, after).as_slice(),
-            )
-            .unwrap();
+        for (seq, spend) in spent.iter().enumerate().rev() {
+            table_spent
+                .insert(
+                    rune_event_key(height, seq as u32).as_slice(),
+                    encode_rune_spend(spend).unwrap().as_slice(),
+                )
+                .unwrap();
         }
     }
     tx.commit().unwrap();
@@ -173,26 +179,7 @@ fn block_view_reads_rune_feed_in_key_order() {
     let view = reader.block_view(height).unwrap().unwrap();
     assert_eq!(view.runes.events, events);
     assert_eq!(view.runes.etchings, etchings);
-    assert_eq!(
-        view.runes.counters,
-        vec![
-            RuneCounter {
-                rune_id: "2:9".to_owned(),
-                burned: 0,
-                mints: 1
-            },
-            RuneCounter {
-                rune_id: "2:10".to_owned(),
-                burned: 2,
-                mints: 3
-            },
-            RuneCounter {
-                rune_id: "9:1".to_owned(),
-                burned: 5,
-                mints: 6
-            },
-        ]
-    );
+    assert_eq!(view.runes.spent, spent);
     stop(source);
 }
 

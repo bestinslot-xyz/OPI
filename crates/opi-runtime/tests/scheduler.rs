@@ -93,10 +93,6 @@ impl BlockSource for MemSource {
         Ok(Vec::new())
     }
 
-    fn inscription_info(&self, _: &str) -> Result<Option<opi_core::InscriptionInfo>> {
-        Ok(None)
-    }
-
     fn block_view(&self, height: u32) -> Result<Option<BlockView>> {
         Ok(self.info(height).map(|info| BlockView {
             height,

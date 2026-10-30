@@ -87,12 +87,13 @@ fn startup_refuses_a_restored_older_journal() {
     let harness = chain_with_inscriptions(4);
     let tmp = tempfile::tempdir().unwrap();
     let config = source_config(tmp.path(), harness.core.url(), 2);
-    let journal_path = config.journal_path();
+    // The meta file holds the gate limit startup checks ord against.
+    let journal_path = config.journal_dir.join(opi_source::journal::META_FILE);
     let source = spawn_source(config.clone()).unwrap();
     wait_for_tip(&source.reader(), harness.height());
     source.shutdown();
     source.join().unwrap();
-    let backup = tmp.path().join("journal-backup.redb");
+    let backup = tmp.path().join("meta-backup.redb");
     std::fs::copy(&journal_path, &backup).unwrap();
 
     harness.inscribe(JSON, "text/plain");
@@ -151,14 +152,19 @@ fn finalize_retries_after_upstream_errors() {
 #[test]
 fn journal_open_recovers_from_interrupted_init() {
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("journal.redb");
-    let init = tmp.path().join("journal.redb.init");
+    let path = tmp.path().join("journal");
+    std::fs::create_dir_all(&path).unwrap();
+    let init = path.join(format!("{}.init", opi_source::journal::META_FILE));
+    let segment_init = path.join(format!("{}.init", opi_source::journal::segment_name(0)));
     std::fs::write(&init, b"torn garbage").unwrap();
+    std::fs::write(&segment_init, b"torn garbage").unwrap();
 
     let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert!(journal.created());
+    assert_eq!(journal.segment_starts(), Vec::<u32>::new());
     drop(journal);
     assert!(!init.exists());
+    assert!(!segment_init.exists());
 
     let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert!(!journal.created());
@@ -203,7 +209,7 @@ fn shutdown_mid_chunk_resumes_cleanly() {
 
     let uninterrupted = tempfile::tempdir().unwrap();
     let config = source_config(uninterrupted.path(), harness.core.url(), 10);
-    let journal_path = config.journal_path();
+    let journal_path = config.journal_dir.clone();
     let source = spawn_source(config).unwrap();
     wait_for_tip(&source.reader(), tip);
     source.shutdown();
@@ -219,7 +225,7 @@ fn shutdown_mid_chunk_resumes_cleanly() {
         },
     );
     let config = source_config(interrupted.path(), shim.url.clone(), 10);
-    let journal_path = config.journal_path();
+    let journal_path = config.journal_dir.clone();
     let source = spawn_source(config).unwrap();
     let reader = source.reader();
     wait_for_tip(&reader, 0);

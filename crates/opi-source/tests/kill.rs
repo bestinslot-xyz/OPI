@@ -4,7 +4,7 @@ use {
     bitcoin::{OutPoint, Txid},
     opi_source::{
         driver::{SourceConfig, spawn_source},
-        journal::cf,
+        journal::{JournalOptions, cf, tracked},
     },
     ord::InscriptionId,
     ordinals::{Edict, Etching, RuneId, Runestone, Terms},
@@ -22,6 +22,9 @@ use {
 
 const TIP: u32 = 60;
 const CHUNK: u32 = 3;
+/// Heights per journal segment, so the run crosses several segment
+/// boundaries and the reorg at [`REORG_HEIGHT`] rolls back across one.
+const SEGMENT: u32 = 10;
 const REORG_HEIGHT: u32 = 40;
 const ITERATIONS: usize = 20;
 const DEFAULT_SEED: u64 = 0x0b15_5eed;
@@ -195,6 +198,7 @@ impl SourceProcess {
         }
         let mut child = command
             .args(["--chain", "regtest", "--chunk", &CHUNK.to_string()])
+            .args(["--journal-segment", &SEGMENT.to_string()])
             .arg("--ord-data-dir")
             .arg(dir.join("ord"))
             .arg("--journal-dir")
@@ -320,18 +324,22 @@ fn random_kills_converge(runes: bool) {
     let reference = tempfile::tempdir().unwrap();
     let config = SourceConfig {
         runes,
+        journal: JournalOptions {
+            segment: SEGMENT,
+            ..Default::default()
+        },
         ..source_config(reference.path(), harness.core.url(), CHUNK)
     };
-    let reference_journal = config.journal_path();
+    let reference_journal = config.journal_dir.clone();
     let source = spawn_source(config).unwrap();
     wait_for_tip(&source.reader(), TIP);
     source.shutdown();
     source.join().unwrap();
-    let expected = dump_with(&reference_journal, runes);
+    let expected = dump_with(&reference_journal, runes, SEGMENT);
     let filled = if runes {
         RUNE_TABLES.as_slice()
     } else {
-        [cf::TRANSFERS, cf::INFO, cf::HEADERS, cf::FIRST_TRANSFER].as_slice()
+        [cf::TRANSFERS, cf::INFO, cf::HEADERS, tracked::TABLES[0]].as_slice()
     };
     for table in filled {
         assert!(
@@ -363,7 +371,7 @@ fn random_kills_converge(runes: bool) {
     last.wait_for_tip(TIP, &context);
     last.terminate(&context);
 
-    let actual = dump_with(&killed.path().join("journal").join("journal.redb"), runes);
+    let actual = dump_with(&killed.path().join("journal"), runes, SEGMENT);
     if let Some(at) =
         (0..expected.len().max(actual.len())).find(|&i| expected.get(i) != actual.get(i))
     {

@@ -3,7 +3,7 @@
 
 use {
     crate::{
-        journal::{Journal, cf, raw_event_key, table},
+        journal::{Journal, begin_write, cf, raw_event_key, table},
         proxy::{BarrierRequest, GateProxy},
         raw_event::RawEvent,
     },
@@ -12,7 +12,7 @@ use {
     ord::index::event::Event,
     redb::{ReadableDatabase, ReadableTable, Table},
     std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         sync::{
             Arc,
             atomic::{AtomicU32, Ordering},
@@ -273,37 +273,62 @@ impl Runner {
 
 type RawTable<'txn> = Table<'txn, &'static [u8], &'static [u8]>;
 
-/// Writes `heights` in one transaction after deleting raw rows above
-/// `rewind_to`. Returns the highest height left in `raw_heights`.
+/// Deletes raw rows above `rewind_to`, then writes `heights`, one
+/// transaction per segment from the lowest up. Returns the highest height
+/// left in the raw log.
+///
+/// A crash between two segments' commits leaves the lower heights written
+/// and the higher ones not, as if the sync had stopped there: ord commits no
+/// height before the sync returns, and a restart drops raw rows above ord's
+/// committed height. Rows above `rewind_to` that a crash leaves behind carry
+/// the hash of a block ord no longer indexes, so finalize ignores them until
+/// they are replaced.
 fn write_heights(
     journal: &Journal,
     rewind_to: Option<u32>,
     heights: &[(u32, BlockHash, Vec<RawEvent>)],
 ) -> Result<Option<u32>> {
-    let tx = journal.begin_write()?;
-    let top = {
-        let mut events = tx.open_table(table(cf::RAW_EVENTS))?;
-        let mut hashes = tx.open_table(table(cf::RAW_HEIGHTS))?;
-        if let Some(height) = rewind_to {
-            delete_above(&mut events, &mut hashes, Some(height))?;
-        }
-        for (height, hash, list) in heights {
-            let first = raw_event_key(*height, 0);
-            let last = raw_event_key(*height, u32::MAX);
-            events.retain_in::<&[u8], _>(first.as_slice()..=last.as_slice(), |_, _| false)?;
-            for (seq, event) in list.iter().enumerate() {
-                let key = raw_event_key(*height, u32::try_from(seq)?);
-                events.insert(key.as_slice(), event.encode().as_slice())?;
+    let mut starts = heights
+        .iter()
+        .map(|(height, ..)| journal.segment_start(*height))
+        .collect::<BTreeSet<_>>();
+    if let Some(rewind_to) = rewind_to {
+        starts.extend(
+            journal
+                .segment_starts()
+                .into_iter()
+                .filter(|start| start + (journal.segment_len() - 1) > rewind_to),
+        );
+    }
+    for start in starts {
+        let segment = journal.segment_mut(start)?;
+        let tx = begin_write(&segment)?;
+        {
+            let mut events = tx.open_table(table(cf::RAW_EVENTS))?;
+            let mut hashes = tx.open_table(table(cf::RAW_HEIGHTS))?;
+            if let Some(height) = rewind_to {
+                delete_above(&mut events, &mut hashes, Some(height))?;
             }
-            hashes.insert(
-                height.to_be_bytes().as_slice(),
-                hash.as_byte_array().as_slice(),
-            )?;
+            for (height, hash, list) in heights
+                .iter()
+                .filter(|(height, ..)| journal.segment_start(*height) == start)
+            {
+                let first = raw_event_key(*height, 0);
+                let last = raw_event_key(*height, u32::MAX);
+                events.retain_in::<&[u8], _>(first.as_slice()..=last.as_slice(), |_, _| false)?;
+                for (seq, event) in list.iter().enumerate() {
+                    let key = raw_event_key(*height, u32::try_from(seq)?);
+                    events.insert(key.as_slice(), event.encode().as_slice())?;
+                }
+                hashes.insert(
+                    height.to_be_bytes().as_slice(),
+                    hash.as_byte_array().as_slice(),
+                )?;
+            }
         }
-        last_height(&hashes)?
-    };
-    tx.commit()?;
-    Ok(top)
+        tx.commit()?;
+    }
+    last_raw_height(journal)
 }
 
 /// Deletes `raw_events` and `raw_heights` rows above `height`, or all rows
@@ -332,21 +357,38 @@ fn last_height(hashes: &impl ReadableTable<&'static [u8], &'static [u8]>) -> Res
     Ok(Some(u32::from_be_bytes(key)))
 }
 
+/// Highest height in the raw log of any segment.
 fn last_raw_height(journal: &Journal) -> Result<Option<u32>> {
-    let tx = journal.db().begin_read()?;
-    last_height(&tx.open_table(table(cf::RAW_HEIGHTS))?)
+    for start in journal.segment_starts().into_iter().rev() {
+        if let Some(segment) = journal.segment(start)?
+            && let Some(height) =
+                last_height(&segment.begin_read()?.open_table(table(cf::RAW_HEIGHTS))?)?
+        {
+            return Ok(Some(height));
+        }
+    }
+    Ok(None)
 }
 
-/// Deletes raw log rows above `height` (all rows when `None`) in one durable
-/// transaction. Run at startup with ord's committed height, it drops events
-/// of blocks ord indexed but never committed.
+/// Deletes raw log rows above `height` (all rows when `None`), one durable
+/// transaction per segment that holds any. Run at startup with ord's
+/// committed height, it drops events of blocks ord indexed but never
+/// committed.
 pub fn truncate_raw_above(journal: &Journal, height: Option<u32>) -> Result<()> {
-    let tx = journal.begin_write()?;
-    {
-        let mut events = tx.open_table(table(cf::RAW_EVENTS))?;
-        let mut hashes = tx.open_table(table(cf::RAW_HEIGHTS))?;
-        delete_above(&mut events, &mut hashes, height)?;
+    for start in journal.segment_starts() {
+        if height.is_some_and(|height| start + (journal.segment_len() - 1) <= height) {
+            continue;
+        }
+        let Some(segment) = journal.segment(start)? else {
+            continue;
+        };
+        let tx = begin_write(&segment)?;
+        {
+            let mut events = tx.open_table(table(cf::RAW_EVENTS))?;
+            let mut hashes = tx.open_table(table(cf::RAW_HEIGHTS))?;
+            delete_above(&mut events, &mut hashes, height)?;
+        }
+        tx.commit()?;
     }
-    tx.commit()?;
     Ok(())
 }

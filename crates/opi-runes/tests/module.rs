@@ -2,8 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use opi_core::{
-    BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, InscriptionRecord, Module,
-    RuneCounter, RuneEtching, RuneEvent, RuneEventKind, RuneFeed, RuneTerms,
+    BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionRecord, Module, RuneEtching,
+    RuneEvent, RuneEventKind, RuneSpend, RuneTerms,
 };
 use opi_runes::{
     RunesConfig, RunesModule, block_event_hash, cumulative_hash, event_str, wallet_addr,
@@ -28,9 +28,6 @@ impl BlockSource for Journal {
     }
     fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
         Ok(Vec::new())
-    }
-    fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-        Ok(None)
     }
     fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
         Ok(None)
@@ -172,11 +169,43 @@ fn etching(rune_id: &str, tx: &str, rune: &str, premine: u128) -> RuneEtching {
     }
 }
 
-fn counter(rune_id: &str, burned: u128, mints: u128) -> RuneCounter {
-    RuneCounter {
-        rune_id: rune_id.into(),
-        burned,
-        mints,
+/// A block's rune events with their input events, and its etchings.
+#[derive(Debug, Clone, Default)]
+struct RuneFeed {
+    events: Vec<RuneEvent>,
+    etchings: Vec<RuneEtching>,
+}
+
+/// The journal's feed of `full`: its events without the inputs, and the
+/// outpoints each transaction's inputs spend.
+fn journal_feed(full: RuneFeed) -> opi_core::RuneFeed {
+    let mut spent: Vec<RuneSpend> = Vec::new();
+    for event in full
+        .events
+        .iter()
+        .filter(|e| e.kind == RuneEventKind::Input)
+    {
+        let outpoint = event.outpoint.clone().unwrap();
+        match spent.last_mut() {
+            Some(spend) if spend.txid == event.txid => {
+                if spend.outpoints.last() != Some(&outpoint) {
+                    spend.outpoints.push(outpoint);
+                }
+            }
+            _ => spent.push(RuneSpend {
+                txid: event.txid.clone(),
+                outpoints: vec![outpoint],
+            }),
+        }
+    }
+    opi_core::RuneFeed {
+        events: full
+            .events
+            .into_iter()
+            .filter(|e| e.kind != RuneEventKind::Input)
+            .collect(),
+        etchings: full.etchings,
+        spent,
     }
 }
 
@@ -189,7 +218,7 @@ fn view(height: u32, runes: RuneFeed) -> BlockView {
             records: Vec::new(),
             infos: Default::default(),
         },
-        runes,
+        runes: journal_feed(runes),
         inscription_moves: Vec::new(),
     }
 }
@@ -201,6 +230,11 @@ const JS_MAX_SAFE: i64 = 9_007_199_254_740_991;
 /// dd:0 while etching `3:1` there, mints `3:1` to ee:0 in the block that
 /// etched it, and mints `1:1` to ff:0.
 fn blocks() -> Vec<BlockView> {
+    (1..).zip(feeds()).map(|(h, feed)| view(h, feed)).collect()
+}
+
+/// The full rune feeds of [`blocks`], input events included.
+fn feeds() -> Vec<RuneFeed> {
     use RuneEventKind::*;
     let mut terms_rune = etching("3:1", "d0", "SECONDRUNE", 5);
     terms_rune.symbol = Some('$');
@@ -214,49 +248,37 @@ fn blocks() -> Vec<BlockView> {
         offset: (None, Some(u64::MAX)),
     });
     vec![
-        view(
-            1,
-            RuneFeed {
-                events: vec![
-                    plain(NewAllocation, "a0", "1:1", 1000),
-                    located(Output, "a0", outpoint("a0", 0), pk1(), "1:1", 1000),
-                ],
-                etchings: vec![etching("1:1", "a0", "FIRSTRUNE", 1000)],
-                counters: Vec::new(),
-            },
-        ),
-        view(
-            2,
-            RuneFeed {
-                events: vec![
-                    plain(Mint, "b0", "1:1", 50),
-                    located(Output, "b0", outpoint("b0", 0), pk2(), "1:1", 50),
-                    located(Input, "c0", outpoint("a0", 0), pk1(), "1:1", 1000),
-                    located(Output, "c0", outpoint("c0", 0), pk1(), "1:1", 600),
-                    plain(Burn, "c0", "1:1", 400),
-                ],
-                etchings: Vec::new(),
-                counters: vec![counter("1:1", 400, 1)],
-            },
-        ),
-        view(
-            3,
-            RuneFeed {
-                events: vec![
-                    located(Input, "d0", outpoint("b0", 0), pk2(), "1:1", 50),
-                    located(Input, "d0", outpoint("c0", 0), pk1(), "1:1", 600),
-                    plain(NewAllocation, "d0", "3:1", 5),
-                    located(Output, "d0", outpoint("d0", 0), pk2(), "1:1", 650),
-                    located(Output, "d0", outpoint("d0", 0), pk2(), "3:1", 5),
-                    plain(Mint, "e0", "3:1", 7),
-                    located(Output, "e0", outpoint("e0", 0), pk1(), "3:1", 7),
-                    plain(Mint, "f0", "1:1", 50),
-                    located(Output, "f0", outpoint("f0", 1), pk1(), "1:1", 50),
-                ],
-                etchings: vec![terms_rune],
-                counters: vec![counter("1:1", 400, 2), counter("3:1", 0, 1)],
-            },
-        ),
+        RuneFeed {
+            events: vec![
+                plain(NewAllocation, "a0", "1:1", 1000),
+                located(Output, "a0", outpoint("a0", 0), pk1(), "1:1", 1000),
+            ],
+            etchings: vec![etching("1:1", "a0", "FIRSTRUNE", 1000)],
+        },
+        RuneFeed {
+            events: vec![
+                plain(Mint, "b0", "1:1", 50),
+                located(Output, "b0", outpoint("b0", 0), pk2(), "1:1", 50),
+                located(Input, "c0", outpoint("a0", 0), pk1(), "1:1", 1000),
+                located(Output, "c0", outpoint("c0", 0), pk1(), "1:1", 600),
+                plain(Burn, "c0", "1:1", 400),
+            ],
+            etchings: Vec::new(),
+        },
+        RuneFeed {
+            events: vec![
+                located(Input, "d0", outpoint("b0", 0), pk2(), "1:1", 50),
+                located(Input, "d0", outpoint("c0", 0), pk1(), "1:1", 600),
+                plain(NewAllocation, "d0", "3:1", 5),
+                located(Output, "d0", outpoint("d0", 0), pk2(), "1:1", 650),
+                located(Output, "d0", outpoint("d0", 0), pk2(), "3:1", 5),
+                plain(Mint, "e0", "3:1", 7),
+                located(Output, "e0", outpoint("e0", 0), pk1(), "3:1", 7),
+                plain(Mint, "f0", "1:1", 50),
+                located(Output, "f0", outpoint("f0", 1), pk1(), "1:1", 50),
+            ],
+            etchings: vec![terms_rune],
+        },
     ]
 }
 
@@ -415,7 +437,7 @@ async fn module_round_trip() {
         .unwrap();
         let ids: Vec<i64> = events.iter().map(|r| r.get(0)).collect();
         assert_eq!(ids, (0..16).collect::<Vec<i64>>());
-        let all: Vec<RuneEvent> = blocks().into_iter().flat_map(|b| b.runes.events).collect();
+        let all: Vec<RuneEvent> = feeds().into_iter().flat_map(|f| f.events).collect();
         for (row, event) in events.iter().zip(&all) {
             assert_eq!(row.get::<i32, _>(1), i32::from(event.kind.id()));
             assert_eq!(row.get::<String, _>(2), event.txid);
@@ -541,11 +563,11 @@ async fn module_round_trip() {
         .collect();
         let mut previous: Option<String> = None;
         let mut expected = Vec::new();
-        for block in blocks() {
-            let strs: Vec<String> = block.runes.events.iter().map(event_str).collect();
+        for (height, feed) in (1..).zip(feeds()) {
+            let strs: Vec<String> = feed.events.iter().map(event_str).collect();
             let block_hash = block_event_hash(&strs);
             let cumulative = cumulative_hash(previous.as_deref(), &block_hash);
-            expected.push((block.height as i32, block_hash, cumulative.clone()));
+            expected.push((height, block_hash, cumulative.clone()));
             previous = Some(cumulative);
         }
         assert_eq!(hashes, expected);
@@ -682,7 +704,17 @@ async fn prune_keeps_what_a_rollback_reads() {
             .apply(&view(
                 4,
                 RuneFeed {
-                    counters: vec![counter("1:1", 400, 3)],
+                    events: vec![
+                        plain(RuneEventKind::Mint, "g0", "1:1", 50),
+                        located(
+                            RuneEventKind::Output,
+                            "g0",
+                            outpoint("g0", 0),
+                            pk1(),
+                            "1:1",
+                            50,
+                        ),
+                    ],
                     ..RuneFeed::default()
                 },
             ))
@@ -714,7 +746,7 @@ async fn prune_keeps_what_a_rollback_reads() {
         assert_eq!(module.cursor().await.unwrap().unwrap().height, 4);
         assert_eq!(
             count("runes_events").fetch_one(&mut conn).await.unwrap(),
-            16
+            18
         );
         assert_eq!(
             count("runes_cumulative_event_hashes")
@@ -756,7 +788,6 @@ async fn rollback_unspends_through_input_events() {
                     located(Output, "g0", outpoint("g0", 0), pk2(), "1:1", 1000),
                 ],
                 etchings: Vec::new(),
-                counters: Vec::new(),
             },
         );
         for block in [blocks().remove(0), view(2, RuneFeed::default()), spend] {
@@ -885,7 +916,6 @@ async fn holders_follow_blocks_and_rollbacks() {
                     located(Output, "h0", outpoint("h0", 0), pk1(), "3:1", 5),
                 ],
                 etchings: Vec::new(),
-                counters: Vec::new(),
             },
         );
         let hashes_before: Vec<String> = sqlx::query_scalar(
@@ -1007,7 +1037,6 @@ async fn drift_below_zero_is_logged_and_the_block_goes_on() {
                     located(Output, "h0", outpoint("h0", 0), pk1(), "3:1", 5),
                 ],
                 etchings: Vec::new(),
-                counters: Vec::new(),
             },
         );
         module.apply(&sweep).await.unwrap();
@@ -1098,15 +1127,23 @@ async fn random_block(conn: &mut PgConnection, random: &mut Random, height: u32)
         // a mint now and then
         if random.below(3) == 0 {
             let rune = format!("1:{}", 1 + random.below(3));
-            events.push(plain(Mint, "00", &rune, 10));
-            *totals.entry(rune).or_default() += 10 + random.below(90) as u128;
+            let amount = 10 + random.below(90) as u128;
+            events.push(RuneEvent {
+                txid: txid.clone(),
+                ..plain(Mint, "00", &rune, amount)
+            });
+            *totals.entry(rune).or_default() += amount;
         }
         let outputs = 1 + random.below(3) as u32;
         let mut allocated: std::collections::BTreeMap<u32, Vec<(String, u128)>> =
             Default::default();
+        let mut burned = Vec::new();
         for (rune, total) in totals {
             match random.below(5) {
-                0 => {} // burned
+                0 => burned.push(RuneEvent {
+                    txid: txid.clone(),
+                    ..plain(Burn, "00", &rune, total)
+                }),
                 1 if total > 1 => {
                     let part = 1 + random.below(total as u64 - 1) as u128;
                     allocated.entry(0).or_default().push((rune.clone(), part));
@@ -1146,13 +1183,13 @@ async fn random_block(conn: &mut PgConnection, random: &mut Random, height: u32)
                 });
             }
         }
+        events.extend(burned);
     }
     view(
         height,
         RuneFeed {
             events,
             etchings: Vec::new(),
-            counters: Vec::new(),
         },
     )
 }
@@ -1195,7 +1232,6 @@ async fn delta_counts_match_a_recount_after_random_blocks_and_reorgs() {
         let feed = RuneFeed {
             events: allocations.into_iter().chain(outputs).collect(),
             etchings,
-            counters: Vec::new(),
         };
         module.apply(&view(1, feed)).await.unwrap();
         assert_eq!(holder_mismatches(&mut conn).await, 0);
@@ -1428,12 +1464,10 @@ async fn signet_hashes_start_at_173831() {
                 amount: 0,
             }],
             etchings: vec![etching("5:1", "a0", "SIGNETRUNE", 0)],
-            counters: vec![counter("5:1", 0, 1)],
         };
         module.apply(&view(173_830, mint.clone())).await.unwrap();
         let mint_again = RuneFeed {
             etchings: Vec::new(),
-            counters: vec![counter("5:1", 0, 2)],
             ..mint
         };
         module.apply(&view(173_831, mint_again)).await.unwrap();
@@ -1546,7 +1580,6 @@ async fn mainnet_seed_row_exists_after_new() {
                         },
                     ],
                     etchings: Vec::new(),
-                    counters: vec![counter("1:0", 0, 1)],
                 },
             ))
             .await

@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, anyhow, bail};
-use opi_core::{BlockRef, BlockView, metrics::PoolStats};
+use opi_core::{BlockRef, BlockView, RuneCounter, RuneEvent, RuneEventKind, metrics::PoolStats};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -7,8 +9,8 @@ use crate::RunesConfig;
 use crate::holders;
 use crate::report::{DB_VERSION, INDEXER_VERSION};
 use crate::rules::{
-    block_event_hash, cumulative_hash, event_str, js_safe, outpoint_rows, spent_outpoints,
-    symbol_hex, wallet_addr,
+    block_event_hash, complete_events, counters, cumulative_hash, event_str, js_safe,
+    outpoint_rows, spent_outpoints, symbol_hex, wallet_addr,
 };
 
 const DB_INIT: &str = include_str!("db_init.sql");
@@ -276,11 +278,13 @@ impl Db {
         let height = block.height as i32;
         let mut tx = self.pool.begin().await?;
         insert_entries(&mut tx, block).await?;
-        insert_outpoints(&mut tx, block, network).await?;
-        let spent = spend_outpoints(&mut tx, block).await?;
+        insert_outpoints(&mut tx, &block.runes.events, height, network).await?;
+        let events = complete_block_events(&mut tx, block).await?;
+        let spent = spend_outpoints(&mut tx, &events, height).await?;
         holders::apply_block(&mut tx, height, &spent).await?;
-        apply_counters(&mut tx, block).await?;
-        insert_events(&mut tx, block, network).await?;
+        let counters = block_counters(&mut tx, &events).await?;
+        apply_counters(&mut tx, &counters, height).await?;
+        insert_events(&mut tx, &events, height, network).await?;
 
         let hashes = if hashed {
             let previous: Option<String> = sqlx::query_scalar(
@@ -290,7 +294,7 @@ impl Db {
             .bind(height - 1)
             .fetch_optional(&mut *tx)
             .await?;
-            let events: Vec<String> = block.runes.events.iter().map(event_str).collect();
+            let events: Vec<String> = events.iter().map(event_str).collect();
             let block_event_hash = block_event_hash(&events);
             let cumulative_event_hash = cumulative_hash(previous.as_deref(), &block_event_hash);
             sqlx::query(
@@ -418,10 +422,11 @@ async fn insert_entries(
 /// no comma.
 async fn insert_outpoints(
     tx: &mut Transaction<'_, Postgres>,
-    block: &BlockView,
+    events: &[RuneEvent],
+    height: i32,
     network: &str,
 ) -> anyhow::Result<()> {
-    let rows = outpoint_rows(&block.runes.events)?;
+    let rows = outpoint_rows(events)?;
     if rows.is_empty() {
         return Ok(());
     }
@@ -456,10 +461,97 @@ async fn insert_outpoints(
     .bind(wallet)
     .bind(rune_ids)
     .bind(balances)
-    .bind(block.height as i32)
+    .bind(height)
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// The block's events with their input events, read from the unspent
+/// outpoints the journal's spends name. The block's own outputs are stored
+/// before this runs, so a transaction spending an output of an earlier one
+/// in the block finds it.
+async fn complete_block_events(
+    tx: &mut Transaction<'_, Postgres>,
+    block: &BlockView,
+) -> anyhow::Result<Vec<RuneEvent>> {
+    let feed = &block.runes;
+    let outpoints: Vec<&str> = feed
+        .spent
+        .iter()
+        .flat_map(|spend| spend.outpoints.iter().map(String::as_str))
+        .collect();
+    let mut held = HashMap::new();
+    if !outpoints.is_empty() {
+        let rows = sqlx::query(
+            "SELECT outpoint, pkscript, rune_ids, balances::text[] AS balances \
+             FROM runes_outpoint_to_balances WHERE outpoint = ANY($1) AND NOT spent",
+        )
+        .bind(&outpoints)
+        .fetch_all(&mut **tx)
+        .await?;
+        for row in rows {
+            let outpoint: String = row.try_get("outpoint")?;
+            let pkscript: String = row.try_get("pkscript")?;
+            let rune_ids: Vec<String> = row.try_get("rune_ids")?;
+            let balances: Vec<String> = row.try_get("balances")?;
+            let balances = rune_ids
+                .into_iter()
+                .zip(balances)
+                .map(|(rune_id, amount)| {
+                    let amount = amount
+                        .parse::<u128>()
+                        .with_context(|| format!("balance {amount} of {outpoint}"))?;
+                    Ok((rune_id, amount))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            held.insert(
+                outpoint.clone(),
+                (
+                    hex::decode(&pkscript).with_context(|| format!("pkscript of {outpoint}"))?,
+                    balances,
+                ),
+            );
+        }
+    }
+    complete_events(&feed.events, &feed.spent, &held)
+        .with_context(|| format!("completing the rune events of block {}", block.height))
+}
+
+/// The counter rows of `events`, from the stored totals of the runes they
+/// mint or burn. Entries etched in the block are stored before this runs.
+async fn block_counters(
+    tx: &mut Transaction<'_, Postgres>,
+    events: &[RuneEvent],
+) -> anyhow::Result<Vec<RuneCounter>> {
+    let touched: Vec<&str> = events
+        .iter()
+        .filter(|e| matches!(e.kind, RuneEventKind::Mint | RuneEventKind::Burn))
+        .map(|e| e.rune_id.as_str())
+        .collect();
+    let mut before = HashMap::new();
+    if !touched.is_empty() {
+        let rows = sqlx::query(
+            "SELECT rune_id, burned::text AS burned, mints::text AS mints \
+             FROM runes_id_to_entry WHERE rune_id = ANY($1)",
+        )
+        .bind(&touched)
+        .fetch_all(&mut **tx)
+        .await?;
+        for row in rows {
+            let rune_id: String = row.try_get("rune_id")?;
+            let burned: String = row.try_get("burned")?;
+            let mints: String = row.try_get("mints")?;
+            before.insert(
+                rune_id,
+                (
+                    burned.parse::<u128>().context("stored burned total")?,
+                    mints.parse::<u128>().context("stored mint total")?,
+                ),
+            );
+        }
+    }
+    counters(events, &before)
 }
 
 /// Marks the outpoints the block's inputs spend. Each must be stored and
@@ -467,9 +559,10 @@ async fn insert_outpoints(
 /// Returns the spent outpoints.
 async fn spend_outpoints(
     tx: &mut Transaction<'_, Postgres>,
-    block: &BlockView,
+    events: &[RuneEvent],
+    height: i32,
 ) -> anyhow::Result<Vec<String>> {
-    let spent = spent_outpoints(&block.runes.events)?;
+    let spent = spent_outpoints(events)?;
     if spent.is_empty() {
         return Ok(spent);
     }
@@ -477,17 +570,15 @@ async fn spend_outpoints(
         "UPDATE runes_outpoint_to_balances SET spent = true, spent_block_height = $1 \
          WHERE outpoint = ANY($2) AND NOT spent",
     )
-    .bind(block.height as i32)
+    .bind(height)
     .bind(&spent)
     .execute(&mut **tx)
     .await?
     .rows_affected();
     if updated != spent.len() as u64 {
         bail!(
-            "block {} spends {} rune outpoints but {} are stored unspent",
-            block.height,
+            "block {height} spends {} rune outpoints but {updated} are stored unspent",
             spent.len(),
-            updated
         );
     }
     Ok(spent)
@@ -497,9 +588,9 @@ async fn spend_outpoints(
 /// totals. Every counter must reach an entry.
 async fn apply_counters(
     tx: &mut Transaction<'_, Postgres>,
-    block: &BlockView,
+    counters: &[RuneCounter],
+    height: i32,
 ) -> anyhow::Result<()> {
-    let counters = &block.runes.counters;
     if counters.is_empty() {
         return Ok(());
     }
@@ -515,7 +606,7 @@ async fn apply_counters(
     .bind(&rune_id)
     .bind(&burned)
     .bind(&mints)
-    .bind(block.height as i32)
+    .bind(height)
     .execute(&mut **tx)
     .await?;
     let updated = sqlx::query(
@@ -528,29 +619,27 @@ async fn apply_counters(
     .bind(&rune_id)
     .bind(&burned)
     .bind(&mints)
-    .bind(block.height as i32)
+    .bind(height)
     .execute(&mut **tx)
     .await?
     .rows_affected();
     if updated != counters.len() as u64 {
         bail!(
-            "block {} has {} rune counters but {} entries exist for them",
-            block.height,
+            "block {height} has {} rune counters but {updated} entries exist for them",
             counters.len(),
-            updated
         );
     }
     Ok(())
 }
 
-/// Inserts the events in feed order with ids continuing from the highest
-/// stored id (the first event gets id 0), so ids ascend in event order.
+/// Inserts the events in order with ids continuing from the highest stored
+/// id (the first event gets id 0), so ids ascend in event order.
 async fn insert_events(
     tx: &mut Transaction<'_, Postgres>,
-    block: &BlockView,
+    events: &[RuneEvent],
+    height: i32,
     network: &str,
 ) -> anyhow::Result<()> {
-    let events = &block.runes.events;
     if events.is_empty() {
         return Ok(());
     }
@@ -585,7 +674,7 @@ async fn insert_events(
     .bind(wallet)
     .bind(rune_id)
     .bind(amount)
-    .bind(block.height as i32)
+    .bind(height)
     .execute(&mut **tx)
     .await?;
     Ok(())

@@ -133,7 +133,6 @@ pub struct StreamVars {
     pub default_confirmations: f64,
     pub max_confirmations: f64,
     pub max_subscribers: f64,
-    pub max_per_client: f64,
     pub heartbeat_secs: f64,
     pub buffer: f64,
     pub resume_wait_secs: f64,
@@ -157,9 +156,6 @@ pub struct StreamSettings {
     pub max_confirmations: u32,
     /// The most streams open at once (STREAM_MAX_SUBSCRIBERS).
     pub max_subscribers: usize,
-    /// The most streams one client IP may hold open; a client's newer
-    /// stream ends its oldest (STREAM_MAX_PER_CLIENT).
-    pub max_per_client: usize,
     /// The heartbeat interval, which is also how long a stream may stay
     /// unable to queue a message before it is cut (STREAM_HEARTBEAT_SECS).
     pub heartbeat: Duration,
@@ -177,8 +173,7 @@ impl Default for StreamSettings {
             poll: Duration::from_millis(1000),
             default_confirmations: 1,
             max_confirmations: 100,
-            max_subscribers: 1000,
-            max_per_client: 5,
+            max_subscribers: 100,
             heartbeat: Duration::from_secs(15),
             buffer: 16,
             resume_wait: Duration::from_secs(300),
@@ -216,12 +211,6 @@ impl StreamVars {
                 "STREAM_MAX_SUBSCRIBERS",
                 self.max_subscribers,
                 0.0,
-                1_000_000.0,
-            )? as usize,
-            max_per_client: whole(
-                "STREAM_MAX_PER_CLIENT",
-                self.max_per_client,
-                1.0,
                 1_000_000.0,
             )? as usize,
             heartbeat: Duration::from_secs(whole(
@@ -388,8 +377,7 @@ pub fn load_config(get: impl Fn(&str) -> Option<String>) -> Result<Config> {
             poll_ms: parse_int_str(&or("STREAM_POLL_MS", "1000")),
             default_confirmations: parse_int_str(&or("STREAM_DEFAULT_CONFIRMATIONS", "1")),
             max_confirmations: parse_int_str(&or("STREAM_MAX_CONFIRMATIONS", "100")),
-            max_subscribers: parse_int_str(&or("STREAM_MAX_SUBSCRIBERS", "1000")),
-            max_per_client: parse_int_str(&or("STREAM_MAX_PER_CLIENT", "5")),
+            max_subscribers: parse_int_str(&or("STREAM_MAX_SUBSCRIBERS", "100")),
             heartbeat_secs: parse_int_str(&or("STREAM_HEARTBEAT_SECS", "15")),
             buffer: parse_int_str(&or("STREAM_BUFFER", "16")),
             resume_wait_secs: parse_int_str(&or("STREAM_RESUME_WAIT_SECS", "300")),

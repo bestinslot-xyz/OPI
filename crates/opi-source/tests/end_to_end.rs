@@ -2,7 +2,7 @@ mod support;
 
 use {
     bitcoin::{OutPoint, ScriptBuf, WPubkeyHash, hashes::Hash},
-    opi_core::{BlockSource, InscriptionRecord},
+    opi_core::{BlockSource, InscriptionInfo, InscriptionRecord},
     opi_source::{
         driver::{SourceHandle, spawn_source},
         journal::JournalReader,
@@ -42,6 +42,18 @@ impl Run {
 
     fn records(&self, height: u32) -> Vec<InscriptionRecord> {
         self.reader.inscription_records(height).unwrap()
+    }
+
+    /// The info of `id` among the infos the block at `height` carries.
+    fn info(&self, height: u32, id: InscriptionId) -> Option<InscriptionInfo> {
+        self.reader
+            .block_view(height)
+            .unwrap()
+            .unwrap()
+            .inscriptions
+            .infos
+            .get(&id.to_string())
+            .cloned()
     }
 }
 
@@ -87,11 +99,7 @@ fn creation_is_recorded_with_null_old_satpoint() {
     assert_eq!(record.txid, id.txid.to_string());
     assert!(!record.sent_as_fee);
 
-    let info = run
-        .reader
-        .inscription_info(&id.to_string())
-        .unwrap()
-        .unwrap();
+    let info = run.info(height, id).unwrap();
     assert!(info.is_json);
     assert!(!info.cursed_for_brc20);
     assert_eq!(info.inscription_number, 0);
@@ -198,7 +206,7 @@ fn image_inscription_is_untracked() {
     let run = Run::new(&harness);
 
     assert_eq!(run.records(height), Vec::new());
-    assert_eq!(run.reader.inscription_info(&id.to_string()).unwrap(), None);
+    assert_eq!(run.info(height, id), None);
 }
 
 #[test]
@@ -212,7 +220,7 @@ fn unbound_inscription_is_untracked() {
     let run = Run::with_url(&harness, shim.url.clone());
 
     assert_eq!(run.records(height), Vec::new());
-    assert_eq!(run.reader.inscription_info(&id.to_string()).unwrap(), None);
+    assert_eq!(run.info(height, id), None);
     // No tracked event follows the lone unbound creation, so its undecided
     // fee flag can't move an idx and its input values aren't fetched.
     assert_eq!(shim.prevout_blocks(), 0);
@@ -277,11 +285,7 @@ fn cursed_inscription_sets_cursed_for_brc20() {
 
     let run = Run::new(&harness);
 
-    let info = run
-        .reader
-        .inscription_info(&id.to_string())
-        .unwrap()
-        .unwrap();
+    let info = run.info(harness.height(), id).unwrap();
     assert!(info.cursed_for_brc20);
     assert!(info.inscription_number < 0);
 }
@@ -296,11 +300,7 @@ fn vindicated_inscription_sets_cursed_for_brc20() {
 
     let run = Run::new(&harness);
 
-    let info = run
-        .reader
-        .inscription_info(&id.to_string())
-        .unwrap()
-        .unwrap();
+    let info = run.info(harness.height(), id).unwrap();
     assert!(info.cursed_for_brc20);
     assert!(info.inscription_number >= 0);
 }
@@ -361,13 +361,10 @@ fn reorg_replaces_records() {
     let records = run.records(height);
     assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0].inscription_id, b.to_string());
-    assert_eq!(run.reader.inscription_info(&a.to_string()).unwrap(), None);
-    assert!(
-        run.reader
-            .inscription_info(&b.to_string())
-            .unwrap()
-            .is_some()
-    );
+    assert_eq!(run.info(height, a), None);
+    assert!(run.info(height, b).is_some());
+    assert_eq!(run.reader.journal().tracked(a).unwrap(), None);
+    assert!(run.reader.journal().tracked(b).unwrap().is_some());
 }
 
 fn script(byte: u8) -> ScriptBuf {

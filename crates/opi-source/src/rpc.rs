@@ -4,9 +4,20 @@
 use {
     crate::proxy::{UpstreamAuth, credentials},
     anyhow::{Context, Result, anyhow},
-    bitcoin::{Amount, Block, BlockHash, block::Header, consensus::encode::deserialize_hex},
+    bitcoin::{
+        Amount, Block, BlockHash, Transaction, Txid, block::Header,
+        consensus::encode::deserialize_hex,
+    },
     serde_json::{Value, json},
 };
+
+/// Transactions read per JSON-RPC batch. bitcoind answers a batch on one of
+/// its RPC threads, so reads in batches leave its work queue to ord.
+const TX_BATCH: usize = 500;
+
+/// Longest a call may take before it fails and its caller retries; a
+/// `getblock` verbosity 3 of a full block is the slowest.
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub(crate) struct BitcoinRpc {
     url: String,
@@ -21,6 +32,7 @@ impl BitcoinRpc {
             auth,
             client: reqwest::Client::builder()
                 .no_proxy()
+                .timeout(CALL_TIMEOUT)
                 .build()
                 .context("building bitcoind client")?,
         })
@@ -93,6 +105,59 @@ impl BitcoinRpc {
                     .collect()
             })
             .collect()
+    }
+
+    /// The transactions with `txids`, in that order, from bitcoind's
+    /// transaction index, in JSON-RPC batches of [`TX_BATCH`].
+    pub(crate) async fn transactions(&self, txids: &[Txid]) -> Result<Vec<Transaction>> {
+        let mut transactions = Vec::with_capacity(txids.len());
+        for batch in txids.chunks(TX_BATCH) {
+            let requests = batch
+                .iter()
+                .enumerate()
+                .map(|(id, txid)| {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "getrawtransaction",
+                        "params": [txid.to_string(), false],
+                    })
+                })
+                .collect::<Vec<_>>();
+            let (user, pass) = credentials(&self.auth).await?;
+            let replies = self
+                .client
+                .post(&self.url)
+                .basic_auth(user, Some(pass))
+                .json(&requests)
+                .send()
+                .await
+                .context("calling bitcoind getrawtransaction")?
+                .json::<Vec<Value>>()
+                .await
+                .context("reading bitcoind getrawtransaction replies")?;
+            let mut hexes = vec![None; batch.len()];
+            for reply in replies {
+                let id = reply["id"]
+                    .as_u64()
+                    .and_then(|id| usize::try_from(id).ok())
+                    .filter(|id| *id < batch.len())
+                    .with_context(|| format!("getrawtransaction reply with id {}", reply["id"]))?;
+                if !reply["error"].is_null() {
+                    return Err(anyhow!(
+                        "bitcoind getrawtransaction {} failed: {}",
+                        batch[id],
+                        reply["error"]
+                    ));
+                }
+                hexes[id] = reply["result"].as_str().map(str::to_owned);
+            }
+            for (txid, hex) in batch.iter().zip(hexes) {
+                let hex = hex.with_context(|| format!("no transaction {txid} in the reply"))?;
+                transactions.push(deserialize_hex(&hex)?);
+            }
+        }
+        Ok(transactions)
     }
 
     async fn hex(&self, method: &str, params: Value) -> Result<String> {

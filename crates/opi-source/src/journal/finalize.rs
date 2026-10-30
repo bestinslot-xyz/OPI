@@ -1,30 +1,37 @@
 //! Finalize: turns the raw events of heights ord has committed into
 //! fork-compatible transfer and inscription info records.
+//!
+//! A height's records follow from its raw events, its block, the entries of
+//! ord's index, which never change once ord commits them, and the tracked
+//! set (see [`super::tracked`]). The info of a first transfer comes from the
+//! inscription's reveal transaction, read from bitcoind's transaction index.
 
 use {
     super::{
-        Journal, cf, compress_info, encode_info, encode_inscription_move, encode_transfer,
-        info_key, inscription_move_key,
+        Journal, begin_write, cf, compress_info, encode_info, encode_inscription_move,
+        encode_transfer, info_key, inscription_move_key,
         order::{Located, assign_idx},
         raw_event_key,
-        runes::{RuneTables, finalize_runes},
-        set_final_tip, table, transfer_key,
+        runes::finalize_runes,
+        set_segment_tip, table,
+        tracked::{Change, Overlay},
+        transfer_key,
     },
     crate::raw_event::RawEvent,
     anyhow::{Context, Result, ensure},
-    bitcoin::{Block, BlockHash, OutPoint, TxOut, Txid, consensus, hashes::Hash},
+    bitcoin::{Block, BlockHash, OutPoint, Transaction, TxOut, Txid, consensus, hashes::Hash},
     opi_core::{InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord},
     ord::{Index, Inscription, InscriptionId, ParsedEnvelope},
     ordinals::{Charm, Rune, SatPoint},
     redb::ReadableTable,
     serde_json::Value,
     std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeSet, HashMap, HashSet},
         ops::RangeInclusive,
     },
 };
 
-/// Most heights finalized in one write transaction.
+/// Most heights one [`finalize_range`] call covers.
 pub const FINALIZE_BATCH: u32 = 1000;
 
 /// Chain data finalize reads beyond the journal and ord's index.
@@ -36,6 +43,10 @@ pub trait ChainData {
     /// The value of every input of every transaction of block `hash`, by
     /// transaction position and input index. The coinbase has none.
     fn input_values(&mut self, hash: BlockHash) -> Result<Vec<Vec<u64>>>;
+
+    /// The transactions with `txids`, in that order, from bitcoind's
+    /// transaction index.
+    fn transactions(&mut self, txids: &[Txid]) -> Result<Vec<Transaction>>;
 }
 
 /// One inscription event of the block.
@@ -54,6 +65,9 @@ struct Movement {
     info: Option<InscriptionInfo>,
     /// Input and pointer of the creation's envelope.
     envelope: Option<(u32, Option<u64>)>,
+    /// Whether its charms make a tracked creation cursed for BRC-20, and its
+    /// first parent.
+    creation: Option<(bool, Option<InscriptionId>)>,
 }
 
 /// Transaction positions within a block.
@@ -103,11 +117,12 @@ impl Positions {
 pub(super) type RawTable<'txn> = redb::Table<'txn, &'static [u8], &'static [u8]>;
 
 /// Finalizes `heights`, which start at the next unfinalized height, as ord
-/// committed them: for each height its transfer records, the info rows of
-/// its tracked creations, its inscription moves when the journal keeps
-/// them, its rune records from ord's first rune height on when the journal
-/// keeps them, and its header, then
-/// `final_tip = heights.end()`, all in one durable transaction.
+/// committed them: for each height its transfer records with the info of
+/// every inscription they name, its inscription moves when the journal
+/// keeps them, its rune records from ord's first rune height on when the
+/// journal keeps them, and its header. Each segment the heights fall in
+/// commits on its own with its final tip, after the tracked set's changes
+/// for those heights.
 ///
 /// Only raw events logged under ord's hash for a height count, so stale rows
 /// of a replaced block are ignored. A height without inscription events and
@@ -124,27 +139,45 @@ pub fn finalize_range(
         last - first < FINALIZE_BATCH,
         "finalize range {first}..={last} exceeds {FINALIZE_BATCH} heights"
     );
-    let expected = journal.final_tip()?.map_or(0, |tip| tip + 1);
+    let tip = journal.final_tip()?;
+    let expected = tip.map_or(0, |tip| tip + 1);
     ensure!(
         first == expected,
         "finalizing from height {first}, but the next unfinalized height is {expected}"
     );
+    journal.tracked_undo_above(tip)?;
 
     let first_rune_height = Rune::first_rune_height(journal.chain()?.into());
+    let mut start = first;
+    while start <= last {
+        let end = last.min(journal.segment_start(start) + (journal.segment_len() - 1));
+        finalize_segment(journal, index, start..=end, chain, first_rune_height)?;
+        start = end + 1;
+    }
+    Ok(())
+}
 
-    let tx = journal.begin_write()?;
+/// Finalizes `heights`, all in one segment, in one transaction of it.
+fn finalize_segment(
+    journal: &Journal,
+    index: &Index,
+    heights: RangeInclusive<u32>,
+    chain: &mut dyn ChainData,
+    first_rune_height: u32,
+) -> Result<()> {
+    let last = *heights.end();
+    let segment = journal.segment_mut(last)?;
+    let mut tracked = Overlay::new(journal);
+    let tx = begin_write(&segment)?;
     {
         let mut transfers = tx.open_table(table(cf::TRANSFERS))?;
         let mut infos = tx.open_table(table(cf::INFO))?;
         let mut headers = tx.open_table(table(cf::HEADERS))?;
-        let mut first_transfers = tx.open_table(table(cf::FIRST_TRANSFER))?;
         let mut rune_tables = if journal.runes() {
             Some([
                 tx.open_table(table(cf::RUNE_EVENTS))?,
                 tx.open_table(table(cf::RUNE_ETCHINGS))?,
-                tx.open_table(table(cf::RUNE_BALANCES))?,
-                tx.open_table(table(cf::RUNE_COUNTERS))?,
-                tx.open_table(table(cf::RUNE_COUNTER_LOG))?,
+                tx.open_table(table(cf::RUNE_SPENT))?,
             ])
         } else {
             None
@@ -175,22 +208,8 @@ pub fn finalize_range(
                 "block {} given for {hash} at height {height}",
                 block.block_hash()
             );
-            if let Some([rune_events, etchings, balances, counters, counter_log]) =
-                rune_tables.as_mut().filter(|_| runes)
-            {
-                finalize_runes(
-                    index,
-                    RuneTables {
-                        events: rune_events,
-                        etchings,
-                        balances,
-                        counters,
-                        counter_log,
-                    },
-                    &block,
-                    height,
-                    &events,
-                )?;
+            if let Some([rune_events, etchings, spent]) = rune_tables.as_mut().filter(|_| runes) {
+                finalize_runes(index, rune_events, etchings, spent, &block, height, &events)?;
             }
             if inscriptions {
                 let positions = Positions::new(&block);
@@ -201,11 +220,9 @@ pub fn finalize_range(
                     index,
                     chain,
                     &positions,
-                    Tables {
-                        transfers: &mut transfers,
-                        infos: &mut infos,
-                        first_transfers: &mut first_transfers,
-                    },
+                    &mut transfers,
+                    &mut infos,
+                    &mut tracked,
                     &block,
                     height,
                     events,
@@ -217,56 +234,107 @@ pub fn finalize_range(
             )?;
         }
     }
-    set_final_tip(&tx, Some(last))?;
+    set_segment_tip(&tx, Some(last))?;
+    tracked.commit()?;
     tx.commit()?;
+    journal.set_cached_tip(Some(last));
     Ok(())
 }
 
-/// The tables one block's events write.
-struct Tables<'a, 'txn> {
-    transfers: &'a mut RawTable<'txn>,
-    infos: &'a mut RawTable<'txn>,
-    first_transfers: &'a mut RawTable<'txn>,
-}
-
-/// Writes the info rows, transfer records and first-transfer entries of one
-/// block's events.
+/// Writes the transfer records of one block's events, the info of every
+/// inscription they name, and the block's changes to the tracked set.
+#[allow(clippy::too_many_arguments)]
 fn finalize_events(
     index: &Index,
     chain: &mut dyn ChainData,
     positions: &Positions,
-    tables: Tables,
+    transfers: &mut RawTable,
+    infos: &mut RawTable,
+    tracked: &mut Overlay,
     block: &Block,
     height: u32,
     events: Vec<RawEvent>,
 ) -> Result<()> {
-    let Tables {
-        transfers,
-        infos,
-        first_transfers,
-    } = tables;
     let mut movements = movements(index, block, positions, events, |id| {
-        let key = info_key(&id.to_string())?;
-        Ok((
-            infos.get(key.as_slice())?.is_some(),
-            first_transfers.get(key.as_slice())?.is_some(),
-        ))
+        Ok(tracked.get(id)?.filter(|row| {
+            row.transferred
+                .is_none_or(|transferred| transferred >= height)
+        }))
     })?;
     decide_fees(chain, block, &mut movements)?;
 
+    let created_here = movements
+        .iter()
+        .filter_map(|m| m.info.as_ref().map(|info| (m.inscription_id, info)))
+        .collect::<HashMap<_, _>>();
+    let reveals = movements
+        .iter()
+        .filter(|m| m.tracked && m.old_location.is_some())
+        .map(|m| m.inscription_id)
+        .filter(|id| !created_here.contains_key(id))
+        .map(|id| id.txid)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let reveals = if reveals.is_empty() {
+        HashMap::new()
+    } else {
+        let txs = chain.transactions(&reveals)?;
+        ensure!(
+            txs.len() == reveals.len(),
+            "{} of {} reveal transactions read",
+            txs.len(),
+            reveals.len()
+        );
+        reveals.into_iter().zip(txs).collect::<HashMap<_, _>>()
+    };
+
+    let mut written = HashSet::new();
+    let mut changes = Vec::new();
     for movement in &movements {
+        let id = movement.inscription_id;
         if let Some(info) = &movement.info {
-            infos.insert(
-                info_key(&info.inscription_id)?.as_slice(),
-                compress_info(&encode_info(info)?)?.as_slice(),
-            )?;
+            let (cursed, parent) = movement
+                .creation
+                .context("tracked creation without facts")?;
+            changes.push(Change::Created {
+                height,
+                id,
+                cursed,
+                parent,
+            });
+            if written.insert(id) {
+                infos.insert(
+                    info_row_key(height, id)?.as_slice(),
+                    compress_info(&encode_info(info)?)?.as_slice(),
+                )?;
+            }
         }
         if movement.tracked && movement.old_location.is_some() {
-            first_transfers.insert(
-                info_key(&movement.inscription_id.to_string())?.as_slice(),
-                height.to_be_bytes().as_slice(),
-            )?;
+            changes.push(Change::Transferred { height, id });
+            if written.insert(id) {
+                let row = tracked
+                    .get(id)?
+                    .with_context(|| format!("transfer of untracked inscription {id}"))?;
+                let reveal = reveals
+                    .get(&id.txid)
+                    .with_context(|| format!("no reveal transaction read for {id}"))?;
+                let payload = ParsedEnvelope::from_transaction(reveal)
+                    .into_iter()
+                    .nth(usize::try_from(id.index)?)
+                    .with_context(|| format!("no envelope for inscription {id}"))?
+                    .payload;
+                let is_json = is_json(&payload);
+                let info = info(index, id, row.cursed, row.parent, is_json, payload)?;
+                infos.insert(
+                    info_row_key(height, id)?.as_slice(),
+                    compress_info(&encode_info(&info)?)?.as_slice(),
+                )?;
+            }
         }
+    }
+    for change in changes {
+        tracked.apply(change)?;
     }
 
     let located = movements
@@ -377,6 +445,14 @@ fn output<'a>(
         .with_context(|| format!("block has no output {outpoint}"))
 }
 
+/// The key of `id`'s info row at `height`.
+fn info_row_key(height: u32, id: InscriptionId) -> Result<[u8; 4 + super::INSCRIPTION_ID_LEN]> {
+    let mut key = [0; 4 + super::INSCRIPTION_ID_LEN];
+    key[..4].copy_from_slice(&height.to_be_bytes());
+    key[4..].copy_from_slice(&info_key(&id.to_string())?);
+    Ok(key)
+}
+
 /// Events of `height` logged under `hash`, in emission order.
 fn logged_events(
     raw_heights: &RawTable,
@@ -399,18 +475,18 @@ fn logged_events(
 }
 
 /// Places every inscription event in the block and decides what it tracks.
-/// `stored` tells, for an inscription, whether it has an info row and a
-/// first-transfer entry from an earlier height. A transfer is tracked when
-/// the inscription is tracked and the transfer is its first: the fork counts
-/// an inscription's location updates and records a transfer only at count 2.
-/// A bound event's fee flag follows from its location; an unbound creation's
-/// is left undecided.
+/// `stored` gives, for an inscription created at an earlier height, its
+/// tracked row when it is tracked and has no first transfer yet. A transfer
+/// is tracked when the inscription is tracked and the transfer is its first:
+/// the fork counts an inscription's location updates and records a transfer
+/// only at count 2. A bound event's fee flag follows from its location; an
+/// unbound creation's is left undecided.
 fn movements(
     index: &Index,
     block: &Block,
     positions: &Positions,
     events: Vec<RawEvent>,
-    stored: impl Fn(InscriptionId) -> Result<(bool, bool)>,
+    mut stored: impl FnMut(InscriptionId) -> Result<Option<super::tracked::Tracked>>,
 ) -> Result<Vec<Movement>> {
     let coinbase = *positions.txids.first().context("block has no coinbase")?;
     let mut envelopes = HashMap::<Txid, Vec<ParsedEnvelope>>::new();
@@ -438,13 +514,15 @@ fn movements(
                 let pointer = payload.pointer();
                 let is_json = is_json(&payload);
                 let tracked = location.is_some() && (is_json || is_text(&payload));
+                let cursed = Charm::Cursed.is_set(charms) || Charm::Vindicated.is_set(charms);
+                let parent = parent_inscription_ids.first().copied();
                 let info = if tracked {
                     tracked_here.insert(inscription_id);
                     Some(info(
                         index,
                         inscription_id,
-                        charms,
-                        &parent_inscription_ids,
+                        cursed,
+                        parent,
                         is_json,
                         payload,
                     )?)
@@ -460,6 +538,7 @@ fn movements(
                     tracked,
                     info,
                     envelope: Some((input, pointer)),
+                    creation: tracked.then_some((cursed, parent)),
                 }
             }
             RawEvent::InscriptionTransferred {
@@ -468,9 +547,8 @@ fn movements(
                 old_location,
                 ..
             } => {
-                let (has_info, has_first_transfer) = stored(inscription_id)?;
-                let tracked = (tracked_here.contains(&inscription_id) || has_info)
-                    && !has_first_transfer
+                let tracked = (tracked_here.contains(&inscription_id)
+                    || stored(inscription_id)?.is_some())
                     && transferred_here.insert(inscription_id);
                 Movement {
                     inscription_id,
@@ -481,6 +559,7 @@ fn movements(
                     tracked,
                     info: None,
                     envelope: None,
+                    creation: None,
                 }
             }
             _ => continue,
@@ -672,11 +751,13 @@ fn is_text(payload: &Inscription) -> bool {
     })
 }
 
+/// The info of an inscription from its envelope's payload and its creation
+/// facts.
 fn info(
     index: &Index,
     inscription_id: InscriptionId,
-    charms: u16,
-    parents: &[InscriptionId],
+    cursed_for_brc20: bool,
+    parent: Option<InscriptionId>,
     is_json: bool,
     payload: Inscription,
 ) -> Result<InscriptionInfo> {
@@ -686,8 +767,8 @@ fn info(
     Ok(InscriptionInfo {
         inscription_id: inscription_id.to_string(),
         inscription_number: entry.inscription_number,
-        cursed_for_brc20: Charm::Cursed.is_set(charms) || Charm::Vindicated.is_set(charms),
-        parent_id: parents.first().map(ToString::to_string),
+        cursed_for_brc20,
+        parent_id: parent.map(|parent| parent.to_string()),
         is_json,
         content: payload.body.unwrap_or_default(),
         content_type: payload.content_type.unwrap_or_default(),

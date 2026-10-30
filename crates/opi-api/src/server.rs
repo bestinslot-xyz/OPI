@@ -1,9 +1,7 @@
 //! The HTTP server: HTTP/1 only, with a
 //! header-read timeout on every connection, so a client that connects and
-//! sends nothing, or never finishes a request's headers, is dropped; TCP
-//! keepalive and, on Linux, a TCP user timeout on every connection, so a
-//! peer that vanished without closing (and its stream) is dropped within
-//! about a minute; and a graceful shutdown bounded in time.
+//! sends nothing, or never finishes a request's headers, is dropped; and a
+//! graceful shutdown bounded in time.
 
 use {
     axum::{Router, body::Body, extract::ConnectInfo},
@@ -12,9 +10,8 @@ use {
         rt::{TokioIo, TokioTimer},
         server::graceful::GracefulShutdown,
     },
-    socket2::{SockRef, TcpKeepalive},
     std::{future::Future, time::Duration},
-    tokio::net::{TcpListener, TcpStream},
+    tokio::net::TcpListener,
     tower::ServiceExt,
 };
 
@@ -22,33 +19,6 @@ use {
 const MAX_HEADER_SIZE: usize = 16 * 1024;
 /// The most headers a request may send.
 const MAX_HEADERS: usize = 2000;
-
-/// How long a connection is idle before its first keepalive probe.
-const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
-/// The time between keepalive probes.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
-/// The unanswered keepalive probes that drop a connection.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-const KEEPALIVE_PROBES: u32 = 3;
-/// How long sent data may stay unacknowledged before the connection drops
-/// (Linux). A peer that reads slowly still acknowledges, so only a vanished
-/// one reaches it.
-#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-const USER_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Sets keepalive and the user timeout on an accepted connection.
-fn detect_dead_peers(stream: &TcpStream) -> std::io::Result<()> {
-    let socket = SockRef::from(stream);
-    let keepalive = TcpKeepalive::new()
-        .with_time(KEEPALIVE_IDLE)
-        .with_interval(KEEPALIVE_INTERVAL);
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let keepalive = keepalive.with_retries(KEEPALIVE_PROBES);
-    socket.set_tcp_keepalive(&keepalive)?;
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    socket.set_tcp_user_timeout(Some(USER_TIMEOUT))?;
-    Ok(())
-}
 
 pub struct ServeOptions {
     /// How long a client has to send a request's headers, from the moment
@@ -104,9 +74,6 @@ pub async fn serve_listener(
             },
             () = &mut shutdown => break,
         };
-        if let Err(err) = detect_dead_peers(&stream) {
-            tracing::debug!("setting keepalive on the connection from {peer}: {err}");
-        }
         let app = app.clone();
         let service = service_fn(move |mut request: Request<Incoming>| {
             request.extensions_mut().insert(ConnectInfo(peer));

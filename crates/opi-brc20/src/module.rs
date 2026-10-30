@@ -509,10 +509,6 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn inscription_info(&self, _: &str) -> anyhow::Result<Option<InscriptionInfo>> {
-            Ok(None)
-        }
-
         fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
             Ok(None)
         }

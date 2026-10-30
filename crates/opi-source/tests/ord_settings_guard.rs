@@ -17,7 +17,7 @@ fn startup_refuses_ord_integration_test() {
     let harness = Harness::new();
     let tmp = tempfile::tempdir().unwrap();
     let config = source_config(tmp.path(), harness.core.url(), 2);
-    let journal_path = config.journal_path();
+    let journal_path = config.journal_dir.join(opi_source::journal::META_FILE);
 
     let err = spawn_source(config).err().expect("startup refuses");
     assert!(format!("{err:#}").contains("integration_test"), "{err:#}");
