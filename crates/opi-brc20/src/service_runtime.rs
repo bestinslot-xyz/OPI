@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tokio::runtime::{Builder, Handle, Runtime};
 
 /// A multi-thread tokio runtime on its own OS threads, for services that the
@@ -8,6 +10,7 @@ use tokio::runtime::{Builder, Handle, Runtime};
 ///
 /// Dropping the value stops every task spawned through its handle, without
 /// waiting for them, so it is safe to drop inside an async context.
+/// `shutdown` waits for the tasks to be dropped instead.
 pub struct ServiceRuntime {
     runtime: Option<Runtime>,
 }
@@ -33,6 +36,16 @@ impl ServiceRuntime {
             .handle()
             .clone()
     }
+
+    /// Stops every task spawned through its handle and waits up to `timeout`
+    /// for the runtime's threads to drop them, so what the tasks hold (such
+    /// as the engine and its RocksDB) is released before this returns. It
+    /// blocks, so call it outside an async context.
+    pub fn shutdown(mut self, timeout: Duration) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_timeout(timeout);
+        }
+    }
 }
 
 impl Drop for ServiceRuntime {
@@ -40,5 +53,28 @@ impl Drop for ServiceRuntime {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use super::ServiceRuntime;
+
+    #[test]
+    fn shutdown_drops_what_its_tasks_hold() {
+        let runtime = ServiceRuntime::new("service-runtime-test").unwrap();
+        let held = Arc::new(());
+        let task_held = held.clone();
+        let (started, running) = std::sync::mpsc::channel();
+        runtime.handle().spawn(async move {
+            let _held = task_held;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        running.recv().unwrap();
+        runtime.shutdown(Duration::from_secs(10));
+        assert_eq!(Arc::strong_count(&held), 1);
     }
 }
