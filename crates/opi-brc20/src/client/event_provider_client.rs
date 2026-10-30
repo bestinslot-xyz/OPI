@@ -27,13 +27,19 @@ impl EventProviderClient {
         })
     }
 
+    /// The OPI API URL listing the verified event providers for this client's
+    /// network; the API lists mainnet providers when the network is left out.
+    fn providers_url(&self) -> String {
+        format!(
+            "{}/lc/get_verified_event_providers?event_hash_version={}&network_type={}",
+            OPI_API_URL, EVENT_HASH_VERSION, self.network_type
+        )
+    }
+
     pub async fn load_providers(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let response: EventProvidersResponse = self
             .client
-            .get(format!(
-                "{}/lc/get_verified_event_providers?event_hash_version={}",
-                OPI_API_URL, EVENT_HASH_VERSION
-            ))
+            .get(self.providers_url())
             .send()
             .await?
             .json()
@@ -295,6 +301,22 @@ pub struct BestBlockData {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn providers_url_names_the_network() {
+        let config = crate::config::Brc20IndexerConfig {
+            network_type_string: "signet".into(),
+            ..Default::default()
+        };
+        let client = super::EventProviderClient::new(&config).unwrap();
+        assert!(
+            client.providers_url().ends_with(
+                "/lc/get_verified_event_providers?event_hash_version=3&network_type=signet"
+            ),
+            "{}",
+            client.providers_url()
+        );
+    }
 
     #[test]
     fn load_block_930255() {
