@@ -9,17 +9,32 @@ use {
 /// barrier or when `update()` returns.
 pub const COMMIT_INTERVAL: usize = u32::MAX as usize;
 
+/// Default size of the redb page cache of ord's index, in bytes. ord reads
+/// its index through the kernel's page cache, so redb's own cache holds a
+/// second copy of each page it keeps; a small one leaves that memory to the
+/// page cache.
+pub const DEFAULT_ORD_CACHE_BYTES: usize = 1024 * 1024 * 1024;
+
 /// Builds the ord settings the indexer runs with: rune indexing when `runes`
-/// is set and a commit interval of [`COMMIT_INTERVAL`]. The index file is
-/// `index` when given, else ord's default path under `data_dir`.
+/// is set, a commit interval of [`COMMIT_INTERVAL`] and a page cache of
+/// `cache_bytes`. The index file is `index` when given, else ord's default
+/// path under `data_dir`.
 pub fn ord_settings(
     chain: Chain,
     data_dir: &Path,
     rpc_url: &str,
     index: Option<&Path>,
     runes: bool,
+    cache_bytes: usize,
 ) -> Result<Settings> {
-    Settings::load(options(chain, data_dir, rpc_url, index, runes)?)
+    Settings::load(options(
+        chain,
+        data_dir,
+        rpc_url,
+        index,
+        runes,
+        cache_bytes,
+    )?)
 }
 
 fn options(
@@ -28,6 +43,7 @@ fn options(
     rpc_url: &str,
     index: Option<&Path>,
     runes: bool,
+    cache_bytes: usize,
 ) -> Result<Options> {
     let mut args = vec![
         "ord".to_string(),
@@ -43,6 +59,8 @@ fn options(
         "opi".into(),
         "--commit-interval".into(),
         COMMIT_INTERVAL.to_string(),
+        "--index-cache-size".into(),
+        cache_bytes.to_string(),
     ];
     if runes {
         args.push("--index-runes".into());
@@ -121,7 +139,31 @@ mod tests {
     }
 
     fn indexer_options(dir: &Path, runes: bool) -> Options {
-        options(Chain::Regtest, dir, "http://127.0.0.1:1", None, runes).unwrap()
+        options(
+            Chain::Regtest,
+            dir,
+            "http://127.0.0.1:1",
+            None,
+            runes,
+            DEFAULT_ORD_CACHE_BYTES,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_page_cache_size_overrides_ords_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = options(
+            Chain::Regtest,
+            dir.path(),
+            "http://127.0.0.1:1",
+            None,
+            false,
+            64 << 20,
+        )
+        .unwrap();
+        let settings = merged(options, &[("INDEX_CACHE_SIZE", "17179869184")]);
+        assert_eq!(settings.index_cache_size(), 64 << 20);
     }
 
     #[test]

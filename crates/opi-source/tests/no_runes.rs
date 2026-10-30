@@ -7,6 +7,7 @@ mod support;
 use {
     opi_core::{BlockSource, RuneFeed},
     opi_source::{
+        DEFAULT_ORD_CACHE_BYTES,
         driver::{SourceConfig, SourceHandle, spawn_source},
         journal::{JournalReader, cf},
         ord_settings,
@@ -163,6 +164,7 @@ fn source_without_runes_finalizes_inscriptions_and_no_rune_records() {
         &harness.core.url(),
         None,
         false,
+        DEFAULT_ORD_CACHE_BYTES,
     )
     .unwrap();
     assert!(!Index::open(&settings).unwrap().has_rune_index());

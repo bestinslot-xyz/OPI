@@ -8,6 +8,7 @@ use {
     opi_runtime::MAX_ROLLBACK_DEPTH,
     opi_sns::SnsConfig,
     opi_source::{
+        DEFAULT_ORD_CACHE_BYTES,
         driver::{DEFAULT_CHUNK, SourceConfig},
         journal::JournalOptions,
         proxy::UpstreamAuth,
@@ -89,6 +90,7 @@ impl Config {
                 chunk,
                 runes: modules.contains(&ModuleKind::Runes),
                 journal: journal_options(&get)?,
+                ord_cache_bytes: ord_cache_bytes(&get)?,
             },
             modules,
             prune,
@@ -281,32 +283,65 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
     Ok(modules)
 }
 
-/// Smallest and largest `OPI_JOURNAL_CACHE_MB`.
-const JOURNAL_CACHE_MB: std::ops::RangeInclusive<usize> = 64..=65536;
+/// Smallest and largest `OPI_JOURNAL_CACHE_MB` and `OPI_ORD_CACHE_MB`.
+const CACHE_MB: std::ops::RangeInclusive<usize> = 64..=65536;
 
 /// The journal's open options from `OPI_JOURNAL_CACHE_MB`, the redb page cache
 /// in MiB (default 1024).
 pub(crate) fn journal_options(get: &impl Fn(&str) -> Option<String>) -> Result<JournalOptions> {
-    match get("OPI_JOURNAL_CACHE_MB").filter(|value| !value.is_empty()) {
-        Some(value) => {
-            let mb = value
-                .parse::<usize>()
-                .ok()
-                .filter(|mb| JOURNAL_CACHE_MB.contains(mb))
-                .with_context(|| {
-                    format!(
-                        "OPI_JOURNAL_CACHE_MB must be an integer from {} to {} (MiB), got \
-                         `{value}`",
-                        JOURNAL_CACHE_MB.start(),
-                        JOURNAL_CACHE_MB.end()
-                    )
-                })?;
-            Ok(JournalOptions {
-                cache_bytes: mb * 1024 * 1024,
-            })
-        }
-        None => Ok(JournalOptions::default()),
-    }
+    Ok(match cache_bytes(get, "OPI_JOURNAL_CACHE_MB")? {
+        Some(cache_bytes) => JournalOptions { cache_bytes },
+        None => JournalOptions::default(),
+    })
+}
+
+/// The redb page cache of ord's index from `OPI_ORD_CACHE_MB`, in bytes
+/// (default 1024 MiB).
+fn ord_cache_bytes(get: &impl Fn(&str) -> Option<String>) -> Result<usize> {
+    Ok(cache_bytes(get, "OPI_ORD_CACHE_MB")?.unwrap_or(DEFAULT_ORD_CACHE_BYTES))
+}
+
+/// Smallest and largest `MALLOC_ARENA_MAX`.
+const MALLOC_ARENAS: std::ops::RangeInclusive<usize> = 1..=1024;
+
+/// glibc's malloc arena limit from `MALLOC_ARENA_MAX` (default 2). glibc
+/// otherwise opens up to 8 arenas per core as threads contend, and each arena
+/// keeps the memory freed into it for its own threads.
+pub(crate) fn malloc_arena_max(get: &impl Fn(&str) -> Option<String>) -> Result<usize> {
+    let Some(value) = get("MALLOC_ARENA_MAX").filter(|value| !value.is_empty()) else {
+        return Ok(2);
+    };
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|arenas| MALLOC_ARENAS.contains(arenas))
+        .with_context(|| {
+            format!(
+                "MALLOC_ARENA_MAX must be an integer from {} to {}, got `{value}`",
+                MALLOC_ARENAS.start(),
+                MALLOC_ARENAS.end()
+            )
+        })
+}
+
+/// The cache size in bytes that `key` sets in MiB, `None` when unset or
+/// empty. Fails outside [`CACHE_MB`].
+fn cache_bytes(get: &impl Fn(&str) -> Option<String>, key: &str) -> Result<Option<usize>> {
+    let Some(value) = get(key).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let mb = value
+        .parse::<usize>()
+        .ok()
+        .filter(|mb| CACHE_MB.contains(mb))
+        .with_context(|| {
+            format!(
+                "{key} must be an integer from {} to {} (MiB), got `{value}`",
+                CACHE_MB.start(),
+                CACHE_MB.end()
+            )
+        })?;
+    Ok(Some(mb * 1024 * 1024))
 }
 
 fn parse_chain(value: &str) -> Result<Chain> {
@@ -363,6 +398,49 @@ mod tests {
             vars.insert("OPI_JOURNAL_CACHE_MB", bad);
             let err = load(&vars).unwrap_err();
             assert!(err.to_string().contains("OPI_JOURNAL_CACHE_MB"), "{err}");
+        }
+    }
+
+    #[test]
+    fn malloc_arena_setting() {
+        let lookup = |value: Option<&'static str>| {
+            move |key: &str| (key == "MALLOC_ARENA_MAX").then_some(value?.to_string())
+        };
+        assert_eq!(malloc_arena_max(&lookup(None)).unwrap(), 2);
+        assert_eq!(malloc_arena_max(&lookup(Some(""))).unwrap(), 2);
+        assert_eq!(malloc_arena_max(&lookup(Some("1"))).unwrap(), 1);
+        assert_eq!(malloc_arena_max(&lookup(Some("1024"))).unwrap(), 1024);
+        for bad in ["0", "1025", "-1", "two", "1.5"] {
+            let err = malloc_arena_max(&lookup(Some(bad))).unwrap_err();
+            assert!(err.to_string().contains("MALLOC_ARENA_MAX"), "{err}");
+        }
+    }
+
+    #[test]
+    fn ord_cache_setting() {
+        let mut vars = base();
+        assert_eq!(
+            load(&vars).unwrap().source.ord_cache_bytes,
+            1024 * 1024 * 1024
+        );
+        vars.insert("OPI_ORD_CACHE_MB", "");
+        assert_eq!(
+            load(&vars).unwrap().source.ord_cache_bytes,
+            1024 * 1024 * 1024
+        );
+        vars.insert("OPI_ORD_CACHE_MB", "4096");
+        assert_eq!(
+            load(&vars).unwrap().source.ord_cache_bytes,
+            4096 * 1024 * 1024
+        );
+        for ok in ["64", "65536"] {
+            vars.insert("OPI_ORD_CACHE_MB", ok);
+            load(&vars).unwrap();
+        }
+        for bad in ["63", "65537", "0", "-1", "4g", "1.5", "abc"] {
+            vars.insert("OPI_ORD_CACHE_MB", bad);
+            let err = load(&vars).unwrap_err();
+            assert!(err.to_string().contains("OPI_ORD_CACHE_MB"), "{err}");
         }
     }
 

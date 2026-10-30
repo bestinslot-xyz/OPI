@@ -5242,6 +5242,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "jsonrpsee",
+ "libc",
  "opi-api",
  "opi-bitmap",
  "opi-brc20",

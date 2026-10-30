@@ -79,6 +79,10 @@ fn main() -> ExitCode {
     } else {
         dotenvy::dotenv().ok();
     }
+    if let Err(err) = limit_malloc_arenas() {
+        eprintln!("{err:#}");
+        return ExitCode::FAILURE;
+    }
     tracing_subscriber::fmt()
         .with_target(false)
         .with_writer(std::io::stderr)
@@ -109,6 +113,25 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Caps glibc's malloc arenas at `MALLOC_ARENA_MAX` (default 2), read after
+/// the `.env` loads. It runs before any thread starts, so every thread shares
+/// the capped arenas. Other allocators ignore the setting.
+fn limit_malloc_arenas() -> Result<()> {
+    let arenas = config::malloc_arena_max(&|key| std::env::var(key).ok())?;
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        let arenas = libc::c_int::try_from(arenas)?;
+        // SAFETY: mallopt only changes the allocator's tuning; no other
+        // thread exists yet to allocate concurrently.
+        if unsafe { libc::mallopt(libc::M_ARENA_MAX, arenas) } != 1 {
+            bail!("glibc refused MALLOC_ARENA_MAX={arenas}");
+        }
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    let _ = arenas;
+    Ok(())
 }
 
 fn run() -> Result<()> {
