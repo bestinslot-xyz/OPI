@@ -447,7 +447,10 @@ impl PublicRpc {
     }
 
     /// Stops the server, waits up to `RPC_STOP_TIMEOUT` for it to finish,
-    /// then stops the runtime.
+    /// then stops the runtime, waiting up to `RPC_STOP_TIMEOUT` again for its
+    /// threads to drop the server's tasks. Those hold the engine, whose
+    /// RocksDB must close before the process exits: one still open at exit
+    /// aborts the process ("pthread lock: Invalid argument").
     fn stop(self) {
         let PublicRpc { server, runtime } = self;
         server.stop().ok();
@@ -457,7 +460,7 @@ impl PublicRpc {
         if stopped.is_err() {
             tracing::warn!("the brc20-prog RPC server did not stop within {RPC_STOP_TIMEOUT:?}");
         }
-        drop(runtime);
+        runtime.shutdown(RPC_STOP_TIMEOUT);
     }
 }
 
