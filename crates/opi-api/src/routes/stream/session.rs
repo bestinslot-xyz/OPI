@@ -9,7 +9,8 @@
 //! connection, for a poller to report a change, sending a heartbeat every
 //! STREAM_HEARTBEAT_SECS. Before each block, and on each change its poller
 //! reports, the last block a module's client holds is checked against the
-//! stored hash; when it was replaced, the stream sends a rollback to the
+//! stored hash (on a change, against the poller's rows when they hold that
+//! block with its hash); when it was replaced, the stream sends a rollback to the
 //! newest block of the client's that is still stored and goes on after it.
 //! A block missing because the module's table is below it (a module behind,
 //! or a reorg in progress) is waited for.
@@ -19,11 +20,15 @@
 //!
 //! The reads take a permit of the module database's stream readers, which
 //! leaves the rest of the pool to the other routes; no permit is held while
-//! a chunk waits for room in the client's buffer.
+//! a chunk waits for room in the client's buffer. A block's events are read
+//! once for all the streams that deliver it ([`Blocks`]).
 
 use {
     super::{
-        Position, StreamStop, format_id,
+        Position, StreamStop,
+        blocks::Blocks,
+        clients::Place,
+        format_id,
         poller::{WINDOW, Watch},
         provider::{BlockRow, Provider},
     },
@@ -41,7 +46,7 @@ use {
         time::Duration,
     },
     tokio::{
-        sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit, mpsc, oneshot},
+        sync::{Semaphore, SemaphorePermit, mpsc, oneshot},
         time::Instant,
     },
 };
@@ -82,6 +87,8 @@ enum End {
     Stopped,
     /// The client could not take a message for a heartbeat interval.
     Slow,
+    /// A newer stream of the client took this one's place.
+    Replaced,
     /// A query failed.
     Failed(ApiError),
     /// The stream cannot go on, for the reason given.
@@ -110,7 +117,8 @@ pub struct Session {
     pub chunks: mpsc::Sender<Bytes>,
     pub end: oneshot::Sender<Option<Bytes>>,
     pub stop: StreamStop,
-    pub permit: OwnedSemaphorePermit,
+    pub blocks: Arc<Blocks>,
+    pub place: Place,
     pub gauge: StreamSubscriberGuard,
 }
 
@@ -125,6 +133,63 @@ fn frame(event: &str, data: &str, id: Option<&str>) -> String {
 
 fn js_string(text: &str) -> String {
     json_stringify(&JsValue::from(text)).unwrap_or_default()
+}
+
+/// The `block` frame of `row` up to its id line: its head, then a chunk per
+/// page of [`EVENT_PAGE`] events, each read under a permit of `reads`.
+async fn render(
+    reads: &Semaphore,
+    provider: Provider,
+    db: &Db,
+    row: &BlockRow,
+) -> Result<Vec<Bytes>, ApiError> {
+    let read_permit = || async {
+        reads
+            .acquire()
+            .await
+            .expect("the readers' semaphore stays open")
+    };
+    let height = row.height;
+    let range = {
+        let _permit = read_permit().await;
+        provider.event_ids(db, height).await?
+    };
+    let name = provider.name();
+    let time = row.time.map_or("null".to_string(), |time| time.to_string());
+    let head = format!(
+        "event: block\ndata: {{\"module\":\"{name}\",\"height\":{height},\"hash\":{},\"block_time\":{time}{},\"events\":[",
+        js_string(&row.hash),
+        provider.header_fields(),
+    );
+    let mut chunks = vec![Bytes::from(head)];
+    if let Some((low, high)) = range {
+        let mut after = low - 1;
+        let mut first = true;
+        loop {
+            let page = {
+                let _permit = read_permit().await;
+                provider.events(db, height, after, high, EVENT_PAGE).await?
+            };
+            let Some((last_id, _)) = page.last() else {
+                break;
+            };
+            after = *last_id;
+            let full = page.len() as i64 == EVENT_PAGE;
+            let mut chunk = String::new();
+            for (_, event) in &page {
+                if !first {
+                    chunk.push(',');
+                }
+                first = false;
+                chunk.push_str(&json_stringify(event).unwrap_or_default());
+            }
+            chunks.push(Bytes::from(chunk));
+            if !full {
+                break;
+            }
+        }
+    }
+    Ok(chunks)
 }
 
 impl Cursor {
@@ -164,6 +229,19 @@ impl Cursor {
         self.provider.oldest(&self.db).await
     }
 
+    /// Whether the poller's rows hold the last block the client holds, with
+    /// its hash.
+    fn polled_as_held(&self) -> bool {
+        let Some((height, hash)) = self.ring.back() else {
+            return false;
+        };
+        self.watch
+            .history
+            .lock()
+            .expect("the history lock")
+            .holds(*height, hash)
+    }
+
     fn push(&mut self, block: (i32, String)) {
         self.ring.push_back(block);
         while self.ring.len() > WINDOW as usize {
@@ -198,6 +276,10 @@ impl Session {
                 "the client fell behind the stream; reconnect with Last-Event-ID to resume"
                     .to_string(),
             ),
+            End::Replaced => Some(
+                "a newer stream of this client took this stream's place (STREAM_MAX_PER_CLIENT)"
+                    .to_string(),
+            ),
             End::Failed(err) => {
                 tracing::error!("stream: {}", err.log_text());
                 Some("internal error".to_string())
@@ -209,7 +291,7 @@ impl Session {
             Bytes::from(frame("error", &data, None))
         });
         self.end.send(last).ok();
-        drop(self.permit);
+        drop(self.place);
         drop(self.gauge);
     }
 
@@ -251,6 +333,7 @@ impl Session {
                 () = tokio::time::sleep_until(next_heartbeat) => Wake::Heartbeat,
                 () = stop.stopped() => return End::Stopped,
                 () = self.chunks.closed() => return End::Closed,
+                _ = &mut self.place.replaced => return End::Replaced,
             };
             if woken == Wake::Heartbeat {
                 if let Err(end) = self.heartbeat().await {
@@ -267,6 +350,13 @@ impl Session {
         for index in 0..self.cursors.len() {
             if self.cursors[index].dirty {
                 self.cursors[index].dirty = false;
+                // A block the poller's rows hold with the client's hash is
+                // still stored as of the poller's last read; a later reorg
+                // is a change, which marks the cursor dirty again.
+                if self.cursors[index].polled_as_held() {
+                    self.cursors[index].waiting_since = None;
+                    continue;
+                }
                 if self.check(index).await? {
                     return Ok(true);
                 }
@@ -374,47 +464,14 @@ impl Session {
         if !rows.iter().any(|row| row.height == due_at) {
             return Ok(false);
         }
-        let range = {
-            let _permit = cursor.read_permit().await;
-            provider.event_ids(&db, height).await?
-        };
-        let name = provider.name();
-        let time = row.time.map_or("null".to_string(), |time| time.to_string());
-        let head = format!(
-            "event: block\ndata: {{\"module\":\"{name}\",\"height\":{height},\"hash\":{},\"block_time\":{time}{},\"events\":[",
-            js_string(&row.hash),
-            provider.header_fields(),
-        );
-        self.send(head).await?;
-        if let Some((low, high)) = range {
-            let mut after = low - 1;
-            let mut first = true;
-            loop {
-                let page = {
-                    let cursor = &self.cursors[index];
-                    let _permit = cursor.read_permit().await;
-                    provider
-                        .events(&db, height, after, high, EVENT_PAGE)
-                        .await?
-                };
-                let Some((last_id, _)) = page.last() else {
-                    break;
-                };
-                after = *last_id;
-                let full = page.len() as i64 == EVENT_PAGE;
-                let mut chunk = String::new();
-                for (_, event) in &page {
-                    if !first {
-                        chunk.push(',');
-                    }
-                    first = false;
-                    chunk.push_str(&json_stringify(event).unwrap_or_default());
-                }
-                self.send(chunk).await?;
-                if !full {
-                    break;
-                }
-            }
+        let rendered = self
+            .blocks
+            .get(provider, height, &row.hash, || {
+                render(&cursor.reads, provider, &db, &row)
+            })
+            .await?;
+        for chunk in rendered.iter() {
+            self.send(chunk.clone()).await?;
         }
         let cursor = &mut self.cursors[index];
         cursor.push((height, row.hash));
@@ -568,16 +625,17 @@ impl Session {
     }
 
     /// Queues `chunk`, waiting at most a heartbeat interval for room.
-    async fn send(&mut self, chunk: String) -> Result<(), End> {
+    async fn send(&mut self, chunk: impl Into<Bytes>) -> Result<(), End> {
         let mut stop = self.stop.clone();
         let wait: Duration = self.settings.heartbeat;
         tokio::select! {
-            sent = tokio::time::timeout(wait, self.chunks.send(Bytes::from(chunk))) => match sent {
+            sent = tokio::time::timeout(wait, self.chunks.send(chunk.into())) => match sent {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(_)) => Err(End::Closed),
                 Err(_) => Err(End::Slow),
             },
             () = stop.stopped() => Err(End::Stopped),
+            _ = &mut self.place.replaced => Err(End::Replaced),
         }
     }
 }

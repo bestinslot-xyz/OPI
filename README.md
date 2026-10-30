@@ -1308,16 +1308,25 @@ there.
 The API learns of new blocks by polling: one poller per module and process,
 whatever the number of subscribers, reads the module's highest block-hash row
 every `STREAM_POLL_MS`, and the new rows when it changes. A subscriber holds
-no database connection while it waits for a block. The streams read a module
+no database connection while it waits for a block. A block's events are read
+once for every stream that delivers it: the streams share each block's
+rendered frame, keeping the most recent 64 MB of them. The streams read a module
 database with at most as many connections at once as the holders snapshots
 may take (4, and at most half of `DB_MAX_CONNECTIONS`), so replaying streams
 leave connections to the other routes. A stream that cannot queue a message
 for its client for `STREAM_HEARTBEAT_SECS` ends with an `error` event; the
-client resumes with its `Last-Event-ID`. Beyond `STREAM_MAX_SUBSCRIBERS`
-open streams, a request answers
-`503 {"error":"too many stream subscribers","result":null}`; the cap counts
-every client together, so one client can take every place the rate limit
-lets it open. A stream's buffer holds `STREAM_BUFFER` chunks, a brc20 page
+client resumes with its `Last-Event-ID`. A client IP holds at most
+`STREAM_MAX_PER_CLIENT` streams: one more ends the client's oldest stream
+with an `error` event and takes its place, so a client that reconnects
+while its old connection still looks open is served at once. Beyond
+`STREAM_MAX_SUBSCRIBERS` open streams, a request from a client below its
+own cap answers
+`503 {"error":"too many stream subscribers","result":null}`. The client IP
+is the one `API_TRUSTED_PROXY_CNT` gives: behind nginx or another proxy,
+set it to the number of proxies, or every client counts as the proxy's IP
+and shares its `STREAM_MAX_PER_CLIENT` streams. Every connection has TCP
+keepalive and, on Linux, a TCP user timeout, so a peer that vanished
+without closing frees its stream's place within about a minute. A stream's buffer holds `STREAM_BUFFER` chunks, a brc20 page
 of 100 events being about 60 KB, so at most about 1 MB per stream with the
 default. On
 shutdown every stream ends at once, so its connection closes within the
@@ -1365,7 +1374,7 @@ win, and a missing file is ignored.
 | `DB_MAX_CONNECTIONS` | maximum connections per module database pool, default `10` |
 | `API_HOST` | listen address, default `127.0.0.1` |
 | `API_PORT` | listen port, default `8000` |
-| `API_TRUSTED_PROXY_CNT` | number of trusted proxies (such as nginx) in front of the API, default `0` |
+| `API_TRUSTED_PROXY_CNT` | number of trusted proxies (such as nginx) in front of the API, default `0`; the rate limiter and `STREAM_MAX_PER_CLIENT` key on the client IP it gives, so set it to `1` behind one nginx |
 | `RATE_LIMIT_ENABLE` | `true` turns the rate limiter on, default `false` |
 | `RATE_LIMIT_WINDOW_MS` | rate limit window in milliseconds, default `900000` |
 | `RATE_LIMIT_MAX` | requests per client per window, default `100` |
@@ -1373,7 +1382,8 @@ win, and a missing file is ignored.
 | `STREAM_POLL_MS` | how often each module's block hashes are read for the push feed, in milliseconds, from 10, default `1000` |
 | `STREAM_DEFAULT_CONFIRMATIONS` | the confirmations of a stream that names none, default `1` |
 | `STREAM_MAX_CONFIRMATIONS` | the most confirmations a stream may ask for, at most `1000`, default `100` |
-| `STREAM_MAX_SUBSCRIBERS` | the most streams open at once, default `100`; `0` refuses every stream |
+| `STREAM_MAX_SUBSCRIBERS` | the most streams open at once, default `1000`; `0` refuses every stream |
+| `STREAM_MAX_PER_CLIENT` | the most streams one client IP holds open, from 1, default `5`; a newer stream ends the client's oldest. Needs `API_TRUSTED_PROXY_CNT` behind a proxy |
 | `STREAM_HEARTBEAT_SECS` | the heartbeat interval, and how long a stream may be unable to queue a message before it ends, default `15` |
 | `STREAM_RESUME_WAIT_SECS` | how long a resumed module's position may wait for its block to be stored or its reorg to be read before it is taken as stale and rolled back 1000 blocks, from 1 to 86400, default `300` |
 | `STREAM_BUFFER` | the chunks (a block's head, a page of 100 events of up to about 60 KB, or a small event) a stream queues for its client, default `16`, about 1 MB at most |

@@ -26,6 +26,7 @@ fn the_stream_settings_default_and_are_checked() {
         ("STREAM_DEFAULT_CONFIRMATIONS", "3"),
         ("STREAM_MAX_CONFIRMATIONS", "1000"),
         ("STREAM_MAX_SUBSCRIBERS", "0"),
+        ("STREAM_MAX_PER_CLIENT", "2"),
         ("STREAM_HEARTBEAT_SECS", "5"),
         ("STREAM_BUFFER", "2"),
         ("STREAM_RESUME_WAIT_SECS", "30"),
@@ -38,6 +39,7 @@ fn the_stream_settings_default_and_are_checked() {
             default_confirmations: 3,
             max_confirmations: 1000,
             max_subscribers: 0,
+            max_per_client: 2,
             heartbeat: Duration::from_secs(5),
             buffer: 2,
             resume_wait: Duration::from_secs(30),
@@ -73,6 +75,11 @@ fn the_stream_settings_default_and_are_checked() {
             "STREAM_MAX_SUBSCRIBERS",
             "-1",
             "STREAM_MAX_SUBSCRIBERS must be an integer from 0 to 1000000, got -1",
+        ),
+        (
+            "STREAM_MAX_PER_CLIENT",
+            "0",
+            "STREAM_MAX_PER_CLIENT must be an integer from 1 to 1000000, got 0",
         ),
         (
             "STREAM_RESUME_WAIT_SECS",

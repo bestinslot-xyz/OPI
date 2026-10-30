@@ -9,9 +9,13 @@
 //! of new blocks and reorgs from the module's block-hash table, which the
 //! indexer writes as each block commits. Each subscriber runs a
 //! [session], whose frames reach the client through a bounded
-//! [body](body::SseBody).
+//! [body](body::SseBody); the sessions share each block's rendered frame
+//! ([blocks]). Each client IP holds a bounded number of streams
+//! ([clients]).
 
+mod blocks;
 mod body;
+mod clients;
 mod poller;
 mod provider;
 mod session;
@@ -25,7 +29,7 @@ use {
     crate::{
         config::{Module, StreamSettings},
         db::Db,
-        extract::JsQuery,
+        extract::{JsQuery, RequestIp},
         js::JsObject,
         openapi::{self, ErrorBody, Null},
         reply::{ApiError, Reply},
@@ -38,6 +42,7 @@ use {
         },
     },
     axum::{
+        Extension,
         body::Body,
         extract::State,
         http::{HeaderMap, HeaderValue, header},
@@ -52,7 +57,8 @@ use {
     },
 };
 
-/// The answer of a stream request beyond STREAM_MAX_SUBSCRIBERS.
+/// The answer of a stream request beyond STREAM_MAX_SUBSCRIBERS from a
+/// client below STREAM_MAX_PER_CLIENT.
 pub const TOO_MANY: &str = "too many stream subscribers";
 
 /// The signal that ends every stream, at the API's shutdown.
@@ -112,7 +118,7 @@ impl std::fmt::Debug for StreamStop {
 }
 
 /// The streams of a process: its settings, the enabled modules' databases,
-/// the pollers and the subscriber cap.
+/// the pollers, the rendered blocks and the open streams of each client.
 #[derive(Clone)]
 pub struct Streams(Arc<Inner>);
 
@@ -122,7 +128,8 @@ struct Inner {
     /// readers.
     enabled: Vec<(Module, Db, Arc<Semaphore>)>,
     pollers: Arc<poller::Pollers>,
-    permits: Arc<Semaphore>,
+    blocks: Arc<blocks::Blocks>,
+    clients: Arc<clients::Clients>,
     stop: StreamStop,
 }
 
@@ -147,7 +154,8 @@ impl Streams {
             settings,
             enabled,
             pollers: poller::Pollers::new(settings.poll, stop.clone()),
-            permits: Arc::new(Semaphore::new(settings.max_subscribers)),
+            blocks: blocks::Blocks::new(blocks::BUDGET),
+            clients: clients::Clients::new(settings.max_subscribers, settings.max_per_client),
             stop,
         }))
     }
@@ -505,7 +513,8 @@ fn parse(
 /// (`StreamHeartbeat`) comes every STREAM_HEARTBEAT_SECS while no block is
 /// due. A stream whose client cannot take a message for that long ends with
 /// an `error` event `{"error"}` (`StreamError`); so does one whose query
-/// fails.
+/// fails, and a client's oldest stream when the client opens one more than
+/// STREAM_MAX_PER_CLIENT.
 ///
 /// Block and rollback events carry the SSE id of the client's position
 /// after them: `<module>:<height>:<hash>` for each module of the stream
@@ -527,11 +536,12 @@ fn parse(
     responses(
         (status = 200, description = "The stream: `block` events (data: `StreamBlock`), `rollback` events (`StreamRollback`), `heartbeat` events (`StreamHeartbeat`) and a last `error` event (`StreamError`) on an early end between events. A block or rollback event's SSE id is the client's position after it: `<module>:<height>:<hash>` for each module with a position, comma-separated in module name order, the hash empty for a module that has sent no block at or below that height.", content_type = "text/event-stream", body = String),
         (status = 400, description = "An invalid parameter or `Last-Event-ID`, a module that is unknown, disabled or not on the stream, or a `from_height` or `Last-Event-ID` position below a module's oldest kept block", body = ErrorBody),
-        (status = 503, description = "`too many stream subscribers`: STREAM_MAX_SUBSCRIBERS streams are open", body = ErrorBody),
+        (status = 503, description = "`too many stream subscribers`: STREAM_MAX_SUBSCRIBERS streams are open and the client holds fewer than STREAM_MAX_PER_CLIENT of them", body = ErrorBody),
     ),
 )]
 pub(super) async fn stream(
     State(streams): State<Streams>,
+    ip: Option<Extension<RequestIp>>,
     JsQuery(query): JsQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -541,7 +551,8 @@ pub(super) async fn stream(
         Ok(start) => start,
         Err(bad) => return Ok(bad.reply().into_response()),
     };
-    let Ok(permit) = inner.permits.clone().try_acquire_owned() else {
+    let client = ip.map(|Extension(RequestIp(ip))| ip).unwrap_or_default();
+    let Some(place) = inner.clients.admit(&client) else {
         return Ok(Reply::error(503, TOO_MANY).into_response());
     };
     let gauge = opi_core::metrics::global().stream_subscriber();
@@ -630,7 +641,8 @@ pub(super) async fn stream(
         chunks,
         end,
         stop: inner.stop.clone(),
-        permit,
+        blocks: inner.blocks.clone(),
+        place,
         gauge,
     };
     tokio::spawn(session.run());
