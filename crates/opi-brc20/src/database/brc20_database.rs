@@ -876,6 +876,21 @@ impl Brc20Database {
         Ok(row.block_hash)
     }
 
+    /// The stored hash and time of `block_height`, the time `None` for a
+    /// block indexed before block times were stored; `None` when no block is
+    /// stored there.
+    pub async fn get_block_hash_and_time(
+        &self,
+        block_height: i32,
+    ) -> Result<Option<(String, Option<i64>)>, Box<dyn Error>> {
+        Ok(sqlx::query_as::<_, (String, Option<i64>)>(
+            "SELECT block_hash, block_time FROM brc20_block_hashes WHERE block_height = $1",
+        )
+        .bind(block_height)
+        .fetch_optional(&self.client)
+        .await?)
+    }
+
     pub async fn should_index_extras(
         &self,
         brc20_block_height: i32,

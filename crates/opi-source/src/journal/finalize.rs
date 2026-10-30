@@ -3,8 +3,8 @@
 //!
 //! A height's records follow from its raw events, its block, the entries of
 //! ord's index, which never change once ord commits them, and the tracked
-//! set (see [`super::tracked`]). The info of a first transfer comes from the
-//! inscription's reveal transaction, read from bitcoind's transaction index.
+//! set (see [`super::tracked`]), which also holds the info a first transfer
+//! carries.
 
 use {
     super::{
@@ -19,14 +19,17 @@ use {
     },
     crate::raw_event::RawEvent,
     anyhow::{Context, Result, ensure},
-    bitcoin::{Block, BlockHash, OutPoint, Transaction, TxOut, Txid, consensus, hashes::Hash},
-    opi_core::{InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord},
+    bitcoin::{Block, BlockHash, OutPoint, TxOut, Txid, consensus, hashes::Hash},
+    opi_core::{
+        InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord,
+        brc20::acts_on_transfer,
+    },
     ord::{Index, Inscription, InscriptionId, ParsedEnvelope},
     ordinals::{Charm, Rune, SatPoint},
     redb::ReadableTable,
     serde_json::Value,
     std::{
-        collections::{BTreeSet, HashMap, HashSet},
+        collections::{HashMap, HashSet},
         ops::RangeInclusive,
     },
 };
@@ -43,10 +46,6 @@ pub trait ChainData {
     /// The value of every input of every transaction of block `hash`, by
     /// transaction position and input index. The coinbase has none.
     fn input_values(&mut self, hash: BlockHash) -> Result<Vec<Vec<u64>>>;
-
-    /// The transactions with `txids`, in that order, from bitcoind's
-    /// transaction index.
-    fn transactions(&mut self, txids: &[Txid]) -> Result<Vec<Transaction>>;
 }
 
 /// One inscription event of the block.
@@ -65,9 +64,6 @@ struct Movement {
     info: Option<InscriptionInfo>,
     /// Input and pointer of the creation's envelope.
     envelope: Option<(u32, Option<u64>)>,
-    /// Whether its charms make a tracked creation cursed for BRC-20, and its
-    /// first parent.
-    creation: Option<(bool, Option<InscriptionId>)>,
 }
 
 /// Transaction positions within a block.
@@ -263,73 +259,31 @@ fn finalize_events(
     })?;
     decide_fees(chain, block, &mut movements)?;
 
-    let created_here = movements
-        .iter()
-        .filter_map(|m| m.info.as_ref().map(|info| (m.inscription_id, info)))
-        .collect::<HashMap<_, _>>();
-    let reveals = movements
-        .iter()
-        .filter(|m| m.tracked && m.old_location.is_some())
-        .map(|m| m.inscription_id)
-        .filter(|id| !created_here.contains_key(id))
-        .map(|id| id.txid)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let reveals = if reveals.is_empty() {
-        HashMap::new()
-    } else {
-        let txs = chain.transactions(&reveals)?;
-        ensure!(
-            txs.len() == reveals.len(),
-            "{} of {} reveal transactions read",
-            txs.len(),
-            reveals.len()
-        );
-        reveals.into_iter().zip(txs).collect::<HashMap<_, _>>()
-    };
-
     let mut written = HashSet::new();
     let mut changes = Vec::new();
     for movement in &movements {
         let id = movement.inscription_id;
         if let Some(info) = &movement.info {
-            let (cursed, parent) = movement
-                .creation
-                .context("tracked creation without facts")?;
+            let stored = compress_info(&encode_info(info)?)?;
+            if written.insert(id) {
+                infos.insert(info_row_key(height, id)?.as_slice(), stored.as_slice())?;
+            }
             changes.push(Change::Created {
                 height,
                 id,
-                cursed,
-                parent,
+                info: acts_on_transfer(info).then_some(stored),
             });
-            if written.insert(id) {
-                infos.insert(
-                    info_row_key(height, id)?.as_slice(),
-                    compress_info(&encode_info(info)?)?.as_slice(),
-                )?;
-            }
         }
         if movement.tracked && movement.old_location.is_some() {
             changes.push(Change::Transferred { height, id });
-            if written.insert(id) {
+            if !written.contains(&id) {
                 let row = tracked
                     .get(id)?
                     .with_context(|| format!("transfer of untracked inscription {id}"))?;
-                let reveal = reveals
-                    .get(&id.txid)
-                    .with_context(|| format!("no reveal transaction read for {id}"))?;
-                let payload = ParsedEnvelope::from_transaction(reveal)
-                    .into_iter()
-                    .nth(usize::try_from(id.index)?)
-                    .with_context(|| format!("no envelope for inscription {id}"))?
-                    .payload;
-                let is_json = is_json(&payload);
-                let info = info(index, id, row.cursed, row.parent, is_json, payload)?;
-                infos.insert(
-                    info_row_key(height, id)?.as_slice(),
-                    compress_info(&encode_info(&info)?)?.as_slice(),
-                )?;
+                if let Some(stored) = row.info {
+                    written.insert(id);
+                    infos.insert(info_row_key(height, id)?.as_slice(), stored.as_slice())?;
+                }
             }
         }
     }
@@ -538,7 +492,6 @@ fn movements(
                     tracked,
                     info,
                     envelope: Some((input, pointer)),
-                    creation: tracked.then_some((cursed, parent)),
                 }
             }
             RawEvent::InscriptionTransferred {
@@ -559,7 +512,6 @@ fn movements(
                     tracked,
                     info: None,
                     envelope: None,
-                    creation: None,
                 }
             }
             _ => continue,

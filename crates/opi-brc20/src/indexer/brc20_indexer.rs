@@ -1149,7 +1149,7 @@ impl Brc20Indexer {
             return Err("Reporting is not supported in light client mode".into());
         }
 
-        let (block_hash, block_time) = self.journal_block_hash_and_time(block_height)?;
+        let (block_hash, block_time) = self.block_hash_and_time(block_height).await?;
 
         let Some(block_events_hash) = get_brc20_database()
             .lock()
@@ -2485,6 +2485,35 @@ impl Brc20Indexer {
         self.journal
             .as_ref()
             .ok_or("full mode reads blocks from the journal inside opi-indexer".into())
+    }
+
+    /// The hash and time of `block_height` as brc20 stored them when it
+    /// indexed the block. A block stored before block times were has its time
+    /// from the journal's header of the same hash, which a pruned journal
+    /// holds only for its window.
+    async fn block_hash_and_time(
+        &self,
+        block_height: i32,
+    ) -> Result<(String, i64), Box<dyn Error>> {
+        let stored = get_brc20_database()
+            .lock()
+            .await
+            .get_block_hash_and_time(block_height)
+            .await?;
+        match stored {
+            Some((hash, Some(time))) => Ok((hash, time)),
+            Some((hash, None)) => {
+                let (journal_hash, time) = self.journal_block_hash_and_time(block_height)?;
+                if journal_hash != hash {
+                    return Err(format!(
+                        "block {block_height} is {hash} in brc20 but {journal_hash} in the journal"
+                    )
+                    .into());
+                }
+                Ok((hash, time))
+            }
+            None => self.journal_block_hash_and_time(block_height),
+        }
     }
 
     /// The journal's hash and time of `block_height`.

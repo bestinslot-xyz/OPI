@@ -183,9 +183,13 @@ state, and each module's database holds the module's.
 The fork records a bound text or JSON inscription's creation and its first
 transfer, and that choice numbers every record of the block after it. ord's
 index keeps no content type, so `tracked.redb` keeps one small row per such
-inscription until its first transfer; the transfer's record then reads the
-inscription's content from its reveal transaction, through bitcoind's
-transaction index. A rune transaction's records list the outpoints it spends:
+inscription until its first transfer. Only brc20 reads a transfer's content,
+and only for a BRC-20 `transfer`, a brc20-module `withdraw` or a BRC2.0
+`deploy`, `call` or `transact`, so the row of such an inscription also keeps
+the info its creation recorded, which its first transfer's record carries
+again; the first transfer of any other inscription carries none. Most of
+these are BRC-20 transfer inscriptions, moved within a few blocks, so the
+kept infos stay few. A rune transaction's records list the outpoints it spends:
 the runes module, which keeps every unspent rune outpoint and every rune's
 totals, makes the input events and the counter rows from them, so the block
 event hashes are those the journal reported before.

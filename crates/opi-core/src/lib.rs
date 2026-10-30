@@ -1,3 +1,4 @@
+pub mod brc20;
 pub mod metrics;
 
 use std::collections::BTreeMap;

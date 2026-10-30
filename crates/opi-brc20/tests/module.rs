@@ -4,7 +4,7 @@ use bitcoin::Network;
 use opi_brc20::{
     config::Brc20IndexerConfig,
     database::get_brc20_database,
-    module::{get_wallet, install_fresh_database, transfers},
+    module::{acts_on_transfer, get_wallet, install_fresh_database, transfers},
 };
 use opi_core::{InscriptionFeed, InscriptionInfo, InscriptionRecord};
 
@@ -160,6 +160,61 @@ fn a_record_without_its_info_is_an_error() {
     )
     .unwrap_err();
     assert!(err.to_string().contains(&inscription_id(9)));
+}
+
+/// The journal leaves out the info of a first transfer brc20 does not act
+/// on, so such a record is skipped.
+#[test]
+fn a_transfer_without_its_info_is_skipped() {
+    let mut transfer = record(7, 1, 9, P2TR);
+    transfer.old_satpoint = Some(format!("{TXID}:1:2"));
+    let created = record(7, 2, 3, P2TR);
+    let txes = transfers(
+        &feed(
+            vec![transfer, created],
+            vec![info(
+                3,
+                r#"{"p":"brc-20","op":"transfer","tick":"ordi","amt":"1"}"#,
+            )],
+        ),
+        Network::Bitcoin,
+    )
+    .unwrap();
+    assert_eq!(txes.len(), 1);
+    assert_eq!(txes[0].inscription_id, inscription_id(3));
+}
+
+/// The operations the journal keeps content for are those the transfer
+/// processing acts on when an inscription is transferred.
+#[test]
+fn acts_on_transfer_names_the_operations_processed_on_transfer() {
+    use opi_brc20::config::*;
+    let acts = |protocol: &str, op: &str| {
+        let module = if protocol == PROTOCOL_BRC20_MODULE {
+            r#","module":"BRC20PROG""#
+        } else {
+            ""
+        };
+        acts_on_transfer(&info(
+            0,
+            &format!(r#"{{"p":"{protocol}","op":"{op}"{module}}}"#),
+        ))
+    };
+    assert!(acts(PROTOCOL_BRC20, OPERATION_TRANSFER));
+    for op in [OPERATION_DEPLOY, OPERATION_MINT, OPERATION_PREDEPLOY] {
+        assert!(!acts(PROTOCOL_BRC20, op), "{op}");
+    }
+    assert!(acts(PROTOCOL_BRC20_MODULE, OPERATION_WITHDRAW));
+    for op in [
+        OPERATION_BRC20_PROG_DEPLOY,
+        OPERATION_BRC20_PROG_DEPLOY_SHORT,
+        OPERATION_BRC20_PROG_CALL,
+        OPERATION_BRC20_PROG_CALL_SHORT,
+        OPERATION_BRC20_PROG_TRANSACT,
+        OPERATION_BRC20_PROG_TRANSACT_SHORT,
+    ] {
+        assert!(acts(PROTOCOL_BRC20_PROG, op), "{op}");
+    }
 }
 
 #[test]

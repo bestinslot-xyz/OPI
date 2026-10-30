@@ -150,12 +150,13 @@ impl BlockSource for JournalReader {
         })?
         .into_iter()
         .collect::<BTreeMap<_, _>>();
-        if let Some(record) = records
-            .iter()
-            .find(|record| !infos.contains_key(&record.inscription_id))
-        {
+        // Every creation carries its info; a first transfer only when the
+        // brc20 module acts on it.
+        if let Some(record) = records.iter().find(|record| {
+            record.old_satpoint.is_none() && !infos.contains_key(&record.inscription_id)
+        }) {
             bail!(
-                "inscription {} of height {height} has no info row",
+                "inscription {} created at height {height} has no info row",
                 record.inscription_id
             );
         }

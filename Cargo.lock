@@ -5228,6 +5228,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "prometheus-client",
+ "serde_json",
 ]
 
 [[package]]

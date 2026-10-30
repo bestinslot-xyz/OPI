@@ -6,10 +6,11 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use bitcoin::Network;
 use brc20_prog::Brc20Prog;
-use opi_core::{BlockRef, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, Module};
+pub use opi_core::brc20::{acts_on_transfer, is_valid_brc20};
+use opi_core::{BlockRef, BlockSource, BlockView, InscriptionFeed, Module};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::{
@@ -344,17 +345,21 @@ pub async fn install_fresh_database(config: &Brc20IndexerConfig) {
 
 /// The BRC-20 transfers of a block's inscription feed, in record order.
 /// Records of inscriptions that cannot carry a BRC-20, BRC2.0 program or
-/// module operation are left out.
+/// module operation are left out. The journal gives the info of a first
+/// transfer only when [`acts_on_transfer`] holds for it, so a transfer
+/// record without one is left out; a creation without one is an error.
 pub fn transfers(feed: &InscriptionFeed, network: Network) -> anyhow::Result<Vec<Brc20Tx>> {
     // Per inscription id: whether it is valid for BRC-20.
     let mut verdicts: HashMap<&str, bool> = HashMap::new();
     let mut txes = Vec::new();
 
     for record in &feed.records {
-        let info = feed
-            .infos
-            .get(&record.inscription_id)
-            .ok_or_else(|| anyhow!("Inscription info not found for {}", record.inscription_id))?;
+        let Some(info) = feed.infos.get(&record.inscription_id) else {
+            if record.old_satpoint.is_some() {
+                continue;
+            }
+            bail!("Inscription info not found for {}", record.inscription_id);
+        };
         let valid = *verdicts
             .entry(record.inscription_id.as_str())
             .or_insert_with(|| is_valid_brc20(info));
@@ -380,51 +385,6 @@ pub fn transfers(feed: &InscriptionFeed, network: Network) -> anyhow::Result<Vec
     }
 
     Ok(txes)
-}
-
-/// Whether an inscription can carry a BRC-20, BRC2.0 program or module
-/// operation.
-pub fn is_valid_brc20(inscription_info: &InscriptionInfo) -> bool {
-    if inscription_info.cursed_for_brc20 {
-        return false;
-    }
-    if !inscription_info.is_json {
-        return false;
-    }
-
-    let Ok(decoded_content_type) = std::str::from_utf8(&inscription_info.content_type) else {
-        return false;
-    };
-
-    if !decoded_content_type.eq("text/plain")
-        && !decoded_content_type.starts_with("text/plain;")
-        && !decoded_content_type.eq("application/json")
-        && !decoded_content_type.starts_with("application/json;")
-    {
-        return false;
-    }
-
-    let json_data: serde_json::Value = match serde_json::from_slice(&inscription_info.content) {
-        Ok(data) => data,
-        Err(_) => return false, // Invalid JSON
-    };
-
-    let Some(protocol) = json_data.get("p").and_then(|v| v.as_str()) else {
-        return false; // Missing or invalid 'p' field
-    };
-    if protocol != "brc-20" && protocol != "brc20-prog" && protocol != "brc20-module" {
-        return false;
-    }
-    if protocol == "brc20-module" {
-        let Some(module) = json_data.get("module").and_then(|m| m.as_str()) else {
-            return false; // Missing or invalid 'module' field for brc20-module
-        };
-        if module != "BRC20PROG" {
-            return false; // Invalid module value
-        }
-    }
-
-    true
 }
 
 /// Address string for a hex pkscript, or an empty string when the script has

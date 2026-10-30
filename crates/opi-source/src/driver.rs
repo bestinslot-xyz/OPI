@@ -14,7 +14,7 @@ use {
         stager::{Stager, StagerHandle, truncate_raw_above},
     },
     anyhow::{Context, Result, anyhow, bail, ensure},
-    bitcoin::{Block, BlockHash, Transaction, Txid},
+    bitcoin::{Block, BlockHash},
     ord::{Chain, Index, settings::Settings},
     std::{
         path::{Path, PathBuf},
@@ -502,10 +502,6 @@ impl ChainData for &Driver {
 
     fn input_values(&mut self, hash: BlockHash) -> Result<Vec<Vec<u64>>> {
         self.runtime.block_on(self.rpc.input_values(hash))
-    }
-
-    fn transactions(&mut self, txids: &[Txid]) -> Result<Vec<Transaction>> {
-        self.runtime.block_on(self.rpc.transactions(txids))
     }
 }
 

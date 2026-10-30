@@ -270,6 +270,27 @@ mod tests {
         .await;
     }
 
+    /// A block's report reads its hash and time from brc20's own table,
+    /// which keeps them for every height brc20 indexed.
+    #[tokio::test]
+    async fn stored_hash_and_time_are_read_back() {
+        with_database("hash_time", |name| async move {
+            let database = database(&name, false).await;
+            insert_block(&database, 7, Some(1_700_000_007)).await;
+            insert_block(&database, 8, None).await;
+            assert_eq!(
+                database.get_block_hash_and_time(7).await.unwrap(),
+                Some(("hash7".to_string(), Some(1_700_000_007)))
+            );
+            assert_eq!(
+                database.get_block_hash_and_time(8).await.unwrap(),
+                Some(("hash8".to_string(), None))
+            );
+            assert_eq!(database.get_block_hash_and_time(9).await.unwrap(), None);
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn the_fill_sets_missing_times_from_the_journal() {
         with_database("fill", |name| async move {
