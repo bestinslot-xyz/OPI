@@ -62,6 +62,31 @@ pub struct InscriptionFeed {
     pub infos: BTreeMap<String, InscriptionInfo>,
 }
 
+/// Creation facts of an inscription, carried by its creation move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InscriptionGenesis {
+    /// ord's inscription number; negative for a cursed inscription.
+    pub number: i32,
+    /// ord's charm bits at creation.
+    pub charms: u16,
+    /// The envelope's content type as inscribed, `None` when it has none.
+    pub content_type: Option<Vec<u8>>,
+}
+
+/// One creation or transfer of a bound inscription, as ord emits it. Every
+/// one is in the feed, not only the BRC-20 ones. `satpoint` is where the
+/// inscription lands, in `txid:vout:offset` form, and `pkscript` the script
+/// of that output (empty for the null outpoint).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InscriptionMove {
+    pub inscription_id: String,
+    pub sequence_number: u32,
+    /// `Some` for a creation.
+    pub genesis: Option<InscriptionGenesis>,
+    pub satpoint: String,
+    pub pkscript: Vec<u8>,
+}
+
 /// Kind of a rune balance event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuneEventKind {
@@ -160,6 +185,9 @@ pub struct BlockView {
     pub time: u32,
     pub inscriptions: InscriptionFeed,
     pub runes: RuneFeed,
+    /// Every inscription creation and transfer of the block in ord's
+    /// emission order; empty unless the journal keeps them.
+    pub inscription_moves: Vec<InscriptionMove>,
 }
 
 /// An indexer driven block by block by the scheduler.

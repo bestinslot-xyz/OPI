@@ -3,8 +3,9 @@
 //! asks for, with a rollback when a reorg replaces a delivered block.
 //!
 //! The modules on the stream are brc20 (its events, in the event feeds'
-//! form), bitmap (the bitmaps a block registered) and sns (the names a block
-//! registered); each has a [`Provider`]. A module's [poller](poller) learns
+//! form), bitmap (the bitmaps a block registered), sns (the names a block
+//! registered) and inscriptions (the inscriptions a block created and
+//! transferred); each has a [`Provider`]. A module's [poller](poller) learns
 //! of new blocks and reorgs from the module's block-hash table, which the
 //! indexer writes as each block commits. Each subscriber runs a
 //! [session], whose frames reach the client through a bounded
@@ -31,6 +32,7 @@ use {
         routes::{
             bitmap::Bitmap,
             brc20::{events::Brc20FeedEvent, snapshot},
+            inscriptions::InscriptionsEvent,
             paging::{BadParam, MAX_MODULES_LEN, integer, optional_text, single},
             sns::SnsName,
         },
@@ -158,6 +160,7 @@ impl Streams {
 enum StreamModule {
     Bitmap,
     Brc20,
+    Inscriptions,
     Sns,
 }
 
@@ -175,6 +178,10 @@ fn bitmap_module() -> RefOr<Schema> {
 
 fn sns_module() -> RefOr<Schema> {
     module_schema("sns")
+}
+
+fn inscriptions_module() -> RefOr<Schema> {
+    module_schema("inscriptions")
 }
 
 /// A brc20 block: its events, in the event feeds' form, by id.
@@ -218,6 +225,20 @@ struct StreamSnsBlock {
     /// Null: the sns database stores no block times.
     block_time: Null,
     events: Vec<SnsName>,
+}
+
+/// An inscriptions block: the inscriptions it created and transferred, by
+/// id, in the order ord applied them.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct StreamInscriptionsBlock {
+    #[schema(schema_with = inscriptions_module)]
+    module: String,
+    height: i32,
+    hash: String,
+    /// The block's time in seconds.
+    block_time: i64,
+    events: Vec<InscriptionsEvent>,
 }
 
 /// The data of a `rollback` event: a reorg replaced the module's blocks
@@ -278,6 +299,10 @@ pub fn components(enabled: &[Module]) -> Vec<(String, RefOr<Schema>)> {
                 add::<SnsName>(&mut schemas);
                 add::<StreamSnsBlock>(&mut schemas)
             }
+            Provider::Inscriptions => {
+                add::<InscriptionsEvent>(&mut schemas);
+                add::<StreamInscriptionsBlock>(&mut schemas)
+            }
         };
         blocks.push((provider, block));
     }
@@ -301,9 +326,9 @@ pub fn components(enabled: &[Module]) -> Vec<(String, RefOr<Schema>)> {
 #[into_params(parameter_in = Query)]
 #[allow(dead_code)]
 struct StreamParams {
-    /// Comma-separated modules: `brc20`, `bitmap`, `sns`. Left out, the
-    /// stream carries every enabled module on the stream. runes is not on
-    /// the stream yet.
+    /// Comma-separated modules: `brc20`, `bitmap`, `sns`, `inscriptions`.
+    /// Left out, the stream carries every enabled module on the stream.
+    /// runes is not on the stream yet.
     #[param(max_length = 64)]
     modules: Option<String>,
     /// The confirmations a block waits for: block H is sent once the
@@ -467,8 +492,9 @@ fn parse(
 /// `{"module","height","hash","block_time","events":[...]}` (schema
 /// `StreamBlock`). brc20's
 /// events take the event feeds' form, with raw amounts of `decimals`
-/// fractional digits; bitmap's are the bitmaps the block registered and
-/// sns's the names. A block is sent once its module's indexed tip reaches
+/// fractional digits; bitmap's are the bitmaps the block registered, sns's
+/// the names, and inscriptions' the inscriptions the block created and
+/// transferred. A block is sent once its module's indexed tip reaches
 /// its height plus `confirmations` less one. The blocks of all the stream's
 /// modules are sent by height, then module name, so a module behind the
 /// others holds them back.

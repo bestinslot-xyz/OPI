@@ -112,7 +112,7 @@ fn parse_modules_trims_js_whitespace() {
 fn parse_modules_rejects_an_unknown_module() {
     assert_eq!(
         err(parse_modules(Some("brc20,ordinals"))),
-        "unknown module `ordinals` in OPI_MODULES (supported: brc20, bitmap, sns, runes)"
+        "unknown module `ordinals` in OPI_MODULES (supported: brc20, bitmap, sns, runes, inscriptions)"
     );
 }
 
@@ -121,7 +121,7 @@ fn parse_modules_rejects_an_empty_list() {
     for value in [" , ", ""] {
         assert_eq!(
             err(parse_modules(Some(value))),
-            "OPI_MODULES names no module (supported: brc20, bitmap, sns, runes)"
+            "OPI_MODULES names no module (supported: brc20, bitmap, sns, runes, inscriptions)"
         );
     }
 }
@@ -139,7 +139,7 @@ fn load_config_requires_db_database_for_brc20() {
 #[test]
 fn load_config_requires_a_database_name_per_enabled_module() {
     let base = [
-        ("OPI_MODULES", "brc20,bitmap,sns,runes"),
+        ("OPI_MODULES", "brc20,bitmap,sns,runes,inscriptions"),
         ("DB_DATABASE", "b"),
     ];
     assert!(err(load_config(env(&base))).contains("BITMAP_DB_DATABASE is not set"));
@@ -154,6 +154,17 @@ fn load_config_requires_a_database_name_per_enabled_module() {
     assert_eq!(
         err(load_config(env(&with_sns))),
         "RUNES_DB_DATABASE is not set (required because runes is enabled)"
+    );
+    let with_runes = [
+        base[0],
+        base[1],
+        ("BITMAP_DB_DATABASE", "m"),
+        ("SNS_DB_DATABASE", "s"),
+        ("RUNES_DB_DATABASE", "r"),
+    ];
+    assert_eq!(
+        err(load_config(env(&with_runes))),
+        "INSCRIPTIONS_DB_DATABASE is not set (required because inscriptions is enabled)"
     );
 }
 
@@ -408,6 +419,7 @@ fn modules_know_their_names_and_tables() {
             ("bitmap", "bitmap_block_hashes"),
             ("sns", "sns_block_hashes"),
             ("runes", "runes_block_hashes"),
+            ("inscriptions", "inscriptions_block_hashes"),
         ]
     );
 }

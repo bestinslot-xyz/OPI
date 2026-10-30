@@ -3,7 +3,8 @@
 
 use {
     super::{
-        Journal, cf, compress_info, encode_info, encode_transfer, info_key,
+        Journal, cf, compress_info, encode_info, encode_inscription_move, encode_transfer,
+        info_key, inscription_move_key,
         order::{Located, assign_idx},
         raw_event_key,
         runes::{RuneTables, finalize_runes},
@@ -11,8 +12,8 @@ use {
     },
     crate::raw_event::RawEvent,
     anyhow::{Context, Result, ensure},
-    bitcoin::{Block, BlockHash, OutPoint, Txid, consensus, hashes::Hash},
-    opi_core::{InscriptionInfo, InscriptionRecord},
+    bitcoin::{Block, BlockHash, OutPoint, TxOut, Txid, consensus, hashes::Hash},
+    opi_core::{InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord},
     ord::{Index, Inscription, InscriptionId, ParsedEnvelope},
     ordinals::{Charm, Rune, SatPoint},
     redb::ReadableTable,
@@ -103,8 +104,9 @@ pub(super) type RawTable<'txn> = redb::Table<'txn, &'static [u8], &'static [u8]>
 
 /// Finalizes `heights`, which start at the next unfinalized height, as ord
 /// committed them: for each height its transfer records, the info rows of
-/// its tracked creations, its rune records from ord's first rune height on
-/// when the journal keeps them, and its header, then
+/// its tracked creations, its inscription moves when the journal keeps
+/// them, its rune records from ord's first rune height on when the journal
+/// keeps them, and its header, then
 /// `final_tip = heights.end()`, all in one durable transaction.
 ///
 /// Only raw events logged under ord's hash for a height count, so stale rows
@@ -147,6 +149,11 @@ pub fn finalize_range(
         } else {
             None
         };
+        let mut moves = if journal.inscriptions() {
+            Some(tx.open_table(table(cf::INSCRIPTION_MOVES))?)
+        } else {
+            None
+        };
         let raw_events = tx.open_table(table(cf::RAW_EVENTS))?;
         let raw_heights = tx.open_table(table(cf::RAW_HEIGHTS))?;
 
@@ -186,9 +193,14 @@ pub fn finalize_range(
                 )?;
             }
             if inscriptions {
+                let positions = Positions::new(&block);
+                if let Some(moves) = moves.as_mut() {
+                    finalize_moves(index, moves, &block, &positions, height, &events)?;
+                }
                 finalize_events(
                     index,
                     chain,
+                    &positions,
                     Tables {
                         transfers: &mut transfers,
                         infos: &mut infos,
@@ -222,6 +234,7 @@ struct Tables<'a, 'txn> {
 fn finalize_events(
     index: &Index,
     chain: &mut dyn ChainData,
+    positions: &Positions,
     tables: Tables,
     block: &Block,
     height: u32,
@@ -232,8 +245,7 @@ fn finalize_events(
         infos,
         first_transfers,
     } = tables;
-    let positions = Positions::new(block);
-    let mut movements = movements(index, block, &positions, events, |id| {
+    let mut movements = movements(index, block, positions, events, |id| {
         let key = info_key(&id.to_string())?;
         Ok((
             infos.get(key.as_slice())?.is_some(),
@@ -268,13 +280,101 @@ fn finalize_events(
         })
         .collect::<Vec<_>>();
     for (event_index, idx) in assign_idx(&located) {
-        let record = record(block, &positions, height, idx, &movements[event_index])?;
+        let record = record(block, positions, height, idx, &movements[event_index])?;
         transfers.insert(
             transfer_key(height, idx).as_slice(),
             encode_transfer(&record)?.as_slice(),
         )?;
     }
     Ok(())
+}
+
+/// Writes one move per inscription event of the block, numbered in emission
+/// order: a bound creation with its number, charms and content type, or a
+/// transfer, each with the satpoint it lands on and that output's script.
+/// Unbound creations have no location and are left out.
+fn finalize_moves(
+    index: &Index,
+    moves: &mut RawTable,
+    block: &Block,
+    positions: &Positions,
+    height: u32,
+    events: &[RawEvent],
+) -> Result<()> {
+    let mut envelopes = HashMap::<Txid, Vec<ParsedEnvelope>>::new();
+    let mut seq = 0u32;
+    for event in events {
+        let (inscription_id, sequence_number, location, genesis) = match event {
+            RawEvent::InscriptionCreated {
+                charms,
+                inscription_id,
+                location: Some(location),
+                sequence_number,
+                ..
+            } => {
+                let tx_index = positions.of(inscription_id.txid)?;
+                let content_type = envelopes
+                    .entry(inscription_id.txid)
+                    .or_insert_with(|| ParsedEnvelope::from_transaction(&block.txdata[tx_index]))
+                    .get(usize::try_from(inscription_id.index)?)
+                    .with_context(|| format!("no envelope for inscription {inscription_id}"))?
+                    .payload
+                    .content_type
+                    .clone();
+                let entry = index
+                    .get_inscription_entry(*inscription_id)?
+                    .with_context(|| {
+                        format!("ord has no entry for inscription {inscription_id}")
+                    })?;
+                let genesis = InscriptionGenesis {
+                    number: entry.inscription_number,
+                    charms: *charms,
+                    content_type,
+                };
+                (inscription_id, sequence_number, location, Some(genesis))
+            }
+            RawEvent::InscriptionTransferred {
+                inscription_id,
+                new_location,
+                sequence_number,
+                ..
+            } => (inscription_id, sequence_number, new_location, None),
+            _ => continue,
+        };
+        let pkscript = output(block, positions, location.outpoint)?
+            .map(|output| output.script_pubkey.to_bytes())
+            .unwrap_or_default();
+        let value = encode_inscription_move(&InscriptionMove {
+            inscription_id: inscription_id.to_string(),
+            sequence_number: *sequence_number,
+            genesis,
+            satpoint: location.to_string(),
+            pkscript,
+        })?;
+        moves.insert(
+            inscription_move_key(height, seq).as_slice(),
+            value.as_slice(),
+        )?;
+        seq += 1;
+    }
+    Ok(())
+}
+
+/// The output at `outpoint`, created by a transaction of the block; `None`
+/// for the null outpoint.
+fn output<'a>(
+    block: &'a Block,
+    positions: &Positions,
+    outpoint: OutPoint,
+) -> Result<Option<&'a TxOut>> {
+    if outpoint == OutPoint::null() {
+        return Ok(None);
+    }
+    let tx = &block.txdata[positions.of(outpoint.txid)?];
+    tx.output
+        .get(usize::try_from(outpoint.vout)?)
+        .map(Some)
+        .with_context(|| format!("block has no output {outpoint}"))
 }
 
 /// Events of `height` logged under `hash`, in emission order.
@@ -606,15 +706,9 @@ fn record(
     let new_location = movement
         .new_location
         .context("tracked movement has no location")?;
-    let (new_pkscript, new_output_value) = if new_location.outpoint == OutPoint::null() {
-        (Vec::new(), 0)
-    } else {
-        let tx = &block.txdata[positions.of(new_location.outpoint.txid)?];
-        let output = tx
-            .output
-            .get(usize::try_from(new_location.outpoint.vout)?)
-            .with_context(|| format!("block has no output {}", new_location.outpoint))?;
-        (output.script_pubkey.to_bytes(), output.value.to_sat())
+    let (new_pkscript, new_output_value) = match output(block, positions, new_location.outpoint)? {
+        Some(output) => (output.script_pubkey.to_bytes(), output.value.to_sat()),
+        None => (Vec::new(), 0),
     };
     let txid = match movement.old_location {
         None => movement.inscription_id.txid,

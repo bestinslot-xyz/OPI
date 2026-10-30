@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.outpoint, u.rune_id as \"rune_id!\", e.rune_name as \"rune_name?\",\n                        e.spacers as \"spacers?\", e.divisibility as \"divisibility?\",\n                        e.symbol as \"symbol?\", u.balance::text as \"amount!\"\n                    from runes_outpoint_to_balances o\n                    cross join lateral unnest(o.rune_ids, o.balances)\n                        with ordinality as u(rune_id, balance, n)\n                    left join runes_id_to_entry e on e.rune_id = u.rune_id\n                    where o.outpoint = any($1) and o.spent = false\n                    order by o.outpoint, u.n;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "outpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rune_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "rune_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "spacers?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "spacers"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "divisibility?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "divisibility"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "symbol?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "symbol"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "amount!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "dbd09c335bc0b1ef6ea38fa48fbb212214cf71332ae9930e8c75b1cd530f5e00"
+}

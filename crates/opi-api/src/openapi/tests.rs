@@ -10,10 +10,10 @@ use {
         routes::{
             self,
             paging::{
-                DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CURSOR_LEN,
-                MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_MODULES_LEN,
-                MAX_NAME_LEN, MAX_OFFSET, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_RUNE_LEN,
-                MAX_TICKER_LEN, MAX_TYPE_LEN,
+                DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CONTENT_TYPE_LEN,
+                MAX_CURSOR_LEN, MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT,
+                MAX_MODULES_LEN, MAX_NAME_LEN, MAX_OFFSET, MAX_OUTPOINTS, MAX_PKSCRIPT_LEN,
+                MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN, MAX_TYPE_LEN,
             },
         },
     },
@@ -117,7 +117,13 @@ fn the_document_lists_only_the_enabled_modules() {
         for path in paths {
             assert!(
                 path.starts_with(&prefix)
-                    || ["/v1/status", "/v1/openapi.json", "/v1/stream"].contains(&path.as_str()),
+                    || [
+                        "/v1/status",
+                        "/v1/openapi.json",
+                        "/v1/stream",
+                        "/v1/outputs"
+                    ]
+                    .contains(&path.as_str()),
                 "{path} with only {} enabled",
                 module.name()
             );
@@ -269,7 +275,10 @@ fn parameter_bounds_are_the_routes_rules() {
                 ("/v1/runes/runes", "search") => json!({"maxLength": MAX_RUNE_LEN}),
                 (_, "search") => json!({"maxLength": MAX_TICKER_LEN}),
                 (_, "type") => json!({"maxLength": MAX_TYPE_LEN}),
-                ("/v1/runes/runes" | "/v1/runes/wallet/balances", "after") => {
+                (
+                    "/v1/runes/runes" | "/v1/runes/wallet/balances" | "/v1/inscriptions/wallet",
+                    "after",
+                ) => {
                     json!({"maxLength": MAX_CURSOR_LEN})
                 }
                 ("/v1/runes/rune/holders", "after") => {
@@ -278,7 +287,8 @@ fn parameter_bounds_are_the_routes_rules() {
                 (
                     "/v1/brc20/wallet/events"
                     | "/v1/runes/wallet/balances"
-                    | "/v1/runes/wallet/events",
+                    | "/v1/runes/wallet/events"
+                    | "/v1/inscriptions/wallet",
                     "address",
                 ) => json!({"maxLength": MAX_ADDRESS_LEN}),
                 (_, "address") if bounded => json!({"minLength": 1, "maxLength": MAX_ADDRESS_LEN}),
@@ -289,7 +299,22 @@ fn parameter_bounds_are_the_routes_rules() {
                     json!({"maxLength": MAX_PKSCRIPT_LEN, "pattern": "^([0-9a-fA-F]{2})*$"})
                 }
                 (_, "contract_address") => json!({"pattern": "^0[xX][0-9a-fA-F]{40}$"}),
-                ("/v1/stream", "from_height") => json!({"minimum": 0, "maximum": i32::MAX}),
+                ("/v1/stream" | "/v1/inscriptions/wallet", "from_height")
+                | ("/v1/inscriptions/wallet", "to_height") => {
+                    json!({"minimum": 0, "maximum": i32::MAX})
+                }
+                ("/v1/inscriptions/inscription", "id") => {
+                    json!({"pattern": "^[0-9a-fA-F]{64}i[0-9]{1,10}$"})
+                }
+                ("/v1/inscriptions/inscription", "number") => {
+                    json!({"minimum": i32::MIN, "maximum": i32::MAX})
+                }
+                ("/v1/inscriptions/outpoint", "outpoint") => {
+                    json!({"pattern": OUTPOINT_PATTERN})
+                }
+                ("/v1/inscriptions/wallet", "content_type") => {
+                    json!({"maxLength": MAX_CONTENT_TYPE_LEN})
+                }
                 ("/v1/stream", "modules") => json!({"maxLength": MAX_MODULES_LEN}),
                 _ => {
                     assert!(
@@ -310,6 +335,30 @@ fn parameter_bounds_are_the_routes_rules() {
         parameter(&document, "/v1/brc20/tickers", "limit").unwrap()["maximum"],
         MAX_LIMIT
     );
+}
+
+/// The outpoint pattern of the inscriptions routes' parameters and bodies.
+const OUTPOINT_PATTERN: &str = "^[0-9a-fA-F]{64}:[0-9]{1,10}$";
+
+#[test]
+fn batch_bodies_are_bounded_as_the_routes_read_them() {
+    let document = document(&MODULES);
+    for path in ["/v1/inscriptions/outpoints", "/v1/outputs"] {
+        let body = &document["paths"][path]["post"]["requestBody"];
+        assert_eq!(body["required"], true, "{path}");
+        let schema = &body["content"]["application/json"]["schema"];
+        let schema = match schema["$ref"].as_str() {
+            Some(reference) => {
+                let name = reference.rsplit('/').next().unwrap();
+                &document["components"]["schemas"][name]
+            }
+            None => schema,
+        };
+        let list = &schema["properties"]["outpoints"];
+        assert_eq!(list["minItems"], 1, "{path}");
+        assert_eq!(list["maxItems"], MAX_OUTPOINTS, "{path}");
+        assert_eq!(list["items"]["pattern"], OUTPOINT_PATTERN, "{path}");
+    }
 }
 
 /// `ModuleRoutes` and the app's merge panic on a schema name two different

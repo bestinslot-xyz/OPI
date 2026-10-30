@@ -1,0 +1,199 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.id, v.block_height, v.sequence_number, v.inscription_id,\n                e.\"number\" as \"number?\", e.content_type as \"content_type?\",\n                e.media_type as \"media_type?\",\n                v.old_outpoint, v.old_offset, v.old_pkscript, v.old_address,\n                v.new_outpoint, v.new_offset, v.new_pkscript, v.new_address\n            from inscriptions_events v\n            left join inscriptions_entries e on e.sequence_number = v.sequence_number\n            where v.id > $2 and v.id <= $3 and v.block_height = $1\n            order by v.id limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sequence_number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "number?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "content_type?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "media_type?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "old_outpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "old_outpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "old_offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "old_offset"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "old_pkscript",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "old_pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "old_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "old_address"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "new_outpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "new_outpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "new_offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "new_offset"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "new_pkscript",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "new_pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "new_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "new_address"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "8db38e09a072233239557b800ad783c1829de5ef4c3d3b17465ff3bc6e0a179f"
+}

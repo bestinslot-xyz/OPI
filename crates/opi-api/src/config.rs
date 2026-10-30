@@ -19,9 +19,16 @@ pub enum Module {
     Bitmap,
     Sns,
     Runes,
+    Inscriptions,
 }
 
-pub const MODULES: [Module; 4] = [Module::Brc20, Module::Bitmap, Module::Sns, Module::Runes];
+pub const MODULES: [Module; 5] = [
+    Module::Brc20,
+    Module::Bitmap,
+    Module::Sns,
+    Module::Runes,
+    Module::Inscriptions,
+];
 
 impl Module {
     pub fn name(self) -> &'static str {
@@ -30,6 +37,7 @@ impl Module {
             Module::Bitmap => "bitmap",
             Module::Sns => "sns",
             Module::Runes => "runes",
+            Module::Inscriptions => "inscriptions",
         }
     }
 
@@ -41,6 +49,7 @@ impl Module {
             Module::Bitmap => "BITMAP_DB",
             Module::Sns => "SNS_DB",
             Module::Runes => "RUNES_DB",
+            Module::Inscriptions => "INSCRIPTIONS_DB",
         }
     }
 
@@ -51,6 +60,7 @@ impl Module {
             Module::Bitmap => "bitmap_block_hashes",
             Module::Sns => "sns_block_hashes",
             Module::Runes => "runes_block_hashes",
+            Module::Inscriptions => "inscriptions_block_hashes",
         }
     }
 }
@@ -291,7 +301,7 @@ impl Config {
 /// Parses OPI_MODULES: comma-separated, entries trimmed, empty entries
 /// ignored, duplicates dropped. Unset means brc20.
 pub fn parse_modules(value: Option<&str>) -> Result<Vec<Module>> {
-    let supported = "supported: brc20, bitmap, sns, runes";
+    let supported = "supported: brc20, bitmap, sns, runes, inscriptions";
     let mut modules = Vec::new();
     for name in value
         .unwrap_or("brc20")

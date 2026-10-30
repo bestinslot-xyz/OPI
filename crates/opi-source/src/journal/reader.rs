@@ -1,15 +1,15 @@
 use {
     super::{
-        Journal, META_PRUNED_BELOW, RUNE_ID_LEN, cf, decode_info, decode_rune_counter_log,
-        decode_rune_etching, decode_rune_event, decode_transfer, decompress_info, final_tip_in,
-        info_key, meta_u32_in, rune_etching_key, rune_event_key, rune_id_string, table,
-        transfer_key,
+        Journal, META_PRUNED_BELOW, RUNE_ID_LEN, cf, decode_info, decode_inscription_move,
+        decode_rune_counter_log, decode_rune_etching, decode_rune_event, decode_transfer,
+        decompress_info, final_tip_in, info_key, inscription_move_key, meta_u32_in,
+        rune_etching_key, rune_event_key, rune_id_string, table, transfer_key,
     },
     anyhow::{Result, anyhow, bail},
     bitcoin::{block::Header, consensus},
     opi_core::{
-        BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, InscriptionRecord,
-        RuneCounter, RuneFeed,
+        BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionInfo, InscriptionMove,
+        InscriptionRecord, RuneCounter, RuneFeed,
     },
     redb::{ReadTransaction, ReadableDatabase},
     std::collections::BTreeMap,
@@ -114,6 +114,16 @@ fn rune_feed_in(tx: &ReadTransaction, height: u32) -> Result<RuneFeed> {
     })
 }
 
+/// Inscription moves of `height` in emission order.
+fn inscription_moves_in(tx: &ReadTransaction, height: u32) -> Result<Vec<InscriptionMove>> {
+    let first = inscription_move_key(height, 0);
+    let last = inscription_move_key(height, u32::MAX);
+    tx.open_table(table(cf::INSCRIPTION_MOVES))?
+        .range::<&[u8]>(first.as_slice()..=last.as_slice())?
+        .map(|row| decode_inscription_move(row?.1.value()))
+        .collect()
+}
+
 fn inscription_info_in(
     tx: &ReadTransaction,
     inscription_id: &str,
@@ -179,6 +189,11 @@ impl BlockSource for JournalReader {
                 rune_feed_in(&tx, height)?
             } else {
                 RuneFeed::default()
+            },
+            inscription_moves: if self.journal.inscriptions() {
+                inscription_moves_in(&tx, height)?
+            } else {
+                Vec::new()
             },
         }))
     }

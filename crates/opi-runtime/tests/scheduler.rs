@@ -107,6 +107,7 @@ impl BlockSource for MemSource {
                 infos: BTreeMap::new(),
             },
             runes: opi_core::RuneFeed::default(),
+            inscription_moves: Vec::new(),
         }))
     }
 }

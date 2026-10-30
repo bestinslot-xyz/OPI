@@ -3,7 +3,13 @@ use {
     crate::{js_object, qs::parse_query},
 };
 
-const ALL: [Module; 4] = [Module::Brc20, Module::Bitmap, Module::Sns, Module::Runes];
+const ALL: [Module; 5] = [
+    Module::Brc20,
+    Module::Bitmap,
+    Module::Sns,
+    Module::Runes,
+    Module::Inscriptions,
+];
 
 fn start(query: &str, last_event_id: Option<&str>) -> Result<Start, BadParam> {
     let mut headers = HeaderMap::new();
@@ -30,7 +36,12 @@ fn modules_default_to_every_enabled_module_on_the_stream_by_name() {
     let start = start("", None).unwrap();
     assert_eq!(
         start.modules,
-        [Provider::Bitmap, Provider::Brc20, Provider::Sns]
+        [
+            Provider::Bitmap,
+            Provider::Brc20,
+            Provider::Inscriptions,
+            Provider::Sns
+        ]
     );
     assert_eq!(start.confirmations, 1);
     assert_eq!(start.from_height, None);
@@ -122,10 +133,11 @@ fn a_last_event_id_names_each_module_s_position() {
         Some(vec![position(Provider::Bitmap, 100, Some("00ab:cd"))])
     );
     assert_eq!(start.from_height, Some(5));
-    let id = "bitmap:7:aa,brc20:9:bb,sns:6:";
+    let id = "bitmap:7:aa,brc20:9:bb,inscriptions:8:cc,sns:6:";
     let positions = vec![
         position(Provider::Bitmap, 7, Some("aa")),
         position(Provider::Brc20, 9, Some("bb")),
+        position(Provider::Inscriptions, 8, Some("cc")),
         position(Provider::Sns, 6, None),
     ];
     assert_eq!(start_resume(id), positions);
@@ -159,5 +171,19 @@ fn the_block_schema_names_the_enabled_modules_blocks() {
     assert_eq!(
         serde_json::to_value(block).unwrap()["oneOf"],
         json!([{"$ref": "#/components/schemas/StreamSnsBlock"}])
+    );
+    let schemas = components(&[Module::Sns, Module::Inscriptions]);
+    let block = &schemas
+        .iter()
+        .find(|(name, _)| name == "StreamBlock")
+        .unwrap()
+        .1;
+    assert!(schemas.iter().any(|(name, _)| name == "InscriptionsEvent"));
+    assert_eq!(
+        serde_json::to_value(block).unwrap()["oneOf"],
+        json!([
+            {"$ref": "#/components/schemas/StreamInscriptionsBlock"},
+            {"$ref": "#/components/schemas/StreamSnsBlock"},
+        ])
     );
 }

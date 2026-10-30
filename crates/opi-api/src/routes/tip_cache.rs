@@ -123,7 +123,7 @@ async fn tip<'e>(executor: impl PgExecutor<'e>, module: Module) -> anyhow::Resul
         .fetch_optional(executor)
         .await?
         .map(|row| (row.block_height, row.block_hash)),
-        Module::Bitmap | Module::Runes => {
+        Module::Bitmap | Module::Runes | Module::Inscriptions => {
             anyhow::bail!("no cached route reads the {} tip", module.name())
         }
     };

@@ -168,36 +168,42 @@ impl Db {
             Inner::Fake(heights) => return heights(module),
             Inner::Pg { pool, .. } => pool,
         };
-        let height: Option<i32> = match module {
-            Module::Brc20 => {
-                sqlx::query_scalar!(
-                    "SELECT max(block_height) as max_block_height FROM brc20_block_hashes;"
+        let height: Option<i32> =
+            match module {
+                Module::Brc20 => {
+                    sqlx::query_scalar!(
+                        "SELECT max(block_height) as max_block_height FROM brc20_block_hashes;"
+                    )
+                    .fetch_one(pool)
+                    .await?
+                }
+                Module::Bitmap => {
+                    sqlx::query_scalar!(
+                        "SELECT max(block_height) as max_block_height FROM bitmap_block_hashes;"
+                    )
+                    .fetch_one(pool)
+                    .await?
+                }
+                Module::Sns => {
+                    sqlx::query_scalar!(
+                        "SELECT max(block_height) as max_block_height FROM sns_block_hashes;"
+                    )
+                    .fetch_one(pool)
+                    .await?
+                }
+                Module::Runes => {
+                    sqlx::query_scalar!(
+                        "SELECT max(block_height) as max_block_height FROM runes_block_hashes;"
+                    )
+                    .fetch_one(pool)
+                    .await?
+                }
+                Module::Inscriptions => sqlx::query_scalar!(
+                    "SELECT max(block_height) as max_block_height FROM inscriptions_block_hashes;"
                 )
                 .fetch_one(pool)
-                .await?
-            }
-            Module::Bitmap => {
-                sqlx::query_scalar!(
-                    "SELECT max(block_height) as max_block_height FROM bitmap_block_hashes;"
-                )
-                .fetch_one(pool)
-                .await?
-            }
-            Module::Sns => {
-                sqlx::query_scalar!(
-                    "SELECT max(block_height) as max_block_height FROM sns_block_hashes;"
-                )
-                .fetch_one(pool)
-                .await?
-            }
-            Module::Runes => {
-                sqlx::query_scalar!(
-                    "SELECT max(block_height) as max_block_height FROM runes_block_hashes;"
-                )
-                .fetch_one(pool)
-                .await?
-            }
-        };
+                .await?,
+            };
         Ok(height.to_js())
     }
 }

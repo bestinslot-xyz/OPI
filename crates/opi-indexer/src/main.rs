@@ -20,6 +20,7 @@ use {
         service_runtime::ServiceRuntime,
     },
     opi_core::{BlockSource, Module, metrics::Phase},
+    opi_inscriptions::{InscriptionsConfig, InscriptionsModule},
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime, RuntimeOptions},
     opi_sns::{SnsConfig, SnsModule},
@@ -360,6 +361,10 @@ async fn supervise(
         runtime.add("runes", runes_factory(config, journal));
         names.push("runes");
     }
+    if let Some(config) = configs.inscriptions {
+        runtime.add("inscriptions", inscriptions_factory(config));
+        names.push("inscriptions");
+    }
     let pruner =
         prune.map(|keep| tokio::spawn(prune::prune_journal(reader.journal().clone(), names, keep)));
 
@@ -581,6 +586,18 @@ fn runes_factory(config: RunesConfig, journal: Arc<dyn BlockSource>) -> ModuleFa
         let (config, journal) = (config.clone(), journal.clone());
         Box::pin(async move {
             let module = RunesModule::new(config, journal).await?;
+            Ok(Box::new(module) as Box<dyn Module>)
+        })
+    })
+}
+
+/// Builds an inscriptions module on a fresh database connection for every
+/// start and restart.
+fn inscriptions_factory(config: InscriptionsConfig) -> ModuleFactory {
+    Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
+        let config = config.clone();
+        Box::pin(async move {
+            let module = InscriptionsModule::new(config).await?;
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })

@@ -4,8 +4,9 @@
 use {
     super::{
         Journal, OUTPOINT_LEN, RuneModelError, cf, decode_rune_counter_log, decode_rune_event,
-        decode_transfer, encode_rune_balance_row, encode_rune_counter, info_key, rune_event_key,
-        rune_outpoint_key, set_final_tip, table, transfer_key,
+        decode_transfer, encode_rune_balance_row, encode_rune_counter, info_key,
+        inscription_move_key, rune_event_key, rune_outpoint_key, set_final_tip, table,
+        transfer_key,
     },
     anyhow::{Context, Result, bail},
     bitcoin::{BlockHash, block::Header, consensus},
@@ -18,8 +19,9 @@ use {
 /// Compares the finalized header hashes from `final_tip` down with ord's
 /// block hashes. On a mismatch it deletes every transfer record and header
 /// above the highest agreeing height, the info rows of inscriptions created
-/// and the first-transfer entries of transfers recorded above it, rolls the
-/// rune tables of a journal that keeps them back to that height, sets
+/// and the first-transfer entries of transfers recorded above it, the
+/// inscription moves above it, rolls the rune tables of a journal that keeps
+/// them back to that height, sets
 /// `final_tip` to that height and returns it, all in one write transaction.
 /// Returns `None` when the tip agrees or nothing is finalized, and fails when
 /// no finalized height agrees.
@@ -75,6 +77,11 @@ pub fn reorg_check(journal: &Journal, index: &Index) -> Result<Option<u32>> {
     }
     if journal.runes() {
         undo_runes(&tx, agreed)?;
+    }
+    if journal.inscriptions() {
+        let first = inscription_move_key(agreed + 1, 0);
+        tx.open_table(table(cf::INSCRIPTION_MOVES))?
+            .retain_in::<&[u8], _>(first.as_slice().., |_, _| false)?;
     }
     set_final_tip(&tx, Some(agreed))?;
     tx.commit()?;

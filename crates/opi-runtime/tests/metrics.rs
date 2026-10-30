@@ -51,6 +51,7 @@ impl BlockSource for Journal {
                 infos: BTreeMap::new(),
             },
             runes: RuneFeed::default(),
+            inscription_moves: Vec::new(),
         }))
     }
 }

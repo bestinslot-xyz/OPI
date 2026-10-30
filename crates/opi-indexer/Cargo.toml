@@ -15,6 +15,7 @@ opi-api = { path = "../opi-api" }
 opi-bitmap = { path = "../opi-bitmap" }
 opi-brc20 = { path = "../opi-brc20" }
 opi-core = { path = "../opi-core" }
+opi-inscriptions = { path = "../opi-inscriptions" }
 opi-runes = { path = "../opi-runes" }
 opi-runtime = { path = "../opi-runtime" }
 opi-sns = { path = "../opi-sns" }

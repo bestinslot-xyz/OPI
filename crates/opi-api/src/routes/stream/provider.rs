@@ -6,16 +6,18 @@ use {
     super::super::{
         bitmap::BitmapRow,
         brc20::events::{self, EVENT_DECIMALS},
+        inscriptions,
         sns::SnsRow,
     },
     crate::{config::Module, db::Db, js::JsValue, reply::ApiError},
 };
 
-/// A module the stream carries.
+/// A module the stream carries, in module name order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Provider {
     Bitmap,
     Brc20,
+    Inscriptions,
     Sns,
 }
 
@@ -36,6 +38,7 @@ impl Provider {
             Module::Bitmap => Ok(Provider::Bitmap),
             Module::Sns => Ok(Provider::Sns),
             Module::Runes => Err("runes is not on the stream yet".into()),
+            Module::Inscriptions => Ok(Provider::Inscriptions),
         }
     }
 
@@ -44,6 +47,7 @@ impl Provider {
             Provider::Brc20 => Module::Brc20,
             Provider::Bitmap => Module::Bitmap,
             Provider::Sns => Module::Sns,
+            Provider::Inscriptions => Module::Inscriptions,
         }
     }
 
@@ -56,7 +60,7 @@ impl Provider {
     pub fn header_fields(self) -> String {
         match self {
             Provider::Brc20 => format!(",\"decimals\":{EVENT_DECIMALS}"),
-            Provider::Bitmap | Provider::Sns => String::new(),
+            Provider::Bitmap | Provider::Sns | Provider::Inscriptions => String::new(),
         }
     }
 
@@ -78,6 +82,12 @@ impl Provider {
             .map(|row| (row.block_height, row.block_hash)),
             Provider::Sns => sqlx::query!(
                 "select block_height, block_hash from sns_block_hashes order by block_height desc limit 1;"
+            )
+            .fetch_optional(pool)
+            .await?
+            .map(|row| (row.block_height, row.block_hash)),
+            Provider::Inscriptions => sqlx::query!(
+                "select block_height, block_hash from inscriptions_block_hashes order by block_height desc limit 1;"
             )
             .fetch_optional(pool)
             .await?
@@ -105,6 +115,13 @@ impl Provider {
                 sqlx::query_scalar!(r#"select min(block_height) as "h?" from sns_block_hashes;"#)
                     .fetch_one(pool)
                     .await?
+            }
+            Provider::Inscriptions => {
+                sqlx::query_scalar!(
+                    r#"select min(block_height) as "h?" from inscriptions_block_hashes;"#
+                )
+                .fetch_one(pool)
+                .await?
             }
         };
         Ok(height)
@@ -160,6 +177,22 @@ impl Provider {
                 time: None,
             })
             .collect(),
+            Provider::Inscriptions => sqlx::query!(
+                r#"select block_height, block_hash, extract(epoch from block_time)::int8 as "block_time!"
+                    from inscriptions_block_hashes
+                    where block_height between $1 and $2 order by block_height;"#,
+                from,
+                to,
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| BlockRow {
+                height: row.block_height,
+                hash: row.block_hash,
+                time: Some(row.block_time),
+            })
+            .collect(),
         };
         Ok(rows)
     }
@@ -211,6 +244,21 @@ impl Provider {
                 time: None,
             })
             .collect(),
+            Provider::Inscriptions => sqlx::query!(
+                r#"select block_height, block_hash, extract(epoch from block_time)::int8 as "block_time!"
+                    from inscriptions_block_hashes
+                    where block_height = any($1) order by block_height;"#,
+                heights,
+            )
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| BlockRow {
+                height: row.block_height,
+                hash: row.block_hash,
+                time: Some(row.block_time),
+            })
+            .collect(),
         };
         Ok(rows)
     }
@@ -222,6 +270,7 @@ impl Provider {
         let pool = db.pool()?;
         let range = match self {
             Provider::Brc20 => return events::block_event_ids(db, height).await,
+            Provider::Inscriptions => return inscriptions::block_event_ids(db, height).await,
             Provider::Bitmap => {
                 let row = sqlx::query!(
                     r#"select min(id + 0) as "lo?", max(id + 0) as "hi?" from bitmaps where block_height = $1;"#,
@@ -247,7 +296,8 @@ impl Provider {
     /// Up to `limit` of block `height`'s events with an id above `after`
     /// and at most `last`, oldest first, each with its id: brc20's events in
     /// the event feeds' form, the bitmaps and the names the block
-    /// registered in the lookup routes' form.
+    /// registered in the lookup routes' form, and the inscriptions the block
+    /// created and transferred.
     pub async fn events(
         self,
         db: &Db,
@@ -259,6 +309,9 @@ impl Provider {
         let pool = db.pool()?;
         let events = match self {
             Provider::Brc20 => return events::block_events(db, height, after, last, limit).await,
+            Provider::Inscriptions => {
+                return inscriptions::block_events(db, height, after, last, limit).await;
+            }
             Provider::Bitmap => sqlx::query!(
                 "select id, inscription_id, inscription_number, bitmap_number, block_height
                     from bitmaps
@@ -317,7 +370,12 @@ mod tests {
 
     #[test]
     fn providers_order_by_module_name() {
-        let mut providers = [Provider::Sns, Provider::Brc20, Provider::Bitmap];
+        let mut providers = [
+            Provider::Sns,
+            Provider::Inscriptions,
+            Provider::Brc20,
+            Provider::Bitmap,
+        ];
         providers.sort();
         let names: Vec<_> = providers.iter().map(|p| p.name()).collect();
         let mut sorted = names.clone();

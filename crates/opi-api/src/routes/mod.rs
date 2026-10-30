@@ -1,8 +1,8 @@
 //! The app's routes, registered in this order: `/v1/status`,
-//! `/v1/openapi.json` and the push feed `/v1/stream` (see [`stream`]), then
-//! each module's routes when it is enabled, or a
-//! 404 for its whole prefix when it is not, then finalhandler's 404 for
-//! anything else.
+//! `/v1/openapi.json`, the push feed `/v1/stream` (see [`stream`]) and
+//! `/v1/outputs` (see [`inscriptions::outputs`]), then each module's routes
+//! when it is enabled, or a 404 for its whole prefix when it is not, then
+//! finalhandler's 404 for anything else.
 //!
 //! Every route is registered with `.routes(routes!(handler))`, which adds
 //! the handler's `#[utoipa::path]` operation to the OpenAPI document (see
@@ -12,6 +12,7 @@
 
 mod bitmap;
 mod brc20;
+mod inscriptions;
 pub mod paging;
 mod registry;
 mod runes;
@@ -90,6 +91,7 @@ pub fn module_routes(module: Module) -> RouteModule {
         Module::Bitmap => bitmap::routes,
         Module::Sns => sns::routes,
         Module::Runes => runes::routes,
+        Module::Inscriptions => inscriptions::routes,
     }
 }
 
@@ -121,11 +123,20 @@ pub fn app(
         status_dbs.clone(),
         settings.stream_stop.clone(),
     );
+    let outputs = inscriptions::outputs::Outputs {
+        inscriptions: enabled
+            .contains(&Module::Inscriptions)
+            .then(|| db_of(Module::Inscriptions)),
+        runes: enabled
+            .contains(&Module::Runes)
+            .then(|| db_of(Module::Runes)),
+    };
     let spec = SpecJson::default();
     let mut router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(status).with_state(Arc::new(status_dbs)))
         .routes(routes!(openapi::openapi_json).with_state(spec.clone()))
-        .routes(routes!(stream::stream).with_state(streams));
+        .routes(routes!(stream::stream).with_state(streams))
+        .routes(routes!(inscriptions::outputs::outputs).with_state(outputs));
     // the stream's event payloads, which no operation's schema names
     let events = stream::components(enabled);
     registry::check_components(router.get_openapi(), &events);
