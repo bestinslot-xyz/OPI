@@ -809,6 +809,34 @@ async fn the_subscriber_cap_answers_503() {
     .await;
 }
 
+#[tokio::test]
+async fn a_client_s_newer_stream_ends_its_oldest() {
+    with_chain("stream_per_client", 2, |pool| async move {
+        let app = stream_app(
+            &pool,
+            &[("STREAM_MAX_PER_CLIENT", "1"), ("STREAM_MAX_SUBSCRIBERS", "1")],
+        );
+        let uri = "/v1/stream?modules=brc20&from_height=1";
+        let mut old = Sse::open(&app, uri, None).await;
+        expect_block(&mut old, "brc20", 1, "b").await;
+        // the newer stream takes the oldest's place, under the global cap too
+        let mut new = Sse::open(&app, uri, None).await;
+        expect_block(&mut new, "brc20", 1, "b").await;
+        loop {
+            let frame = old.next().await.expect("the error event");
+            if frame.event == "error" {
+                assert_eq!(
+                    frame.data,
+                    json!({"error": "a newer stream of this client took this stream's place (STREAM_MAX_PER_CLIENT)"})
+                );
+                break;
+            }
+        }
+        assert_eq!(old.next().await, None);
+    })
+    .await;
+}
+
 /// Asks for a stream until one answers, within 10 seconds; the answer's
 /// stream closes at once.
 async fn wait_for_a_free_place(app: &Router) {
