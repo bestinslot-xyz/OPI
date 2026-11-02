@@ -1622,6 +1622,14 @@ impl Brc20Indexer {
                 block_hash,
             )
             .await?;
+            // The refunds' rows reach Postgres here, since a block without
+            // transfers returns below without flushing, and the extra tables
+            // read the block's balance changes from Postgres next.
+            get_brc20_database()
+                .lock()
+                .await
+                .flush_queries_to_db()
+                .await?;
         }
 
         if transfers.is_empty() {
@@ -3215,5 +3223,162 @@ mod tests {
                 .journal_block_hash_and_time(840_000)
                 .is_err()
         );
+    }
+
+    /// Runs `body` against a throwaway database, dropped even when `body`
+    /// panics. `body` runs on a local task, since the indexer's futures are
+    /// not `Send`.
+    async fn with_database<F, Fut>(tag: &str, body: F)
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = ()> + 'static,
+    {
+        use sqlx::{Connection, postgres::PgConnectOptions};
+        if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
+            eprintln!("OPI_TEST_PG is not 1; skipping");
+            return;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("opi_brc20_indexer_{tag}_{}_{nanos}", std::process::id());
+        let admin = PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(5432)
+            .username("alper")
+            .database("postgres");
+        let mut root = sqlx::PgConnection::connect_with(&admin).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+            .execute(&mut root)
+            .await
+            .unwrap();
+        let body = body(name.clone());
+        let result = tokio::task::LocalSet::new()
+            .run_until(async { tokio::task::spawn_local(body).await })
+            .await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE {name} WITH (FORCE)"
+        )))
+        .execute(&mut root)
+        .await
+        .unwrap();
+        if let Err(error) = result {
+            std::panic::resume_unwind(error.into_panic());
+        }
+    }
+
+    /// A refund block without transfers leaves its refunds' balance rows in
+    /// Postgres when its events are done, so the extra tables, which the
+    /// block indexes next from those rows, credit the refund address.
+    #[tokio::test]
+    async fn a_refund_block_without_transfers_writes_its_balances_before_the_extras() {
+        use std::str::FromStr;
+
+        use bitcoin::Network;
+
+        use crate::config::{BRC20_SWAP_MODULE_PKSCRIPT, BRC20_SWAP_REFUND_ADDRESS};
+
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        with_database("refund", |name| async move {
+            const REFUND_HEIGHT: i32 = 10;
+            let module = BRC20_SWAP_MODULE_PKSCRIPT[&Network::Signet];
+            let refund_address = BRC20_SWAP_REFUND_ADDRESS[&Network::Signet];
+            let refund_pkscript = bitcoin::Address::from_str(refund_address)
+                .unwrap()
+                .require_network(Network::Signet)
+                .unwrap()
+                .script_pubkey()
+                .to_hex_string();
+            let config = Brc20IndexerConfig {
+                db_host: "127.0.0.1".into(),
+                db_port: "5432".into(),
+                db_user: "alper".into(),
+                db_password: String::new(),
+                db_database: name.clone(),
+                db_ssl: false,
+                network_type: Network::Signet,
+                light_client_mode: false,
+                first_brc20_prog_phase_one_height: i32::MAX,
+                brc20_swap_refund_activation_height: REFUND_HEIGHT,
+                brc20_swap_refund_address: refund_address.into(),
+                brc20_swap_module_pkscript: module.into(),
+                ..Default::default()
+            };
+
+            // The swap module holds 500 meme from block 9.
+            let mut seed = crate::database::Brc20Database::new(&config);
+            seed.init().await.unwrap();
+            sqlx::query(
+                "INSERT INTO brc20_tickers (original_tick, tick, max_supply, decimals,
+                     limit_per_mint, remaining_supply, is_self_mint, deploy_inscription_id, block_height)
+                 VALUES ('meme', 'meme', 1000, 0, 1000, 500, false, 'deployi0', 1)",
+            )
+            .execute(&seed.client)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO brc20_historic_balances
+                     (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
+                 VALUES ($1, '', 'meme', 500, 500, 9, 1000000)",
+            )
+            .bind(module)
+            .execute(&seed.client)
+            .await
+            .unwrap();
+            let mut database = crate::database::Brc20Database::new(&config);
+            database.init().await.unwrap();
+            crate::database::replace_brc20_database(database).await;
+
+            let engine = TestEngine::open();
+            let mut indexer = Brc20Indexer::new(
+                config,
+                engine.prog.clone(),
+                engine.bitcoin_rpc_buffer.clone(),
+                None,
+            );
+            indexer
+                .generate_and_process_events(
+                    REFUND_HEIGHT,
+                    &"00".repeat(32),
+                    1_700_000_000,
+                    false,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+
+            let database = get_brc20_database();
+            let mut database = database.lock().await;
+            let written: Vec<(String, String)> = sqlx::query_as(
+                "SELECT pkscript, overall_balance::text FROM brc20_historic_balances
+                 WHERE block_height = $1 ORDER BY id",
+            )
+            .bind(REFUND_HEIGHT)
+            .fetch_all(&database.client)
+            .await
+            .unwrap();
+            // The transfer-inscribe locks the module's 500, then the
+            // transfer-transfer moves it to the refund address.
+            assert_eq!(
+                written,
+                vec![
+                    (module.to_string(), "500".to_string()),
+                    (module.to_string(), "0".to_string()),
+                    (refund_pkscript.clone(), "500".to_string()),
+                ]
+            );
+
+            database.index_extra_tables(REFUND_HEIGHT).await.unwrap();
+            let current: Vec<(String, String)> = sqlx::query_as(
+                "SELECT pkscript, overall_balance::text FROM brc20_current_balances
+                 WHERE tick = 'meme' AND overall_balance <> 0",
+            )
+            .fetch_all(&database.client)
+            .await
+            .unwrap();
+            assert_eq!(current, vec![(refund_pkscript, "500".to_string())]);
+        })
+        .await;
     }
 }
