@@ -117,8 +117,9 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `OPI_CHAIN` | `mainnet`, `signet`, `testnet4` or `regtest` |
 | `OPI_ORD_DATA_DIR` | directory of ord's index database |
 | `OPI_JOURNAL_DIR` | directory of the journal (see [Journal](#journal)) |
-| `OPI_JOURNAL_CACHE_MB` | the redb page cache the journal's files share, in MiB, 64 to 65536, default `1024`: a quarter goes to `tracked.redb` and the rest is split among the three segments open at once. The process's memory grows by up to that amount |
-| `OPI_JOURNAL_SEGMENT` | heights per journal segment file, 100 to 100000, default `1000`; fixed when the journal is created |
+| `OPI_JOURNAL_CACHE_MB` | the redb page cache of the journal's `tracked.redb`, in MiB, 64 to 65536, default `1024`. The process's memory grows by up to that amount; the journal's height files are read through the kernel's page cache |
+| `OPI_JOURNAL_SEGMENT` | heights per journal segment directory, 100 to 100000, default `1000`; fixed when the journal is created |
+| `OPI_MIN_FREE_DISK_GB` | free disk space, in GiB, the journal keeps on its file system, 1 to 10000, default `20`. A journal write that would leave less fails, and `run` stops; free space and start again to resume |
 | `OPI_ORD_CACHE_MB` | the redb page cache of ord's index in MiB, 64 to 65536, default `1024`. ord reads its index through the kernel's page cache, which holds the pages redb's cache would copy, so the RAM serves ord best left to the page cache; raise it only on a host whose page cache already holds the whole index |
 | `MALLOC_ARENA_MAX` | glibc's malloc arenas, 1 to 1024, default `2`. glibc otherwise opens up to 8 arenas per core, and each keeps the memory freed into it: on a signet catch-up 90 arenas held 3.6 of the process's 4.6 GiB, and 2 arenas brought its peak to 3.1 GiB. Read from the `.env` too |
 | `BITCOIN_RPC_URL` | bitcoind RPC URL |
@@ -176,9 +177,18 @@ state, and each module's database holds the module's.
 
 | File | Holds |
 | --- | --- |
-| `seg-<height>.redb` | raw events, records, inscription infos, rune events, headers and inscription moves of `OPI_JOURNAL_SEGMENT` heights from `<height>` |
-| `meta.redb` | chain, schema, the `runes`, `inscriptions` and segment settings, and the gate limit |
+| `raw/<segment>/<height>` | the raw events ord emitted for a block it has indexed and the journal has yet to finalize, under the block's hash |
+| `rec/<segment>/<height>` | a finalized block's header, transfer records, inscription infos, rune events and inscription moves |
+| `meta.json` | chain, schema, the `runes`, `inscriptions` and segment settings, the gate limit and the pruned floor |
 | `tracked.redb` | the bound text and JSON inscriptions whose first transfer the journal has yet to record |
+| `lock` | held while a process has the journal open |
+
+`<segment>` is the first height of the `OPI_JOURNAL_SEGMENT` heights its
+directory groups. A height file is a 28-byte header (magic, format version,
+stream, flags, height, lengths and CRC-32 checksums), a head (the block hash
+of a raw file, the block header of a record file), and a body holding the
+height's rows table by table, zstd-compressed when that makes it smaller.
+The layout is documented in `crates/opi-source/src/journal/files.rs`.
 
 The fork records a bound text or JSON inscription's creation and its first
 transfer, and that choice numbers every record of the block after it. ord's
@@ -194,11 +204,24 @@ the runes module, which keeps every unspent rune outpoint and every rune's
 totals, makes the input events and the counter rows from them, so the block
 event hashes are those the journal reported before.
 
-Every write commits one segment at a time, and each segment records its own
-final tip, so a finalize, rollback or raw-event write that spans two segments
-is consistent after a crash at any point. A journal built in the single-file
-layout (`journal.redb`) is refused with a message: delete it and the ord data
-dir and index again.
+A height file is written to `<height>.tmp`, synced, renamed into place and
+its directory synced, so it exists whole or not at all; an open deletes the
+`.tmp` files a crash leaves. Finalize writes record files in height order and
+a rollback deletes them from the top down, so the final tip is the highest
+height with a record file, after a crash at any point. Finalize deletes a
+height's raw file once its record file is written: modules read records, and
+a reorg makes ord emit the replacing block's events again. Raw files on disk
+are those of the blocks ord has indexed ahead of finalize, at most
+`OPI_CHUNK` of them.
+
+Before every write the journal checks the free space of its file system, and
+refuses a write that would leave less than `OPI_MIN_FREE_DISK_GB`; `run` logs
+the refusal and stops, and a start after space is freed resumes where it
+stopped.
+
+A journal built in a redb layout (`journal.redb`, or `meta.redb` with
+`seg-<height>.redb` files) is refused with a message: delete it and the ord
+data dir and index again.
 
 #### Pruning
 
@@ -209,7 +232,7 @@ the deepest rollback the scheduler walks.
 
 | Store | Pruned | Kept |
 | --- | --- | --- |
-| journal | segment files whose heights are all below both the final tip and the lowest module height minus `<blocks>`; tracked inscriptions transferred below the window | the window's segments; the tracked inscriptions not yet transferred |
+| journal | record segments whose heights are all below both the final tip and the lowest module height minus `<blocks>`; raw files a crash left below the window; tracked inscriptions transferred below the window | the window's record segments; the tracked inscriptions not yet transferred |
 | brc20 | `brc20_logs`, which nothing reads | every table the API, the light clients and `validate` read |
 | bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
@@ -218,19 +241,25 @@ the deepest rollback the scheduler walks.
 Each module prunes its tables every 100 blocks. ord's index has no history to
 prune: `run` builds it without sat, address or transaction indexes.
 
-The journal prunes by deleting whole files, so its disk use follows from the
-window: it holds at most `<blocks> / OPI_JOURNAL_SEGMENT + 2` segments (the
-window's, the one being written, and the one the window starts in), plus
-`meta.redb` and `tracked.redb`. A background task deletes the segments below
-the window every minute, while every enabled module is running and has
-reported its height; a deletion takes milliseconds and needs no compaction.
-A module or API read that holds a segment keeps reading it, and the file
-system frees the file's space when the read ends.
+The journal prunes by deleting whole directories of height files, and each
+file takes the bytes it holds, so its disk use is its data: at most
+`<blocks> / OPI_JOURNAL_SEGMENT + 2` record segments (the window's, the one
+being written, and the one the window starts in), the raw files of the blocks
+ord has indexed ahead of finalize, `tracked.redb` and `meta.json`. A
+background task deletes the segments below the window every minute, while
+every enabled module is running and has reported its height; a deletion takes
+milliseconds. A module or API read with a file open keeps reading it, and the
+file system frees its space when the read ends.
 
-redb grows a file by doubling it until the file fills its first 4 GiB
-region, so a segment file can be up to twice the size of what it holds. On
-mainnet at the 2023-2024 inscription peak a 1000-height segment holds a few
-GB; a smaller `OPI_JOURNAL_SEGMENT` makes each file, and so the slack, smaller.
+On mainnet in 2025 a height's records hold about 0.5 MB of transfer records
+and inscription infos, which compress about 3 to 1, so a window of 2000
+blocks takes well under 1 GB. Its raw events hold 2 to 65 MB, almost all of
+them transfers of inscriptions the journal does not track; they compress
+about 2.5 to 1 and live only until finalize, so a catch-up of `OPI_CHUNK`
+blocks holds a few GB of them at its peak.
+`tracked.redb` holds one row per tracked inscription not yet transferred,
+about 48 million rows and 2.2 GB of data at height 890,000; it is compacted
+when the journal opens.
 
 A pruned journal no longer holds the blocks a module needs to start from
 scratch. A module whose next block is below the journal's pruned floor (a new

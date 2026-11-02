@@ -11,7 +11,7 @@ use {
     opi_source::{
         DEFAULT_ORD_CACHE_BYTES,
         driver::{DEFAULT_CHUNK, SourceConfig},
-        journal::{JournalOptions, SEGMENT_RANGE},
+        journal::{DEFAULT_MIN_FREE_GB, JournalOptions, MIN_FREE_GB_RANGE, SEGMENT_RANGE},
         proxy::UpstreamAuth,
     },
     ord::Chain,
@@ -302,8 +302,10 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
 const CACHE_MB: std::ops::RangeInclusive<usize> = 64..=65536;
 
 /// The journal's open options from `OPI_JOURNAL_CACHE_MB`, the redb page cache
-/// in MiB that the journal's files share (default 1024), and
-/// `OPI_JOURNAL_SEGMENT`, the heights per segment file (default 1000).
+/// of `tracked.redb` in MiB (default 1024), `OPI_JOURNAL_SEGMENT`, the
+/// heights per segment directory (default 1000), and
+/// `OPI_MIN_FREE_DISK_GB`, the free space in GiB below which the journal
+/// stops writing (default 20).
 pub(crate) fn journal_options(get: &impl Fn(&str) -> Option<String>) -> Result<JournalOptions> {
     let defaults = JournalOptions::default();
     let segment = match get("OPI_JOURNAL_SEGMENT").filter(|value| !value.is_empty()) {
@@ -320,9 +322,24 @@ pub(crate) fn journal_options(get: &impl Fn(&str) -> Option<String>) -> Result<J
             })?,
         None => defaults.segment,
     };
+    let min_free_gb = match get("OPI_MIN_FREE_DISK_GB").filter(|value| !value.is_empty()) {
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|gb| MIN_FREE_GB_RANGE.contains(gb))
+            .with_context(|| {
+                format!(
+                    "OPI_MIN_FREE_DISK_GB must be a GiB count from {} to {}, got `{value}`",
+                    MIN_FREE_GB_RANGE.start(),
+                    MIN_FREE_GB_RANGE.end()
+                )
+            })?,
+        None => DEFAULT_MIN_FREE_GB,
+    };
     Ok(JournalOptions {
         cache_bytes: cache_bytes(get, "OPI_JOURNAL_CACHE_MB")?.unwrap_or(defaults.cache_bytes),
         segment,
+        min_free_bytes: min_free_gb << 30,
         ..defaults
     })
 }
@@ -447,6 +464,23 @@ mod tests {
             vars.insert("OPI_JOURNAL_SEGMENT", bad);
             let err = load(&vars).unwrap_err();
             assert!(err.to_string().contains("OPI_JOURNAL_SEGMENT"), "{err}");
+        }
+    }
+
+    #[test]
+    fn min_free_disk_setting() {
+        let mut vars = base();
+        assert_eq!(load(&vars).unwrap().source.journal.min_free_bytes, 20 << 30);
+        vars.insert("OPI_MIN_FREE_DISK_GB", "");
+        assert_eq!(load(&vars).unwrap().source.journal.min_free_bytes, 20 << 30);
+        for (ok, gb) in [("1", 1u64), ("50", 50), ("10000", 10_000)] {
+            vars.insert("OPI_MIN_FREE_DISK_GB", ok);
+            assert_eq!(load(&vars).unwrap().source.journal.min_free_bytes, gb << 30);
+        }
+        for bad in ["0", "10001", "-1", "20g", "1.5", "abc"] {
+            vars.insert("OPI_MIN_FREE_DISK_GB", bad);
+            let err = load(&vars).unwrap_err();
+            assert!(err.to_string().contains("OPI_MIN_FREE_DISK_GB"), "{err}");
         }
     }
 

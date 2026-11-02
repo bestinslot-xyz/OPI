@@ -6,8 +6,8 @@ use {
         RuneSpend,
     },
     opi_source::journal::{
-        JournalReader, begin_write, cf, encode_rune_etching, encode_rune_event, encode_rune_spend,
-        rune_etching_key, rune_event_key, table,
+        JournalReader, cf, encode_rune_etching, encode_rune_event, encode_rune_spend,
+        rune_etching_key, rune_event_key, testing,
     },
     support::{Harness, start, wait_for_tip},
 };
@@ -126,55 +126,32 @@ fn block_view_reads_rune_feed_in_key_order() {
             outpoints: Vec::new(),
         },
     ];
-    let segment = reader.journal().segment_mut(height).unwrap();
-    let tx = begin_write(&segment).unwrap();
-    {
-        let mut table_events = tx.open_table(table(cf::RUNE_EVENTS)).unwrap();
-        let mut table_etchings = tx.open_table(table(cf::RUNE_ETCHINGS)).unwrap();
-        let mut table_spent = tx.open_table(table(cf::RUNE_SPENT)).unwrap();
-        // Neighbouring heights must not leak into the view.
-        for other in [height - 1, height + 1] {
-            table_events
-                .insert(
-                    rune_event_key(other, 0).as_slice(),
-                    encode_rune_event(&event(RuneEventKind::Mint, "7:7", 1))
-                        .unwrap()
-                        .as_slice(),
-                )
-                .unwrap();
-            table_spent
-                .insert(
-                    rune_event_key(other, 0).as_slice(),
-                    encode_rune_spend(&spent[0]).unwrap().as_slice(),
-                )
-                .unwrap();
-        }
-        for (seq, e) in events.iter().enumerate().rev() {
-            table_events
-                .insert(
-                    rune_event_key(height, seq as u32).as_slice(),
-                    encode_rune_event(e).unwrap().as_slice(),
-                )
-                .unwrap();
-        }
-        for (seq, e) in etchings.iter().enumerate() {
-            table_etchings
-                .insert(
-                    rune_etching_key(height, seq as u32).as_slice(),
-                    encode_rune_etching(e).unwrap().as_slice(),
-                )
-                .unwrap();
-        }
-        for (seq, spend) in spent.iter().enumerate().rev() {
-            table_spent
-                .insert(
-                    rune_event_key(height, seq as u32).as_slice(),
-                    encode_rune_spend(spend).unwrap().as_slice(),
-                )
-                .unwrap();
-        }
+    let mut file = reader.journal().records(height).unwrap().unwrap();
+    for (seq, e) in events.iter().enumerate().rev() {
+        file.rows_mut(cf::RUNE_EVENTS)
+            .insert(
+                &rune_event_key(height, seq as u32),
+                &encode_rune_event(e).unwrap(),
+            )
+            .unwrap();
     }
-    tx.commit().unwrap();
+    for (seq, e) in etchings.iter().enumerate() {
+        file.rows_mut(cf::RUNE_ETCHINGS)
+            .insert(
+                &rune_etching_key(height, seq as u32),
+                &encode_rune_etching(e).unwrap(),
+            )
+            .unwrap();
+    }
+    for (seq, spend) in spent.iter().enumerate().rev() {
+        file.rows_mut(cf::RUNE_SPENT)
+            .insert(
+                &rune_event_key(height, seq as u32),
+                &encode_rune_spend(spend).unwrap(),
+            )
+            .unwrap();
+    }
+    testing::rewrite_records(reader.journal(), &file).unwrap();
 
     let view = reader.block_view(height).unwrap().unwrap();
     assert_eq!(view.runes.events, events);

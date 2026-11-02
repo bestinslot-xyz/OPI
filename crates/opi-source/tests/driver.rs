@@ -93,7 +93,7 @@ fn startup_refuses_a_restored_older_journal() {
     wait_for_tip(&source.reader(), harness.height());
     source.shutdown();
     source.join().unwrap();
-    let backup = tmp.path().join("meta-backup.redb");
+    let backup = tmp.path().join("meta-backup.json");
     std::fs::copy(&journal_path, &backup).unwrap();
 
     harness.inscribe(JSON, "text/plain");
@@ -155,13 +155,14 @@ fn journal_open_recovers_from_interrupted_init() {
     let path = tmp.path().join("journal");
     std::fs::create_dir_all(&path).unwrap();
     let init = path.join(format!("{}.init", opi_source::journal::META_FILE));
-    let segment_init = path.join(format!("{}.init", opi_source::journal::segment_name(0)));
+    let segment_init = path.join("rec/000000000/000000000.tmp");
+    std::fs::create_dir_all(segment_init.parent().unwrap()).unwrap();
     std::fs::write(&init, b"torn garbage").unwrap();
     std::fs::write(&segment_init, b"torn garbage").unwrap();
 
     let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert!(journal.created());
-    assert_eq!(journal.segment_starts(), Vec::<u32>::new());
+    assert_eq!(journal.final_tip().unwrap(), None);
     drop(journal);
     assert!(!init.exists());
     assert!(!segment_init.exists());

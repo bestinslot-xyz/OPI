@@ -1,10 +1,11 @@
 //! Journal pruning of `run` with OPI_PRUNE: a background task deletes the
-//! journal segments below the window.
+//! journal's height files below the window.
 //!
-//! The window keeps raw events for the last OPI_PRUNE blocks below the final
-//! tip, and records for the last OPI_PRUNE blocks below the lowest module
-//! height. A segment goes once every height in it is below both, so a prune
-//! deletes a few files and takes no time worth pacing.
+//! The window keeps records for the last OPI_PRUNE blocks below the lowest
+//! module height and below the final tip. A record segment goes once every
+//! height in it is below the window, so a prune deletes a few directories
+//! and takes no time worth pacing. Finalize deletes raw files itself; a
+//! prune catches those a crash left below the final tip's window.
 
 use {
     anyhow::{Context, Result},
@@ -43,7 +44,7 @@ pub(crate) fn window(journal: &Journal, lowest: Option<u32>, keep: u32) -> Resul
 /// last `keep` blocks below the final tip and below the lowest height of the
 /// `modules`. The module heights are those the scheduler records in the
 /// process metrics; while any module's height is unknown (starting,
-/// restarting or failed), nothing is pruned. A failed prune is logged and
+/// restarting or failed), no record is pruned. A failed prune is logged and
 /// retried at the next interval.
 pub(crate) async fn prune_journal(journal: Journal, modules: Vec<&'static str>, keep: u32) {
     let mut interval = tokio::time::interval(PRUNE_INTERVAL);
@@ -70,6 +71,7 @@ async fn prune_once(journal: &Journal, modules: &[&'static str], keep: u32) -> R
             raw_below = window.raw,
             records_below = window.records,
             segments = pruned.segments,
+            raw = pruned.raw,
             tracked = pruned.tracked,
             journal_bytes = journal.disk_bytes().ok(),
             "pruned the journal"
@@ -152,7 +154,8 @@ mod tests {
     }
 
     /// The pruner deletes the segments below the window of the lowest module,
-    /// and nothing while a module's height is unknown.
+    /// and no record while a module's height is unknown; raw files below the
+    /// final tip's window go either way.
     #[tokio::test]
     async fn the_pruner_deletes_segments_below_the_lowest_module() {
         let tmp = tempfile::tempdir().unwrap();
@@ -160,20 +163,16 @@ mod tests {
         testing::fill(&journal, 0..2500, DENSITY).unwrap();
         let module = "prune_test_module";
 
-        assert!(
-            prune_once(&journal, &[module], 1000)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(journal.segment_starts().len(), 25);
+        let pruned = prune_once(&journal, &[module], 1000).await.unwrap();
+        assert_eq!((pruned.segments, pruned.raw), (0, 1500));
+        assert_eq!(journal.segment_starts().unwrap().len(), 25);
 
         opi_core::metrics::global()
             .module(module)
             .set_height(Some(1800));
         let pruned = prune_once(&journal, &[module], 1000).await.unwrap();
         assert_eq!(pruned.segments, 8);
-        assert_eq!(journal.segment_starts().first(), Some(&800));
+        assert_eq!(journal.segment_starts().unwrap().first(), Some(&800));
         assert_eq!(journal.pruned_below().unwrap(), 800);
     }
 }

@@ -1,14 +1,13 @@
 use {
     bitcoin::{BlockHash, Network, Txid, hashes::Hash},
     opi_source::{
-        journal::{DEFAULT_SEGMENT, Journal, JournalOptions, begin_write, cf, table},
+        journal::{DEFAULT_SEGMENT, Journal, JournalOptions, Stream, cf},
         proxy::{BarrierRequest, GateProxy, ProxyConfig, UpstreamAuth},
         raw_event::RawEvent,
         stager::{Stager, truncate_raw_above},
     },
     ord::{Chain, index::event::Event},
     ordinals::RuneId,
-    redb::{ReadableDatabase, ReadableTable},
     serde_json::json,
     std::{
         sync::{
@@ -143,18 +142,27 @@ fn event(height: u32, tx: u32) -> Event {
     }
 }
 
-/// Every row of table `name` across the journal's segments.
+/// Every row of raw table `name` across the journal's raw files.
 fn segment_rows(journal: &Journal, name: &'static str) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut rows = Vec::new();
-    for start in journal.segment_starts() {
-        let segment = journal.segment(start).unwrap().unwrap();
-        let tx = segment.begin_read().unwrap();
-        for row in tx.open_table(table(name)).unwrap().iter().unwrap() {
-            let (key, value) = row.unwrap();
-            rows.push((key.value().to_vec(), value.value().to_vec()));
-        }
-    }
-    rows
+    journal.table_rows(Stream::Raw, name).unwrap()
+}
+
+/// The segment directories of the journal's raw files.
+fn raw_segments(journal: &Journal) -> Vec<u32> {
+    let mut starts = std::fs::read_dir(journal.dir().join(Stream::Raw.dir_name()))
+        .unwrap()
+        .map(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect::<Vec<u32>>();
+    starts.sort_unstable();
+    starts
 }
 
 fn raw_rows(journal: &Journal) -> Vec<(u32, u32, RawEvent)> {
@@ -259,9 +267,9 @@ async fn rewind_deletes_higher_heights() {
     );
 }
 
-/// A sync spanning several segments writes each height to its own segment,
-/// one transaction per segment, and a rewind deletes the heights above it
-/// from every segment, the rewound height's and those above.
+/// A sync spanning several segments writes each height's file in its own
+/// segment directory, and a rewind deletes the heights above it from every
+/// segment, the rewound height's and those above.
 #[tokio::test]
 async fn sync_and_rewind_span_segments() {
     let mut s = setup_segmented(7, 32, 2).await;
@@ -270,7 +278,7 @@ async fn sync_and_rewind_span_segments() {
 
     s.send((1..=7).map(|height| event(height, 0))).await;
     s.barrier().await;
-    assert_eq!(s.db.segment_starts(), [0, 2, 4, 6]);
+    assert_eq!(raw_segments(&s.db), [0, 2, 4, 6]);
     assert_eq!(raw_rows(&s.db), rows((1..=7).map(|h| (h, 0, event(h, 0)))));
     assert_eq!(staged_tip.load(Ordering::SeqCst), 7);
 
@@ -351,30 +359,14 @@ async fn discard_pending_drops_partial_block_before_retry() {
 async fn truncate_raw_above_removes_rows_and_heights() {
     let tmp = tempfile::tempdir().unwrap();
     let journal = Journal::open(&tmp.path().join("journal"), Chain::Regtest, true).unwrap();
-    let tx = begin_write(&journal.segment_mut(1).unwrap()).unwrap();
-    {
-        let mut events = tx.open_table(table(cf::RAW_EVENTS)).unwrap();
-        let mut heights = tx.open_table(table(cf::RAW_HEIGHTS)).unwrap();
-        for height in 1u32..=3 {
-            for seq in 0u32..2 {
-                let mut key = height.to_be_bytes().to_vec();
-                key.extend(seq.to_be_bytes());
-                events
-                    .insert(
-                        key.as_slice(),
-                        RawEvent::from(event(height, seq)).encode().as_slice(),
-                    )
-                    .unwrap();
-            }
-            heights
-                .insert(
-                    height.to_be_bytes().as_slice(),
-                    BlockHash::all_zeros().as_byte_array().as_slice(),
-                )
-                .unwrap();
-        }
+    for height in 1u32..=3 {
+        let events = (0u32..2)
+            .map(|seq| RawEvent::from(event(height, seq)).encode())
+            .collect::<Vec<_>>();
+        journal
+            .write_raw(height, BlockHash::all_zeros(), &events)
+            .unwrap();
     }
-    tx.commit().unwrap();
 
     truncate_raw_above(&journal, Some(1)).unwrap();
 
