@@ -1,8 +1,8 @@
 use {
     super::{
-        INSCRIPTION_ID_LEN, Journal, cf, decode_info, decode_inscription_move, decode_rune_etching,
-        decode_rune_event, decode_rune_spend, decode_transfer, decompress_info, segment_tip_in,
-        table,
+        HeightFile, INSCRIPTION_ID_LEN, Journal, Stream, cf, decode_info, decode_inscription_move,
+        decode_rune_etching, decode_rune_event, decode_rune_spend, decode_transfer,
+        decompress_info,
     },
     anyhow::{Result, bail},
     bitcoin::{block::Header, consensus},
@@ -10,7 +10,6 @@ use {
         BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionMove, InscriptionRecord,
         RuneFeed,
     },
-    redb::{ReadTransaction, ReadableDatabase},
     std::collections::BTreeMap,
 };
 
@@ -30,10 +29,23 @@ impl JournalReader {
         &self.journal
     }
 
-    /// A read transaction on the segment holding `height`, `None` when the
-    /// segment has no finalized height at or above `height`. Fails for a
+    /// The record file of `height`, `None` above the final tip. Fails for a
     /// height below the pruned floor.
-    fn snapshot(&self, height: u32) -> Result<Option<ReadTransaction>> {
+    fn records(&self, height: u32) -> Result<Option<HeightFile>> {
+        self.check_floor(height)?;
+        if self.journal.final_tip()?.is_none_or(|tip| height > tip) {
+            return Ok(None);
+        }
+        let file = self.journal.records(height)?;
+        if file.is_none() {
+            // A prune may have raised the floor past `height` since the
+            // check.
+            self.check_floor(height)?;
+        }
+        Ok(file)
+    }
+
+    fn check_floor(&self, height: u32) -> Result<()> {
         let floor = self.journal.pruned_below()?;
         if height < floor {
             bail!(
@@ -42,76 +54,42 @@ impl JournalReader {
                  from the start without OPI_PRUNE"
             );
         }
-        let Some(segment) = self.journal.segment(height)? else {
-            return Ok(None);
-        };
-        let tx = segment.begin_read()?;
-        if segment_tip_in(&tx)?.is_none_or(|tip| height > tip) {
-            return Ok(None);
-        }
-        Ok(Some(tx))
+        Ok(())
     }
 }
 
-/// The rows of `height` in table `name`, in key order.
-fn height_rows<T>(
-    tx: &ReadTransaction,
-    name: &'static str,
-    height: u32,
-    mut decode: impl FnMut(&[u8], &[u8]) -> Result<T>,
-) -> Result<Vec<T>> {
-    let first = height.to_be_bytes();
-    let next = height.checked_add(1).map(u32::to_be_bytes);
-    let table = tx.open_table(table(name))?;
-    let rows = match &next {
-        Some(next) => table.range::<&[u8]>(first.as_slice()..next.as_slice())?,
-        None => table.range::<&[u8]>(first.as_slice()..)?,
-    };
-    rows.map(|row| {
-        let (key, value) = row?;
-        decode(key.value(), value.value())
-    })
-    .collect()
-}
-
-fn block_info_in(tx: &ReadTransaction, height: u32) -> Result<Option<BlockInfo>> {
-    let headers = tx.open_table(table(cf::HEADERS))?;
-    let Some(header) = headers.get(height.to_be_bytes().as_slice())? else {
-        return Ok(None);
-    };
-    let header: Header = consensus::deserialize(header.value())?;
-    Ok(Some(BlockInfo {
+fn block_info_of(height: u32, head: &[u8]) -> Result<BlockInfo> {
+    let header: Header = consensus::deserialize(head)?;
+    Ok(BlockInfo {
         height,
         hash: header.block_hash().to_string(),
         time: header.time,
-    }))
+    })
 }
 
-fn inscription_records_in(tx: &ReadTransaction, height: u32) -> Result<Vec<InscriptionRecord>> {
-    height_rows(tx, cf::TRANSFERS, height, decode_transfer)
+fn inscription_records_in(file: &HeightFile) -> Result<Vec<InscriptionRecord>> {
+    file.rows(cf::TRANSFERS)
+        .map(|(key, value)| decode_transfer(key, value))
+        .collect()
 }
 
-/// Rune events but the inputs, etchings and spends of `height`, each in key
+fn values<T>(file: &HeightFile, name: &str, decode: impl Fn(&[u8]) -> Result<T>) -> Result<Vec<T>> {
+    file.rows(name).map(|(_, value)| decode(value)).collect()
+}
+
+/// Rune events but the inputs, etchings and spends of a height, each in key
 /// order.
-fn rune_feed_in(tx: &ReadTransaction, height: u32) -> Result<RuneFeed> {
+fn rune_feed_in(file: &HeightFile) -> Result<RuneFeed> {
     Ok(RuneFeed {
-        events: height_rows(tx, cf::RUNE_EVENTS, height, |_, value| {
-            decode_rune_event(value)
-        })?,
-        etchings: height_rows(tx, cf::RUNE_ETCHINGS, height, |_, value| {
-            decode_rune_etching(value)
-        })?,
-        spent: height_rows(tx, cf::RUNE_SPENT, height, |_, value| {
-            decode_rune_spend(value)
-        })?,
+        events: values(file, cf::RUNE_EVENTS, decode_rune_event)?,
+        etchings: values(file, cf::RUNE_ETCHINGS, decode_rune_etching)?,
+        spent: values(file, cf::RUNE_SPENT, decode_rune_spend)?,
     })
 }
 
-/// Inscription moves of `height` in emission order.
-fn inscription_moves_in(tx: &ReadTransaction, height: u32) -> Result<Vec<InscriptionMove>> {
-    height_rows(tx, cf::INSCRIPTION_MOVES, height, |_, value| {
-        decode_inscription_move(value)
-    })
+/// Inscription moves of a height in emission order.
+fn inscription_moves_in(file: &HeightFile) -> Result<Vec<InscriptionMove>> {
+    values(file, cf::INSCRIPTION_MOVES, decode_inscription_move)
 }
 
 impl BlockSource for JournalReader {
@@ -123,33 +101,32 @@ impl BlockSource for JournalReader {
         if height < self.journal.pruned_below()? {
             return Ok(None);
         }
-        match self.journal.segment(height)? {
-            Some(segment) => block_info_in(&segment.begin_read()?, height),
+        match self.journal.store().read_head(Stream::Records, height)? {
+            Some(head) => Ok(Some(block_info_of(height, &head)?)),
             None => Ok(None),
         }
     }
 
     fn inscription_records(&self, height: u32) -> Result<Vec<InscriptionRecord>> {
-        match self.snapshot(height)? {
-            Some(tx) => inscription_records_in(&tx, height),
+        match self.records(height)? {
+            Some(file) => inscription_records_in(&file),
             None => Ok(Vec::new()),
         }
     }
 
     fn block_view(&self, height: u32) -> Result<Option<BlockView>> {
-        let Some(tx) = self.snapshot(height)? else {
+        let Some(file) = self.records(height)? else {
             return Ok(None);
         };
-        let Some(block) = block_info_in(&tx, height)? else {
-            return Ok(None);
-        };
-        let records = inscription_records_in(&tx, height)?;
-        let infos = height_rows(&tx, cf::INFO, height, |key, value| {
-            let id = decode_inscription_id_key(&key[4..])?;
-            Ok((id.clone(), decode_info(&id, &decompress_info(value)?)?))
-        })?
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+        let block = block_info_of(height, &file.head)?;
+        let records = inscription_records_in(&file)?;
+        let infos = file
+            .rows(cf::INFO)
+            .map(|(key, value)| {
+                let id = decode_inscription_id_key(&key[4..])?;
+                Ok((id.clone(), decode_info(&id, &decompress_info(value)?)?))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         // Every creation carries its info; a first transfer only when the
         // brc20 module acts on it.
         if let Some(record) = records.iter().find(|record| {
@@ -166,12 +143,12 @@ impl BlockSource for JournalReader {
             time: block.time,
             inscriptions: InscriptionFeed { records, infos },
             runes: if self.journal.runes() {
-                rune_feed_in(&tx, height)?
+                rune_feed_in(&file)?
             } else {
                 RuneFeed::default()
             },
             inscription_moves: if self.journal.inscriptions() {
-                inscription_moves_in(&tx, height)?
+                inscription_moves_in(&file)?
             } else {
                 Vec::new()
             },

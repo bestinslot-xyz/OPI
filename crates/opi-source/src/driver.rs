@@ -5,8 +5,9 @@ use {
     crate::{
         check_ord_index, check_ord_settings,
         journal::{
-            ChainData, EmissionOrderError, FINALIZE_BATCH, Journal, JournalOptions, JournalReader,
-            RuneModelError, finalize_range, init_path, remove_if_exists, reorg_check, sync_parent,
+            ChainData, DiskFull, EmissionOrderError, FINALIZE_BATCH, Journal, JournalOptions,
+            JournalReader, RuneModelError, finalize_range, init_path, remove_if_exists,
+            reorg_check, sync_parent,
         },
         ord_settings,
         proxy::{GateProxy, ProxyConfig, UpstreamAuth},
@@ -479,8 +480,9 @@ fn gib(bytes: u64) -> f64 {
 /// Whether a finalize error means ord's events break the model finalize
 /// relies on, which no retry can fix.
 fn is_fatal(err: &anyhow::Error) -> bool {
-    err.chain()
-        .any(|cause| cause.is::<EmissionOrderError>() || cause.is::<RuneModelError>())
+    err.chain().any(|cause| {
+        cause.is::<EmissionOrderError>() || cause.is::<RuneModelError>() || cause.is::<DiskFull>()
+    })
 }
 
 /// Blocks come from the proxy cache, else from bitcoind directly, as a header
@@ -513,6 +515,18 @@ mod tests {
     fn rune_model_errors_are_fatal_through_context() {
         let err =
             anyhow::Error::new(RuneModelError("unbalanced".into())).context("finalizing height 7");
+        assert!(is_fatal(&err));
+    }
+
+    #[test]
+    fn a_full_disk_is_fatal() {
+        let err = anyhow::Error::new(DiskFull {
+            path: "/journal".into(),
+            free: 1,
+            needed: 2,
+            min_free: 3,
+        })
+        .context("finalizing height 7");
         assert!(is_fatal(&err));
     }
 

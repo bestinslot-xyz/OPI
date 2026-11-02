@@ -1,20 +1,24 @@
-//! The journal: ord's raw event log and the records finalize makes of it,
-//! for a rolling window of recent blocks.
+//! The journal: ord's raw events and the records finalize makes of them, for
+//! a rolling window of recent blocks.
 //!
-//! A journal is a directory. Every table keyed by height lives in segment
-//! files of [`JournalOptions::segment`] consecutive heights each,
-//! `seg-<first height>.redb`, so a prune deletes whole files and the
-//! journal's disk use follows from the window it keeps. `meta.redb` holds
-//! the settings the journal was built with and the gate limit.
-//! `tracked.redb` holds the one fact finalize needs from before the window:
-//! which bound text and JSON inscriptions have not been transferred yet (see
-//! [`tracked`]).
+//! A journal is a directory. Everything keyed by height lives in height
+//! files (see [`files`]): `raw/` holds each staged height's raw events until
+//! finalize has made its records, and `rec/` holds each finalized height's
+//! records, grouped in directories of [`JournalOptions::segment`] heights so
+//! a prune deletes whole directories. A height file is written once, made
+//! durable by a rename, and deleted whole, so the journal's disk use is the
+//! data it holds.
 //!
-//! A write touches one file at a time and commits on its own. Each segment
-//! records the highest finalized height it holds, so a finalize or rollback
-//! that spans two segments leaves a consistent final tip after a crash at
-//! any point: the final tip is the highest one any segment records.
+//! `meta.json` holds the settings the journal was built with, the gate limit
+//! and the pruned floor, replaced by an atomic rename. `tracked.redb` holds
+//! the one fact finalize needs from before the window: which bound text and
+//! JSON inscriptions have not been transferred yet (see [`tracked`]).
+//! `lock` is held while the journal is open.
+//!
+//! The final tip is the highest height with a record file: finalize writes
+//! heights in order, and a rollback deletes them from the top down.
 
+mod files;
 mod finalize;
 pub mod order;
 mod prune;
@@ -22,30 +26,32 @@ mod reader;
 mod reorg;
 mod runes;
 mod schema;
-mod segments;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod tracked;
 
+#[cfg(feature = "testing")]
+pub use files::testing_free;
 pub use {
+    files::{DiskFull, FORMAT_VERSION, HeightFile, Rows, Stream},
     finalize::{ChainData, EmissionOrderError, FINALIZE_BATCH, finalize_range, is_json_body},
     prune::Pruned,
     reader::JournalReader,
     reorg::{reorg_check, rollback_to},
     runes::RuneModelError,
     schema::*,
-    segments::{SEGMENT_PREFIX, segment_name},
 };
 
 use {
     crate::ord_settings::{enabled_or_disabled, with_or_without},
-    anyhow::{Context, Result, anyhow, bail, ensure},
+    anyhow::{Context, Result, bail, ensure},
+    bitcoin::{BlockHash, hashes::Hash},
+    files::Store,
     ord::Chain,
-    redb::{
-        Database, Durability, ReadTransaction, ReadableDatabase, TableDefinition, WriteTransaction,
-    },
-    segments::Segments,
+    redb::{Database, Durability, TableDefinition, WriteTransaction},
+    serde::{Deserialize, Serialize},
     std::{
+        fs::File,
         path::{Path, PathBuf},
         sync::{
             Arc, Mutex,
@@ -54,18 +60,23 @@ use {
     },
 };
 
-/// Table names. Each names one redb table mapping `&[u8]` to `&[u8]`.
+/// Table names. A height table's rows live in height files (see
+/// [`files::TABLES`]); `tracked.redb` names its own.
 pub mod cf {
     /// Transfer records: height (`u32` BE) ++ idx (`u32` BE) -> record.
     pub const TRANSFERS: &str = "ord_transfers";
     /// The info of every inscription a height's records name: height (`u32`
     /// BE) ++ inscription id (store form) -> zstd-compressed info.
     pub const INFO: &str = "ord_inscription_info";
+    /// Block headers, the head of each record file: height (`u32` BE) ->
+    /// consensus-encoded header.
     pub const HEADERS: &str = "height_to_block_header";
+    /// Raw events: height (`u32` BE) ++ sequence (`u32` BE) -> encoded
+    /// event.
     pub const RAW_EVENTS: &str = "raw_events";
+    /// The hash each height's raw events were logged under, the head of
+    /// each raw file: height (`u32` BE) -> block hash.
     pub const RAW_HEIGHTS: &str = "raw_heights";
-    /// `meta.redb`'s settings, and each segment's final tip.
-    pub const META: &str = "meta";
     /// Rune events but the inputs: height (`u32` BE) ++ sequence (`u32` BE)
     /// -> encoded event.
     pub const RUNE_EVENTS: &str = "rune_events";
@@ -81,53 +92,14 @@ pub mod cf {
     pub const INSCRIPTION_MOVES: &str = "inscription_moves";
 }
 
-/// The tables of a segment file, every one keyed by height first.
-const SEGMENT_TABLES: [&str; 10] = [
-    cf::TRANSFERS,
-    cf::INFO,
-    cf::HEADERS,
-    cf::RAW_EVENTS,
-    cf::RAW_HEIGHTS,
-    cf::META,
-    cf::RUNE_EVENTS,
-    cf::RUNE_ETCHINGS,
-    cf::RUNE_SPENT,
-    cf::INSCRIPTION_MOVES,
-];
+/// `meta.json`'s file name inside the journal dir.
+pub const META_FILE: &str = "meta.json";
+const LOCK_FILE: &str = "lock";
+/// File names of the redb journal layouts, which this layout refuses.
+const REDB_META_FILE: &str = "meta.redb";
+const SINGLE_FILE: &str = "journal.redb";
 
-/// The record tables of a segment: what finalize writes and a rollback
-/// deletes.
-const RECORD_TABLES: [&str; 7] = [
-    cf::TRANSFERS,
-    cf::INFO,
-    cf::HEADERS,
-    cf::RUNE_EVENTS,
-    cf::RUNE_ETCHINGS,
-    cf::RUNE_SPENT,
-    cf::INSCRIPTION_MOVES,
-];
-
-/// `meta.redb`'s file name inside the journal dir.
-pub const META_FILE: &str = "meta.redb";
-/// The file name of the single-file journal layout, which this layout
-/// refuses.
-pub const LEGACY_FILE: &str = "journal.redb";
-
-const META_GATE_LIMIT: &[u8] = b"gate_limit";
-const META_CHAIN: &[u8] = b"chain";
-const META_SCHEMA: &[u8] = b"schema";
-/// Whether the journal keeps rune records: one byte, 1 or 0.
-const META_RUNES: &[u8] = b"runes";
-/// Whether the journal keeps every inscription move: one byte, 1 or 0.
-const META_INSCRIPTIONS: &[u8] = b"inscriptions";
-/// Heights per segment (`u32` BE), fixed when the journal is created.
-const META_SEGMENT: &[u8] = b"segment";
-/// Lowest height the journal serves records of (`u32` BE); absent when
-/// nothing was pruned. Raised before a prune deletes segment files.
-const META_PRUNED_BELOW: &[u8] = b"pruned_below";
-/// A segment's highest finalized height (`u32` BE), in its own meta table.
-const SEGMENT_FINAL_TIP: &[u8] = b"final_tip";
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const ZSTD_LEVEL: i32 = 3;
 
 /// The heights per segment `OPI_JOURNAL_SEGMENT` accepts.
@@ -135,21 +107,29 @@ pub const SEGMENT_RANGE: std::ops::RangeInclusive<u32> = 100..=100_000;
 /// Heights per segment unless configured.
 pub const DEFAULT_SEGMENT: u32 = 1000;
 
-/// redb's own default page cache size.
+/// `tracked.redb`'s page cache unless configured.
 pub const DEFAULT_CACHE_BYTES: usize = 1024 * 1024 * 1024;
+
+/// The free disk space, in GiB, `OPI_MIN_FREE_DISK_GB` accepts.
+pub const MIN_FREE_GB_RANGE: std::ops::RangeInclusive<u64> = 1..=10_000;
+/// The free disk space, in GiB, the journal keeps unless configured.
+pub const DEFAULT_MIN_FREE_GB: u64 = 20;
 
 /// How a journal is opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JournalOptions {
-    /// redb page cache in bytes, shared by the journal's files: a quarter
-    /// goes to `tracked.redb` and the rest is split evenly among the
-    /// segments open at once (see [`segments::OPEN_SEGMENTS`]).
+    /// `tracked.redb`'s page cache in bytes. Height files are read through
+    /// the kernel's page cache.
     pub cache_bytes: usize,
     /// Whether the journal keeps every inscription move, for the
     /// inscriptions module. Fixed when the journal is created.
     pub inscriptions: bool,
-    /// Heights per segment file. Fixed when the journal is created.
+    /// Heights per segment directory. Fixed when the journal is created.
     pub segment: u32,
+    /// Free bytes a write must leave on the journal's file system; a write
+    /// that would leave less fails with [`DiskFull`]. 0 for tools and tests;
+    /// `opi-indexer` sets it from `OPI_MIN_FREE_DISK_GB`.
+    pub min_free_bytes: u64,
 }
 
 impl Default for JournalOptions {
@@ -158,19 +138,8 @@ impl Default for JournalOptions {
             cache_bytes: DEFAULT_CACHE_BYTES,
             inscriptions: false,
             segment: DEFAULT_SEGMENT,
+            min_free_bytes: 0,
         }
-    }
-}
-
-impl JournalOptions {
-    /// The page cache of `tracked.redb`.
-    fn tracked_cache(&self) -> usize {
-        self.cache_bytes / 4
-    }
-
-    /// The page cache of each open segment.
-    fn segment_cache(&self) -> usize {
-        (self.cache_bytes - self.tracked_cache()) / segments::OPEN_SEGMENTS
     }
 }
 
@@ -215,46 +184,59 @@ pub(crate) fn sync_parent(path: &Path) -> Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    std::fs::File::open(parent)
+    File::open(parent)
         .and_then(|dir| dir.sync_all())
         .with_context(|| format!("syncing {}", parent.display()))
 }
 
-/// Builds a database at `path` through `build`, at `<path>.init` first and
-/// renamed into place once complete, so a crash leaves no half-made file.
-fn create_atomically(
-    path: &Path,
-    cache_bytes: usize,
-    build: impl FnOnce(&Database) -> Result<()>,
-) -> Result<()> {
+/// Writes `bytes` to `path` through `<path>.init`, synced and renamed into
+/// place, so a crash leaves the old file or the new one.
+fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     let init = init_path(path);
-    remove_if_exists(&init)?;
-    {
-        let db = create_db(&init, cache_bytes)?;
-        build(&db)?;
-    }
+    std::fs::write(&init, bytes).with_context(|| format!("writing {}", init.display()))?;
+    File::open(&init)
+        .and_then(|file| file.sync_all())
+        .with_context(|| format!("syncing {}", init.display()))?;
     std::fs::rename(&init, path)
         .with_context(|| format!("renaming {} into place", init.display()))?;
     sync_parent(path)
 }
 
-/// Whether `err` reports a journal another open holds: redb locks each file
-/// exclusively while a database is open.
-pub fn is_in_use(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        matches!(
-            cause.downcast_ref::<redb::DatabaseError>(),
-            Some(redb::DatabaseError::DatabaseAlreadyOpen)
-        ) || matches!(
-            cause.downcast_ref::<redb::Error>(),
-            Some(redb::Error::DatabaseAlreadyOpen)
-        )
-    })
-}
-
-/// Definition of the journal table called `name`.
+/// Definition of the redb table called `name`.
 pub fn table(name: &'static str) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
     TableDefinition::new(name)
+}
+
+/// Another open holds the journal: its `lock` is taken.
+#[derive(Debug)]
+pub struct InUse(pub PathBuf);
+
+impl std::fmt::Display for InUse {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "the journal at {} is open elsewhere", self.0.display())
+    }
+}
+
+impl std::error::Error for InUse {}
+
+/// Whether `err` reports a journal another open holds.
+pub fn is_in_use(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<InUse>())
+}
+
+/// `meta.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Meta {
+    schema: u32,
+    chain: String,
+    runes: bool,
+    inscriptions: bool,
+    segment: u32,
+    /// Highest height the gate has ever been opened to.
+    gate_limit: Option<u32>,
+    /// Lowest height the journal serves records of; raised before a prune
+    /// deletes record files.
+    pruned_below: Option<u32>,
 }
 
 /// The journal in a directory. Clones share it.
@@ -265,9 +247,9 @@ pub struct Journal {
 
 struct Inner {
     dir: PathBuf,
-    meta: Database,
+    meta: Mutex<Meta>,
+    store: Store,
     tracked: Database,
-    segments: Mutex<Segments>,
     options: JournalOptions,
     /// Highest finalized height, -1 when none.
     final_tip: AtomicI64,
@@ -275,6 +257,7 @@ struct Inner {
     created: bool,
     runes: bool,
     inscriptions: bool,
+    _lock: File,
 }
 
 impl Journal {
@@ -287,11 +270,11 @@ impl Journal {
     /// none, with rune records when `runes` is set and every inscription
     /// move when `options.inscriptions` is set. Fails when the journal
     /// belongs to another chain or schema, was built with another `runes`,
-    /// `inscriptions` or segment setting, or `dir` holds a single-file
-    /// journal. A refused open leaves the journal unchanged.
+    /// `inscriptions` or segment setting, or `dir` holds a redb journal. A
+    /// refused open leaves the journal unchanged.
     ///
-    /// redb locks each open file, so a second open of the same journal from
-    /// another process fails.
+    /// The journal holds an exclusive lock on its `lock` file while open, so
+    /// a second open of the same journal fails with [`InUse`].
     pub fn open_with(
         dir: &Path,
         chain: Chain,
@@ -299,52 +282,48 @@ impl Journal {
         options: &JournalOptions,
     ) -> Result<Journal> {
         ensure!(options.segment > 0, "a journal segment holds no heights");
-        let legacy = dir.join(LEGACY_FILE);
-        if legacy.exists() {
-            bail!(
-                "{} is a single-file journal, which this version no longer reads; delete it and \
-                 ord's data dir and index again, or run the release that built it",
-                legacy.display()
-            );
-        }
+        refuse_redb_layout(dir)?;
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let lock = lock(dir)?;
+
         let meta_path = dir.join(META_FILE);
+        remove_if_exists(&init_path(&meta_path))?;
         let created = !meta_path.exists();
-        if created {
-            create_atomically(&meta_path, 1 << 20, |db| {
-                let tx = begin_write(db)?;
-                {
-                    let mut meta = tx.open_table(table(cf::META))?;
-                    meta.insert(META_CHAIN, chain.to_string().as_bytes())?;
-                    meta.insert(META_SCHEMA, SCHEMA_VERSION.to_be_bytes().as_slice())?;
-                    meta.insert(META_RUNES, [u8::from(runes)].as_slice())?;
-                    meta.insert(
-                        META_INSCRIPTIONS,
-                        [u8::from(options.inscriptions)].as_slice(),
-                    )?;
-                    meta.insert(META_SEGMENT, options.segment.to_be_bytes().as_slice())?;
-                }
-                tx.commit()?;
-                Ok(())
-            })?;
-        }
-        let meta = create_db(&meta_path, 1 << 20)?;
+        let meta = if created {
+            let meta = Meta {
+                schema: SCHEMA_VERSION,
+                chain: chain.to_string(),
+                runes,
+                inscriptions: options.inscriptions,
+                segment: options.segment,
+                gate_limit: None,
+                pruned_below: None,
+            };
+            write_atomically(&meta_path, &serde_json::to_vec_pretty(&meta)?)?;
+            meta
+        } else {
+            let raw = std::fs::read(&meta_path)
+                .with_context(|| format!("reading {}", meta_path.display()))?;
+            serde_json::from_slice(&raw)
+                .with_context(|| format!("parsing {}", meta_path.display()))?
+        };
         check_meta(&meta, dir, chain, runes, options)?;
 
-        let tracked = tracked::open(&dir.join(tracked::TRACKED_FILE), options.tracked_cache())?;
-        let segments = Segments::scan(dir, options)?;
+        let tracked = tracked::open(&dir.join(tracked::TRACKED_FILE), options.cache_bytes)?;
+        let store = Store::new(dir, options.segment, options.min_free_bytes)?;
         let journal = Journal {
             inner: Arc::new(Inner {
                 dir: dir.to_path_buf(),
-                meta,
+                meta: Mutex::new(meta),
+                store,
                 tracked,
-                segments: Mutex::new(segments),
                 options: *options,
                 final_tip: AtomicI64::new(-1),
                 chain,
                 created,
                 runes,
                 inscriptions: options.inscriptions,
+                _lock: lock,
             }),
         };
         journal.load_final_tip()?;
@@ -370,24 +349,20 @@ impl Journal {
         height - height % self.segment_len()
     }
 
+    pub(crate) fn store(&self) -> &Store {
+        &self.inner.store
+    }
+
     /// Highest finalized height, if any block has been finalized.
     pub fn final_tip(&self) -> Result<Option<u32>> {
         let tip = self.inner.final_tip.load(Ordering::SeqCst);
         Ok(u32::try_from(tip).ok())
     }
 
-    /// Reads the final tip from the segments: the highest one any of them
-    /// records.
+    /// Reads the final tip from the record files: the highest height with
+    /// one.
     fn load_final_tip(&self) -> Result<()> {
-        let mut tip = None;
-        for start in self.segment_starts().into_iter().rev() {
-            if let Some(db) = self.segment(start)?
-                && let Some(segment_tip) = segment_tip_in(&db.begin_read()?)?
-            {
-                tip = Some(segment_tip);
-                break;
-            }
-        }
+        let tip = self.store().last_height(Stream::Records)?;
         self.set_cached_tip(tip);
         Ok(())
     }
@@ -401,24 +376,25 @@ impl Journal {
     /// Highest height the gate has ever been opened to, so ord's committed
     /// height never exceeds it while this journal logs its events.
     pub fn gate_limit(&self) -> Result<Option<u32>> {
-        meta_u32_in(
-            &self.inner.meta.begin_read()?,
-            META_GATE_LIMIT,
-            "gate_limit",
-        )
+        Ok(self.inner.meta.lock().unwrap().gate_limit)
     }
 
     /// Durably records `height` as the gate limit, before the gate opens to
     /// it.
     pub fn set_gate_limit(&self, height: u32) -> Result<()> {
-        self.set_meta_u32(META_GATE_LIMIT, height)
+        self.update_meta(|meta| meta.gate_limit = Some(height))
     }
 
-    fn set_meta_u32(&self, key: &[u8], value: u32) -> Result<()> {
-        let tx = begin_write(&self.inner.meta)?;
-        tx.open_table(table(cf::META))?
-            .insert(key, value.to_be_bytes().as_slice())?;
-        tx.commit()?;
+    /// Applies `change` to `meta.json` and writes it durably.
+    fn update_meta(&self, change: impl FnOnce(&mut Meta)) -> Result<()> {
+        let mut meta = self.inner.meta.lock().unwrap();
+        let mut next = meta.clone();
+        change(&mut next);
+        write_atomically(
+            &self.dir().join(META_FILE),
+            &serde_json::to_vec_pretty(&next)?,
+        )?;
+        *meta = next;
         Ok(())
     }
 
@@ -447,164 +423,213 @@ impl Journal {
         &self.inner.tracked
     }
 
-    /// The first height of every segment file, ascending.
-    pub fn segment_starts(&self) -> Vec<u32> {
-        self.inner.segments.lock().unwrap().starts()
+    /// Lowest height whose records the journal serves; 0 when nothing was
+    /// pruned.
+    pub fn pruned_below(&self) -> Result<u32> {
+        Ok(self.inner.meta.lock().unwrap().pruned_below.unwrap_or(0))
     }
 
-    /// The segment holding `height`, `None` when its file does not exist.
-    /// The handle stays valid while held, even after a prune deletes the
-    /// file.
-    pub fn segment(&self, height: u32) -> Result<Option<Arc<Database>>> {
-        let start = self.segment_start(height);
-        self.inner.segments.lock().unwrap().get(start)
+    /// The first height of every record segment, ascending.
+    pub fn segment_starts(&self) -> Result<Vec<u32>> {
+        self.store().segment_starts(Stream::Records)
     }
 
-    /// The segment holding `height`, created when absent.
-    pub fn segment_mut(&self, height: u32) -> Result<Arc<Database>> {
-        let start = self.segment_start(height);
-        self.inner.segments.lock().unwrap().get_or_create(start)
+    /// The record file of `height`, `None` when it has none.
+    pub fn records(&self, height: u32) -> Result<Option<HeightFile>> {
+        self.store().read(Stream::Records, height)
+    }
+
+    /// Writes `file` as the records of the next unfinalized height and makes
+    /// it the final tip.
+    pub fn append_records(&self, file: &HeightFile) -> Result<()> {
+        let expected = self.final_tip()?.map_or(0, |tip| tip + 1);
+        ensure!(
+            file.height == expected,
+            "appending the records of height {}, but the next unfinalized height is {expected}",
+            file.height
+        );
+        self.store().write(Stream::Records, file)?;
+        self.set_cached_tip(Some(file.height));
+        Ok(())
+    }
+
+    /// The raw events of `height` logged under `hash`, in emission order;
+    /// none when the height has no raw file or one logged under another
+    /// hash.
+    pub fn raw_rows(&self, height: u32, hash: BlockHash) -> Result<Option<HeightFile>> {
+        let store = self.store();
+        if store
+            .read_head(Stream::Raw, height)?
+            .is_none_or(|head| head != hash.as_byte_array())
+        {
+            return Ok(None);
+        }
+        store.read(Stream::Raw, height)
+    }
+
+    /// Writes the raw events of `height`, logged under `hash`, replacing any.
+    pub fn write_raw(&self, height: u32, hash: BlockHash, events: &[Vec<u8>]) -> Result<()> {
+        let mut file = HeightFile::new(height, hash.as_byte_array().to_vec());
+        let rows = file.rows_mut(cf::RAW_EVENTS);
+        for (seq, event) in events.iter().enumerate() {
+            rows.insert(&raw_event_key(height, u32::try_from(seq)?), event)?;
+        }
+        self.store().write(Stream::Raw, &file)
+    }
+
+    /// Highest height with raw events.
+    pub fn last_raw_height(&self) -> Result<Option<u32>> {
+        self.store().last_height(Stream::Raw)
+    }
+
+    /// Deletes the raw events above `height`, all of them when `None`.
+    pub fn remove_raw_above(&self, height: Option<u32>) -> Result<()> {
+        self.store().remove_above(Stream::Raw, height)
+    }
+
+    /// Every row of table `name` in `stream`, height by height in key order:
+    /// a body table's rows, or for [`cf::HEADERS`] and [`cf::RAW_HEIGHTS`]
+    /// each file's head under its height. For tests and tools.
+    pub fn table_rows(&self, stream: Stream, name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let head = matches!(
+            (stream, name),
+            (Stream::Records, cf::HEADERS) | (Stream::Raw, cf::RAW_HEIGHTS)
+        );
+        let mut rows = Vec::new();
+        for height in self.heights(stream)? {
+            if let Some(file) = self.store().read(stream, height)? {
+                if head {
+                    rows.push((height.to_be_bytes().to_vec(), file.head));
+                } else {
+                    rows.extend(file.rows(name).map(|(k, v)| (k.to_vec(), v.to_vec())));
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    /// The heights with a file in `stream`, ascending.
+    pub fn heights(&self, stream: Stream) -> Result<Vec<u32>> {
+        let store = self.store();
+        let mut heights = Vec::new();
+        for start in store.segment_starts(stream)? {
+            heights.extend(store.heights_in(stream, start)?);
+        }
+        Ok(heights)
+    }
+
+    /// The path of `height`'s file in `stream`.
+    pub fn height_path(&self, stream: Stream, height: u32) -> PathBuf {
+        self.store().path(stream, height)
     }
 
     /// Deletes the files of the journal in `dir`, which no open may hold.
     pub fn remove_files(dir: &Path) -> Result<()> {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return Ok(());
-        };
-        for entry in entries {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let base = name.strip_suffix(".init").unwrap_or(&name);
-            if base == META_FILE
-                || base == tracked::TRACKED_FILE
-                || (base.starts_with(SEGMENT_PREFIX) && base.ends_with(".redb"))
-            {
-                remove_if_exists(&entry.path())?;
+        for name in [META_FILE, LOCK_FILE, tracked::TRACKED_FILE] {
+            let path = dir.join(name);
+            remove_if_exists(&path)?;
+            remove_if_exists(&init_path(&path))?;
+        }
+        for stream in Stream::ALL {
+            match std::fs::remove_dir_all(dir.join(stream.dir_name())) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
             }
         }
         Ok(())
     }
+}
 
-    /// Lowest height whose records the journal serves; 0 when nothing was
-    /// pruned.
-    pub fn pruned_below(&self) -> Result<u32> {
-        Ok(meta_u32_in(
-            &self.inner.meta.begin_read()?,
-            META_PRUNED_BELOW,
-            "pruned_below",
-        )?
-        .unwrap_or(0))
+/// Refuses a directory holding a journal of a redb layout.
+fn refuse_redb_layout(dir: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let name = entry?.file_name();
+        let name = name.to_string_lossy();
+        if name == SINGLE_FILE
+            || name == REDB_META_FILE
+            || (name.starts_with("seg-") && name.ends_with(".redb"))
+        {
+            bail!(
+                "{} holds a redb journal ({name}), which this version does not read; delete the \
+                 journal and ord's data dir and index again, or run the release that built it",
+                dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Takes the exclusive lock of the journal in `dir`.
+fn lock(dir: &Path) -> Result<File> {
+    let path = dir.join(LOCK_FILE);
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(file),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(InUse(dir.to_path_buf()).into()),
+        Err(err) => Err(err).with_context(|| format!("locking {}", path.display())),
     }
 }
 
-/// Checks `meta.redb` against the settings the journal is opened with.
+/// Checks `meta.json` against the settings the journal is opened with.
 fn check_meta(
-    db: &Database,
+    meta: &Meta,
     dir: &Path,
     chain: Chain,
     runes: bool,
     options: &JournalOptions,
 ) -> Result<()> {
-    let tx = db.begin_read()?;
-    let meta = tx.open_table(table(cf::META))?;
-    let get = |key: &[u8]| -> Result<Vec<u8>> {
-        Ok(meta
-            .get(key)?
-            .with_context(|| {
-                format!(
-                    "journal meta lacks {}",
-                    String::from_utf8_lossy(key).into_owned()
-                )
-            })?
-            .value()
-            .to_vec())
-    };
-    if get(META_SCHEMA)? != SCHEMA_VERSION.to_be_bytes() {
-        bail!("unsupported journal schema, expected {SCHEMA_VERSION}");
-    }
-    let existing = get(META_CHAIN)?;
-    if existing != chain.to_string().as_bytes() {
+    if meta.schema != SCHEMA_VERSION {
         bail!(
-            "journal chain mismatch: journal is {}, requested {chain}",
-            String::from_utf8_lossy(&existing)
+            "unsupported journal schema {}, expected {SCHEMA_VERSION}",
+            meta.schema
         );
     }
-    let flag = |key: &[u8], name: &str| -> Result<bool> {
-        match get(key)?.as_slice() {
-            [0] => Ok(false),
-            [1] => Ok(true),
-            other => bail!("journal {name} setting is {other:?}, expected [0] or [1]"),
-        }
-    };
-    let built = flag(META_RUNES, "runes")?;
-    if built != runes {
+    if meta.chain != chain.to_string() {
+        bail!(
+            "journal chain mismatch: journal is {}, requested {chain}",
+            meta.chain
+        );
+    }
+    if meta.runes != runes {
         bail!(
             "journal at {} was built {} rune indexing, but runes is {}; start with runes {} \
              again, or delete the journal and ord's data dir and index again",
             dir.display(),
-            with_or_without(built),
+            with_or_without(meta.runes),
             enabled_or_disabled(runes),
-            enabled_or_disabled(built),
+            enabled_or_disabled(meta.runes),
         );
     }
-    let built = flag(META_INSCRIPTIONS, "inscriptions")?;
-    if built != options.inscriptions {
+    if meta.inscriptions != options.inscriptions {
         bail!(
             "journal at {} was built {} the inscription moves the inscriptions module \
              reads, but the module is {}; start with it {} again, or delete the journal \
              and ord's data dir and index again",
             dir.display(),
-            with_or_without(built),
+            with_or_without(meta.inscriptions),
             enabled_or_disabled(options.inscriptions),
-            enabled_or_disabled(built),
+            enabled_or_disabled(meta.inscriptions),
         );
     }
-    let segment = u32::from_be_bytes(
-        get(META_SEGMENT)?
-            .try_into()
-            .map_err(|_| anyhow!("journal segment setting is not 4 bytes"))?,
-    );
-    if segment != options.segment {
+    if meta.segment != options.segment {
         bail!(
-            "journal at {} was built with segments of {segment} heights, but \
-             OPI_JOURNAL_SEGMENT is {}; set it to {segment} again, or delete the journal and \
+            "journal at {} was built with segments of {} heights, but \
+             OPI_JOURNAL_SEGMENT is {}; set it to {} again, or delete the journal and \
              ord's data dir and index again",
             dir.display(),
-            options.segment
+            meta.segment,
+            options.segment,
+            meta.segment,
         );
-    }
-    Ok(())
-}
-
-/// Reads the 4-byte big-endian meta value `key` inside `tx`.
-fn meta_u32_in(tx: &ReadTransaction, key: &[u8], name: &str) -> Result<Option<u32>> {
-    let meta = tx.open_table(table(cf::META))?;
-    let Some(raw) = meta.get(key)? else {
-        return Ok(None);
-    };
-    let raw = raw.value();
-    let bytes: [u8; 4] = raw
-        .try_into()
-        .map_err(|_| anyhow!("{name} is {} bytes, expected 4", raw.len()))?;
-    Ok(Some(u32::from_be_bytes(bytes)))
-}
-
-/// Highest finalized height a segment holds, as of `tx`.
-fn segment_tip_in(tx: &ReadTransaction) -> Result<Option<u32>> {
-    meta_u32_in(tx, SEGMENT_FINAL_TIP, "final_tip")
-}
-
-/// Sets a segment's final tip to `height`, or clears it when `None`.
-fn set_segment_tip(tx: &WriteTransaction, height: Option<u32>) -> Result<()> {
-    let mut meta = tx.open_table(table(cf::META))?;
-    match height {
-        Some(height) => {
-            meta.insert(SEGMENT_FINAL_TIP, height.to_be_bytes().as_slice())?;
-        }
-        None => {
-            meta.remove(SEGMENT_FINAL_TIP)?;
-        }
     }
     Ok(())
 }
@@ -617,14 +642,4 @@ pub fn compress_info(value: &[u8]) -> Result<Vec<u8>> {
 /// Inverse of [`compress_info`].
 pub fn decompress_info(stored: &[u8]) -> Result<Vec<u8>> {
     Ok(zstd::stream::decode_all(stored)?)
-}
-
-/// Deletes every row of `tx`'s record tables from `height` up.
-fn delete_records_from(tx: &WriteTransaction, height: u32) -> Result<()> {
-    let first = height.to_be_bytes();
-    for name in RECORD_TABLES {
-        tx.open_table(table(name))?
-            .retain_in::<&[u8], _>(first.as_slice().., |_, _| false)?;
-    }
-    Ok(())
 }

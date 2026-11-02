@@ -1,18 +1,18 @@
 use {
+    bitcoin::hashes::Hash,
     opi_core::{
         InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord, RuneEtching,
         RuneEvent, RuneEventKind, RuneSpend, RuneTerms,
     },
     opi_source::journal::{
-        DEFAULT_SEGMENT, Journal, JournalOptions, LEGACY_FILE, META_FILE, begin_write, cf,
-        compress_info, decode_info, decode_inscription_move, decode_rune_etching,
-        decode_rune_event, decode_rune_spend, decode_transfer, decompress_info, encode_info,
-        encode_inscription_move, encode_rune_etching, encode_rune_event, encode_rune_spend,
-        encode_transfer, inscription_move_key, rune_id_key, rune_id_string, rune_outpoint_key,
-        table, tracked, transfer_key,
+        DEFAULT_SEGMENT, HeightFile, Journal, JournalOptions, META_FILE, Stream, compress_info,
+        decode_info, decode_inscription_move, decode_rune_etching, decode_rune_event,
+        decode_rune_spend, decode_transfer, decompress_info, encode_info, encode_inscription_move,
+        encode_rune_etching, encode_rune_event, encode_rune_spend, encode_transfer,
+        inscription_move_key, is_in_use, rune_id_key, rune_id_string, rune_outpoint_key, testing,
+        tracked, transfer_key,
     },
     ord::Chain,
-    redb::{ReadableDatabase, TableHandle},
     std::path::Path,
 };
 
@@ -297,24 +297,20 @@ fn rune_keys_sort_numerically() {
     assert_eq!(&outpoint[32..], 7u32.to_le_bytes());
 }
 
-/// Writes `value` under `key` in the meta file of the closed journal in
-/// `dir`.
-fn put_meta(dir: &Path, key: &[u8], value: &[u8]) {
-    let db = redb::Database::create(dir.join(META_FILE)).unwrap();
-    let tx = begin_write(&db).unwrap();
-    tx.open_table(table(cf::META))
-        .unwrap()
-        .insert(key, value)
-        .unwrap();
-    tx.commit().unwrap();
+/// Sets `key` to `value` in the meta file of the closed journal in `dir`.
+fn put_meta(dir: &Path, key: &str, value: serde_json::Value) {
+    let path = dir.join(META_FILE);
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    meta[key] = value;
+    std::fs::write(path, serde_json::to_vec(&meta).unwrap()).unwrap();
 }
 
-/// The value under `key` in the meta file of the closed journal in `dir`.
-fn get_meta(dir: &Path, key: &[u8]) -> Option<Vec<u8>> {
-    let db = redb::Database::create(dir.join(META_FILE)).unwrap();
-    let tx = db.begin_read().unwrap();
-    let table = tx.open_table(table(cf::META)).unwrap();
-    table.get(key).unwrap().map(|v| v.value().to_vec())
+/// The value of `key` in the meta file of the closed journal in `dir`.
+fn get_meta(dir: &Path, key: &str) -> serde_json::Value {
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join(META_FILE)).unwrap()).unwrap();
+    meta[key].clone()
 }
 
 #[test]
@@ -324,15 +320,12 @@ fn open_creates_meta_and_tracked_files() {
     let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert!(journal.created());
     assert_eq!(journal.final_tip().unwrap(), None);
-    assert_eq!(journal.segment_starts(), Vec::<u32>::new());
+    assert_eq!(journal.segment_starts().unwrap(), Vec::<u32>::new());
     assert!(path.join(tracked::TRACKED_FILE).exists());
     drop(journal);
-    assert_eq!(get_meta(&path, b"chain").unwrap(), b"regtest");
-    assert_eq!(get_meta(&path, b"schema").unwrap(), 2u32.to_be_bytes());
-    assert_eq!(
-        get_meta(&path, b"segment").unwrap(),
-        DEFAULT_SEGMENT.to_be_bytes()
-    );
+    assert_eq!(get_meta(&path, "chain"), "regtest");
+    assert_eq!(get_meta(&path, "schema"), 3);
+    assert_eq!(get_meta(&path, "segment"), DEFAULT_SEGMENT);
     assert!(
         !Journal::open(&path, Chain::Regtest, true)
             .unwrap()
@@ -340,56 +333,37 @@ fn open_creates_meta_and_tracked_files() {
     );
 }
 
-/// A segment file holds every table, named after its first height.
+/// A height's files live in the directory of its segment, named after the
+/// segment's first height, one per stream.
 #[test]
-fn segments_hold_every_table() {
+fn height_files_live_in_segment_dirs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
-    let segment = journal.segment_mut(824_731).unwrap();
-    assert_eq!(journal.segment_starts(), [824_000]);
-    assert!(path.join("seg-000824000.redb").exists());
-    let tx = segment.begin_read().unwrap();
-    let names = tx
-        .list_tables()
-        .unwrap()
-        .map(|handle| handle.name().to_string())
-        .collect::<Vec<_>>();
-    for name in [
-        cf::TRANSFERS,
-        cf::INFO,
-        cf::HEADERS,
-        cf::RAW_EVENTS,
-        cf::RAW_HEIGHTS,
-        cf::META,
-        cf::RUNE_EVENTS,
-        cf::RUNE_ETCHINGS,
-        cf::RUNE_SPENT,
-        cf::INSCRIPTION_MOVES,
-    ] {
-        assert!(names.iter().any(|have| have == name), "{name}");
-    }
-    assert!(journal.segment(825_000).unwrap().is_none());
+    journal
+        .write_raw(824_731, bitcoin::BlockHash::all_zeros(), &[vec![1, 2, 3]])
+        .unwrap();
+    testing::rewrite_records(
+        &journal,
+        &HeightFile::new(824_731, testing::header(824_731)),
+    )
+    .unwrap();
+    assert!(path.join("raw/000824000/000824731").exists());
+    assert!(path.join("rec/000824000/000824731").exists());
+    assert_eq!(journal.segment_starts().unwrap(), [824_000]);
+    assert_eq!(journal.heights(Stream::Raw).unwrap(), [824_731]);
 }
 
-/// A segment the registry let go while a writer still holds it comes back
-/// as the same handle: redb opens a file only once.
+/// A journal is open once at a time.
 #[test]
-fn a_held_segment_is_shared_after_the_registry_lets_it_go() {
+fn a_second_open_is_refused_while_the_first_holds_the_journal() {
     let dir = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&dir.path().join("journal"), Chain::Regtest, false).unwrap();
-    let held = journal.segment_mut(0).unwrap();
-    for height in [1000, 2000, 3000, 4000] {
-        journal.segment_mut(height).unwrap();
-    }
-    let again = journal.segment(10).unwrap().unwrap();
-    assert!(std::sync::Arc::ptr_eq(&held, &again));
-    drop((held, again));
-    for height in [1000, 2000, 3000] {
-        journal.segment(height).unwrap();
-    }
-    // Nothing holds it now, so it opens again.
-    journal.segment(10).unwrap().unwrap();
+    let path = dir.path().join("journal");
+    let journal = Journal::open(&path, Chain::Regtest, false).unwrap();
+    let err = Journal::open(&path, Chain::Regtest, false).err().unwrap();
+    assert!(is_in_use(&err), "{err:#}");
+    drop(journal);
+    Journal::open(&path, Chain::Regtest, false).unwrap();
 }
 
 #[test]
@@ -414,7 +388,7 @@ fn reopen_rejects_schema_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     drop(Journal::open(&path, Chain::Regtest, true).unwrap());
-    put_meta(&path, b"schema", &3u32.to_be_bytes());
+    put_meta(&path, "schema", 99.into());
     let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
     assert!(err.to_string().contains("schema"), "{err}");
 }
@@ -437,18 +411,22 @@ fn reopen_rejects_another_segment_length() {
     assert!(message.contains("1000"), "{message}");
 }
 
-/// A directory holding a single-file journal is refused, and left as it is.
+/// A directory holding a redb journal, single-file or segmented, is refused,
+/// and left as it is.
 #[test]
-fn open_refuses_the_single_file_layout() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("journal");
-    std::fs::create_dir_all(&path).unwrap();
-    std::fs::write(path.join(LEGACY_FILE), b"old").unwrap();
-    let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
-    let message = format!("{err:#}");
-    assert!(message.contains("single-file journal"), "{message}");
-    assert!(!path.join(META_FILE).exists());
-    assert_eq!(std::fs::read(path.join(LEGACY_FILE)).unwrap(), b"old");
+fn open_refuses_the_redb_layouts() {
+    for file in ["journal.redb", "meta.redb", "seg-000890000.redb"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join(file), b"old").unwrap();
+        let err = Journal::open(&path, Chain::Regtest, true).err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("redb journal"), "{message}");
+        assert!(message.contains(file), "{message}");
+        assert!(!path.join(META_FILE).exists());
+        assert_eq!(std::fs::read(path.join(file)).unwrap(), b"old");
+    }
 }
 
 /// A journal records the runes setting it was created with.
@@ -461,11 +439,11 @@ fn open_records_the_runes_setting() {
             .unwrap()
             .runes()
     );
-    assert_eq!(get_meta(&without, b"runes").unwrap(), [0]);
+    assert_eq!(get_meta(&without, "runes"), false);
 
     let with = dir.path().join("with");
     assert!(Journal::open(&with, Chain::Regtest, true).unwrap().runes());
-    assert_eq!(get_meta(&with, b"runes").unwrap(), [1]);
+    assert_eq!(get_meta(&with, "runes"), true);
 }
 
 #[test]
@@ -564,7 +542,7 @@ fn open_records_the_inscriptions_setting() {
     let journal = Journal::open(&without, Chain::Regtest, false).unwrap();
     assert!(!journal.inscriptions());
     drop(journal);
-    assert_eq!(get_meta(&without, b"inscriptions").unwrap(), [0]);
+    assert_eq!(get_meta(&without, "inscriptions"), false);
     let err = Journal::open_with(&without, Chain::Regtest, false, &with_moves())
         .err()
         .unwrap();
@@ -577,7 +555,7 @@ fn open_records_the_inscriptions_setting() {
     let journal = Journal::open_with(&with, Chain::Regtest, false, &with_moves()).unwrap();
     assert!(journal.inscriptions());
     drop(journal);
-    assert_eq!(get_meta(&with, b"inscriptions").unwrap(), [1]);
+    assert_eq!(get_meta(&with, "inscriptions"), true);
     let err = Journal::open(&with, Chain::Regtest, false).err().unwrap();
     assert!(
         format!("{err:#}").contains("built with the inscription moves"),
@@ -585,27 +563,23 @@ fn open_records_the_inscriptions_setting() {
     );
 }
 
-/// The final tip is the highest one any segment records, read when the
-/// journal opens.
+/// The final tip is the highest height with a record file, read when the
+/// journal opens; raw files above it and empty segment directories don't
+/// count.
 #[test]
-fn final_tip_is_the_highest_segment_tip() {
+fn final_tip_is_the_highest_record_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("journal");
     {
         let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
-        for (height, tip) in [(839_000, Some(839_999u32)), (840_000, Some(840_017))] {
-            let segment = journal.segment_mut(height).unwrap();
-            let tx = begin_write(&segment).unwrap();
-            if let Some(tip) = tip {
-                tx.open_table(table(cf::META))
-                    .unwrap()
-                    .insert(b"final_tip".as_slice(), tip.to_be_bytes().as_slice())
-                    .unwrap();
-            }
-            tx.commit().unwrap();
+        for height in [839_999, 840_017] {
+            testing::rewrite_records(&journal, &HeightFile::new(height, testing::header(height)))
+                .unwrap();
         }
-        // A segment above the tip holding only raw events.
-        journal.segment_mut(841_000).unwrap();
+        journal
+            .write_raw(841_000, bitcoin::BlockHash::all_zeros(), &[])
+            .unwrap();
+        std::fs::create_dir_all(path.join("rec/000842000")).unwrap();
     }
     let journal = Journal::open(&path, Chain::Regtest, true).unwrap();
     assert_eq!(journal.final_tip().unwrap(), Some(840_017));

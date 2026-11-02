@@ -19,7 +19,7 @@ use {
     opi_core::BlockSource,
     opi_source::{
         driver::{SourceConfig, SourceHandle, spawn_source},
-        journal::{Journal, JournalReader, cf, table, tracked},
+        journal::{Journal, JournalReader, Stream, cf, table, tracked},
         proxy::UpstreamAuth,
     },
     ord::{Chain, InscriptionId},
@@ -350,11 +350,10 @@ pub fn wait_for_tip(reader: &JournalReader, height: u32) {
     }
 }
 
-/// The rune tables of a segment.
+/// The rune tables of a record file.
 pub const RUNE_TABLES: [&str; 3] = [cf::RUNE_EVENTS, cf::RUNE_ETCHINGS, cf::RUNE_SPENT];
 
-/// The tables of a segment holding finalized rows: everything but the raw
-/// event log and the segment's final tip.
+/// The tables of a record file, its header among them.
 pub const FINALIZED_TABLES: [&str; 7] = [
     cf::TRANSFERS,
     cf::INFO,
@@ -371,8 +370,8 @@ pub fn dump(dir: &Path) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
 }
 
 /// Every finalized row of the journal in `dir`, built with `runes` and
-/// segments of `segment` heights: each segment's finalized tables, then the
-/// tracked set.
+/// segments of `segment` heights: each finalized table, then the tracked
+/// set.
 pub fn dump_with(dir: &Path, runes: bool, segment: u32) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
     let options = opi_source::journal::JournalOptions {
         segment,
@@ -382,29 +381,29 @@ pub fn dump_with(dir: &Path, runes: bool, segment: u32) -> Vec<(&'static str, Ve
     dump_journal(&journal)
 }
 
-/// Every finalized row of `journal`.
+/// Every finalized row of `journal`: each finalized table, then the tracked
+/// set.
 pub fn dump_journal(journal: &Journal) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
     let mut rows = Vec::new();
-    for start in journal.segment_starts() {
-        let segment = journal.segment(start).unwrap().unwrap();
-        rows.extend(dump_tables(&segment, &FINALIZED_TABLES));
+    for name in FINALIZED_TABLES {
+        rows.extend(
+            segment_rows(journal, name)
+                .into_iter()
+                .map(|(key, value)| (name, key, value)),
+        );
     }
     rows.extend(dump_tables(journal.tracked_db(), &tracked::TABLES));
     rows
 }
 
-/// The rows of table `name` in every segment of `journal`.
+/// The rows of table `name` in every height file of `journal`: raw files
+/// for the raw tables, record files for the others.
 pub fn segment_rows(journal: &Journal, name: &'static str) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut rows = Vec::new();
-    for start in journal.segment_starts() {
-        let segment = journal.segment(start).unwrap().unwrap();
-        rows.extend(
-            dump_tables(&segment, &[name])
-                .into_iter()
-                .map(|(_, key, value)| (key, value)),
-        );
-    }
-    rows
+    let stream = match name {
+        cf::RAW_EVENTS | cf::RAW_HEIGHTS => Stream::Raw,
+        _ => Stream::Records,
+    };
+    journal.table_rows(stream, name).unwrap()
 }
 
 /// Every row of the `tables` of the journal database `db`, table by table.

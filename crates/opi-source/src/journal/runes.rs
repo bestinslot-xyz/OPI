@@ -8,8 +8,8 @@
 
 use {
     super::{
-        encode_rune_etching, encode_rune_event, encode_rune_spend, finalize::RawTable,
-        rune_etching_key, rune_event_key,
+        Rows, encode_rune_etching, encode_rune_event, encode_rune_spend, rune_etching_key,
+        rune_event_key,
     },
     crate::raw_event::RawEvent,
     anyhow::{Result, bail, ensure},
@@ -51,9 +51,9 @@ struct TxRunes {
 /// skipped.
 pub(super) fn finalize_runes(
     index: &Index,
-    event_table: &mut RawTable,
-    etchings: &mut RawTable,
-    spent: &mut RawTable,
+    event_table: &mut Rows,
+    etchings: &mut Rows,
+    spent: &mut Rows,
     block: &Block,
     height: u32,
     events: &[RawEvent],

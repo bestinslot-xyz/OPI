@@ -23,8 +23,8 @@ pub const PRUNE_EVERY: u32 = 100;
 /// over.
 ///
 /// `block_view` reads a whole block's records and inscription contents, so it
-/// runs on tokio's blocking pool. `tip` and `block_info` are single-key redb
-/// reads and run inline on the task.
+/// runs on tokio's blocking pool. `tip` reads memory and `block_info` reads a
+/// height file's head, so they run inline on the task.
 ///
 /// Each cursor read records the module's indexed height and database pool in
 /// the process metrics, and each applied block its height and apply time.

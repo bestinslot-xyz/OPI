@@ -8,25 +8,23 @@
 
 use {
     super::{
-        Journal, begin_write, cf, compress_info, encode_info, encode_inscription_move,
+        HeightFile, Journal, Rows, Stream, cf, compress_info, encode_info, encode_inscription_move,
         encode_transfer, info_key, inscription_move_key,
         order::{Located, assign_idx},
-        raw_event_key,
+        remove_if_exists,
         runes::finalize_runes,
-        set_segment_tip, table,
         tracked::{Change, Overlay},
         transfer_key,
     },
     crate::raw_event::RawEvent,
     anyhow::{Context, Result, ensure},
-    bitcoin::{Block, BlockHash, OutPoint, TxOut, Txid, consensus, hashes::Hash},
+    bitcoin::{Block, BlockHash, OutPoint, TxOut, Txid, consensus},
     opi_core::{
         InscriptionGenesis, InscriptionInfo, InscriptionMove, InscriptionRecord,
         brc20::acts_on_transfer,
     },
     ord::{Index, Inscription, InscriptionId, ParsedEnvelope},
     ordinals::{Charm, Rune, SatPoint},
-    redb::ReadableTable,
     serde_json::Value,
     std::{
         collections::{HashMap, HashSet},
@@ -110,15 +108,15 @@ impl Positions {
     }
 }
 
-pub(super) type RawTable<'txn> = redb::Table<'txn, &'static [u8], &'static [u8]>;
-
 /// Finalizes `heights`, which start at the next unfinalized height, as ord
 /// committed them: for each height its transfer records with the info of
 /// every inscription they name, its inscription moves when the journal
 /// keeps them, its rune records from ord's first rune height on when the
-/// journal keeps them, and its header. Each segment the heights fall in
-/// commits on its own with its final tip, after the tracked set's changes
-/// for those heights.
+/// journal keeps them, and its header. Each height commits the tracked
+/// set's changes for it, then its record file, which makes it the final
+/// tip, then deletes its raw file: nothing reads a finalized height's raw
+/// events again, since a reorg that replaces the height makes ord emit the
+/// new block's events.
 ///
 /// Only raw events logged under ord's hash for a height count, so stale rows
 /// of a replaced block are ignored. A height without inscription events and
@@ -144,97 +142,97 @@ pub fn finalize_range(
     journal.tracked_undo_above(tip)?;
 
     let first_rune_height = Rune::first_rune_height(journal.chain()?.into());
-    let mut start = first;
-    while start <= last {
-        let end = last.min(journal.segment_start(start) + (journal.segment_len() - 1));
-        finalize_segment(journal, index, start..=end, chain, first_rune_height)?;
-        start = end + 1;
+    let mut tracked = Overlay::new(journal);
+    for height in heights {
+        let file = finalize_height(
+            journal,
+            index,
+            chain,
+            &mut tracked,
+            height,
+            first_rune_height,
+        )?;
+        tracked.commit()?;
+        journal.append_records(&file)?;
+        remove_if_exists(&journal.height_path(Stream::Raw, height))?;
     }
     Ok(())
 }
 
-/// Finalizes `heights`, all in one segment, in one transaction of it.
-fn finalize_segment(
+/// The record file of `height`, with its changes to the tracked set laid
+/// over `tracked`.
+fn finalize_height(
     journal: &Journal,
     index: &Index,
-    heights: RangeInclusive<u32>,
     chain: &mut dyn ChainData,
+    tracked: &mut Overlay,
+    height: u32,
     first_rune_height: u32,
-) -> Result<()> {
-    let last = *heights.end();
-    let segment = journal.segment_mut(last)?;
-    let mut tracked = Overlay::new(journal);
-    let tx = begin_write(&segment)?;
-    {
-        let mut transfers = tx.open_table(table(cf::TRANSFERS))?;
-        let mut infos = tx.open_table(table(cf::INFO))?;
-        let mut headers = tx.open_table(table(cf::HEADERS))?;
-        let mut rune_tables = if journal.runes() {
-            Some([
-                tx.open_table(table(cf::RUNE_EVENTS))?,
-                tx.open_table(table(cf::RUNE_ETCHINGS))?,
-                tx.open_table(table(cf::RUNE_SPENT))?,
-            ])
-        } else {
-            None
-        };
-        let mut moves = if journal.inscriptions() {
-            Some(tx.open_table(table(cf::INSCRIPTION_MOVES))?)
-        } else {
-            None
-        };
-        let raw_events = tx.open_table(table(cf::RAW_EVENTS))?;
-        let raw_heights = tx.open_table(table(cf::RAW_HEIGHTS))?;
-
-        for height in heights {
-            let hash = index
-                .block_hash(Some(height))?
-                .with_context(|| format!("ord has no hash for committed height {height}"))?;
-            let events = logged_events(&raw_heights, &raw_events, height, hash)?;
-            let inscriptions = events.iter().any(|event| {
-                matches!(
-                    event,
-                    RawEvent::InscriptionCreated { .. } | RawEvent::InscriptionTransferred { .. }
-                )
-            });
-            let runes = rune_tables.is_some() && height >= first_rune_height;
-            let block = chain.block(hash, inscriptions || runes)?;
-            ensure!(
-                block.block_hash() == hash,
-                "block {} given for {hash} at height {height}",
-                block.block_hash()
-            );
-            if let Some([rune_events, etchings, spent]) = rune_tables.as_mut().filter(|_| runes) {
-                finalize_runes(index, rune_events, etchings, spent, &block, height, &events)?;
-            }
-            if inscriptions {
-                let positions = Positions::new(&block);
-                if let Some(moves) = moves.as_mut() {
-                    finalize_moves(index, moves, &block, &positions, height, &events)?;
-                }
-                finalize_events(
-                    index,
-                    chain,
-                    &positions,
-                    &mut transfers,
-                    &mut infos,
-                    &mut tracked,
-                    &block,
-                    height,
-                    events,
-                )?;
-            }
-            headers.insert(
-                height.to_be_bytes().as_slice(),
-                consensus::serialize(&block.header).as_slice(),
+) -> Result<HeightFile> {
+    let hash = index
+        .block_hash(Some(height))?
+        .with_context(|| format!("ord has no hash for committed height {height}"))?;
+    let events = logged_events(journal, height, hash)?;
+    let inscriptions = events.iter().any(|event| {
+        matches!(
+            event,
+            RawEvent::InscriptionCreated { .. } | RawEvent::InscriptionTransferred { .. }
+        )
+    });
+    let runes = journal.runes() && height >= first_rune_height;
+    let block = chain.block(hash, inscriptions || runes)?;
+    ensure!(
+        block.block_hash() == hash,
+        "block {} given for {hash} at height {height}",
+        block.block_hash()
+    );
+    let mut file = HeightFile::new(height, consensus::serialize(&block.header));
+    if runes {
+        let mut rune_events = Rows::default();
+        let mut etchings = Rows::default();
+        let mut spent = Rows::default();
+        finalize_runes(
+            index,
+            &mut rune_events,
+            &mut etchings,
+            &mut spent,
+            &block,
+            height,
+            &events,
+        )?;
+        *file.rows_mut(cf::RUNE_EVENTS) = rune_events;
+        *file.rows_mut(cf::RUNE_ETCHINGS) = etchings;
+        *file.rows_mut(cf::RUNE_SPENT) = spent;
+    }
+    if inscriptions {
+        let positions = Positions::new(&block);
+        if journal.inscriptions() {
+            finalize_moves(
+                index,
+                file.rows_mut(cf::INSCRIPTION_MOVES),
+                &block,
+                &positions,
+                height,
+                &events,
             )?;
         }
+        let mut transfers = Rows::default();
+        let mut infos = Rows::default();
+        finalize_events(
+            index,
+            chain,
+            &positions,
+            &mut transfers,
+            &mut infos,
+            tracked,
+            &block,
+            height,
+            events,
+        )?;
+        *file.rows_mut(cf::TRANSFERS) = transfers;
+        *file.rows_mut(cf::INFO) = infos;
     }
-    set_segment_tip(&tx, Some(last))?;
-    tracked.commit()?;
-    tx.commit()?;
-    journal.set_cached_tip(Some(last));
-    Ok(())
+    Ok(file)
 }
 
 /// Writes the transfer records of one block's events, the info of every
@@ -244,8 +242,8 @@ fn finalize_events(
     index: &Index,
     chain: &mut dyn ChainData,
     positions: &Positions,
-    transfers: &mut RawTable,
-    infos: &mut RawTable,
+    transfers: &mut Rows,
+    infos: &mut Rows,
     tracked: &mut Overlay,
     block: &Block,
     height: u32,
@@ -317,7 +315,7 @@ fn finalize_events(
 /// Unbound creations have no location and are left out.
 fn finalize_moves(
     index: &Index,
-    moves: &mut RawTable,
+    moves: &mut Rows,
     block: &Block,
     positions: &Positions,
     height: u32,
@@ -408,23 +406,12 @@ fn info_row_key(height: u32, id: InscriptionId) -> Result<[u8; 4 + super::INSCRI
 }
 
 /// Events of `height` logged under `hash`, in emission order.
-fn logged_events(
-    raw_heights: &RawTable,
-    raw_events: &RawTable,
-    height: u32,
-    hash: BlockHash,
-) -> Result<Vec<RawEvent>> {
-    let tagged = raw_heights
-        .get(height.to_be_bytes().as_slice())?
-        .is_some_and(|tag| tag.value() == hash.as_byte_array().as_slice());
-    if !tagged {
+fn logged_events(journal: &Journal, height: u32, hash: BlockHash) -> Result<Vec<RawEvent>> {
+    let Some(file) = journal.raw_rows(height, hash)? else {
         return Ok(Vec::new());
-    }
-    let first = raw_event_key(height, 0);
-    let last = raw_event_key(height, u32::MAX);
-    raw_events
-        .range::<&[u8]>(first.as_slice()..=last.as_slice())?
-        .map(|row| RawEvent::decode(row?.1.value()))
+    };
+    file.rows(cf::RAW_EVENTS)
+        .map(|(_, value)| RawEvent::decode(value))
         .collect()
 }
 

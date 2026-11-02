@@ -16,8 +16,13 @@
 //! A log keyed by height names every row a height created or transferred,
 //! so a rollback undoes them and a prune drops the rows of inscriptions
 //! transferred below the window. Writes for a height commit before the
-//! segment that finalizes it, and finalize first undoes whatever is logged
-//! above the final tip, so the set always matches the final tip.
+//! record file that finalizes it, and finalize first undoes whatever is
+//! logged above the final tip, so the set always matches the final tip.
+//!
+//! The set is live state, not a window: it holds every tracked inscription
+//! not yet transferred, from the first inscription on (48.5M rows and 2.2
+//! GB of keys and values on mainnet at height 890,000), and grows with the
+//! text and JSON inscriptions nobody moves.
 
 use {
     super::{Journal, begin_write, create_db, info_key, table},
@@ -88,9 +93,13 @@ fn log_key(height: u32, kind: u8, id: InscriptionId) -> Result<[u8; 5 + ID_LEN]>
     Ok(key)
 }
 
-/// Opens `tracked.redb` at `path`, creating it with its tables when absent.
+/// Opens `tracked.redb` at `path`, creating it with its tables when absent,
+/// and compacts it: copy-on-write commits leave freed pages behind, and a
+/// redb file only shrinks when compacted.
 pub(super) fn open(path: &Path, cache_bytes: usize) -> Result<Database> {
-    let db = create_db(path, cache_bytes)?;
+    let mut db = create_db(path, cache_bytes)?;
+    db.compact()
+        .with_context(|| format!("compacting {}", path.display()))?;
     let tx = begin_write(&db)?;
     tx.open_table(table(TRACKED))?;
     tx.open_table(table(LOG))?;
