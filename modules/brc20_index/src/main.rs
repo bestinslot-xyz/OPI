@@ -188,6 +188,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("BRC20 Indexer v{}", env!("CARGO_PKG_VERSION"));
     let config = Brc20IndexerConfig::default();
+    config.validate_brc20_prog_credentials()?;
     set_brc20_database(Arc::new(Mutex::new(Brc20Database::new(&config))));
     let mut brc20_indexer = Brc20Indexer::new(config);
     if args.is_validate {

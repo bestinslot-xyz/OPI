@@ -236,7 +236,7 @@ pub const OPERATION_MODE_LIGHT: &str = "light";
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 7;
 pub const EVENT_HASH_VERSION: i32 = 3;
-pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.16.0";
+pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.17.0";
 pub const INDEXER_VERSION: &str = concat!("opi-brc20-rs-node v", env!("CARGO_PKG_VERSION"));
 pub const LIGHT_CLIENT_VERSION: &str =
     concat!("opi-brc20-rs-node-light v", env!("CARGO_PKG_VERSION"));
@@ -431,5 +431,78 @@ impl Default for Brc20IndexerConfig {
         };
 
         config
+    }
+}
+
+impl Brc20IndexerConfig {
+    /// brc20_prog serves the indexer methods (brc20_mine, brc20_finaliseBlock, ...) only to
+    /// callers with HTTP basic auth, so a BRC2.0-enabled indexer needs both credentials.
+    pub fn validate_brc20_prog_credentials(&self) -> Result<(), String> {
+        if !self.brc20_prog_enabled {
+            return Ok(());
+        }
+        let mut missing = Vec::new();
+        if self.brc20_prog_rpc_user.is_none() {
+            missing.push(BRC20_PROG_RPC_USER_KEY);
+        }
+        if self.brc20_prog_rpc_password.is_none() {
+            missing.push(BRC20_PROG_RPC_PASSWORD_KEY);
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "{} must be set when {} is true. brc20_prog requires HTTP basic auth for the indexer \
+             methods: set them to the BRC20_PROG_RPC_SERVER_USER and \
+             BRC20_PROG_RPC_SERVER_PASSWORD of the brc20_prog server.",
+            missing.join(" and "),
+            BRC20_PROG_ENABLED_KEY
+        ))
+    }
+}
+
+#[cfg(test)]
+mod brc20_prog_credentials_tests {
+    use super::*;
+
+    fn config(enabled: bool, user: Option<&str>, password: Option<&str>) -> Brc20IndexerConfig {
+        let mut config = Brc20IndexerConfig::default();
+        config.brc20_prog_enabled = enabled;
+        config.brc20_prog_rpc_user = user.map(str::to_string);
+        config.brc20_prog_rpc_password = password.map(str::to_string);
+        config
+    }
+
+    #[test]
+    fn disabled_prog_needs_no_credentials() {
+        assert!(
+            config(false, None, None)
+                .validate_brc20_prog_credentials()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn enabled_prog_with_both_credentials_is_valid() {
+        assert!(
+            config(true, Some("indexer"), Some(&"a".repeat(64)))
+                .validate_brc20_prog_credentials()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn enabled_prog_without_credentials_names_missing_keys() {
+        let err = config(true, None, None)
+            .validate_brc20_prog_credentials()
+            .unwrap_err();
+        assert!(err.contains(BRC20_PROG_RPC_USER_KEY));
+        assert!(err.contains(BRC20_PROG_RPC_PASSWORD_KEY));
+
+        let err = config(true, Some("indexer"), None)
+            .validate_brc20_prog_credentials()
+            .unwrap_err();
+        assert!(!err.contains(BRC20_PROG_RPC_USER_KEY));
+        assert!(err.contains(BRC20_PROG_RPC_PASSWORD_KEY));
     }
 }

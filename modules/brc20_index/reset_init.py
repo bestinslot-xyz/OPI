@@ -28,8 +28,8 @@ if init_env:
   REPORT_NAME="opi_brc20_index"
   BRC20_PROG_ENABLED="false"
   BRC20_PROG_RPC_URL="http://localhost:18545"
-  BRC20_PROG_RPC_USER="user"
-  BRC20_PROG_RPC_PASSWORD="password"
+  BRC20_PROG_RPC_USER=""
+  BRC20_PROG_RPC_PASSWORD=""
 
   print("Initialising .env file")
   print("leave blank to use default values")
@@ -96,12 +96,22 @@ if init_env:
     res = input("BRC20 programmable module RPC URL (Default: http://localhost:18545): ")
     if res != '':
       BRC20_PROG_RPC_URL = res
-    res = input("BRC20 programmable module RPC username (Default: user): ")
-    if res != '':
-      BRC20_PROG_RPC_USER = res
-    res = stdiomask.getpass("BRC20 programmable module RPC password (Default: password): ")
-    if res != '':
-      BRC20_PROG_RPC_PASSWORD = res
+    print('brc20_prog requires HTTP basic auth for the indexer methods. Enter the BRC20_PROG_RPC_SERVER_USER and BRC20_PROG_RPC_SERVER_PASSWORD the brc20_prog server runs with.')
+    print('brc20_prog requires a password of at least 32 characters; generate one with `openssl rand -hex 32`.')
+    while True:
+      res = input("BRC20 programmable module RPC username: ")
+      if res != '':
+        BRC20_PROG_RPC_USER = res
+        break
+      else:
+        print('BRC20 programmable module RPC username cannot be empty')
+    while True:
+      res = stdiomask.getpass("BRC20 programmable module RPC password: ")
+      if res != '':
+        BRC20_PROG_RPC_PASSWORD = res
+        break
+      else:
+        print('BRC20 programmable module RPC password cannot be empty')
 
   f = open('.env', 'w')
   f.write('DB_USER="' + DB_USER + '"\n')

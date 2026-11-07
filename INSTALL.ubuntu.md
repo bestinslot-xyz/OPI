@@ -175,7 +175,9 @@ ord --data-dir . index run;
 **BRC-20 Indexer**
 
 > [!WARNING]
-> If running BRC2.0, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+> If running BRC2.0, set up and run brc20_prog server (v0.17 or later) using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
+> 
+> brc20_prog requires `BRC20_PROG_RPC_SERVER_USER` and a strong `BRC20_PROG_RPC_SERVER_PASSWORD` (at least 32 characters; generate it with `openssl rand -hex 32`). Give the same pair to `reset_init.py` when it asks for the BRC20 programmable module RPC username and password.
 > 
 > BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`.
 > 

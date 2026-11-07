@@ -8,7 +8,7 @@ axum = "0.8.7"
 axum-server = "0.8.0"
 base64 = "0.22.1"
 bitcoin = "0.32.8"
-brc20-prog = { version = "0.16.0", default-features = false }
+brc20-prog = { version = "0.17.0", default-features = false }
 db_reader = { path = "../../ord/db_reader", default-features = false }
 dotenvy = "0.15.7"
 hex = "0.4.3"

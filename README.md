@@ -182,7 +182,9 @@ cd ord/target/release;
 
 **BRC-20 Indexer**
 
-If BRC20 Programmable Module is supported, set up and run brc20_prog server using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running BRC-20 indexer.
+If BRC20 Programmable Module is supported, set up and run brc20_prog server (v0.17 or later) using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running BRC-20 indexer.
+
+brc20_prog serves the indexer methods only with HTTP basic auth, and refuses to start without `BRC20_PROG_RPC_SERVER_USER` and a strong `BRC20_PROG_RPC_SERVER_PASSWORD` (at least 32 characters, different from the user, not a sample value such as `password`). Generate the password with `openssl rand -hex 32`, then set the same pair as `BRC20_PROG_RPC_USER` and `BRC20_PROG_RPC_PASSWORD` in `modules/brc20_index/.env`. The indexer refuses to start with BRC2.0 enabled and either value empty.
 
 ```bash
 cd modules/brc20_index;
