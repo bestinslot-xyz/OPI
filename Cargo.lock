@@ -1856,9 +1856,9 @@ dependencies = [
 
 [[package]]
 name = "brc20-prog"
-version = "0.16.6"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc02f1e01d874477bd47189986b8b259e0fd5bb7acc3285eaaa4500ca70a941"
+checksum = "af8146933ec26fb136ca7d2156de26548988945fd71fe19cfe7cf6021b9680f1"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -1886,6 +1886,7 @@ dependencies = [
  "serde_either",
  "serde_json",
  "sha256",
+ "subtle",
  "tokio",
  "tower",
  "tower-http 0.7.1",
