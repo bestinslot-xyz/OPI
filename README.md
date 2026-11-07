@@ -270,8 +270,10 @@ not pruned.
 
 #### BRC2.0 engine
 
-When `brc20` is enabled, the brc20-prog engine (`Brc20Prog`, brc20-prog 0.16)
-runs inside the `opi-indexer` process. There is no separate brc20-prog server.
+When `brc20` is enabled, the brc20-prog engine (`Brc20Prog`, brc20-prog 0.17)
+runs inside the `opi-indexer` process as a library. There is no separate
+brc20-prog server, and the engine needs no RPC credentials: brc20 calls the
+indexer methods in process.
 
 | Variable | Meaning |
 | --- | --- |
@@ -288,12 +290,12 @@ SIGINT or SIGTERM; `brc20 light` serves it until the light client stops.
 `brc20 light` stops on SIGINT or SIGTERM after its current block, or between
 its start-up steps and BRC2.0 balance fill batches, with the engine's blocks
 committed; a second signal exits (status 130) once the engine's current
-commit has finished, or after 30 seconds. It rejects the indexer methods
-(`brc20_mine` and the like) and takes no credentials, so bind it to loopback
-or firewall it. brc20-prog's `BRC20_PROG_RPC_SERVER_ENABLE_AUTH`,
-`BRC20_PROG_RPC_SERVER_USER` and `BRC20_PROG_RPC_SERVER_PASSWORD` do not apply
-to it; `BRC20_PROG_RPC_SERVER_ENABLE_AUTH=true` without a user and password
-makes the engine fail to open. The engine reads its remaining settings from
+commit has finished, or after 30 seconds. It answers the indexer methods
+(`brc20_mine` and the like) with a 401 error for every caller and takes no
+credentials, so bind it to loopback or firewall it. brc20-prog's
+`BRC20_PROG_RPC_SERVER_ENABLE_AUTH`, `BRC20_PROG_RPC_SERVER_USER` and
+`BRC20_PROG_RPC_SERVER_PASSWORD` apply only to brc20-prog's standalone server
+and have no effect here. The engine reads its remaining settings from
 brc20-prog's own variables (`EVM_CALL_GAS_LIMIT`, request limits; see
 brc20-prog's configuration docs).
 
@@ -1538,7 +1540,7 @@ likewise needs a fresh ord data dir and journal.
 Dependencies track their latest releases, except:
 
 - `brc20-prog` (in `crates/opi-brc20`) stays within
-  `BRC20_PROG_VERSION_REQUIREMENT` (`~0.16.0`); `opi-indexer` links
+  `BRC20_PROG_VERSION_REQUIREMENT` (`~0.17.0`); `opi-indexer` links
   brc20-prog as a library (`crates/opi-indexer` pins the same release).
 - `redb` stays at `=3.1.3`, ord's locked version (see above), although redb 4
   is released.

@@ -217,7 +217,7 @@ pub const OPERATION_MODE_LIGHT: &str = "light";
 // These should be updated when the database schema changes
 pub const DB_VERSION: i32 = 7;
 pub const EVENT_HASH_VERSION: i32 = 3;
-pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.16.0";
+pub const BRC20_PROG_VERSION_REQUIREMENT: &str = "~0.17.0";
 pub const INDEXER_VERSION: &str = concat!("opi-brc20-rs-node v", env!("CARGO_PKG_VERSION"));
 pub const LIGHT_CLIENT_VERSION: &str =
     concat!("opi-brc20-rs-node-light v", env!("CARGO_PKG_VERSION"));

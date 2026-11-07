@@ -722,7 +722,7 @@ mod tests {
         assert!(height.contains(r#""result":"0x"#), "{height}");
 
         let mined = rpc_call(address, "brc20_mine", "[1,0]");
-        assert!(mined.contains(r#""error""#), "{mined}");
+        assert!(mined.contains(r#""code":401"#), "{mined}");
         assert!(!mined.contains(r#""result""#), "{mined}");
 
         rpc.stop();
