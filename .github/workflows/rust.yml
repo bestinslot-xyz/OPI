@@ -2,7 +2,7 @@ name: rust
 
 on:
   push:
-    branches: [main, opi-monolith]
+    branches: [main]
   pull_request:
 
 env:

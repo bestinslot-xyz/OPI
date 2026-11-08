@@ -459,9 +459,8 @@ docker compose -f docker/compose.light.yml up -d --build
 
 #### CI
 
-`.github/workflows/docker.yml` builds the image on pushes to `main` and
-`opi-monolith` and on pull requests, and checks that both compose files
-resolve. It does not publish the image.
+`.github/workflows/docker.yml` builds the image on pushes to `main` and on
+pull requests, and checks that both compose files resolve. It does not publish the image.
 
 `.github/workflows/rust.yml` runs on the same events: `cargo fmt --all
 --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`
