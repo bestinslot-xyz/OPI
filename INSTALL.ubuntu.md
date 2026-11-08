@@ -79,23 +79,6 @@ sudo systemctl restart postgresql
 ```
 
 
-## Installing NodeJS
-
-These steps are following the guide at [here](https://github.com/nodesource/distributions).
-
-```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-
-NODE_MAJOR=20
-echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list
-
-sudo apt-get update
-sudo apt-get install nodejs -y
-```
-
 ## Installing Cargo & Rust
 
 These steps are following the guide at [here](https://doc.rust-lang.org/cargo/getting-started/installation.html).
@@ -117,136 +100,58 @@ rustup update stable
 git clone https://github.com/bestinslot-xyz/OPI.git && cd OPI
 ```
 
-> [!WARNING]
-> If running on Signet with BRC2.0, clone the experimental signet branch by using:
-> ```
-> git clone -b experimental-signet-brc20-prog https://github.com/bestinslot-xyz/OPI.git && cd OPI
-> ```
-
 All next shell script groups assumes that you are in OPI folder cloned by above command.
 
-## Installing node modules
-```bash
-cd modules/brc20_api; npm install;
-cd ../bitmap_api; npm install;
-cd ../pow20_api; npm install;
-cd ../sns_api; npm install;
-cd ../..;
-```
+## Build opi-indexer:
 
-## Installing python libraries
-
-**Create a virtual environment and install python libraries**
-```bash
-sudo apt install python3.12-venv -y;
-cd modules;
-python3 -m venv .venv;
-source .venv/bin/activate;
-pip3 install -r requirements.txt;
-cd ..;
-```
-
-## Build ord:
+opi-indexer runs the BRC-20, Bitmap, SNS and Runes indexers in one process, and `opi-indexer api` serves the HTTP API. See the [README](README.md#configuration) for its configuration.
 
 ```bash
 sudo apt install build-essential libssl-dev pkg-config clang -y;
-cd ord; cargo build --release;
+cargo build --release --locked -p opi-indexer;
 ```
 
 ## Initialise .env configuration and databases
 
-Run `reset_init.py` in each module folder (preferrably start from main_index) to initialise .env file, databases and set other necessary files.
+Copy `.env_sample` to `.env` in the OPI folder and fill it in (`OPI_MODULES` selects which of `brc20`, `bitmap`, `sns`, `runes` and `inscriptions` run). Create each module's database first (for example `sudo -u postgres createdb opi_brc20`); its schema is created on first start.
+
+`opi-indexer run` and `opi-indexer api` read this one `.env` (the API settings are listed in the README's [API configuration](README.md#api-configuration)).
+
+Each enabled module needs its database name (`DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`, `INSCRIPTIONS_DB_DATABASE`); the start fails when it is unset. One `REPORT_NAME` names the node for all modules.
 
 # Run
 
 Postgres will auto run on system start. \
-Bitcoind needs to be run with `-txindex=1` flag before running main indexer. \
-**Here, we run the ord binary directly. Ord also serves an RPC server.**
+Bitcoind needs to be run with `-txindex=1` flag before running main indexer.
 
-**Main Meta-Protocol Indexer**
-```bash
-cd ord/target/release;
-ord --data-dir . index run;
-```
+**Main Meta-Protocol Indexer (BRC-20, Bitmap, SNS and Runes)**
 
 > [!NOTE]
-> For ord to reach the bitcoin rpc server correctly, pass `--bitcoin-rpc-url`, `--bitcoin-rpc-username` and `--bitcoin-rpc-password` parameters before `index run`. To run on signet, add `--signet` as well.
-
-**BRC-20 Indexer**
-
-> [!WARNING]
-> If running BRC2.0, set up and run brc20_prog server (v0.17 or later) using the instructions at [bestinslot-xyz/brc20-programmable-module#usage](https://github.com/bestinslot-xyz/brc20-programmable-module#usage) before running `brc20_index.py`.
-> 
-> brc20_prog requires `BRC20_PROG_RPC_SERVER_USER` and a strong `BRC20_PROG_RPC_SERVER_PASSWORD` (at least 32 characters; generate it with `openssl rand -hex 32`). Give the same pair to `reset_init.py` when it asks for the BRC20 programmable module RPC username and password.
-> 
-> BRC2.0 requires setting up the `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWORD`, and on Signet, `BITCOIN_RPC_NETWORK=signet`.
-> 
-> BRC2.0 needs to be running before starting the brc20 indexer. When running `reset_init.py`, enable BRC2.0 by setting the variable to true when asked.
+> With the `brc20` module, the BRC2.0 engine (brc20-prog) runs inside `opi-indexer`; there is no separate server to install and no brc20-prog RPC credentials to set. Set `BRC20_PROG_DB_PATH` in `.env` to a writable directory. `opi-indexer run` serves the engine's public JSON-RPC on `BRC20_PROG_RPC_SERVER_URL` (default `127.0.0.1:18545`).
+>
+> The engine gets its Bitcoin data in process, through the indexer: from the Bitcoin RPC cache when `BITCOIN_RPC_CACHE_ENABLED=true`, and in full mode from bitcoind at `BITCOIN_RPC_URL` with `BITCOIN_RPC_USER` and `BITCOIN_RPC_PASSWD`, or `BITCOIN_RPC_COOKIE` (re-read on every request). Full mode requires one of the two credentials. Light mode needs no bitcoind and no Bitcoin credentials, and requires `BITCOIN_RPC_CACHE_ENABLED=true`. The network follows `NETWORK_TYPE`. For keys left over from older setups, see the BRC2.0 engine section of the README.
+>
+> The public JSON-RPC takes no credentials; keep it on loopback or firewall it. A panic in brc20 or the engine stops the process, so run `opi-indexer` under systemd (or another supervisor) that restarts it.
+>
+> A node that ran the standalone brc20-prog server stops it and points `BRC20_PROG_DB_PATH` at its database.
 
 ```bash
-cd modules/brc20_index;
-cargo build --release;
-cd target/release;
-./brc20-index;
+./target/release/opi-indexer run;
 ```
 
-**BRC-20 API**
+**API**
 
-This is an optional API and doesn't need to be run.
+This is an optional API and doesn't need to be run. One process serves every module in `OPI_MODULES` on `API_PORT` (default 8000).
 
 ```bash
-cd modules/brc20_api;
-node api.js;
+./target/release/opi-indexer api;
 ```
 
-**Bitmap Indexer**
-```bash
-cd modules/bitmap_index;
-python3 bitmap_index.py;
-```
-
-**Bitmap API**
-
-This is an optional API and doesn't need to be run.
-
-```bash
-cd modules/bitmap_api;
-node api.js;
-```
-
-**SNS Indexer**
-```bash
-cd modules/sns_index;
-python3 sns_index.py;
-```
-
-**SNS API**
-
-This is an optional API and doesn't need to be run.
-
-```bash
-cd modules/sns_api;
-node api.js;
-```
-
-**POW20 Indexer**
-```bash
-cd modules/pow20_index;
-python3 pow20_index.py;
-```
-
-**POW20 API**
-
-This is an optional API and doesn't need to be run.
-
-```bash
-cd modules/pow20_api;
-node api.js;
-```
+Give the API a read-only database role (see the README's [API](README.md#api) section).
 
 # Update
 
-- Stop all indexers and apis (preferably starting from main indexer but actually the order shouldn't matter)
+- Stop the indexer and the api (preferably starting from main indexer but actually the order shouldn't matter)
 - Update the repo (`git pull`)
-- Recompile ord (`cd ord; cargo build --release;`)
-- Re-run all indexers and apis
+- Recompile opi-indexer (`cargo build --release --locked -p opi-indexer;`)
+- Re-run the indexer and the api

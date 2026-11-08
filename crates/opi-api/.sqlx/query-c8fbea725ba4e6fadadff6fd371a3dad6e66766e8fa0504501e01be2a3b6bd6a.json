@@ -1,0 +1,80 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select inscription_id, inscription_number, \"name\", domain, block_height\n            from sns_names\n            where (\"name\" collate \"C\" like $1 or \"name\" collate \"C\" like $2)\n                and ($3::text[] is null or domain = any($3))\n                and ($4::text is null or \"name\" collate \"C\" > $4)\n            order by \"name\" collate \"C\"\n            limit $5;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "inscription_number"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "block_height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "TextArray",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c8fbea725ba4e6fadadff6fd371a3dad6e66766e8fa0504501e01be2a3b6bd6a"
+}

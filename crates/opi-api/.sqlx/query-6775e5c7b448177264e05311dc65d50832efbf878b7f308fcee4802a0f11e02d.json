@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select overall_balance::text as \"overall_balance\", available_balance::text as \"available_balance\"\n                from brc20_current_balances\n                where wallet = $1\n                  and tick = $2\n                limit 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "overall_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "available_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "6775e5c7b448177264e05311dc65d50832efbf878b7f308fcee4802a0f11e02d"
+}

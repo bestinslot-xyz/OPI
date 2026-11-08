@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bcb.tick, bcb.overall_balance::text as \"overall_balance\", bt.decimals as \"decimals?\"\n            from brc20_current_balances bcb\n            left join brc20_tickers bt on bcb.tick = bt.tick\n            where bcb.wallet = $1 and bcb.overall_balance > 0\n            order by bcb.overall_balance desc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tick",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_current_balances",
+            "name": "tick"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "overall_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "decimals?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_tickers",
+            "name": "decimals"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "648bb7b1572c58fa7a6da209770f8659177b795a08b142bcf0d19a32dc1d7784"
+}

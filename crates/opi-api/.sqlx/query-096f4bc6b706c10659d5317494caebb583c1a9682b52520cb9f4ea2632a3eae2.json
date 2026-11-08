@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bool_and(to_regclass(r) is not null) as \"built!\" from unnest($1::text[]) r;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "built!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "096f4bc6b706c10659d5317494caebb583c1a9682b52520cb9f4ea2632a3eae2"
+}

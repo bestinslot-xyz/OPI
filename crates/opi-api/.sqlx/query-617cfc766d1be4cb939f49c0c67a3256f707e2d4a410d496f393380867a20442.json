@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select cumulative_event_hash, block_event_hash, cumulative_trace_hash, block_trace_hash\n            from brc20_cumulative_event_hashes\n            where block_height = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cumulative_event_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_cumulative_event_hashes",
+            "name": "cumulative_event_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_event_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_cumulative_event_hashes",
+            "name": "block_event_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "cumulative_trace_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_cumulative_event_hashes",
+            "name": "cumulative_trace_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "block_trace_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_cumulative_event_hashes",
+            "name": "block_trace_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "617cfc766d1be4cb939f49c0c67a3256f707e2d4a410d496f393380867a20442"
+}

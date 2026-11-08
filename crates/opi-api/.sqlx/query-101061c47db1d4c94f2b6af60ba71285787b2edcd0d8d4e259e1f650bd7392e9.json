@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select block_height, block_hash, extract(epoch from block_time)::int8 as \"block_time!\"\n                    from inscriptions_block_hashes\n                    where block_height between $1 and $2 order by block_height;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_block_hashes",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_block_hashes",
+            "name": "block_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "block_time!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "101061c47db1d4c94f2b6af60ba71285787b2edcd0d8d4e259e1f650bd7392e9"
+}

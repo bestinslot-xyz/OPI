@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pkscript as \"pkscript?\", wallet_addr as \"wallet_addr?\", rune_id as \"rune_id?\", sum(balance)::text as \"total_balance\"\n            from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)\n            where rune_id = $1 and spent = false\n            group by pkscript, wallet_addr, rune_id\n            order by sum(balance) desc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pkscript?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "wallet_addr?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "wallet_addr"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rune_id?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "total_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "b6bc7a61cc8b62bd4360c9e2bdafdd9fdf0b478935dd7e40d08bb7f95b836034"
+}

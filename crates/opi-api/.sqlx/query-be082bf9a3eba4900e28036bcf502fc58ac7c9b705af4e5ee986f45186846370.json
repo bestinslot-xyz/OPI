@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select block_height, block_hash, block_time from brc20_block_hashes\n                    where block_height between $1 and $2 order by block_height;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "block_time",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_time"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "be082bf9a3eba4900e28036bcf502fc58ac7c9b705af4e5ee986f45186846370"
+}

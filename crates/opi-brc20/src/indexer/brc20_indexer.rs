@@ -1,0 +1,3384 @@
+use std::{cmp::min, error::Error, sync::Arc};
+
+use brc20_prog::{Brc20Prog, Brc20ProgApiServer, Brc20ProgConfig};
+use opi_core::BlockSource;
+use tokio::sync::watch;
+use versions::{Requirement, Versioning};
+
+use crate::{
+    client::EventProviderClient,
+    config::{
+        AMOUNT_KEY, BASE64_DATA_KEY, BRC20_MODULE_BRC20PROG, BRC20_PROG_MINE_BATCH_SIZE,
+        BRC20_PROG_VERSION_REQUIREMENT, Brc20IndexerConfig, CONTRACT_ADDRESS_KEY, DATA_KEY,
+        DB_VERSION, DECIMALS_KEY, HASH_KEY, INSCRIPTION_ID_KEY, LIMIT_PER_MINT_KEY, MAX_AMOUNT,
+        MAX_SUPPLY_KEY, MODULE_KEY, OPERATION_BRC20_PROG_CALL, OPERATION_BRC20_PROG_CALL_SHORT,
+        OPERATION_BRC20_PROG_DEPLOY, OPERATION_BRC20_PROG_DEPLOY_SHORT,
+        OPERATION_BRC20_PROG_TRANSACT, OPERATION_BRC20_PROG_TRANSACT_SHORT, OPERATION_DEPLOY,
+        OPERATION_KEY, OPERATION_MINT, OPERATION_PREDEPLOY, OPERATION_TRANSFER, OPERATION_WITHDRAW,
+        PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY, PREDEPLOY_BLOCK_HEIGHT_DELAY, PROTOCOL_BRC20,
+        PROTOCOL_BRC20_MODULE, PROTOCOL_BRC20_PROG, PROTOCOL_KEY, SALT_KEY, SELF_MINT_KEY,
+        TICKER_KEY,
+    },
+    database::{
+        extras_verified, get_brc20_database, prog_balances,
+        timer::{start_timer, stop_timer},
+    },
+    engine_writes::guarded,
+    indexer::{
+        BitcoinRpcBufferSlot, EventGenerator, EventProcessor,
+        brc20_prog_client::retrieve_brc20_prog_traces_hash,
+        brc20_reporter::Brc20Reporter,
+        brc20_swap_refund::Brc20SwapRefund,
+        engine_time::{EngineBlock, timed},
+        utils::{ALLOW_ZERO, DISALLOW_ZERO, get_amount_value, get_decimals_value},
+    },
+    no_default,
+    types::{
+        Brc20Tx,
+        events::{
+            Brc20ProgCallInscribeEvent, Brc20ProgCallTransferEvent, Brc20ProgDeployInscribeEvent,
+            Brc20ProgDeployTransferEvent, Brc20ProgTransactInscribeEvent,
+            Brc20ProgTransactTransferEvent, Brc20ProgWithdrawInscribeEvent,
+            Brc20ProgWithdrawTransferEvent, DeployInscribeEvent, Event, MintInscribeEvent,
+            PreDeployInscribeEvent, TransferInscribeEvent, TransferTransferEvent, event_name_to_id,
+            load_event,
+        },
+    },
+};
+
+static SPAN: &str = "Brc20Indexer";
+
+pub struct Brc20Indexer {
+    /// The journal a full-mode indexer reads block tips, hashes and times
+    /// from. Light clients read them from the event providers.
+    journal: Option<Arc<dyn BlockSource>>,
+    event_provider_client: EventProviderClient,
+    pub(crate) last_opi_block: i32,
+    last_reported_block: Option<i32>,
+    config: Brc20IndexerConfig,
+    brc20_prog: Brc20Prog,
+    brc20_reporter: Brc20Reporter,
+    /// The buffer slot of the engine's Bitcoin RPC source, which `init` points
+    /// at this indexer's database.
+    bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
+    /// Ends the light client's loop once it holds true.
+    stop: Option<watch::Receiver<bool>>,
+}
+
+impl Brc20Indexer {
+    /// An indexer driving `brc20_prog`, whose Bitcoin RPC source reads its
+    /// uncommitted results through `bitcoin_rpc_buffer`.
+    pub fn new(
+        config: Brc20IndexerConfig,
+        brc20_prog: Brc20Prog,
+        bitcoin_rpc_buffer: BitcoinRpcBufferSlot,
+        journal: Option<Arc<dyn BlockSource>>,
+    ) -> Self {
+        let brc20_reporter = Brc20Reporter::new(&config);
+        let event_provider_client =
+            EventProviderClient::new(&config).expect("Failed to create EventProviderClient");
+
+        Brc20Indexer {
+            journal,
+            config,
+            last_opi_block: 0,
+            last_reported_block: None,
+            brc20_prog,
+            brc20_reporter,
+            event_provider_client,
+            bitcoin_rpc_buffer,
+            stop: None,
+        }
+    }
+
+    /// Points the engine's Bitcoin RPC source at the global database's buffer
+    /// of uncommitted results, so lookups read and write this indexer's block.
+    pub(crate) async fn install_bitcoin_rpc_buffer(&self) {
+        let buffer = get_brc20_database()
+            .lock()
+            .await
+            .bitcoin_rpc_cache
+            .buffer()
+            .clone();
+        self.bitcoin_rpc_buffer.install(buffer);
+    }
+
+    /// Starts the indexer. The engine's Bitcoin RPC source reads this
+    /// indexer's buffer before the first engine call that can reach Bitcoin.
+    pub(crate) async fn init(&mut self) -> Result<(), Box<dyn Error>> {
+        self.install_bitcoin_rpc_buffer().await;
+        get_brc20_database().lock().await.init().await?;
+
+        // Rows indexed before block times were stored get theirs from the
+        // journal's headers, before indexing resumes.
+        if let Some(journal) = &self.journal {
+            let filled = get_brc20_database()
+                .lock()
+                .await
+                .fill_block_times(journal.as_ref(), crate::database::block_time::FILL_BATCH)
+                .await?;
+            if filled > 0 {
+                tracing::info!("Filled block_time of {filled} block(s) from the journal");
+            }
+        }
+
+        tracing::info!(
+            "OPI Block Height: {}",
+            get_brc20_database()
+                .lock()
+                .await
+                .get_current_block_height()
+                .await?
+        );
+
+        tracing::info!(
+            "Prog Block Height: {}",
+            parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
+        );
+
+        // Ensure no residue before proceeding
+        self.reorg_to_last_synced_block_height(Reconcile::AtStart)
+            .await?;
+
+        if get_brc20_database()
+            .lock()
+            .await
+            .requires_trace_hash_upgrade()
+            .await?
+        {
+            self.regenerate_and_validate_trace_hashes().await?;
+        }
+
+        get_brc20_database()
+            .lock()
+            .await
+            .maybe_fix_refund_order(self.config.brc20_swap_refund_activation_height)
+            .await?;
+
+        get_brc20_database()
+            .lock()
+            .await
+            .update_event_hash_and_indexer_version()
+            .await?;
+
+        // Event providers serve light clients and block reporting; a full indexer
+        // that does not report computes every event itself.
+        if self.config.light_client_mode || self.config.report_to_indexer {
+            self.event_provider_client.load_providers().await?;
+        }
+        // A full-mode indexer reads the journal's tip before each block it
+        // indexes, and the journal may not have a block yet.
+        if self.config.light_client_mode {
+            self.last_opi_block = self.get_opi_block_height().await?;
+        }
+
+        if self.config.report_to_indexer {
+            self.last_reported_block = self
+                .event_provider_client
+                .get_best_verified_block_with_retries()
+                .await
+                .ok();
+        }
+
+        let db_version = get_brc20_database().lock().await.get_db_version().await?;
+        if db_version != DB_VERSION {
+            return Err(format!(
+                "db_version mismatch, expected {}, got {}, please run brc20_indexer with --reset",
+                DB_VERSION, db_version
+            )
+            .into());
+        }
+
+        self.clear_caches().await?;
+        // Clearing brc20-prog's caches drops its uncommitted blocks, which can
+        // leave it below brc20.
+        self.reorg_to_last_synced_block_height(Reconcile::AtStart)
+            .await?;
+
+        let brc20_prog_version = self.brc20_prog.brc20_version().await?;
+        let requirement = Requirement::new(BRC20_PROG_VERSION_REQUIREMENT).unwrap_or_else(|| {
+            panic!(
+                "Invalid BRC20_PROG_VERSION requirement: {}",
+                BRC20_PROG_VERSION_REQUIREMENT
+            )
+        });
+        let version = Versioning::new(&brc20_prog_version)
+            .unwrap_or_else(|| panic!("Invalid brc20_prog version: {}", brc20_prog_version));
+        if !requirement.matches(&version) {
+            return Err(format!(
+                "brc20_prog version mismatch, expected {}, got {}",
+                BRC20_PROG_VERSION_REQUIREMENT, brc20_prog_version
+            )
+            .into());
+        }
+
+        // A stop requested during the long start-up steps below ends the
+        // start between them, where each has committed; the next start
+        // resumes from there.
+        if self.stopping_during_start("the current-balances check") {
+            return Ok(());
+        }
+        // Once per database, after every start-up reorg.
+        extras_verified::verify_once(&*get_brc20_database().lock().await).await?;
+
+        if self.stopping_during_start("the BRC2.0 balance fill") {
+            return Ok(());
+        }
+        self.fill_prog_balances().await?;
+
+        self.initialise_engine(BRC20_PROG_MINE_BATCH_SIZE).await
+    }
+
+    /// Initialises the engine and mines it, `mine_batch` blocks per commit,
+    /// up to the block before BRC2.0's activation. A stop request ends it
+    /// before the initialisation or after a committed batch.
+    async fn initialise_engine(&self, mine_batch: i32) -> Result<(), Box<dyn Error>> {
+        if self.stopping_during_start("the BRC2.0 engine's initialisation") {
+            return Ok(());
+        }
+        let brc20_prog_block_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
+
+        let genesis_hash = "0".repeat(64).as_str().try_into()?;
+        guarded(self.brc20_prog.brc20_initialise(genesis_hash, 0, 0)).await?;
+
+        self.mine_to_activation(brc20_prog_block_height, mine_batch)
+            .await
+    }
+
+    /// Mines the engine from `brc20_prog_block_height` up to the block before
+    /// BRC2.0's activation, committing every `mine_batch` blocks. A stop
+    /// request ends it after a committed batch.
+    async fn mine_to_activation(
+        &self,
+        brc20_prog_block_height: i32,
+        mine_batch: i32,
+    ) -> Result<(), Box<dyn Error>> {
+        if brc20_prog_block_height < self.config.first_brc20_prog_phase_one_height - 1 {
+            let mut current_prog_height = brc20_prog_block_height;
+            while current_prog_height < self.config.first_brc20_prog_phase_one_height - 1 {
+                let next_prog_height = (current_prog_height + mine_batch)
+                    .min(self.config.first_brc20_prog_phase_one_height - 1);
+                tracing::info!(
+                    "BRC20 Prog initialising from block height {} to {}",
+                    current_prog_height,
+                    next_prog_height
+                );
+                self.brc20_prog
+                    .brc20_mine((next_prog_height - current_prog_height) as u64, 0)
+                    .await?;
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
+                current_prog_height = next_prog_height;
+                if current_prog_height < self.config.first_brc20_prog_phase_one_height - 1
+                    && self.stopping_during_start("the rest of the BRC2.0 engine's initialisation")
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Whether a stop was requested, logged as stopping before `step`.
+    fn stopping_during_start(&self, step: &str) -> bool {
+        let stopping = self.stop_requested();
+        if stopping {
+            tracing::info!("Stop requested during start-up; stopping before {step}");
+        }
+        stopping
+    }
+
+    /// Fills the BRC2.0 balance tables from the engine's logs when they are
+    /// marked for filling, up to brc20's block, which the engine must also
+    /// hold (see `prog_balance_fill_height`). A stop request ends it between
+    /// batches, and the next start resumes it.
+    async fn fill_prog_balances(&self) -> Result<(), Box<dyn Error>> {
+        let (pool, brc20_height) = {
+            let database = get_brc20_database();
+            let database = database.lock().await;
+            (
+                database.client.clone(),
+                database.get_current_block_height().await?,
+            )
+        };
+        if prog_balances::fill_progress(&pool).await?.is_none() {
+            return Ok(());
+        }
+        let prog_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;
+        let to_height = prog_balance_fill_height(
+            brc20_height,
+            prog_height,
+            self.config.first_brc20_prog_phase_one_height,
+        )?;
+        prog_balances::fill(
+            &pool,
+            &self.brc20_prog,
+            self.config.first_brc20_prog_phase_one_height,
+            to_height,
+            Brc20ProgConfig::from_env().get_logs_max_blocks,
+            prog_balances::FILL_BLOCKS,
+            || self.stop_requested(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The BRC2.0 balance events of block `block_height`, read from the engine
+    /// once it holds the block.
+    async fn prog_balance_events(
+        &self,
+        block_height: i32,
+    ) -> Result<Vec<prog_balances::BalanceEvent>, Box<dyn Error>> {
+        if block_height < self.config.first_brc20_prog_phase_one_height {
+            return Ok(Vec::new());
+        }
+        Ok(timed(prog_balances::balance_events(
+            &self.brc20_prog,
+            block_height,
+            block_height,
+        ))
+        .await?
+        .into_iter()
+        .flat_map(|(_, events)| events)
+        .collect())
+    }
+
+    pub async fn regenerate_and_validate_trace_hashes(&mut self) -> Result<(), Box<dyn Error>> {
+        tracing::info!("Updating BRC2.0 event/trace hashes...");
+        let last_reported_block = self
+            .event_provider_client
+            .get_best_verified_block_with_retries()
+            .await?;
+        let start_block = min(
+            if self.config.report_all_blocks {
+                self.config.first_inscription_height // Re-generate all blocks
+            } else {
+                self.config.first_brc20_prog_phase_one_height // Only re-generate from BRC2.0 phase one
+            },
+            last_reported_block + 1,
+        );
+        let end_block = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+
+        tracing::info!(
+            "Starting trace hash regeneration from block {} to {}",
+            start_block,
+            end_block
+        );
+
+        for block_height in start_block..=end_block {
+            if block_height >= self.config.first_brc20_prog_phase_one_height {
+                if block_height % 1000 == 0 {
+                    tracing::info!(
+                        "Regenerating trace hash for block height {}/{}",
+                        block_height,
+                        end_block
+                    );
+                }
+                let Some(block_trace_hash) = self
+                    .brc20_prog
+                    .debug_get_block_trace_hash(block_height.to_string())
+                    .await?
+                else {
+                    return Err("Trace hash regeneration failed".into());
+                };
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .update_trace_hash(block_height, &block_trace_hash)
+                    .await?;
+                let Some(cumulative_trace_hash) = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_cumulative_traces_hash(block_height)
+                    .await?
+                else {
+                    return Err("Cumulative trace hash not found".into());
+                };
+                if self.config.light_client_mode {
+                    // Validate with OPI client if in light client mode
+                    let Some(opi_trace_hash) = self
+                        .event_provider_client
+                        .get_block_info_with_retries(block_height)
+                        .await?
+                        .best_cumulative_trace_hash
+                    else {
+                        return Err("Failed to get OPI trace hash for validation".into());
+                    };
+                    if cumulative_trace_hash != opi_trace_hash {
+                        return Err(format!(
+                            "Trace hash mismatch at block {}: expected {}, got {}",
+                            block_height, opi_trace_hash, cumulative_trace_hash
+                        )
+                        .into());
+                    }
+                }
+            }
+            if !self.config.light_client_mode
+                && (self.config.report_all_blocks || block_height > last_reported_block)
+            {
+                if block_height % 1000 == 0 {
+                    tracing::info!("Reporting block height {}/{}", block_height, end_block);
+                }
+                self.report_block(block_height).await?;
+            }
+        }
+        tracing::info!("BRC2.0 trace hash update complete.");
+        Ok(())
+    }
+
+    pub async fn clear_caches(&mut self) -> Result<(), Box<dyn Error>> {
+        let current_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+
+        let function_timer = start_timer(SPAN, "clear_caches", current_block_height);
+
+        self.brc20_prog.brc20_clear_caches().await?;
+
+        if get_brc20_database()
+            .lock()
+            .await
+            .check_residue(current_block_height)
+            .await?
+        {
+            tracing::debug!(
+                "BRC20 indexer residue found at block height {}, reorging to last synced block height",
+                current_block_height
+            );
+            self.reorg(current_block_height).await?;
+        }
+
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn reorg(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        tracing::info!("Reorganizing BRC20 indexer database...");
+        if block_height >= self.config.first_brc20_prog_phase_one_height {
+            guarded(self.brc20_prog.brc20_reorg(block_height as u64)).await?;
+        }
+        get_brc20_database()
+            .lock()
+            .await
+            .reorg(block_height)
+            .await?;
+        tracing::info!("BRC20 indexer database reorg complete.");
+        Ok(())
+    }
+
+    pub async fn reset(&mut self) -> Result<(), Box<dyn Error>> {
+        tracing::info!("Resetting BRC20 indexer database...");
+        get_brc20_database().lock().await.reset().await?;
+        get_brc20_database().lock().await.init().await?;
+        tracing::info!("BRC20 indexer database reset complete.");
+        Ok(())
+    }
+
+    /// Runs a light client until the height limit or a stop request (see
+    /// `stop_on`). A full-mode indexer runs as a module inside `opi-indexer`
+    /// and indexes through `index_block`.
+    ///
+    /// The process metrics follow it: the process runs once `init` is done,
+    /// each read of the OPI network's best verified block is the chain tip,
+    /// and each block records brc20's height, block time and engine time.
+    pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        if !self.config.light_client_mode {
+            return Err("full mode runs inside opi-indexer".into());
+        }
+        let metrics = opi_core::metrics::global();
+        self.init().await?;
+        // `init` read the network's best verified block, and start-up is done.
+        publish_opi_tip(metrics, self.last_opi_block);
+        // A stop requested during start-up keeps shutting down, which the
+        // phase never leaves.
+        metrics.set_phase(opi_core::metrics::Phase::Running);
+        self.index_until_stopped().await
+    }
+
+    /// Makes the light client's loop stop once `stop` holds true.
+    pub fn stop_on(&mut self, stop: watch::Receiver<bool>) {
+        self.stop = Some(stop);
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.stop.as_ref().is_some_and(|stop| *stop.borrow())
+    }
+
+    /// Waits `duration`, or less when a stop is requested meanwhile.
+    /// A closed stop channel waits the full duration.
+    async fn pause(&self, duration: std::time::Duration) {
+        let sleep = tokio::time::sleep(duration);
+        tokio::pin!(sleep);
+        if let Some(stop) = &self.stop {
+            let mut stop = stop.clone();
+            tokio::select! {
+                _ = &mut sleep => return,
+                requested = stop.wait_for(|stop| *stop) => if requested.is_ok() {
+                    return;
+                },
+            }
+        }
+        sleep.await;
+    }
+
+    /// The light client's block loop: indexes each block the OPI network has
+    /// verified, until the height limit or a stop request. A stop request is
+    /// read before each block and ends a wait for new blocks early; the
+    /// engine then commits its blocks and the loop returns.
+    pub(crate) async fn index_until_stopped(&mut self) -> Result<(), Box<dyn Error>> {
+        let metrics = opi_core::metrics::global();
+        let module_metrics = metrics.module("brc20");
+        let pool = get_brc20_database().lock().await.client.clone();
+        loop {
+            if self.stop_requested() {
+                tracing::info!("Stopping the light client after its last block");
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
+                return Ok(());
+            }
+            let next_block = get_brc20_database()
+                .lock()
+                .await
+                .get_next_block_height()
+                .await?;
+            module_metrics.set_height(u32::try_from(next_block - 1).ok());
+            module_metrics.set_pool(opi_core::metrics::PoolStats::new(
+                pool.size(),
+                pool.num_idle(),
+            ));
+
+            if next_block >= self.config.height_limit {
+                // Check height limit
+                tracing::info!(
+                    "Reached height limit of {}, stopping indexer.",
+                    self.config.height_limit
+                );
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
+                return Ok(());
+            }
+
+            let loop_timer = start_timer(SPAN, "run_single_block", next_block);
+            let block_started = std::time::Instant::now();
+            let engine_block = EngineBlock::start();
+
+            // This doesn't always reorg, but it will reorg if the last block is not the same
+            let reorg_to_last_synced_block_height_timer =
+                start_timer(SPAN, "reorg_to_last_synced_block_height", next_block);
+            self.reorg_to_last_synced_block_height(Reconcile::PerBlock)
+                .await?;
+            stop_timer(&reorg_to_last_synced_block_height_timer).await;
+
+            let next_block = get_brc20_database()
+                .lock()
+                .await
+                .get_next_block_height()
+                .await?;
+
+            if next_block >= self.config.height_limit {
+                tracing::info!(
+                    "Reached height limit of {}, stopping indexer.",
+                    self.config.height_limit
+                );
+                guarded(self.brc20_prog.brc20_commit_to_database()).await?;
+                return Ok(());
+            }
+
+            // Check if a new block is available
+            let last_opi_block = self.last_opi_block;
+            if next_block > last_opi_block {
+                tracing::info!("Waiting for new blocks...");
+                if let Ok(height) = self.get_opi_block_height().await {
+                    self.last_opi_block = height;
+                    publish_opi_tip(metrics, height);
+                }
+                self.pause(tokio::time::Duration::from_secs(5)).await;
+                continue;
+            }
+
+            let is_synced = next_block == last_opi_block;
+
+            if next_block % 1000 == 0 && next_block >= self.config.first_brc20_height {
+                tracing::info!("Clearing brc20 db caches at block height {}", next_block);
+                let clear_caches_timer = start_timer(SPAN, "clear_brc20_caches", next_block);
+                get_brc20_database().lock().await.clear_caches();
+                stop_timer(&clear_caches_timer).await;
+            }
+            if is_synced || next_block % 1000 == 0 {
+                tracing::info!("Processing block: {}", next_block);
+            }
+
+            let get_block_info_timer = start_timer(SPAN, "get_block_info", next_block);
+            let block_info = self
+                .event_provider_client
+                .get_block_info_with_retries(next_block)
+                .await?;
+            let (block_hash, block_time, opi_cumulative_event_hash, opi_cumulative_trace_hash) = (
+                block_info.best_block_hash,
+                block_info.best_block_time.unwrap_or(0) as i64, // Default to 0 if not available
+                block_info.best_cumulative_hash,
+                block_info.best_cumulative_trace_hash,
+            );
+            stop_timer(&get_block_info_timer).await;
+
+            if block_time == 0 && next_block >= self.config.first_brc20_prog_phase_one_height {
+                tracing::error!(
+                    "Block time is 0 for block {}, this may cause issues with BRC2.0 events. Stopping indexing.",
+                    next_block
+                );
+                return Err("Block time is 0".into());
+            }
+
+            if next_block < self.config.first_brc20_height {
+                if next_block % 1000 == 0 {
+                    tracing::info!(
+                        "Block height {} is less than first_brc20_height {}, skipping",
+                        next_block,
+                        self.config.first_brc20_height
+                    );
+                    let timer = start_timer(SPAN, "flush_queries_to_db", next_block);
+                    get_brc20_database()
+                        .lock()
+                        .await
+                        .flush_queries_to_db()
+                        .await?;
+                    stop_timer(&timer).await;
+                }
+            } else {
+                if next_block > self.config.first_brc20_prog_phase_one_height {
+                    match self.pre_fill_rpc_results_cache(next_block).await {
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to get Bitcoin RPC results for block {}: {}",
+                                next_block,
+                                err
+                            );
+                            tracing::error!("Retrying in 5 seconds...");
+                            self.pause(tokio::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    };
+                }
+                let get_events_timer = start_timer(SPAN, "get_events", next_block);
+                let events = match self
+                    .event_provider_client
+                    .get_events(next_block as i64)
+                    .await
+                {
+                    Ok(events) => events,
+                    Err(err) => {
+                        tracing::error!("Failed to get events for block {}: {}", next_block, err);
+                        tracing::error!("Retrying in 5 seconds...");
+                        self.pause(tokio::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+                stop_timer(&get_events_timer).await;
+                self.process_events(
+                    next_block,
+                    &block_hash,
+                    block_time as u64,
+                    is_synced,
+                    events,
+                )
+                .await?;
+            }
+
+            let index_extras_timer = start_timer(SPAN, "index_extra_tables", next_block);
+            if next_block >= self.config.first_brc20_height
+                && get_brc20_database()
+                    .lock()
+                    .await
+                    .should_index_extras(next_block, last_opi_block)
+                    .await?
+            {
+                // Index extras if synced or close to sync
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .index_extra_tables(next_block)
+                    .await?;
+            }
+            stop_timer(&index_extras_timer).await;
+
+            let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
+            let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
+                timed(retrieve_brc20_prog_traces_hash(
+                    &self.brc20_prog,
+                    next_block,
+                ))
+                .await?
+            } else {
+                String::new()
+            };
+            stop_timer(&trace_hash_timer).await;
+
+            let prog_balance_events = self.prog_balance_events(next_block).await?;
+
+            let set_block_hashes_timer = start_timer(SPAN, "set_block_hashes", next_block);
+            get_brc20_database()
+                .lock()
+                .await
+                .set_block_hashes(
+                    next_block,
+                    &block_hash,
+                    block_traces_hash.as_str(),
+                    (block_time != 0).then_some(block_time),
+                    &prog_balance_events,
+                )
+                .await?;
+            stop_timer(&set_block_hashes_timer).await;
+
+            let Some(block_events_hash) = get_brc20_database()
+                .lock()
+                .await
+                .get_block_events_hash(next_block)
+                .await?
+            else {
+                tracing::warn!("Block events hash not found for block {}", next_block);
+                return Ok(());
+            };
+
+            let Some(cumulative_events_hash) = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_events_hash(next_block)
+                .await?
+            else {
+                tracing::warn!("Cumulative events hash not found for block {}", next_block);
+                return Ok(());
+            };
+
+            let cumulative_traces_hash = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_traces_hash(next_block)
+                .await?
+                .unwrap_or_default();
+
+            // Validate cumulative hash with OPI client
+            if cumulative_events_hash != opi_cumulative_event_hash
+                || cumulative_traces_hash != opi_cumulative_trace_hash.clone().unwrap_or_default()
+            {
+                // Reorg the last block if cumulative events hash mismatch
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .reorg(next_block - 1)
+                    .await?;
+                guarded(self.brc20_prog.brc20_reorg((next_block - 1) as u64)).await?;
+                tracing::error!("Cumulative event hash mismatch!!");
+                tracing::error!("OPI cumulative event hash: {}", opi_cumulative_event_hash);
+                tracing::error!("Our cumulative event hash: {}", cumulative_events_hash);
+                tracing::error!(
+                    "OPI cumulative traces hash: {:?}",
+                    opi_cumulative_trace_hash.unwrap_or_default()
+                );
+                tracing::error!("Our cumulative traces hash: {:?}", cumulative_traces_hash);
+                return Err("Cumulative hash mismatch, please check your OPI client".into());
+            }
+
+            // Start reporting after 10 blocks left to full sync
+            if self.config.report_to_indexer {
+                let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
+                if let Some(last_reported_block) = self.last_reported_block {
+                    if next_block >= last_reported_block - 10 || self.config.report_all_blocks {
+                        self.brc20_reporter
+                            .report(
+                                next_block,
+                                block_hash.to_string(),
+                                if block_time == 0 {
+                                    None
+                                } else {
+                                    Some(block_time)
+                                },
+                                block_events_hash.clone(),
+                                cumulative_events_hash.clone(),
+                                block_traces_hash.clone(),
+                                cumulative_traces_hash.clone(),
+                            )
+                            .await
+                            .ok();
+                        self.last_reported_block = self
+                            .event_provider_client
+                            .get_best_verified_block()
+                            .await
+                            .ok(); // Try once to avoid holding up the loop
+                    }
+                } else {
+                    self.last_reported_block = self
+                        .event_provider_client
+                        .get_best_verified_block()
+                        .await
+                        .ok(); // Try once to avoid holding up the loop
+                }
+                stop_timer(&report_timer).await;
+            }
+            stop_timer(&loop_timer).await;
+            engine_block.finish();
+            module_metrics.observe_block(block_started.elapsed());
+            module_metrics.set_height(u32::try_from(next_block).ok());
+        }
+    }
+
+    /// Indexes block `next_block` in full mode: its BRC-20 and BRC2.0 events,
+    /// brc20-prog's block, the extra tables, the block's hashes and the report.
+    /// `last_opi_block` holds the journal tip the caller read last.
+    pub async fn index_block(
+        &mut self,
+        next_block: i32,
+        block_hash: &str,
+        block_time: i64,
+        transfers: Vec<Brc20Tx>,
+    ) -> Result<(), Box<dyn Error>> {
+        let loop_timer = start_timer(SPAN, "run_single_block", next_block);
+        let engine_block = EngineBlock::start();
+        let last_opi_block = self.last_opi_block;
+
+        let is_synced = next_block == last_opi_block;
+
+        if next_block % 1000 == 0 && next_block >= self.config.first_brc20_height {
+            tracing::info!("Clearing brc20 db caches at block height {}", next_block);
+            let clear_caches_timer = start_timer(SPAN, "clear_brc20_caches", next_block);
+            get_brc20_database().lock().await.clear_caches();
+            stop_timer(&clear_caches_timer).await;
+        }
+        if is_synced || next_block % 1000 == 0 {
+            tracing::info!("Processing block: {}", next_block);
+        }
+
+        if block_time == 0 && next_block >= self.config.first_brc20_prog_phase_one_height {
+            tracing::error!(
+                "Block time is 0 for block {}, this may cause issues with BRC2.0 events. Stopping indexing.",
+                next_block
+            );
+            return Err("Block time is 0".into());
+        }
+
+        if next_block < self.config.first_brc20_height {
+            if next_block % 1000 == 0 {
+                tracing::info!(
+                    "Block height {} is less than first_brc20_height {}, skipping",
+                    next_block,
+                    self.config.first_brc20_height
+                );
+                let timer = start_timer(SPAN, "flush_queries_to_db", next_block);
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .flush_queries_to_db()
+                    .await?;
+                stop_timer(&timer).await;
+            }
+        } else {
+            self.generate_and_process_events(
+                next_block,
+                block_hash,
+                block_time as u64,
+                is_synced,
+                transfers,
+            )
+            .await?;
+        }
+
+        let index_extras_timer = start_timer(SPAN, "index_extra_tables", next_block);
+        if next_block >= self.config.first_brc20_height
+            && get_brc20_database()
+                .lock()
+                .await
+                .should_index_extras(next_block, last_opi_block)
+                .await?
+        {
+            // Index extras if synced or close to sync
+            get_brc20_database()
+                .lock()
+                .await
+                .index_extra_tables(next_block)
+                .await?;
+        }
+        stop_timer(&index_extras_timer).await;
+
+        let trace_hash_timer = start_timer(SPAN, "retrieve_brc20_prog_traces_hash", next_block);
+        let block_traces_hash = if next_block >= self.config.first_brc20_prog_phase_one_height {
+            timed(retrieve_brc20_prog_traces_hash(
+                &self.brc20_prog,
+                next_block,
+            ))
+            .await?
+        } else {
+            String::new()
+        };
+        stop_timer(&trace_hash_timer).await;
+
+        let prog_balance_events = self.prog_balance_events(next_block).await?;
+
+        let set_block_hashes_timer = start_timer(SPAN, "set_block_hashes", next_block);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_block_hashes(
+                next_block,
+                block_hash,
+                block_traces_hash.as_str(),
+                (block_time != 0).then_some(block_time),
+                &prog_balance_events,
+            )
+            .await?;
+        stop_timer(&set_block_hashes_timer).await;
+
+        let Some(block_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_block_events_hash(next_block)
+            .await?
+        else {
+            return Err(format!("Block events hash not found for block {}", next_block).into());
+        };
+
+        let Some(cumulative_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_events_hash(next_block)
+            .await?
+        else {
+            return Err(
+                format!("Cumulative events hash not found for block {}", next_block).into(),
+            );
+        };
+
+        let cumulative_traces_hash = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_traces_hash(next_block)
+            .await?
+            .unwrap_or_default();
+
+        // Start reporting after 10 blocks left to full sync
+        if self.config.report_to_indexer {
+            let report_timer = start_timer(SPAN, "report_to_indexer", next_block);
+            if let Some(last_reported_block) = self.last_reported_block {
+                if next_block >= last_reported_block - 10 || self.config.report_all_blocks {
+                    self.brc20_reporter
+                        .report(
+                            next_block,
+                            block_hash.to_string(),
+                            if block_time == 0 {
+                                None
+                            } else {
+                                Some(block_time)
+                            },
+                            block_events_hash.clone(),
+                            cumulative_events_hash.clone(),
+                            block_traces_hash.clone(),
+                            cumulative_traces_hash.clone(),
+                        )
+                        .await
+                        .ok();
+                    self.last_reported_block = self
+                        .event_provider_client
+                        .get_best_verified_block()
+                        .await
+                        .ok(); // Try once to avoid holding up the loop
+                }
+            } else {
+                self.last_reported_block = self
+                    .event_provider_client
+                    .get_best_verified_block()
+                    .await
+                    .ok(); // Try once to avoid holding up the loop
+            }
+            stop_timer(&report_timer).await;
+        }
+        stop_timer(&loop_timer).await;
+        engine_block.finish();
+        Ok(())
+    }
+
+    pub async fn validate(&mut self) -> Result<(), Box<dyn Error>> {
+        let last_indexed_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+
+        if self
+            .validate_block(last_indexed_block_height)
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                "Hash mismatch found at height {}",
+                last_indexed_block_height
+            );
+            tracing::warn!("Running a search to find the first mismatched block...");
+        } else {
+            tracing::info!("All blocks are valid up to {}", last_indexed_block_height);
+            return Ok(());
+        }
+
+        let mut low = self.config.first_brc20_height;
+        let mut high = last_indexed_block_height;
+        while low <= high {
+            let mid = (low + high) / 2;
+            if self.validate_block(mid).await.is_err() {
+                high = mid - 1;
+            } else {
+                low = mid + 1;
+            }
+        }
+        if low > last_indexed_block_height {
+            tracing::info!("All blocks are valid up to {}", last_indexed_block_height);
+        } else {
+            tracing::error!("Hash mismatch found above height {}", low);
+            if last_indexed_block_height - low - 1 <= 10 {
+                tracing::error!(
+                    "Please reorg the indexer using `--reorg {}` and re-validate.",
+                    low - 1
+                )
+            } else {
+                tracing::error!("Please re-index from scratch using `--reset`.");
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn validate_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        tracing::warn!("Validating block {}", block_height);
+
+        let block_data = self
+            .event_provider_client
+            .get_block_info_with_retries(block_height)
+            .await?;
+
+        let Some(cumulative_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!(
+                "Cumulative events hash not found for block {}",
+                block_height
+            )
+            .into());
+        };
+
+        tracing::warn!("Cumulative events hash: {}", cumulative_events_hash);
+        tracing::warn!(
+            "OPI network events hash: {}",
+            block_data.best_cumulative_hash
+        );
+
+        if cumulative_events_hash != block_data.best_cumulative_hash {
+            return Err(format!(
+                "Cumulative events hash mismatch at block {}: expected {}, got {}",
+                block_height, block_data.best_cumulative_hash, cumulative_events_hash
+            )
+            .into());
+        }
+
+        if block_height >= self.config.first_brc20_prog_phase_one_height {
+            let Some(cumulative_trace_hash) = get_brc20_database()
+                .lock()
+                .await
+                .get_cumulative_traces_hash(block_height)
+                .await?
+            else {
+                return Err(format!(
+                    "Cumulative traces hash not found for block {}",
+                    block_height
+                )
+                .into());
+            };
+
+            if let Some(expected_trace_hash) = block_data.best_cumulative_trace_hash {
+                tracing::warn!("Local traces hash: {}", cumulative_trace_hash);
+                tracing::warn!("OPI network traces hash: {}", expected_trace_hash);
+                if cumulative_trace_hash != expected_trace_hash {
+                    return Err(format!(
+                        "Cumulative traces hash mismatch at block {}: expected {}, got {}",
+                        block_height, expected_trace_hash, cumulative_trace_hash
+                    )
+                    .into());
+                }
+            }
+        }
+
+        tracing::warn!("Block {} is valid", block_height);
+
+        Ok(())
+    }
+
+    pub async fn get_block_event_string(
+        &mut self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        get_brc20_database().lock().await.init().await?;
+        let Some(block_event_str) = get_brc20_database()
+            .lock()
+            .await
+            .get_block_events_str(block_height)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(block_event_str))
+    }
+
+    pub async fn get_block_trace_string(
+        &mut self,
+        block_height: i32,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        let Ok(Some(trace_string)) = self
+            .brc20_prog
+            .debug_get_block_trace_string(block_height.to_string())
+            .await
+        else {
+            return Ok(None);
+        };
+        Ok(Some(trace_string))
+    }
+
+    pub async fn report_block(&mut self, block_height: i32) -> Result<(), Box<dyn Error>> {
+        if self.config.light_client_mode {
+            return Err("Reporting is not supported in light client mode".into());
+        }
+
+        let (block_hash, block_time) = self.block_hash_and_time(block_height).await?;
+
+        let Some(block_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_block_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!("Block events hash not found for block {}", block_height).into());
+        };
+
+        let Some(cumulative_events_hash) = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_events_hash(block_height)
+            .await?
+        else {
+            return Err(format!(
+                "Cumulative events hash not found for block {}",
+                block_height
+            )
+            .into());
+        };
+
+        let cumulative_traces_hash = get_brc20_database()
+            .lock()
+            .await
+            .get_cumulative_traces_hash(block_height)
+            .await?
+            .unwrap_or_default();
+
+        let block_traces_hash = if block_height >= self.config.first_brc20_prog_phase_one_height {
+            retrieve_brc20_prog_traces_hash(&self.brc20_prog, block_height).await?
+        } else {
+            String::new()
+        };
+
+        self.brc20_reporter
+            .report(
+                block_height,
+                block_hash.to_string(),
+                if block_time == 0 {
+                    None
+                } else {
+                    Some(block_time)
+                },
+                block_events_hash,
+                cumulative_events_hash,
+                block_traces_hash,
+                cumulative_traces_hash,
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn pre_fill_rpc_results_cache(&self, next_block: i32) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "pre_fill_rpc_results_cache", next_block);
+        let bitcoin_rpc_results = match self
+            .event_provider_client
+            .get_bitcoin_rpc_results_with_retries(next_block as i64)
+            .await
+        {
+            Ok(results) => results,
+            Err(error) => {
+                return Err(error);
+            }
+        };
+        tracing::debug!(
+            "Found {} Bitcoin RPC results for block {}",
+            bitcoin_rpc_results.len(),
+            next_block
+        );
+        for response in bitcoin_rpc_results {
+            let request_bytes = serde_json::to_string(&response.request)?;
+            let response_bytes = serde_json::to_string(&response.response)?.into();
+            get_brc20_database()
+                .lock()
+                .await
+                .cache_bitcoin_rpc_request(request_bytes.as_bytes(), &response_bytes)
+                .await?;
+        }
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn finalise_block_for_brc20_prog(
+        &mut self,
+        block_height: i32,
+        block_hash: &str,
+        block_time: u64,
+        is_synced: bool,
+        brc20_prog_tx_idx: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        if block_height >= self.config.first_brc20_prog_phase_one_height {
+            let function_timer = start_timer(SPAN, "finalise_block_for_brc20_prog", block_height);
+            timed(self.brc20_prog.brc20_finalise_block(
+                block_time,
+                block_hash.try_into()?,
+                brc20_prog_tx_idx,
+            ))
+            .await?;
+            if is_synced || block_height % 10 == 0 {
+                timed(guarded(self.brc20_prog.brc20_commit_to_database())).await?;
+            }
+            stop_timer(&function_timer).await;
+        }
+        Ok(())
+    }
+
+    pub async fn process_events(
+        &mut self,
+        block_height: i32,
+        block_hash: &str,
+        block_time: u64,
+        is_synced: bool,
+        events: Vec<serde_json::Value>,
+    ) -> Result<(), Box<dyn Error>> {
+        static METHOD_SPAN: &str = "process_events";
+        let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
+        if events.is_empty() {
+            self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
+                .await?;
+            stop_timer(&function_timer).await;
+            return Ok(());
+        }
+
+        tracing::info!("Found {} event(s) for block {}", events.len(), block_height);
+
+        let mut brc20_prog_tx_idx = 0;
+        for event_record in events {
+            let event_name = event_record
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!("Event type not found in event record: {:?}", event_record)
+                })?;
+            let single_event_timer = start_timer(METHOD_SPAN, event_name, block_height);
+            let event_type_id = event_name_to_id(event_name);
+            let inscription_id = event_record
+                .get("inscription_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "Inscription ID not found in event record: {:?}",
+                        event_record
+                    )
+                })?;
+            if event_type_id == Brc20ProgDeployInscribeEvent::event_id() {
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut load_event::<Brc20ProgDeployInscribeEvent>(event_type_id, &event_record)?,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_deploy_inscribe(block_height, inscription_id).await?;
+            } else if event_type_id == Brc20ProgDeployTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgDeployTransferEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                match EventProcessor::brc20_prog_deploy_transfer(
+                    &self.brc20_prog,
+                    block_height,
+                    block_time,
+                    block_hash,
+                    brc20_prog_tx_idx,
+                    inscription_id,
+                    &event,
+                )
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += tx_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgDeployTransferEvent: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else if event_type_id == Brc20ProgCallInscribeEvent::event_id() {
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut load_event::<Brc20ProgCallInscribeEvent>(event_type_id, &event_record)?,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_call_inscribe(block_height, inscription_id).await?;
+            } else if event_type_id == Brc20ProgCallTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgCallTransferEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                match EventProcessor::brc20_prog_call_transfer(
+                    &self.brc20_prog,
+                    block_height,
+                    block_time,
+                    block_hash,
+                    brc20_prog_tx_idx,
+                    inscription_id,
+                    &event,
+                )
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += tx_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgCallTransferEvent: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else if event_type_id == Brc20ProgTransactInscribeEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgTransactInscribeEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                EventProcessor::brc20_prog_transact_inscribe(block_height, inscription_id).await?;
+            } else if event_type_id == Brc20ProgTransactTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgTransactTransferEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                match EventProcessor::brc20_prog_transact_transfer(
+                    &self.brc20_prog,
+                    block_height,
+                    block_hash,
+                    inscription_id,
+                    block_time,
+                    brc20_prog_tx_idx,
+                    &event,
+                )
+                .await
+                {
+                    Ok(txes_executed) => {
+                        brc20_prog_tx_idx += txes_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgTransactTransferEvent: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else if event_type_id == Brc20ProgWithdrawInscribeEvent::event_id() {
+                let event =
+                    load_event::<Brc20ProgWithdrawInscribeEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for Brc20ProgWithdrawInscribeEvent",
+                            event.ticker
+                        )
+                    })?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut load_event::<Brc20ProgWithdrawInscribeEvent>(
+                        event_type_id,
+                        &event_record,
+                    )?,
+                    ticker.decimals,
+                )?;
+                EventProcessor::brc20_prog_withdraw_inscribe(block_height, inscription_id).await?;
+            } else if event_type_id == Brc20ProgWithdrawTransferEvent::event_id() {
+                let mut event =
+                    load_event::<Brc20ProgWithdrawTransferEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for Brc20ProgWithdrawTransferEvent",
+                            event.ticker
+                        )
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                match EventProcessor::brc20_prog_withdraw_transfer(
+                    &self.brc20_prog,
+                    block_height,
+                    block_hash,
+                    block_time,
+                    brc20_prog_tx_idx,
+                    inscription_id,
+                    event_id,
+                    &event,
+                )
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += tx_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process Brc20ProgWithdrawTransferEvent: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else if event_type_id == DeployInscribeEvent::event_id() {
+                let mut event = load_event::<DeployInscribeEvent>(event_type_id, &event_record)?;
+                let decimals = event.decimals;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    decimals,
+                )?;
+                EventProcessor::brc20_deploy_inscribe(block_height, inscription_id, &event).await?;
+            } else if event_type_id == MintInscribeEvent::event_id() {
+                let mut event = load_event::<MintInscribeEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!("Ticker {} not found for MintInscribeEvent", event.ticker)
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
+            } else if event_type_id == PreDeployInscribeEvent::event_id() {
+                let mut event = load_event::<PreDeployInscribeEvent>(event_type_id, &event_record)?;
+                get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    0,
+                )?;
+                // PreDeployInscribeEvent is not processed here, it is handled already in the transfer processing
+            } else if event_type_id == TransferInscribeEvent::event_id() {
+                let mut event = load_event::<TransferInscribeEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for TransferInscribeEvent",
+                            event.ticker
+                        )
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                EventProcessor::brc20_transfer_inscribe(
+                    block_height,
+                    event_id,
+                    inscription_id,
+                    &event,
+                )
+                .await?;
+            } else if event_type_id == TransferTransferEvent::event_id() {
+                let mut event = load_event::<TransferTransferEvent>(event_type_id, &event_record)?;
+                let ticker = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                    .ok_or_else(|| {
+                        format!(
+                            "Ticker {} not found for TransferTransferEvent",
+                            event.ticker
+                        )
+                    })?;
+                let event_id = get_brc20_database().lock().await.add_light_event(
+                    block_height,
+                    inscription_id,
+                    &mut event,
+                    ticker.decimals,
+                )?;
+                match EventProcessor::brc20_transfer_transfer(
+                    &self.brc20_prog,
+                    block_height,
+                    block_time,
+                    block_hash,
+                    brc20_prog_tx_idx,
+                    inscription_id,
+                    event_id,
+                    &event,
+                    &self.config,
+                )
+                .await
+                {
+                    Ok(tx_executed) => {
+                        brc20_prog_tx_idx += tx_executed.count;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to process TransferTransferEvent: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                tracing::warn!("Unknown event type: {}", event_type_id);
+                return Err(format!(
+                    "Unknown event type: {} for block {}",
+                    event_type_id, block_height
+                )
+                .into());
+            }
+            stop_timer(&single_event_timer).await;
+        }
+
+        let flush_timer = start_timer(SPAN, "flush_queries_to_db", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .flush_queries_to_db()
+            .await?;
+        stop_timer(&flush_timer).await;
+
+        self.finalise_block_for_brc20_prog(
+            block_height,
+            block_hash,
+            block_time,
+            is_synced,
+            brc20_prog_tx_idx,
+        )
+        .await?;
+
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    /// Generates events for the given block height.
+    pub async fn generate_and_process_events(
+        &mut self,
+        block_height: i32,
+        block_hash: &str,
+        block_time: u64,
+        is_synced: bool,
+        transfers: Vec<Brc20Tx>,
+    ) -> Result<(), Box<dyn Error>> {
+        static METHOD_SPAN: &str = "generate_and_process_events";
+        let function_timer = start_timer(SPAN, METHOD_SPAN, block_height);
+        let mut brc20_prog_tx_idx: u64 = 0;
+
+        if block_height == self.config.brc20_swap_refund_activation_height {
+            Brc20SwapRefund::generate_and_process_refunds(
+                block_height,
+                &self.brc20_prog,
+                &self.config,
+                block_time,
+                block_hash,
+            )
+            .await?;
+            // The refunds' rows reach Postgres here, since a block without
+            // transfers returns below without flushing, and the extra tables
+            // read the block's balance changes from Postgres next.
+            get_brc20_database()
+                .lock()
+                .await
+                .flush_queries_to_db()
+                .await?;
+        }
+
+        if transfers.is_empty() {
+            self.finalise_block_for_brc20_prog(block_height, block_hash, block_time, is_synced, 0)
+                .await?;
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Found {} transfer(s) for block {}",
+            transfers.len(),
+            block_height,
+        );
+
+        let mut last_transfer_timer = None;
+        for index in 0..transfers.len() {
+            last_transfer_timer = match last_transfer_timer {
+                Some(timer) => {
+                    stop_timer(&timer).await;
+                    Some(start_timer(
+                        METHOD_SPAN,
+                        "transfer".to_string(),
+                        block_height,
+                    ))
+                }
+                None => Some(start_timer(
+                    METHOD_SPAN,
+                    "transfer".to_string(),
+                    block_height,
+                )),
+            };
+            let transfer = &transfers[index];
+            if index % 100 == 0 && transfers.len() > 100 {
+                tracing::debug!("Processing transfer {} / {}", index, transfers.len());
+            }
+
+            if transfer.sent_as_fee && transfer.old_satpoint.as_ref().is_none_or(|x| x.is_empty()) {
+                tracing::debug!(
+                    "Skipping transfer {} as it is sent as fee and old satpoint is not present",
+                    transfer.inscription_id
+                );
+                continue;
+            }
+
+            let Some(protocol) = transfer.content.get(PROTOCOL_KEY).and_then(|p| p.as_str()) else {
+                tracing::debug!(
+                    "Skipping transfer {} as protocol is not present",
+                    transfer.inscription_id
+                );
+                continue;
+            };
+
+            if protocol != PROTOCOL_BRC20
+                && protocol != PROTOCOL_BRC20_PROG
+                && protocol != PROTOCOL_BRC20_MODULE
+            {
+                tracing::debug!(
+                    "Skipping transfer {} as protocol is not BRC20 or BRC20 Prog",
+                    transfer.inscription_id
+                );
+                continue;
+            }
+
+            let Some(operation) = transfer
+                .content
+                .get(OPERATION_KEY)
+                .and_then(|op| op.as_str())
+            else {
+                tracing::debug!(
+                    "Skipping transfer {} as operation is not present",
+                    transfer.inscription_id
+                );
+                continue;
+            };
+
+            if protocol == PROTOCOL_BRC20_PROG {
+                if block_height < self.config.first_brc20_prog_phase_one_height {
+                    tracing::debug!(
+                        "Skipping transfer {} as block height {} is less than first BRC20 Prog height {}",
+                        transfer.inscription_id,
+                        block_height,
+                        self.config.first_brc20_prog_phase_one_height
+                    );
+                    continue;
+                }
+
+                let data = transfer.content.get(DATA_KEY).and_then(|d| d.as_str());
+                let base64_data = transfer
+                    .content
+                    .get(BASE64_DATA_KEY)
+                    .and_then(|b| b.as_str());
+
+                if data.is_none() && base64_data.is_none() {
+                    tracing::debug!(
+                        "Skipping transfer {} as data or base64_data is not present",
+                        transfer.inscription_id
+                    );
+                    continue;
+                }
+
+                if data.is_some() && base64_data.is_some() {
+                    tracing::debug!(
+                        "Skipping transfer {} as both data and base64_data are present",
+                        transfer.inscription_id
+                    );
+                    continue;
+                }
+
+                if operation == OPERATION_BRC20_PROG_DEPLOY
+                    || operation == OPERATION_BRC20_PROG_DEPLOY_SHORT
+                {
+                    if transfer.old_satpoint.is_some() {
+                        match EventGenerator::brc20_prog_deploy_transfer(
+                            block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await
+                        {
+                            Ok(event) => {
+                                match EventProcessor::brc20_prog_deploy_transfer(
+                                    &self.brc20_prog,
+                                    block_height,
+                                    block_time,
+                                    block_hash,
+                                    brc20_prog_tx_idx,
+                                    &transfer.inscription_id,
+                                    &event,
+                                )
+                                .await
+                                {
+                                    Ok(tx_executed) => {
+                                        brc20_prog_tx_idx += tx_executed.count;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to process BRC20 Prog deploy transfer event: {}",
+                                            e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "Failed to generate BRC20 Prog deploy transfer event: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        EventGenerator::brc20_prog_deploy_inscribe(
+                            block_height,
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await?;
+                        EventProcessor::brc20_prog_deploy_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
+                        )
+                        .await?;
+                    }
+                } else if operation == OPERATION_BRC20_PROG_CALL
+                    || operation == OPERATION_BRC20_PROG_CALL_SHORT
+                {
+                    if transfer.content.get(CONTRACT_ADDRESS_KEY).is_none()
+                        && transfer.content.get(INSCRIPTION_ID_KEY).is_none()
+                    {
+                        tracing::debug!(
+                            "Skipping transfer {} as contract address or inscription ID is not present",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+                    if transfer.old_satpoint.is_some() {
+                        match EventGenerator::brc20_prog_call_transfer(
+                            block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
+                            transfer
+                                .content
+                                .get(CONTRACT_ADDRESS_KEY)
+                                .and_then(|c| c.as_str()),
+                            transfer
+                                .content
+                                .get(INSCRIPTION_ID_KEY)
+                                .and_then(|i| i.as_str()),
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await
+                        {
+                            Ok(event) => {
+                                match EventProcessor::brc20_prog_call_transfer(
+                                    &self.brc20_prog,
+                                    block_height,
+                                    block_time,
+                                    block_hash,
+                                    brc20_prog_tx_idx,
+                                    &transfer.inscription_id,
+                                    &event,
+                                )
+                                .await
+                                {
+                                    Ok(tx_executed) => {
+                                        brc20_prog_tx_idx += tx_executed.count;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to process BRC20 Prog call transfer event: {}",
+                                            e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to generate BRC20 Prog call transfer event: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        EventGenerator::brc20_prog_call_inscribe(
+                            block_height,
+                            transfer
+                                .content
+                                .get(CONTRACT_ADDRESS_KEY)
+                                .and_then(|c| c.as_str()),
+                            transfer
+                                .content
+                                .get(INSCRIPTION_ID_KEY)
+                                .and_then(|i| i.as_str()),
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await?;
+                        EventProcessor::brc20_prog_call_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
+                        )
+                        .await?;
+                    }
+                } else if operation == OPERATION_BRC20_PROG_TRANSACT
+                    || operation == OPERATION_BRC20_PROG_TRANSACT_SHORT
+                {
+                    if transfer.old_satpoint.is_some() {
+                        match EventGenerator::brc20_prog_transact_transfer(
+                            block_height,
+                            block_height >= self.config.first_brc20_prog_prague_height,
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await
+                        {
+                            Ok(event) => {
+                                if let Ok(txes_executed) =
+                                    EventProcessor::brc20_prog_transact_transfer(
+                                        &self.brc20_prog,
+                                        block_height,
+                                        block_hash,
+                                        &transfer.inscription_id,
+                                        block_time,
+                                        brc20_prog_tx_idx,
+                                        &event,
+                                    )
+                                    .await
+                                {
+                                    brc20_prog_tx_idx += txes_executed.count;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "Failed to generate BRC20 Prog transact transfer event: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        EventGenerator::brc20_prog_transact_inscribe(
+                            block_height,
+                            data,
+                            base64_data,
+                            transfer,
+                        )
+                        .await?;
+                        EventProcessor::brc20_prog_transact_inscribe(
+                            block_height,
+                            &transfer.inscription_id,
+                        )
+                        .await?;
+                    }
+                }
+                continue;
+            }
+
+            if operation == OPERATION_PREDEPLOY && transfer.old_satpoint.is_none() {
+                if block_height
+                    < self.config.first_brc20_prog_phase_one_height
+                        - PREDEPLOY_BLOCK_HEIGHT_ACCEPTANCE_DELAY
+                {
+                    tracing::debug!(
+                        "Skipping transfer {} as block height {} is too early",
+                        transfer.inscription_id,
+                        block_height
+                    );
+                    continue;
+                }
+
+                let Some(hash) = transfer.content.get(HASH_KEY).and_then(|h| h.as_str()) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as hash is not present",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                EventGenerator::brc20_predeploy_inscribe(block_height, hash, transfer).await?;
+                continue;
+            }
+
+            let Some(original_ticker) = transfer.content.get(TICKER_KEY).and_then(|ot| ot.as_str())
+            else {
+                tracing::debug!(
+                    "Skipping transfer {} as ticker is not present",
+                    transfer.inscription_id
+                );
+                continue;
+            };
+
+            let ticker = original_ticker.to_lowercase();
+
+            // if ticker or original_ticker contains \x00, skip the transfer
+            if ticker.contains('\x00') || original_ticker.contains('\x00') {
+                tracing::debug!(
+                    "Skipping transfer {} as ticker or original_ticker contains null byte",
+                    transfer.inscription_id
+                );
+                continue;
+            }
+
+            let ticker_length = original_ticker.len();
+
+            if !(ticker_length == 4
+                || ticker_length == 5
+                || (ticker_length == 6
+                    && is_alphanumerical_or_dash(&ticker)
+                    && block_height >= self.config.first_brc20_prog_phase_one_height))
+            {
+                tracing::debug!(
+                    "Skipping transfer {} as ticker length {} is not valid at block height {}",
+                    transfer.inscription_id,
+                    ticker_length,
+                    block_height
+                );
+                continue;
+            }
+
+            if protocol == PROTOCOL_BRC20_MODULE {
+                let Ok(Some(deployed_ticker)) =
+                    get_brc20_database().lock().await.get_ticker(&ticker)
+                else {
+                    tracing::debug!(
+                        "Skipping transfer {} as ticker {} is not deployed",
+                        transfer.inscription_id,
+                        ticker
+                    );
+                    continue;
+                };
+
+                let Some(module) = transfer.content.get(MODULE_KEY).and_then(|m| m.as_str()) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as module is not present",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                if module != BRC20_MODULE_BRC20PROG || operation != OPERATION_WITHDRAW {
+                    tracing::debug!(
+                        "Skipping transfer {} as module is not BRC20 Prog or operation is not withdraw",
+                        transfer.inscription_id
+                    );
+                    continue;
+                }
+
+                let Ok(amount) = get_amount_value(
+                    transfer.content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
+                    deployed_ticker.decimals,
+                    no_default!(),
+                    DISALLOW_ZERO,
+                ) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as amount is not present or invalid",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                if transfer.old_satpoint.as_ref().is_some() {
+                    let (event_id, event) = EventGenerator::brc20_prog_withdraw_transfer(
+                        block_height,
+                        &deployed_ticker,
+                        original_ticker,
+                        amount,
+                        transfer,
+                    )
+                    .await?;
+                    match EventProcessor::brc20_prog_withdraw_transfer(
+                        &self.brc20_prog,
+                        block_height,
+                        block_hash,
+                        block_time,
+                        brc20_prog_tx_idx,
+                        &transfer.inscription_id,
+                        event_id,
+                        &event,
+                    )
+                    .await
+                    {
+                        Ok(tx_executed) => {
+                            brc20_prog_tx_idx += tx_executed.count;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to process Brc20ProgWithdrawTransferEvent: {}",
+                                e
+                            );
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    EventGenerator::brc20_prog_withdraw_inscribe(
+                        block_height,
+                        &deployed_ticker,
+                        original_ticker,
+                        amount,
+                        transfer,
+                    )
+                    .await?;
+                    EventProcessor::brc20_prog_withdraw_inscribe(
+                        block_height,
+                        &transfer.inscription_id,
+                    )
+                    .await?;
+                }
+                continue;
+            }
+
+            if operation == OPERATION_DEPLOY && transfer.old_satpoint.is_none() {
+                if let Ok(Some(_)) = get_brc20_database().lock().await.get_ticker(&ticker) {
+                    tracing::debug!(
+                        "Skipping transfer {} as ticker {} is already deployed",
+                        transfer.inscription_id,
+                        ticker
+                    );
+                    continue;
+                }
+
+                let Ok(decimals) =
+                    get_decimals_value(transfer.content.get(DECIMALS_KEY).and_then(|d| d.as_str()))
+                else {
+                    tracing::debug!(
+                        "Skipping transfer {} as decimals are not present or invalid",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                let Ok(mut max_supply) = get_amount_value(
+                    transfer
+                        .content
+                        .get(MAX_SUPPLY_KEY)
+                        .and_then(|m| m.as_str()),
+                    decimals,
+                    no_default!(),
+                    ALLOW_ZERO,
+                ) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as max supply is not present or invalid",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                let mut limit_per_mint_res = get_amount_value(
+                    transfer
+                        .content
+                        .get(LIMIT_PER_MINT_KEY)
+                        .and_then(|l| l.as_str()),
+                    decimals,
+                    no_default!(),
+                    DISALLOW_ZERO,
+                );
+
+                if limit_per_mint_res.is_err() {
+                    if transfer.content.get(LIMIT_PER_MINT_KEY).is_none() {
+                        limit_per_mint_res = Ok(max_supply);
+                    } else {
+                        tracing::debug!(
+                            "Skipping transfer {} as limit per mint is not present or invalid",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+                }
+
+                let mut limit_per_mint = limit_per_mint_res?;
+
+                let mut is_self_mint = false;
+                if ticker_length == 5 {
+                    if block_height < self.config.self_mint_activation_height {
+                        tracing::debug!(
+                            "Skipping transfer {} as self mint is not enabled yet",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+                    if let Some(self_mint) =
+                        transfer.content.get(SELF_MINT_KEY).and_then(|s| s.as_str())
+                    {
+                        if self_mint != "true" {
+                            tracing::debug!(
+                                "Skipping transfer {} as self mint is not enabled",
+                                transfer.inscription_id
+                            );
+                            continue;
+                        }
+                    } else {
+                        tracing::debug!(
+                            "Skipping transfer {} as self mint is not present",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+                    is_self_mint = true;
+                    if max_supply == 0 {
+                        max_supply = MAX_AMOUNT;
+                        if limit_per_mint == 0 {
+                            limit_per_mint = MAX_AMOUNT;
+                        }
+                    }
+                } else if ticker_length == 6 {
+                    if block_height < self.config.first_brc20_prog_phase_one_height {
+                        tracing::debug!(
+                            "Skipping transfer {} as 6-byte tickers are not enabled yet",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+
+                    let Some(salt) = transfer.content.get(SALT_KEY).and_then(|s| s.as_str()) else {
+                        tracing::debug!(
+                            "Skipping transfer {} as salt is not present or invalid",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let Some(parent_id) = transfer.parent_id.as_ref() else {
+                        tracing::debug!(
+                            "Skipping transfer {} as parent ID is not present",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let Some(predeploy_event) = get_brc20_database()
+                        .lock()
+                        .await
+                        .get_event_with_type::<PreDeployInscribeEvent>(parent_id)
+                        .await?
+                    else {
+                        tracing::debug!(
+                            "Skipping transfer {} as predeploy event is not present",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    if predeploy_event.block_height > block_height - PREDEPLOY_BLOCK_HEIGHT_DELAY {
+                        tracing::debug!(
+                            "Skipping transfer {} as predeploy block height {} is too recent",
+                            transfer.inscription_id,
+                            predeploy_event.block_height
+                        );
+                        continue;
+                    }
+
+                    let Ok(salt_bytes) = hex::decode(salt) else {
+                        tracing::debug!(
+                            "Skipping transfer {} as salt is not a valid hex string",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let Ok(pkscript_bytes) =
+                        hex::decode(predeploy_event.predeployer_pk_script.as_str())
+                    else {
+                        tracing::debug!(
+                            "Skipping transfer {} as pkscript is not a valid hex string",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    };
+
+                    let salted_ticker =
+                        [original_ticker.as_bytes(), &salt_bytes, &pkscript_bytes].concat();
+
+                    if predeploy_event.hash
+                        != sha256::digest(hex::decode(sha256::digest(&salted_ticker))?)
+                    {
+                        tracing::debug!(
+                            "Skipping transfer {} as ticker hash does not match predeploy hash",
+                            transfer.inscription_id
+                        );
+                        continue;
+                    }
+
+                    if let Some(self_mint) =
+                        transfer.content.get(SELF_MINT_KEY).and_then(|s| s.as_str())
+                    {
+                        is_self_mint = self_mint == "true";
+                    } else {
+                        is_self_mint = false;
+                    }
+                    if is_self_mint && max_supply == 0 {
+                        max_supply = MAX_AMOUNT;
+                        if limit_per_mint == 0 {
+                            limit_per_mint = MAX_AMOUNT;
+                        }
+                    }
+                }
+
+                if max_supply == 0 {
+                    tracing::debug!(
+                        "Skipping transfer {} as max supply is 0",
+                        transfer.inscription_id
+                    );
+                    continue;
+                }
+
+                let event = EventGenerator::brc20_deploy_inscribe(
+                    block_height,
+                    ticker.as_str(),
+                    original_ticker,
+                    max_supply,
+                    limit_per_mint,
+                    decimals,
+                    is_self_mint,
+                    transfer,
+                )
+                .await?;
+                EventProcessor::brc20_deploy_inscribe(
+                    block_height,
+                    &transfer.inscription_id,
+                    &event,
+                )
+                .await?;
+
+                continue;
+            }
+
+            if operation == OPERATION_MINT && transfer.old_satpoint.is_none() {
+                let Ok(Some(mut deployed_ticker)) =
+                    get_brc20_database().lock().await.get_ticker(&ticker)
+                else {
+                    tracing::debug!(
+                        "Skipping transfer {} as ticker {} is not deployed",
+                        transfer.inscription_id,
+                        ticker
+                    );
+                    continue;
+                };
+
+                let Ok(amount) = get_amount_value(
+                    transfer.content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
+                    deployed_ticker.decimals,
+                    no_default!(),
+                    DISALLOW_ZERO,
+                ) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as amount is not present or invalid",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                match EventGenerator::brc20_mint_inscribe(
+                    block_height,
+                    &mut deployed_ticker,
+                    original_ticker,
+                    amount,
+                    transfer,
+                )
+                .await
+                {
+                    Ok((event_id, event)) => {
+                        EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            "Failed to generate BRC20 mint inscribe event for transfer {}",
+                            transfer.inscription_id
+                        );
+                    }
+                }
+                continue;
+            }
+
+            if operation == OPERATION_TRANSFER {
+                let Ok(Some(deployed_ticker)) =
+                    get_brc20_database().lock().await.get_ticker(&ticker)
+                else {
+                    tracing::debug!(
+                        "Skipping transfer {} as ticker {} is not deployed",
+                        transfer.inscription_id,
+                        ticker
+                    );
+                    continue;
+                };
+
+                let Ok(amount) = get_amount_value(
+                    transfer.content.get(AMOUNT_KEY).and_then(|a| a.as_str()),
+                    deployed_ticker.decimals,
+                    no_default!(),
+                    DISALLOW_ZERO,
+                ) else {
+                    tracing::debug!(
+                        "Skipping transfer {} as amount is not present or invalid",
+                        transfer.inscription_id
+                    );
+                    continue;
+                };
+
+                if transfer.old_satpoint.is_some() {
+                    match EventGenerator::brc20_transfer_transfer(
+                        block_height,
+                        &deployed_ticker,
+                        original_ticker,
+                        amount,
+                        transfer,
+                    )
+                    .await
+                    {
+                        Ok((event_id, event)) => {
+                            match EventProcessor::brc20_transfer_transfer(
+                                &self.brc20_prog,
+                                block_height,
+                                block_time,
+                                block_hash,
+                                brc20_prog_tx_idx,
+                                &transfer.inscription_id,
+                                event_id,
+                                &event,
+                                &self.config,
+                            )
+                            .await
+                            {
+                                Ok(txes_executed) => {
+                                    brc20_prog_tx_idx += txes_executed.count;
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        "Failed to process Brc20TransferTransferEvent: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Failed to generate BRC20 transfer transfer event for transfer {}: {}",
+                                transfer.inscription_id,
+                                e
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    match EventGenerator::brc20_transfer_inscribe(
+                        block_height,
+                        &deployed_ticker,
+                        original_ticker,
+                        amount,
+                        transfer,
+                    )
+                    .await
+                    {
+                        Ok((event_id, event)) => {
+                            EventProcessor::brc20_transfer_inscribe(
+                                block_height,
+                                event_id,
+                                &transfer.inscription_id,
+                                &event,
+                            )
+                            .await?;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Failed to generate BRC20 transfer inscribe event for transfer {}: {}",
+                                transfer.inscription_id,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(timer) = last_transfer_timer {
+            stop_timer(&timer).await;
+        }
+
+        let flush_timer = start_timer(SPAN, "flush_queries_to_db", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .flush_queries_to_db()
+            .await?;
+        stop_timer(&flush_timer).await;
+
+        self.finalise_block_for_brc20_prog(
+            block_height,
+            block_hash,
+            block_time,
+            is_synced,
+            brc20_prog_tx_idx,
+        )
+        .await?;
+
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn get_opi_block_height(&self) -> Result<i32, Box<dyn Error>> {
+        if self.config.light_client_mode {
+            self.event_provider_client
+                .get_best_verified_block_with_retries()
+                .await
+        } else {
+            self.journal()?
+                .tip()?
+                .map(|height| height as i32)
+                .ok_or("Failed to get current block height".into())
+        }
+    }
+
+    fn journal(&self) -> Result<&Arc<dyn BlockSource>, Box<dyn Error>> {
+        self.journal
+            .as_ref()
+            .ok_or("full mode reads blocks from the journal inside opi-indexer".into())
+    }
+
+    /// The hash and time of `block_height` as brc20 stored them when it
+    /// indexed the block. A block stored before block times were has its time
+    /// from the journal's header of the same hash, which a pruned journal
+    /// holds only for its window.
+    async fn block_hash_and_time(
+        &self,
+        block_height: i32,
+    ) -> Result<(String, i64), Box<dyn Error>> {
+        let stored = get_brc20_database()
+            .lock()
+            .await
+            .get_block_hash_and_time(block_height)
+            .await?;
+        match stored {
+            Some((hash, Some(time))) => Ok((hash, time)),
+            Some((hash, None)) => {
+                let (journal_hash, time) = self.journal_block_hash_and_time(block_height)?;
+                if journal_hash != hash {
+                    return Err(format!(
+                        "block {block_height} is {hash} in brc20 but {journal_hash} in the journal"
+                    )
+                    .into());
+                }
+                Ok((hash, time))
+            }
+            None => self.journal_block_hash_and_time(block_height),
+        }
+    }
+
+    /// The journal's hash and time of `block_height`.
+    fn journal_block_hash_and_time(
+        &self,
+        block_height: i32,
+    ) -> Result<(String, i64), Box<dyn Error>> {
+        self.journal()?
+            .block_info(block_height as u32)?
+            .map(|info| (info.hash, info.time as i64))
+            .ok_or("Block hash and time not found".into())
+    }
+
+    /// Fails when brc20 and brc20-prog disagree on their last block, by the
+    /// height and hash comparisons `reorg_to_last_synced_block_height` makes
+    /// before it reconciles them. A full module runs it before every block;
+    /// the restarted instance's `init` reconciles the two.
+    pub(crate) async fn check_brc20_prog_height(&self) -> Result<(), Box<dyn Error>> {
+        let last_brc20_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+        let last_brc20_prog_block_height =
+            if last_brc20_block_height < self.config.first_brc20_prog_phase_one_height {
+                self.config.first_brc20_prog_phase_one_height - 1
+            } else {
+                parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
+            };
+        if let Some(mismatch) = brc20_prog_height_mismatch(
+            last_brc20_block_height,
+            last_brc20_prog_block_height,
+            self.config.first_brc20_height,
+            self.config.first_brc20_prog_phase_one_height,
+        ) {
+            return Err(mismatch.into());
+        }
+
+        if !compares_brc20_prog_hash(
+            last_brc20_block_height,
+            self.config.first_brc20_height,
+            self.config.first_brc20_prog_phase_one_height,
+        ) {
+            return Ok(());
+        }
+        let brc20_block_hash = get_brc20_database()
+            .lock()
+            .await
+            .get_block_hash(last_brc20_block_height)
+            .await?;
+        let brc20_prog_block_hash = self
+            .brc20_prog
+            .eth_get_block_by_number(last_brc20_block_height.to_string(), Some(false))
+            .await?
+            .hash
+            .bytes
+            .to_string()
+            .trim_start_matches("0x")
+            .to_string();
+        if brc20_block_hash != brc20_prog_block_hash {
+            return Err(format!(
+                "brc20's block hash at {} is {} but brc20-prog's is {}",
+                last_brc20_block_height, brc20_block_hash, brc20_prog_block_hash
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Reconciles brc20 with brc20-prog and, in light mode, with the OPI
+    /// network. An engine below brc20 rolls brc20 back to the engine (see
+    /// `engine_catch_up_height`). Between blocks (`Reconcile::PerBlock`) an
+    /// engine below the block before BRC2.0's activation is an error instead,
+    /// since only a start mines the engine up to that block.
+    pub async fn reorg_to_last_synced_block_height(
+        &mut self,
+        reconcile: Reconcile,
+    ) -> Result<(), Box<dyn Error>> {
+        tracing::debug!("Reorganizing BRC20 indexer to last synced block height...");
+        let mut last_brc20_block_height = get_brc20_database()
+            .lock()
+            .await
+            .get_current_block_height()
+            .await?;
+        let last_opi_block_height = self.last_opi_block;
+        let mut last_brc20_prog_block_height =
+            if last_brc20_block_height < self.config.first_brc20_prog_phase_one_height {
+                self.config.first_brc20_prog_phase_one_height - 1
+            } else {
+                parse_hex_number(&self.brc20_prog.eth_block_number().await?)?
+            };
+
+        // BRC20 indexer has not indexed any blocks yet, no need to reorg BRC20
+        if last_brc20_block_height < self.config.first_brc20_height {
+            if last_brc20_prog_block_height > self.config.first_brc20_prog_phase_one_height {
+                guarded(
+                    self.brc20_prog
+                        .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        tracing::debug!(
+            "BRC20 indexer last block height: {}, OPI indexer last block height: {}, BRC20 Prog last block height: {}",
+            last_brc20_block_height,
+            last_opi_block_height,
+            last_brc20_prog_block_height
+        );
+
+        if let Some(target) = engine_catch_up_height(
+            last_brc20_block_height,
+            last_brc20_prog_block_height,
+            self.config.first_brc20_prog_phase_one_height,
+        ) {
+            let phase_one = self.config.first_brc20_prog_phase_one_height;
+            if reconcile == Reconcile::PerBlock && last_brc20_prog_block_height < phase_one - 1 {
+                return Err(format!(
+                    "the BRC2.0 engine at {} is at height {}, below the block before BRC2.0's activation ({}), while brc20 is at {}; restart to replay BRC2.0",
+                    self.config.brc20_prog_db_path,
+                    last_brc20_prog_block_height,
+                    phase_one - 1,
+                    last_brc20_block_height
+                )
+                .into());
+            }
+            let message = format!(
+                "The BRC2.0 engine at {} is at height {}, below brc20's height {}; rolling brc20 back to {}, and the BRC2.0 blocks above {} replay now",
+                self.config.brc20_prog_db_path,
+                last_brc20_prog_block_height,
+                last_brc20_block_height,
+                target,
+                target
+            );
+            if is_commit_lag(
+                last_brc20_block_height,
+                last_brc20_prog_block_height,
+                phase_one,
+            ) {
+                tracing::info!("{message}");
+            } else {
+                tracing::warn!("{message}");
+            }
+            self.reorg(target).await?;
+            if target < self.config.first_brc20_height {
+                return Ok(());
+            }
+            last_brc20_block_height = target;
+            if target < self.config.first_brc20_prog_phase_one_height {
+                last_brc20_prog_block_height = self.config.first_brc20_prog_phase_one_height - 1;
+            }
+        }
+
+        if last_brc20_prog_block_height >= self.config.first_brc20_prog_phase_one_height {
+            if last_brc20_block_height == last_brc20_prog_block_height {
+                // BRC20 and BRC20 Prog are already synced, no need to reorg
+                tracing::debug!(
+                    "BRC20 and BRC20 Prog are synced at height: {}",
+                    last_brc20_block_height
+                );
+            } else {
+                tracing::info!(
+                    "BRC20 Prog is ahead of BRC20, reorging BRC20 prog to current BRC20 height: {}",
+                    last_brc20_block_height
+                );
+                guarded(self.brc20_prog.brc20_reorg(last_brc20_block_height as u64)).await?;
+
+                last_brc20_prog_block_height = last_brc20_block_height;
+            }
+        }
+
+        let mut current_brc20_height = last_brc20_block_height;
+        let mut current_brc20_prog_height = last_brc20_prog_block_height;
+        loop {
+            if current_brc20_height < last_brc20_block_height - 10 {
+                // If the difference is greater than 10, we don't support reorg
+                return Err(format!(
+                    "BRC20 REORG IS TOO LARGE, LAST BLOCK HEIGHT: {}",
+                    last_brc20_block_height
+                )
+                .into());
+            }
+
+            let brc20_block_hash = get_brc20_database()
+                .lock()
+                .await
+                .get_block_hash(current_brc20_height)
+                .await?;
+            let opi_block_hash = if self.config.light_client_mode {
+                self.event_provider_client
+                    .get_block_info_with_retries(current_brc20_height)
+                    .await?
+                    .best_block_hash
+            } else {
+                // opi-indexer's scheduler compares brc20's hashes with the
+                // journal's before every block, so this walk only reconciles
+                // brc20 with brc20-prog.
+                brc20_block_hash.clone()
+            };
+            let brc20_prog_block_hash =
+                if current_brc20_height < self.config.first_brc20_prog_phase_one_height {
+                    opi_block_hash.clone()
+                } else {
+                    self.brc20_prog
+                        .eth_get_block_by_number(current_brc20_height.to_string(), Some(false))
+                        .await?
+                        .hash
+                        .bytes
+                        .to_string()
+                        .trim_start_matches("0x")
+                        .to_string()
+                };
+
+            tracing::debug!(
+                "Checking block height {}, BRC20 hash: {}, OPI hash: {}, BRC20 Prog hash: {}",
+                current_brc20_height,
+                brc20_block_hash,
+                opi_block_hash,
+                brc20_prog_block_hash
+            );
+
+            if brc20_block_hash == opi_block_hash && brc20_block_hash == brc20_prog_block_hash {
+                // We found a block hash that is the same in all three databases
+                tracing::debug!(
+                    "Found synced block at height {}, hash: {}, last BRC20 block height: {}",
+                    current_brc20_height,
+                    brc20_block_hash,
+                    last_brc20_block_height
+                );
+                if last_brc20_block_height == current_brc20_height {
+                    // Last block is synced, no need to reorg
+                    break;
+                }
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .reorg(current_brc20_height)
+                    .await?;
+                if current_brc20_height >= self.config.first_brc20_prog_phase_one_height {
+                    guarded(
+                        self.brc20_prog
+                            .brc20_reorg(current_brc20_prog_height as u64),
+                    )
+                    .await?;
+                }
+                break;
+            }
+
+            if current_brc20_height == self.config.first_brc20_height {
+                tracing::debug!(
+                    "Reached first BRC20 height {}, reorging to it",
+                    self.config.first_brc20_height
+                );
+                // We reached the first inscription height, reorg everyone to their first heights
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .reorg(self.config.first_brc20_height)
+                    .await?;
+                guarded(
+                    self.brc20_prog
+                        .brc20_reorg(self.config.first_brc20_prog_phase_one_height as u64),
+                )
+                .await?;
+                break;
+            }
+            current_brc20_height -= 1;
+            current_brc20_prog_height -= 1;
+        }
+
+        Ok(())
+    }
+}
+
+fn is_alphanumerical_or_dash(ticker: &str) -> bool {
+    ticker
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn parse_hex_number(eth_number: &str) -> Result<i32, Box<dyn Error>> {
+    i32::from_str_radix(eth_number.trim_start_matches("0x"), 16).map_err(|e| e.into())
+}
+
+/// Records a read of the OPI network's best verified block as the light
+/// client's chain tip.
+fn publish_opi_tip(metrics: &opi_core::metrics::Metrics, height: i32) {
+    if let Ok(height) = u32::try_from(height) {
+        metrics.set_chain_tip(height);
+    }
+}
+
+/// Why brc20 at `last_brc20` and brc20-prog at `last_prog` disagree, by the
+/// conditions under which `reorg_to_last_synced_block_height` reorgs one of
+/// them. `last_prog` is `phase_one - 1` while brc20 is below `phase_one`.
+fn brc20_prog_height_mismatch(
+    last_brc20: i32,
+    last_prog: i32,
+    first_brc20_height: i32,
+    phase_one: i32,
+) -> Option<String> {
+    if last_brc20 < first_brc20_height {
+        return (last_prog > phase_one).then(|| {
+            format!("brc20-prog is at {last_prog} while brc20 has not indexed a BRC-20 block")
+        });
+    }
+    (last_prog >= phase_one && last_prog != last_brc20)
+        .then(|| format!("brc20 is at {last_brc20} but brc20-prog is at {last_prog}"))
+}
+
+/// When `reorg_to_last_synced_block_height` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reconcile {
+    /// During `init`, before indexing resumes.
+    AtStart,
+    /// Before each block of the light client's run loop.
+    PerBlock,
+}
+
+/// Whether the engine at `last_prog` trails brc20 at `last_brc20` only by
+/// blocks it had not yet committed: at most 10 blocks, from the block
+/// before phase one on.
+fn is_commit_lag(last_brc20: i32, last_prog: i32, phase_one: i32) -> bool {
+    last_brc20 - last_prog <= 10 && last_prog >= phase_one - 1
+}
+
+/// The height brc20 rolls back to when the engine at `last_prog` is below
+/// brc20 at `last_brc20`, such as a fresh or lagging engine data dir:
+/// `last_prog`, or `phase_one - 1` when the engine is below that, so the
+/// BRC2.0 blocks above it replay through the engine. `None` when brc20 is
+/// below phase one, where the engine holds no BRC2.0 block, or when the
+/// engine is not behind.
+fn engine_catch_up_height(last_brc20: i32, last_prog: i32, phase_one: i32) -> Option<i32> {
+    (last_brc20 >= phase_one && last_prog < last_brc20).then(|| last_prog.max(phase_one - 1))
+}
+
+/// Whether brc20's stored hash at `last_brc20` is compared with brc20-prog's:
+/// `reorg_to_last_synced_block_height` reads brc20-prog's hash only once brc20
+/// has indexed a BRC-20 block at or above phase one.
+fn compares_brc20_prog_hash(last_brc20: i32, first_brc20_height: i32, phase_one: i32) -> bool {
+    last_brc20 >= first_brc20_height && last_brc20 >= phase_one
+}
+
+/// The last block the BRC2.0 balance fill replays: brc20's height. From
+/// phase one on the engine must hold exactly that block, since a fill that
+/// stops short would still finish and drop its marker.
+fn prog_balance_fill_height(brc20: i32, prog: i32, phase_one: i32) -> Result<i32, String> {
+    if brc20 >= phase_one && prog != brc20 {
+        return Err(format!(
+            "BRC2.0 balance fill: brc20 is at block {brc20} but brc20-prog at {prog}"
+        ));
+    }
+    Ok(brc20)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::brc20_prog_client::test_engine::TestEngine;
+
+    /// In light mode brc20's height is compared with the OPI network's best
+    /// verified block.
+    #[test]
+    fn light_mode_readiness_follows_the_opi_tip() {
+        use opi_core::metrics::{Metrics, Phase, ReadyLimits};
+        let metrics = Metrics::new();
+        metrics.set_phase(Phase::Running);
+        let brc20 = metrics.module("brc20");
+        brc20.set_height(Some(900));
+        publish_opi_tip(&metrics, -1);
+        assert_eq!(
+            metrics.indexer_readiness(ReadyLimits::default()),
+            Err("the chain tip is not known yet".into())
+        );
+        publish_opi_tip(&metrics, 905);
+        let err = metrics
+            .indexer_readiness(ReadyLimits::default())
+            .unwrap_err();
+        assert!(
+            err.contains("brc20 is 5 blocks behind the tip 905"),
+            "{err}"
+        );
+        publish_opi_tip(&metrics, 902);
+        assert_eq!(metrics.indexer_readiness(ReadyLimits::default()), Ok(()));
+    }
+    use opi_core::{BlockInfo, BlockView, InscriptionRecord};
+
+    const FIRST: i32 = 112_402;
+    const PHASE_ONE: i32 = 230_000;
+
+    #[test]
+    fn the_fill_needs_brc20_and_the_engine_at_one_height_from_phase_one() {
+        // Below phase one the engine sits at phase one - 1 and nothing fills.
+        assert_eq!(
+            prog_balance_fill_height(200_000, PHASE_ONE - 1, PHASE_ONE),
+            Ok(200_000)
+        );
+        assert_eq!(
+            prog_balance_fill_height(PHASE_ONE - 1, PHASE_ONE - 1, PHASE_ONE),
+            Ok(PHASE_ONE - 1)
+        );
+        assert_eq!(
+            prog_balance_fill_height(PHASE_ONE, PHASE_ONE, PHASE_ONE),
+            Ok(PHASE_ONE)
+        );
+        assert_eq!(
+            prog_balance_fill_height(300_000, 300_000, PHASE_ONE),
+            Ok(300_000)
+        );
+        assert!(prog_balance_fill_height(300_000, 299_990, PHASE_ONE).is_err());
+        assert!(prog_balance_fill_height(300_000, 300_001, PHASE_ONE).is_err());
+        assert!(prog_balance_fill_height(PHASE_ONE, PHASE_ONE - 1, PHASE_ONE).is_err());
+    }
+
+    #[test]
+    fn an_engine_below_brc20_rolls_brc20_back_to_the_engine_or_phase_one() {
+        let target = |brc20, prog| engine_catch_up_height(brc20, prog, PHASE_ONE);
+        // A lagging engine: brc20 rolls back to the engine's height.
+        assert_eq!(target(300_000, 299_000), Some(299_000));
+        assert_eq!(target(300_000, PHASE_ONE), Some(PHASE_ONE));
+        // A fresh or pre-BRC2.0 engine: brc20 rolls back to phase one - 1.
+        assert_eq!(target(300_000, 0), Some(PHASE_ONE - 1));
+        assert_eq!(target(300_000, PHASE_ONE - 1), Some(PHASE_ONE - 1));
+        assert_eq!(target(PHASE_ONE, 0), Some(PHASE_ONE - 1));
+        // An engine at or above brc20, or brc20 below phase one, needs none.
+        assert_eq!(target(300_000, 300_000), None);
+        assert_eq!(target(300_000, 300_001), None);
+        assert_eq!(target(PHASE_ONE - 1, 0), None);
+    }
+
+    #[test]
+    fn prog_height_check_matches_the_reconciliation_conditions() {
+        let mismatch = |brc20, prog| brc20_prog_height_mismatch(brc20, prog, FIRST, PHASE_ONE);
+        // Before the first BRC-20 block only a prog past phase one disagrees.
+        assert!(mismatch(FIRST - 1, PHASE_ONE - 1).is_none());
+        assert!(mismatch(FIRST - 1, PHASE_ONE).is_none());
+        assert!(mismatch(FIRST - 1, PHASE_ONE + 1).is_some());
+        // Below phase one brc20-prog is taken to sit at phase one - 1.
+        assert!(mismatch(200_000, PHASE_ONE - 1).is_none());
+        assert!(mismatch(PHASE_ONE - 1, PHASE_ONE - 1).is_none());
+        // From phase one on the heights must be equal.
+        assert!(mismatch(PHASE_ONE, PHASE_ONE).is_none());
+        assert!(mismatch(300_000, 300_000).is_none());
+        assert!(mismatch(300_000, 300_001).is_some());
+        assert!(mismatch(300_001, 300_000).is_some());
+
+        // brc20-prog's block hash is compared from phase one on.
+        let compares = |brc20| compares_brc20_prog_hash(brc20, FIRST, PHASE_ONE);
+        assert!(!compares(FIRST - 1));
+        assert!(!compares(FIRST));
+        assert!(!compares(PHASE_ONE - 1));
+        assert!(compares(PHASE_ONE));
+        assert!(compares(300_000));
+    }
+
+    struct StubJournal {
+        tip: Option<u32>,
+        block: Option<BlockInfo>,
+    }
+
+    impl BlockSource for StubJournal {
+        fn tip(&self) -> anyhow::Result<Option<u32>> {
+            Ok(self.tip)
+        }
+
+        fn block_info(&self, height: u32) -> anyhow::Result<Option<BlockInfo>> {
+            Ok(self.block.clone().filter(|block| block.height == height))
+        }
+
+        fn inscription_records(&self, _: u32) -> anyhow::Result<Vec<InscriptionRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn block_view(&self, _: u32) -> anyhow::Result<Option<BlockView>> {
+            Ok(None)
+        }
+    }
+
+    fn full_indexer(engine: &TestEngine, journal: Option<StubJournal>) -> Brc20Indexer {
+        let config = Brc20IndexerConfig {
+            light_client_mode: false,
+            ..Default::default()
+        };
+        Brc20Indexer::new(
+            config,
+            engine.prog.clone(),
+            engine.bitcoin_rpc_buffer.clone(),
+            journal.map(|journal| Arc::new(journal) as Arc<dyn BlockSource>),
+        )
+    }
+
+    /// `init` starts by pointing the engine's Bitcoin RPC source at the
+    /// global database's buffer, so a light client's prefetched results and
+    /// a full node's buffered ones are what the engine reads.
+    #[tokio::test]
+    async fn the_source_reads_the_installed_databases_buffer() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        crate::database::replace_brc20_database(crate::database::Brc20Database::new(
+            &Brc20IndexerConfig::default(),
+        ))
+        .await;
+        let engine = TestEngine::open();
+        let indexer = full_indexer(&engine, None);
+        let database_buffer = get_brc20_database()
+            .lock()
+            .await
+            .bitcoin_rpc_cache
+            .buffer()
+            .clone();
+        assert!(!Arc::ptr_eq(
+            &engine.bitcoin_rpc_buffer.current(),
+            &database_buffer
+        ));
+
+        indexer.install_bitcoin_rpc_buffer().await;
+        assert!(Arc::ptr_eq(
+            &engine.bitcoin_rpc_buffer.current(),
+            &database_buffer
+        ));
+    }
+
+    /// A stop request ends the light client's loop at its next block
+    /// boundary, after the engine commits its blocks.
+    #[tokio::test]
+    async fn a_stop_request_ends_the_light_loop_with_a_commit() {
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        crate::database::replace_brc20_database(crate::database::Brc20Database::new(
+            &Brc20IndexerConfig::default(),
+        ))
+        .await;
+        let engine = TestEngine::open();
+        let prog = &engine.prog;
+        prog.brc20_initialise("0".repeat(64).as_str().try_into().unwrap(), 0, 0)
+            .await
+            .unwrap();
+        prog.brc20_mine(2, 0).await.unwrap();
+        let mut indexer = Brc20Indexer::new(
+            Brc20IndexerConfig {
+                light_client_mode: true,
+                ..Default::default()
+            },
+            prog.clone(),
+            engine.bitcoin_rpc_buffer.clone(),
+            None,
+        );
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        stop.send(true).unwrap();
+        indexer.index_until_stopped().await.unwrap();
+
+        // Clearing the caches drops uncommitted blocks; the two blocks stay.
+        prog.brc20_clear_caches().await.unwrap();
+        assert_eq!(
+            parse_hex_number(&prog.eth_block_number().await.unwrap()).unwrap(),
+            2
+        );
+    }
+
+    /// A wait for new blocks ends when a stop is requested.
+    #[tokio::test]
+    async fn a_stop_request_ends_the_wait_for_new_blocks() {
+        let engine = TestEngine::open();
+        let mut indexer = full_indexer(&engine, None);
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        let started = std::time::Instant::now();
+        tokio::join!(indexer.pause(std::time::Duration::from_secs(60)), async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            stop.send(true).unwrap();
+        });
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(indexer.stop_requested());
+    }
+
+    fn light_indexer(engine: &TestEngine, phase_one: i32) -> (Brc20Indexer, watch::Sender<bool>) {
+        let mut indexer = Brc20Indexer::new(
+            Brc20IndexerConfig {
+                light_client_mode: true,
+                first_brc20_prog_phase_one_height: phase_one,
+                ..Default::default()
+            },
+            engine.prog.clone(),
+            engine.bitcoin_rpc_buffer.clone(),
+            None,
+        );
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        (indexer, stop)
+    }
+
+    /// The genesis block exists once the engine is initialised.
+    async fn has_genesis(prog: &Brc20Prog) -> bool {
+        prog.eth_get_block_by_number("0".to_string(), Some(false))
+            .await
+            .is_ok()
+    }
+
+    /// A stop requested before the engine's initialisation leaves the engine
+    /// uninitialised; without one the start initialises it.
+    #[tokio::test]
+    async fn a_stop_before_the_engine_initialisation_skips_it() {
+        let engine = TestEngine::open();
+        let (indexer, stop) = light_indexer(&engine, 5);
+        stop.send(true).unwrap();
+        indexer.initialise_engine(1).await.unwrap();
+        assert!(!has_genesis(&engine.prog).await);
+        assert_eq!(
+            parse_hex_number(&engine.prog.eth_block_number().await.unwrap()).unwrap(),
+            0
+        );
+
+        stop.send(false).unwrap();
+        indexer.initialise_engine(10).await.unwrap();
+        assert!(has_genesis(&engine.prog).await);
+        assert_eq!(
+            parse_hex_number(&engine.prog.eth_block_number().await.unwrap()).unwrap(),
+            4
+        );
+    }
+
+    /// A stop request ends the mining to activation after a committed batch.
+    #[tokio::test]
+    async fn a_stop_ends_the_mining_after_a_committed_batch() {
+        let engine = TestEngine::open();
+        let prog = &engine.prog;
+        prog.brc20_initialise("0".repeat(64).as_str().try_into().unwrap(), 0, 0)
+            .await
+            .unwrap();
+        let (indexer, stop) = light_indexer(&engine, 5);
+        stop.send(true).unwrap();
+        indexer.mine_to_activation(0, 1).await.unwrap();
+        // One batch of one block, committed: clearing the caches keeps it.
+        prog.brc20_clear_caches().await.unwrap();
+        assert_eq!(
+            parse_hex_number(&prog.eth_block_number().await.unwrap()).unwrap(),
+            1
+        );
+    }
+
+    /// A closed stop channel requests nothing, so a wait lasts its full
+    /// duration instead of returning at once.
+    #[tokio::test]
+    async fn a_closed_stop_channel_waits_the_full_duration() {
+        let engine = TestEngine::open();
+        let mut indexer = full_indexer(&engine, None);
+        let (stop, stopped) = watch::channel(false);
+        indexer.stop_on(stopped);
+        drop(stop);
+        let started = std::time::Instant::now();
+        indexer.pause(std::time::Duration::from_millis(300)).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(300));
+        assert!(!indexer.stop_requested());
+    }
+
+    #[test]
+    fn a_short_engine_lag_from_phase_one_on_is_a_commit_lag() {
+        assert!(is_commit_lag(300_010, 300_000, PHASE_ONE));
+        assert!(is_commit_lag(PHASE_ONE + 3, PHASE_ONE - 1, PHASE_ONE));
+        assert!(!is_commit_lag(300_011, 300_000, PHASE_ONE));
+        assert!(!is_commit_lag(PHASE_ONE + 3, 0, PHASE_ONE));
+        assert!(!is_commit_lag(PHASE_ONE + 3, PHASE_ONE - 2, PHASE_ONE));
+    }
+
+    #[tokio::test]
+    async fn tip_hash_and_time_come_from_the_journal() {
+        let engine = TestEngine::open();
+        let indexer = full_indexer(
+            &engine,
+            Some(StubJournal {
+                tip: Some(840_001),
+                block: Some(BlockInfo {
+                    height: 840_000,
+                    hash: "ab".repeat(32),
+                    time: 1_713_571_767,
+                }),
+            }),
+        );
+        assert_eq!(indexer.get_opi_block_height().await.unwrap(), 840_001);
+        assert_eq!(
+            indexer.journal_block_hash_and_time(840_000).unwrap(),
+            ("ab".repeat(32), 1_713_571_767)
+        );
+        assert!(indexer.journal_block_hash_and_time(1).is_err());
+
+        let empty = full_indexer(
+            &engine,
+            Some(StubJournal {
+                tip: None,
+                block: None,
+            }),
+        );
+        assert!(empty.get_opi_block_height().await.is_err());
+
+        let without_journal = full_indexer(&engine, None);
+        assert!(without_journal.get_opi_block_height().await.is_err());
+        assert!(
+            without_journal
+                .journal_block_hash_and_time(840_000)
+                .is_err()
+        );
+    }
+
+    /// Runs `body` against a throwaway database, dropped even when `body`
+    /// panics. `body` runs on a local task, since the indexer's futures are
+    /// not `Send`.
+    async fn with_database<F, Fut>(tag: &str, body: F)
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = ()> + 'static,
+    {
+        use sqlx::{Connection, postgres::PgConnectOptions};
+        if std::env::var("OPI_TEST_PG").as_deref() != Ok("1") {
+            eprintln!("OPI_TEST_PG is not 1; skipping");
+            return;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("opi_brc20_indexer_{tag}_{}_{nanos}", std::process::id());
+        let admin = PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(5432)
+            .username("alper")
+            .database("postgres");
+        let mut root = sqlx::PgConnection::connect_with(&admin).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+            .execute(&mut root)
+            .await
+            .unwrap();
+        let body = body(name.clone());
+        let result = tokio::task::LocalSet::new()
+            .run_until(async { tokio::task::spawn_local(body).await })
+            .await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE {name} WITH (FORCE)"
+        )))
+        .execute(&mut root)
+        .await
+        .unwrap();
+        if let Err(error) = result {
+            std::panic::resume_unwind(error.into_panic());
+        }
+    }
+
+    /// A refund block without transfers leaves its refunds' balance rows in
+    /// Postgres when its events are done, so the extra tables, which the
+    /// block indexes next from those rows, credit the refund address.
+    #[tokio::test]
+    async fn a_refund_block_without_transfers_writes_its_balances_before_the_extras() {
+        use std::str::FromStr;
+
+        use bitcoin::Network;
+
+        use crate::config::{BRC20_SWAP_MODULE_PKSCRIPT, BRC20_SWAP_REFUND_ADDRESS};
+
+        let _serialised = crate::database::BRC20_DATABASE_TEST_LOCK.lock().await;
+        with_database("refund", |name| async move {
+            const REFUND_HEIGHT: i32 = 10;
+            let module = BRC20_SWAP_MODULE_PKSCRIPT[&Network::Signet];
+            let refund_address = BRC20_SWAP_REFUND_ADDRESS[&Network::Signet];
+            let refund_pkscript = bitcoin::Address::from_str(refund_address)
+                .unwrap()
+                .require_network(Network::Signet)
+                .unwrap()
+                .script_pubkey()
+                .to_hex_string();
+            let config = Brc20IndexerConfig {
+                db_host: "127.0.0.1".into(),
+                db_port: "5432".into(),
+                db_user: "alper".into(),
+                db_password: String::new(),
+                db_database: name.clone(),
+                db_ssl: false,
+                network_type: Network::Signet,
+                light_client_mode: false,
+                first_brc20_prog_phase_one_height: i32::MAX,
+                brc20_swap_refund_activation_height: REFUND_HEIGHT,
+                brc20_swap_refund_address: refund_address.into(),
+                brc20_swap_module_pkscript: module.into(),
+                ..Default::default()
+            };
+
+            // The swap module holds 500 meme from block 9.
+            let mut seed = crate::database::Brc20Database::new(&config);
+            seed.init().await.unwrap();
+            sqlx::query(
+                "INSERT INTO brc20_tickers (original_tick, tick, max_supply, decimals,
+                     limit_per_mint, remaining_supply, is_self_mint, deploy_inscription_id, block_height)
+                 VALUES ('meme', 'meme', 1000, 0, 1000, 500, false, 'deployi0', 1)",
+            )
+            .execute(&seed.client)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO brc20_historic_balances
+                     (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
+                 VALUES ($1, '', 'meme', 500, 500, 9, 1000000)",
+            )
+            .bind(module)
+            .execute(&seed.client)
+            .await
+            .unwrap();
+            let mut database = crate::database::Brc20Database::new(&config);
+            database.init().await.unwrap();
+            crate::database::replace_brc20_database(database).await;
+
+            let engine = TestEngine::open();
+            let mut indexer = Brc20Indexer::new(
+                config,
+                engine.prog.clone(),
+                engine.bitcoin_rpc_buffer.clone(),
+                None,
+            );
+            indexer
+                .generate_and_process_events(
+                    REFUND_HEIGHT,
+                    &"00".repeat(32),
+                    1_700_000_000,
+                    false,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+
+            let database = get_brc20_database();
+            let mut database = database.lock().await;
+            let written: Vec<(String, String)> = sqlx::query_as(
+                "SELECT pkscript, overall_balance::text FROM brc20_historic_balances
+                 WHERE block_height = $1 ORDER BY id",
+            )
+            .bind(REFUND_HEIGHT)
+            .fetch_all(&database.client)
+            .await
+            .unwrap();
+            // The transfer-inscribe locks the module's 500, then the
+            // transfer-transfer moves it to the refund address.
+            assert_eq!(
+                written,
+                vec![
+                    (module.to_string(), "500".to_string()),
+                    (module.to_string(), "0".to_string()),
+                    (refund_pkscript.clone(), "500".to_string()),
+                ]
+            );
+
+            database.index_extra_tables(REFUND_HEIGHT).await.unwrap();
+            let current: Vec<(String, String)> = sqlx::query_as(
+                "SELECT pkscript, overall_balance::text FROM brc20_current_balances
+                 WHERE tick = 'meme' AND overall_balance <> 0",
+            )
+            .fetch_all(&database.client)
+            .await
+            .unwrap();
+            assert_eq!(current, vec![(refund_pkscript, "500".to_string())]);
+        })
+        .await;
+    }
+}

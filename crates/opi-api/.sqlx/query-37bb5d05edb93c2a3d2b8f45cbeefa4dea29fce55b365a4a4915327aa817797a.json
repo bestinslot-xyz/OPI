@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.block_height, extract(epoch from h.block_time)::int8 as \"block_time?\",\n                    (select t.event_type_name from runes_event_types t\n                      where t.event_type_id = r.event_type limit 1) as \"event_type?\",\n                    r.txid, r.outpoint, r.pkscript, r.wallet_addr, r.rune_id,\n                    e.rune_name as \"rune_name?\", e.spacers as \"spacers?\",\n                    e.divisibility as \"divisibility?\", r.amount::text as \"amount!\"\n                from (\n                    select * from runes_events\n                    where (wallet_addr, id) < ($1, $3) and (wallet_addr, id) > ($1, -1)\n                      and ($2::int4 is null or event_type = $2)\n                    order by wallet_addr desc, id desc limit $4\n                ) r\n                left join runes_block_hashes h on h.block_height = r.block_height\n                left join runes_id_to_entry e on e.rune_id = r.rune_id\n                order by r.id desc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "block_time?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "event_type?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "txid",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "txid"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "outpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "outpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "pkscript",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "wallet_addr",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "wallet_addr"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "rune_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "rune_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "spacers?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "spacers"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "divisibility?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "divisibility"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "amount!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "37bb5d05edb93c2a3d2b8f45cbeefa4dea29fce55b365a4a4915327aa817797a"
+}

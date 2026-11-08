@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select event_type_name, event_type_id from runes_event_types;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_event_types",
+            "name": "event_type_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_event_types",
+            "name": "event_type_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "31b86bbbaa9ae061ee98f63d4d9cf75c0fdc5031a7e6508655e929193fcf229c"
+}

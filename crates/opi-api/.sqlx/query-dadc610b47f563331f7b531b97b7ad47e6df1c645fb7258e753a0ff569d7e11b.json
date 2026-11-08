@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select event_type, outpoint as \"outpoint?\", pkscript as \"pkscript?\", rune_id as \"rune_id?\", amount::text as \"amount\"\n            from runes_events re\n            where block_height = $1\n            order by id asc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "event_type"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "outpoint?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "outpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pkscript?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "rune_id?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_events",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "amount",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "dadc610b47f563331f7b531b97b7ad47e6df1c645fb7258e753a0ff569d7e11b"
+}

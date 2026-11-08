@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select indexer_version from bitmap_indexer_version;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "indexer_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bitmap_indexer_version",
+            "name": "indexer_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cda6f750241758cdfd34331cdccd9027cc4c3efe71f45ef2c6f28a71f4276660"
+}

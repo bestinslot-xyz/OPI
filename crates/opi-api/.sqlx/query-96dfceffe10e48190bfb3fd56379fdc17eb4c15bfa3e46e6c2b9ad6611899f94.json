@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(select 1 from brc20_current_balances\n                where block_height > coalesce($1::int4, -1)) as \"ahead!\";",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ahead!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "96dfceffe10e48190bfb3fd56379fdc17eb4c15bfa3e46e6c2b9ad6611899f94"
+}

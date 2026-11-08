@@ -1,0 +1,654 @@
+use std::error::Error;
+
+use brc20_prog::{
+    Brc20Prog, Brc20ProgApiServer,
+    types::{B256ED, Base64Bytes, RawBytes},
+};
+
+use crate::{
+    config::{BRC20_PROG_OP_RETURN_PKSCRIPT, Brc20IndexerConfig, NO_TX_ID, NO_WALLET, OP_RETURN},
+    database::{
+        Brc20Balance, TransferValidity, get_brc20_database,
+        timer::{start_timer, stop_timer},
+    },
+    indexer::engine_time::timed,
+    types::{
+        Ticker,
+        events::{
+            Brc20ProgCallTransferEvent, Brc20ProgDeployTransferEvent,
+            Brc20ProgTransactTransferEvent, Brc20ProgWithdrawTransferEvent, DeployInscribeEvent,
+            Event, MintInscribeEvent, TransferInscribeEvent, TransferTransferEvent,
+        },
+    },
+};
+
+static SPAN: &str = "EventProcessor";
+
+pub struct EventProcessor;
+
+pub struct Brc20ProgTxesExecuted {
+    pub count: u64,
+}
+
+impl Brc20ProgTxesExecuted {
+    pub fn none() -> Self {
+        Self { count: 0 }
+    }
+
+    pub fn one() -> Self {
+        Self { count: 1 }
+    }
+
+    pub fn count(count: u64) -> Self {
+        Self { count }
+    }
+}
+
+impl EventProcessor {
+    pub async fn brc20_prog_deploy_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_inscribe", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn brc20_prog_deploy_transfer(
+        prog_client: &Brc20Prog,
+        block_height: i32,
+        block_time: u64,
+        block_hash: &str,
+        brc20_prog_tx_idx: u64,
+        inscription_id: &str,
+        event: &Brc20ProgDeployTransferEvent,
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_deploy_transfer", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Used);
+
+        timed(
+            prog_client.brc20_deploy(
+                event.source_pk_script.clone(),
+                event.data.as_ref().map(|d| RawBytes::new(d.to_string())),
+                event
+                    .base64_data
+                    .as_ref()
+                    .map(|b| Base64Bytes::new(b.to_string())),
+                block_time,
+                block_hash.try_into()?,
+                brc20_prog_tx_idx,
+                inscription_id.to_string(),
+                event.byte_len as u64,
+                string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
+            ),
+        )
+        .await
+        .expect("Failed to deploy smart contract, the embedded brc20-prog engine failed");
+
+        stop_timer(&function_timer).await;
+        Ok(Brc20ProgTxesExecuted::one())
+    }
+
+    pub async fn brc20_prog_call_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_call_inscribe", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn brc20_prog_call_transfer(
+        prog_client: &Brc20Prog,
+        block_height: i32,
+        block_time: u64,
+        block_hash: &str,
+        brc20_prog_tx_idx: u64,
+        inscription_id: &str,
+        event: &Brc20ProgCallTransferEvent,
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_call_transfer", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Used);
+
+        let contract_address = if let Some(address) = event.contract_address.clone() {
+            address.as_str().try_into().ok()
+        } else {
+            None
+        };
+
+        timed(
+            prog_client.brc20_call(
+                event.source_pk_script.clone(),
+                contract_address,
+                event
+                    .contract_inscription_id
+                    .as_ref()
+                    .map(|s| s.to_string()),
+                event.data.as_ref().map(|d| RawBytes::new(d.to_string())),
+                event
+                    .base64_data
+                    .as_ref()
+                    .map(|b| Base64Bytes::new(b.to_string())),
+                block_time,
+                block_hash.try_into()?,
+                brc20_prog_tx_idx,
+                inscription_id.to_string(),
+                event.byte_len,
+                string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
+            ),
+        )
+        .await
+        .expect("Failed to call smart contract, the embedded brc20-prog engine failed");
+
+        stop_timer(&function_timer).await;
+        Ok(Brc20ProgTxesExecuted::one())
+    }
+
+    pub async fn brc20_prog_transact_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_inscribe", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn brc20_prog_transact_transfer(
+        prog_client: &Brc20Prog,
+        block_height: i32,
+        block_hash: &str,
+        inscription_id: &str,
+        block_time: u64,
+        brc20_prog_tx_idx: u64,
+        event: &Brc20ProgTransactTransferEvent,
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_transact_transfer", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Used);
+
+        let transact_result = timed(
+            prog_client.brc20_transact(
+                event.data.as_ref().map(|d| RawBytes::new(d.to_string())),
+                event
+                    .base64_data
+                    .as_ref()
+                    .map(|b| Base64Bytes::new(b.to_string())),
+                block_time,
+                block_hash.try_into()?,
+                brc20_prog_tx_idx,
+                inscription_id.to_string(),
+                event.byte_len as u64,
+                string_to_b256ed(&event.btc_txid.clone().unwrap_or(NO_TX_ID.to_string())),
+            ),
+        )
+        .await
+        .expect("Failed to run transact, the embedded brc20-prog engine failed");
+
+        stop_timer(&function_timer).await;
+        Ok(Brc20ProgTxesExecuted::count(transact_result.len() as u64))
+    }
+
+    pub async fn brc20_prog_withdraw_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_inscribe", block_height);
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)] // the transfer context is passed individually
+    pub async fn brc20_prog_withdraw_transfer(
+        prog_client: &Brc20Prog,
+        block_height: i32,
+        block_hash: &str,
+        block_time: u64,
+        brc20_prog_tx_idx: u64,
+        inscription_id: &str,
+        event_id: i64,
+        event: &Brc20ProgWithdrawTransferEvent,
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer", block_height);
+        if event
+            .spent_pk_script
+            .as_ref()
+            .map(|s| s.starts_with(OP_RETURN))
+            .unwrap_or(false)
+        {
+            get_brc20_database()
+                .lock()
+                .await
+                .set_transfer_validity(inscription_id, TransferValidity::Invalid);
+            tracing::debug!(
+                "New pkscript is OP_RETURN for withdraw inscription ID: {}",
+                inscription_id
+            );
+            return Ok(Brc20ProgTxesExecuted::count(0));
+        }
+
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Used);
+
+        let withdraw_result = timed(prog_client.brc20_withdraw(
+            event.source_pk_script.clone(),
+            event.ticker.clone(),
+            event.amount.into(),
+            block_time,
+            block_hash.try_into()?,
+            brc20_prog_tx_idx,
+            inscription_id.to_string(),
+        ))
+        .await
+        .expect("Failed to run withdraw, the embedded brc20-prog engine failed");
+
+        if !withdraw_result.status.is_zero() {
+            let mut brc20_prog_balance = get_brc20_database()
+                .lock()
+                .await
+                .get_balance(&event.ticker, BRC20_PROG_OP_RETURN_PKSCRIPT)
+                .await?;
+
+            brc20_prog_balance.overall_balance -= event.amount;
+            brc20_prog_balance.available_balance -= event.amount;
+
+            // Reduce balance in the BRC20PROG module
+            get_brc20_database().lock().await.update_balance(
+                &event.ticker,
+                BRC20_PROG_OP_RETURN_PKSCRIPT,
+                NO_WALLET,
+                &Brc20Balance {
+                    overall_balance: brc20_prog_balance.overall_balance,
+                    available_balance: brc20_prog_balance.available_balance,
+                },
+                block_height,
+                event_id,
+            )?;
+
+            let Some(target_pkscript) = event.spent_pk_script.as_ref() else {
+                tracing::debug!("Target pk script not found");
+                return Err("Target pk script not found")?;
+            };
+
+            let mut target_balance = get_brc20_database()
+                .lock()
+                .await
+                .get_balance(&event.ticker, target_pkscript)
+                .await?;
+
+            target_balance.overall_balance += event.amount;
+            target_balance.available_balance += event.amount;
+
+            get_brc20_database().lock().await.update_balance(
+                &event.ticker,
+                target_pkscript,
+                event
+                    .spent_wallet
+                    .as_ref()
+                    .unwrap_or(&NO_WALLET.to_string()),
+                &Brc20Balance {
+                    overall_balance: target_balance.overall_balance,
+                    available_balance: target_balance.available_balance,
+                },
+                block_height,
+                -event_id, // Negate to create a unique event ID
+            )?;
+        }
+
+        stop_timer(&function_timer).await;
+        Ok(Brc20ProgTxesExecuted::one())
+    }
+
+    pub async fn brc20_deploy_inscribe(
+        block_height: i32,
+        inscription_id: &str,
+        event: &DeployInscribeEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_deploy_inscribe", block_height);
+
+        let new_ticker = Ticker {
+            ticker: event.ticker.to_string(),
+            remaining_supply: event.max_supply,
+            limit_per_mint: event.limit_per_mint,
+            decimals: event.decimals,
+            is_self_mint: event.is_self_mint,
+            deploy_inscription_id: inscription_id.to_string(),
+            original_ticker: event.original_ticker.to_string(),
+            _max_supply: event.max_supply,
+            burned_supply: 0,
+            deploy_block_height: block_height,
+        };
+        get_brc20_database().lock().await.add_ticker(&new_ticker)?;
+
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn brc20_mint_inscribe(
+        block_height: i32,
+        event_id: i64,
+        event: &MintInscribeEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_mint_inscribe", block_height);
+
+        let mut deployed_ticker = get_brc20_database()
+            .lock()
+            .await
+            .get_ticker(&event.ticker)?
+            .ok_or("Ticker not found")?;
+
+        deployed_ticker.remaining_supply -= event.amount;
+
+        get_brc20_database()
+            .lock()
+            .await
+            .update_ticker(deployed_ticker.clone())?;
+
+        let mut balance = get_brc20_database()
+            .lock()
+            .await
+            .get_balance(&deployed_ticker.ticker, &event.minted_pk_script)
+            .await?;
+
+        balance.overall_balance += event.amount;
+        balance.available_balance += event.amount;
+
+        get_brc20_database().lock().await.update_balance(
+            deployed_ticker.ticker.as_str(),
+            &event.minted_pk_script,
+            &event.minted_wallet,
+            &balance,
+            block_height,
+            event_id,
+        )?;
+
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    pub async fn brc20_transfer_inscribe(
+        block_height: i32,
+        event_id: i64,
+        inscription_id: &str,
+        event: &TransferInscribeEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_transfer_inscribe", block_height);
+
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Valid);
+
+        let mut balance = get_brc20_database()
+            .lock()
+            .await
+            .get_balance(&event.ticker, &event.source_pk_script)
+            .await?;
+
+        if balance.available_balance < event.amount {
+            tracing::error!(
+                "Insufficient balance for transfer {}: available {}, required {}",
+                event.ticker,
+                balance.available_balance,
+                event.amount
+            );
+            Err("Insufficient balance for transfer")?;
+        }
+
+        balance.available_balance -= event.amount;
+
+        get_brc20_database().lock().await.update_balance(
+            &event.ticker,
+            &event.source_pk_script,
+            &event.source_wallet,
+            &balance,
+            block_height,
+            event_id,
+        )?;
+
+        stop_timer(&function_timer).await;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)] // the transfer context is passed individually
+    pub async fn brc20_transfer_transfer(
+        prog_client: &Brc20Prog,
+        block_height: i32,
+        block_time: u64,
+        block_hash: &str,
+        brc20_prog_tx_idx: u64,
+        inscription_id: &str,
+        event_id: i64,
+        event: &TransferTransferEvent,
+        config: &Brc20IndexerConfig,
+    ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
+        let function_timer = start_timer(SPAN, "brc20_transfer_transfer", block_height);
+        let mut prog_tx_count = 0;
+
+        let TransferValidity::Valid = get_brc20_database()
+            .lock()
+            .await
+            .get_transfer_validity(
+                inscription_id,
+                TransferInscribeEvent::event_id(),
+                TransferTransferEvent::event_id(),
+            )
+            .await?
+        else {
+            tracing::debug!(
+                "Skipping transfer {} as transfer is not valid",
+                inscription_id
+            );
+            return Ok(Brc20ProgTxesExecuted::none());
+        };
+
+        // TODO: Reduce overall balance of the source wallet
+
+        // If sent as fee, return to the source wallet
+        // If sent to BRC20_PROG_OP_RETURN_PKSCRIPT, send to brc20_prog
+        // If sent to OP_RETURN, update burned supply
+        // If sent to a wallet, update the wallet balance
+        let mut source_balance = get_brc20_database()
+            .lock()
+            .await
+            .get_balance(&event.ticker, &event.source_pk_script)
+            .await?;
+        let spent_pk_script = event.spent_pk_script.clone().unwrap_or_default();
+        if spent_pk_script.is_empty() {
+            source_balance.available_balance += event.amount;
+
+            get_brc20_database().lock().await.update_balance(
+                &event.ticker,
+                &event.source_pk_script,
+                &event.source_wallet,
+                &source_balance,
+                block_height,
+                event_id,
+            )?;
+        } else if spent_pk_script == BRC20_PROG_OP_RETURN_PKSCRIPT {
+            if (block_height < config.first_brc20_prog_all_tickers_height
+                && event.original_ticker.len() < 6)
+                || block_height < config.first_brc20_prog_phase_one_height
+            {
+                // Burn tokens if BRC20 Prog is not enabled for this ticker yet
+                source_balance.overall_balance -= event.amount;
+                get_brc20_database().lock().await.update_balance(
+                    &event.ticker,
+                    &event.source_pk_script,
+                    &event.source_wallet,
+                    &source_balance,
+                    block_height,
+                    event_id,
+                )?;
+
+                let Some(mut ticker) = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_ticker(&event.ticker)?
+                else {
+                    tracing::debug!("Ticker not found for {}", event.ticker);
+                    return Err("Ticker not found")?;
+                };
+
+                ticker.burned_supply += event.amount;
+                get_brc20_database()
+                    .lock()
+                    .await
+                    .update_ticker(ticker.clone())?;
+
+                tracing::warn!(
+                    "Burning {} tokens for ticker {} as BRC20 Prog is not enabled yet",
+                    event.amount,
+                    event.ticker
+                );
+                return Ok(Brc20ProgTxesExecuted::none());
+            } else {
+                source_balance.overall_balance -= event.amount;
+
+                get_brc20_database().lock().await.update_balance(
+                    &event.ticker,
+                    &event.source_pk_script,
+                    &event.source_wallet,
+                    &source_balance,
+                    block_height,
+                    event_id,
+                )?;
+
+                let mut brc20_prog_balance = get_brc20_database()
+                    .lock()
+                    .await
+                    .get_balance(&event.ticker, BRC20_PROG_OP_RETURN_PKSCRIPT)
+                    .await?;
+
+                brc20_prog_balance.available_balance += event.amount;
+                brc20_prog_balance.overall_balance += event.amount;
+
+                get_brc20_database().lock().await.update_balance(
+                    &event.ticker,
+                    BRC20_PROG_OP_RETURN_PKSCRIPT,
+                    NO_WALLET,
+                    &brc20_prog_balance,
+                    block_height,
+                    -event_id, // Negate to create a unique event ID
+                )?;
+
+                prog_tx_count += 1;
+                timed(prog_client.brc20_deposit(
+                    event.source_pk_script.clone(),
+                    event.ticker.clone(),
+                    event.amount.into(),
+                    block_time,
+                    block_hash.try_into()?,
+                    brc20_prog_tx_idx,
+                    inscription_id.to_string(),
+                ))
+                .await?;
+            }
+        } else if spent_pk_script == OP_RETURN {
+            let mut source_balance = get_brc20_database()
+                .lock()
+                .await
+                .get_balance(&event.ticker, &event.source_pk_script)
+                .await?;
+
+            source_balance.overall_balance -= event.amount;
+
+            get_brc20_database().lock().await.update_balance(
+                &event.ticker,
+                &event.source_pk_script,
+                &event.source_wallet,
+                &source_balance,
+                block_height,
+                event_id,
+            )?;
+
+            let Some(mut ticker) = get_brc20_database()
+                .lock()
+                .await
+                .get_ticker(&event.ticker)?
+            else {
+                tracing::debug!("Ticker not found for {}", event.ticker);
+                return Err("Ticker not found")?;
+            };
+            // Update burned supply
+            ticker.burned_supply += event.amount;
+            get_brc20_database()
+                .lock()
+                .await
+                .update_ticker(ticker.clone())?;
+        } else {
+            let mut source_balance = get_brc20_database()
+                .lock()
+                .await
+                .get_balance(&event.ticker, &event.source_pk_script)
+                .await?;
+
+            source_balance.overall_balance -= event.amount;
+
+            get_brc20_database().lock().await.update_balance(
+                &event.ticker,
+                &event.source_pk_script,
+                &event.source_wallet,
+                &source_balance,
+                block_height,
+                event_id,
+            )?;
+
+            let mut target_balance = get_brc20_database()
+                .lock()
+                .await
+                .get_balance(&event.ticker, &spent_pk_script)
+                .await?;
+
+            target_balance.available_balance += event.amount;
+            target_balance.overall_balance += event.amount;
+
+            get_brc20_database().lock().await.update_balance(
+                &event.ticker,
+                &spent_pk_script,
+                &event.spent_wallet.clone().unwrap_or(NO_WALLET.to_string()),
+                &target_balance,
+                block_height,
+                -event_id, // Negate to create a unique event ID
+            )?;
+        }
+        get_brc20_database()
+            .lock()
+            .await
+            .set_transfer_validity(inscription_id, TransferValidity::Used);
+
+        stop_timer(&function_timer).await;
+        Ok(Brc20ProgTxesExecuted::count(prog_tx_count))
+    }
+}
+
+fn string_to_b256ed(s: &str) -> B256ED {
+    let bytes = hex::decode(s).expect("Decoding hex string failed");
+    let array: [u8; 32] = bytes.try_into().expect("Invalid length for B256ED");
+    array.into()
+}

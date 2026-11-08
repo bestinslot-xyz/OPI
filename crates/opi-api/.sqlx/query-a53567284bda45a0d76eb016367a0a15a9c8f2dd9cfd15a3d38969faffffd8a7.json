@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pkscript as \"pkscript?\", wallet_addr as \"wallet_addr?\", rotb.outpoint as \"outpoint?\", rotb.rune_ids::text as \"rune_ids\", rotb.balances::text as \"balances\"\n                from runes_outpoint_to_balances rotb\n                where pkscript = $1 and spent = false;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pkscript?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "wallet_addr?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "wallet_addr"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "outpoint?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "outpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "rune_ids",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "balances",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "a53567284bda45a0d76eb016367a0a15a9c8f2dd9cfd15a3d38969faffffd8a7"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select min(block_height) as \"h?\" from bitmap_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "h?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fe68bb12f3543e77828fd85e28f2cea93f9aec3e3e56bf94e79359705a95ae53"
+}

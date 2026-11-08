@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pkscript as \"pkscript?\", wallet_addr as \"wallet_addr?\", rite.rune_id as \"rune_id?\", rite.rune_name as \"rune_name?\", sum(balance)::text as \"total_balance\"\n                from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)\n                left join runes_id_to_entry rite on rite.rune_id = u.rune_id\n                where pkscript = $1 and block_height < $2 and (spent_block_height is null or spent_block_height >= $2)\n                group by pkscript, wallet_addr, rite.rune_id, rite.rune_name;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pkscript?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "wallet_addr?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "wallet_addr"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rune_id?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "rune_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "total_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a3170808aa0c1edff48976dd00a1216bd3b19a2ecda0cdc1d9cb4db861eefb9a"
+}

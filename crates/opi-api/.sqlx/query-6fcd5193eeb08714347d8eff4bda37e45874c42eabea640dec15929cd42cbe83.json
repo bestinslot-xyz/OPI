@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select b.inscription_id as \"inscription_id!\", b.inscription_number as \"inscription_number!\",\n                b.bitmap_number as \"bitmap_number!\", b.block_height as \"block_height!\"\n            from unnest($1::int4[], $2::int4[]) as r(low, high)\n            cross join lateral (\n                select inscription_id, inscription_number, bitmap_number, block_height\n                from bitmaps\n                where bitmap_number between r.low and r.high\n                    and ($3::int4 is null or bitmap_number > $3)\n                order by bitmap_number\n                limit $4\n            ) b\n            order by b.bitmap_number\n            limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inscription_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_number!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "inscription_number"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "bitmap_number!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "bitmap_number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "block_height!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmaps",
+            "name": "block_height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "Int4Array",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6fcd5193eeb08714347d8eff4bda37e45874c42eabea640dec15929cd42cbe83"
+}

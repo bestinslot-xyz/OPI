@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select block_height, block_hash from bitmap_block_hashes\n                    where block_height between $1 and $2 order by block_height;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmap_block_hashes",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bitmap_block_hashes",
+            "name": "block_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "cda17d9aaf640a0c34e935986e5ef27815e02f2dad4bf1fbfe46887bb0d15e7b"
+}

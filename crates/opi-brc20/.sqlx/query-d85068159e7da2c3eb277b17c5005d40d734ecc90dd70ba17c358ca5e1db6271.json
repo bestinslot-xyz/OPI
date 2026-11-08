@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE brc20_ticker_holders SET holders = 0 WHERE holders <> 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d85068159e7da2c3eb277b17c5005d40d734ecc90dd70ba17c358ca5e1db6271"
+}

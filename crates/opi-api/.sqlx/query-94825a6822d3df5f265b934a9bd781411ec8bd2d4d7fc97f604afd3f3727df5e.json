@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select contract_address from brc20_prog_tickers\n            where ticker = $1\n            order by block_height, contract_address\n            limit 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "contract_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_prog_tickers",
+            "name": "contract_address"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "94825a6822d3df5f265b934a9bd781411ec8bd2d4d7fc97f604afd3f3727df5e"
+}

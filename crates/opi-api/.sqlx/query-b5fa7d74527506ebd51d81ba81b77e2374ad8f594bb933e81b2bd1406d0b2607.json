@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select block_height, block_hash from bitmap_block_hashes\n                    where block_height = any($1) order by block_height;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "bitmap_block_hashes",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bitmap_block_hashes",
+            "name": "block_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "b5fa7d74527506ebd51d81ba81b77e2374ad8f594bb933e81b2bd1406d0b2607"
+}

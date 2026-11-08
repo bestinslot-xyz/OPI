@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select min(u.lo) as \"lo?\", max(u.hi) as \"hi?\" from (\n                (select min(id + 0) as lo, max(id + 0) as hi from brc20_events where block_height = $1)\n                union all\n                (select min(id + 0) as lo, max(id + 0) as hi from brc20_light_events where block_height = $1)\n            ) u;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lo?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "hi?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "0fbeaa92cd3c73556951d1a2b56fb0fc0f85cb4e3813cf5da82b7bcccfe4fb8d"
+}
