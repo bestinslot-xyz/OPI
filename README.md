@@ -1,5 +1,10 @@
 # OPI - Open Protocol Indexer
 
+> [!WARNING]
+> **Running OPI 2.x? Stay on the [`legacy`](https://github.com/bestinslot-xyz/OPI/tree/legacy) branch.**
+> OPI 3.0 is a new single-binary indexer with its own data layout and does not upgrade a 2.x installation in place. A 3.0 node starts fresh: it indexes from the start, or restores a snapshot from [snap.opi.network](https://snap.opi.network).
+> To keep a 2.x node running, pull from `legacy`, which holds the Python and per-module setup of 2.x. Set up 3.0 as a new installation alongside it and switch over once it has caught up.
+
 Open Protocol Indexer, OPI, is the **best-in-slot open-source indexing client** for **meta-protocols** on Bitcoin.
 OPI links upstream **ord 0.29.1** as a library and is built with **modularity** in mind.
 All modules in OPI have been built with **reorg protection**.
