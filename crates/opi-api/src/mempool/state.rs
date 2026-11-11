@@ -17,6 +17,13 @@ const RUNESTONE: [u8; 2] = [0x6a, 0x5d];
 /// policy allows 25.
 const MAX_LINEAGE: usize = 100;
 
+/// Blocks past the tip a transaction left at after which the view drops it
+/// whatever the utxos module's height. The view bridges the block or two the
+/// module trails bitcoind by; a module further behind is catching up, and
+/// keeping every confirmed transaction until it arrives would grow the view
+/// without bound.
+pub const MAX_LEFT_BLOCKS: u32 = 3;
+
 /// An output of a mempool transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxOutput {
@@ -147,14 +154,19 @@ impl State {
         }
     }
 
-    /// Drops the transactions that left at or below `utxos_height`: the
-    /// utxos module holds their block's outputs by now, or they were
-    /// replaced.
-    pub fn purge(&mut self, utxos_height: u32) {
+    /// Drops the transactions that left at or below `utxos_height` (the utxos
+    /// module holds their block's outputs by now, or they were replaced), and
+    /// those that left `MAX_LEFT_BLOCKS` or more below bitcoind's `tip`.
+    pub fn purge(&mut self, utxos_height: Option<u32>, tip: u32) {
         let gone: Vec<Txid> = self
             .txs
             .values()
-            .filter(|tx| tx.left_at.is_some_and(|left| left <= utxos_height))
+            .filter(|tx| {
+                tx.left_at.is_some_and(|left| {
+                    utxos_height.is_some_and(|height| left <= height)
+                        || tip >= left.saturating_add(MAX_LEFT_BLOCKS)
+                })
+            })
             .map(|tx| tx.txid)
             .collect();
         for txid in gone {
@@ -348,12 +360,26 @@ mod tests {
         state.insert(MempoolTx::new(&mined, 0, 0));
         state.leave(&mined.compute_txid(), 101);
         assert!(state.live().is_empty());
-        state.purge(100);
+        state.purge(Some(100), 101);
         assert!(
             state.is_spent(&confirmed(1)),
             "kept while utxos is below 101"
         );
-        state.purge(101);
+        state.purge(Some(101), 101);
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn a_departed_transaction_goes_once_the_tip_is_well_past_it() {
+        let mut state = State::default();
+        let mined = tx(&[confirmed(1)], &[(1, script(1))], &[]);
+        state.insert(MempoolTx::new(&mined, 0, 0));
+        state.leave(&mined.compute_txid(), 900_001);
+        // The utxos module is catching up far below, or its height is unknown.
+        state.purge(Some(300_000), 900_000 + MAX_LEFT_BLOCKS);
+        state.purge(None, 900_000 + MAX_LEFT_BLOCKS);
+        assert!(state.is_spent(&confirmed(1)), "kept within the window");
+        state.purge(Some(300_000), 900_001 + MAX_LEFT_BLOCKS);
         assert!(state.is_empty());
     }
 

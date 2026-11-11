@@ -7,7 +7,9 @@
 //! module reaches the bitcoind tip it left at: by then the module holds the
 //! block that confirmed it, so its outputs never vanish and its inputs never
 //! reappear between the two. A transaction replaced without a block leaves
-//! at a tip the module already holds and goes at the next poll.
+//! at a tip the module already holds and goes at the next poll. A module
+//! catching up from far behind bridges nothing: a transaction goes once the
+//! tip is [`state::MAX_LEFT_BLOCKS`] past where it left.
 
 mod rpc;
 pub mod state;
@@ -91,7 +93,7 @@ impl Mempool {
 
     /// One poll: adds the transactions new to bitcoind's mempool, marks the
     /// ones gone from it with the tip, and drops those the utxos module has
-    /// reached (`utxos_height`, when it is known).
+    /// reached (`utxos_height`, when it is known) or the tip has left behind.
     pub async fn poll(&self, bitcoind: &dyn Bitcoind, utxos_height: Option<u32>) -> Result<()> {
         let listed: HashSet<Txid> = bitcoind.mempool_txids().await?.into_iter().collect();
         // read after the listing, so a block that empties the mempool between
@@ -111,9 +113,7 @@ impl Mempool {
             for txid in live.difference(&listed) {
                 inner.state.leave(txid, tip);
             }
-            if let Some(height) = utxos_height {
-                inner.state.purge(height);
-            }
+            inner.state.purge(utxos_height, tip);
             inner.updated_at = Some(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)

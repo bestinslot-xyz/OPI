@@ -163,7 +163,9 @@ or a rune or lies above `indexed_height`. Only mempool outputs that are not
 pending count as cardinal; `inscribed` and `runic` list none. A transaction
 that leaves the mempool stays in the view until the utxos module reaches
 the bitcoind tip it left at, so a block's outputs never vanish between
-bitcoind and the module. Before the view's first poll, `mempool=true`
+bitcoind and the module, and at most until the tip is 3 blocks past it, so
+a module catching up from far behind does not grow the view. Before the
+view's first poll, `mempool=true`
 answers 503.
 
 ### Prerequisites
