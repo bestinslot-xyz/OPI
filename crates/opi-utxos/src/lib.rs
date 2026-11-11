@@ -25,8 +25,10 @@ use db::{Db, Undo};
 
 /// Most outputs and spends one catch-up transaction writes.
 const CATCH_UP_BATCH: usize = 250_000;
-/// Blocks a catch-up fetches from bitcoind ahead of the one it folds in.
-const FETCH_AHEAD: usize = 16;
+/// Blocks a catch-up fetches from bitcoind ahead of the one it folds in. It
+/// stays well under bitcoind's default `-rpcworkqueue` of 16, which ord's own
+/// block fetches share.
+const FETCH_AHEAD: usize = 4;
 /// Applied heights between two prunes of the undo data.
 const PRUNE_EVERY: u32 = 100;
 
