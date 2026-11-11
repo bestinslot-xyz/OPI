@@ -218,6 +218,9 @@ pub struct MetricsConfig {
     /// READY_MAX_TIP_AGE_SECS: the longest the chain tip may go unread while
     /// the process reports ready.
     pub ready_max_tip_age_secs: u64,
+    /// READY_NETWORK_CHECK_SECS: how often `run` compares brc20's hashes
+    /// with the OPI network's for readiness; 0 runs no comparison.
+    pub ready_network_check_secs: u64,
 }
 
 impl MetricsConfig {
@@ -246,7 +249,15 @@ impl MetricsConfig {
                 "seconds",
                 opi_core::metrics::DEFAULT_READY_MAX_TIP_AGE_SECS,
             )?,
+            ready_network_check_secs: whole("READY_NETWORK_CHECK_SECS", "seconds", 0)?,
         })
+    }
+
+    /// How often `run` compares brc20 with the OPI network, `None` when it
+    /// does not.
+    pub fn network_check_every(&self) -> Option<std::time::Duration> {
+        (self.ready_network_check_secs > 0)
+            .then(|| std::time::Duration::from_secs(self.ready_network_check_secs))
     }
 
     /// The readiness bounds these settings set.
@@ -840,17 +851,38 @@ mod tests {
                 addr: None,
                 ready_max_lag_blocks: 2,
                 ready_max_tip_age_secs: 600,
+                ready_network_check_secs: 0,
             }
         );
+        assert_eq!(metrics_config(&[]).unwrap().network_check_every(), None);
         assert_eq!(
             metrics_config(&[
                 ("METRICS_ADDR", ""),
                 ("READY_MAX_LAG_BLOCKS", ""),
-                ("READY_MAX_TIP_AGE_SECS", "")
+                ("READY_MAX_TIP_AGE_SECS", ""),
+                ("READY_NETWORK_CHECK_SECS", "")
             ])
             .unwrap(),
             metrics_config(&[]).unwrap()
         );
+    }
+
+    #[test]
+    fn the_network_check_runs_every_ready_network_check_secs() {
+        let config = metrics_config(&[("READY_NETWORK_CHECK_SECS", "60")]).unwrap();
+        assert_eq!(
+            config.network_check_every(),
+            Some(std::time::Duration::from_secs(60))
+        );
+        let off = metrics_config(&[("READY_NETWORK_CHECK_SECS", "0")]).unwrap();
+        assert_eq!(off.network_check_every(), None);
+        for bad in ["-1", "often", "1.5"] {
+            let err = metrics_config(&[("READY_NETWORK_CHECK_SECS", bad)]).unwrap_err();
+            assert!(
+                err.to_string().contains("READY_NETWORK_CHECK_SECS"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -867,6 +899,7 @@ mod tests {
                 addr: Some("127.0.0.1:9100".into()),
                 ready_max_lag_blocks: 6,
                 ready_max_tip_age_secs: 120,
+                ready_network_check_secs: 0,
             }
         );
         assert_eq!(
