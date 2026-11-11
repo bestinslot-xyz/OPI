@@ -14,6 +14,7 @@ use {
         journal::{DEFAULT_MIN_FREE_GB, JournalOptions, MIN_FREE_GB_RANGE, SEGMENT_RANGE},
         proxy::UpstreamAuth,
     },
+    opi_utxos::UtxosConfig,
     ord::Chain,
     std::path::PathBuf,
 };
@@ -133,6 +134,7 @@ pub struct ModuleConfigs {
     pub sns: Option<SnsConfig>,
     pub runes: Option<RunesConfig>,
     pub inscriptions: Option<InscriptionsConfig>,
+    pub utxos: Option<UtxosConfig>,
 }
 
 impl ModuleConfigs {
@@ -163,6 +165,7 @@ impl ModuleConfigs {
             sns: None,
             runes: None,
             inscriptions: None,
+            utxos: None,
         };
         for module in &config.modules {
             match module {
@@ -200,6 +203,12 @@ impl ModuleConfigs {
                     config.check_network(&inscriptions.network_type)?;
                     configs.inscriptions = Some(inscriptions);
                 }
+                ModuleKind::Utxos => {
+                    require("UTXOS_DB_DATABASE")?;
+                    let utxos = UtxosConfig::from_lookup(get).context("utxos config")?;
+                    config.check_network(&utxos.network_type)?;
+                    configs.utxos = Some(utxos);
+                }
             }
         }
         Ok(configs)
@@ -218,6 +227,9 @@ pub struct MetricsConfig {
     /// READY_MAX_TIP_AGE_SECS: the longest the chain tip may go unread while
     /// the process reports ready.
     pub ready_max_tip_age_secs: u64,
+    /// READY_NETWORK_CHECK_SECS: how often `run` compares brc20's hashes
+    /// with the OPI network's for readiness; 0 runs no comparison.
+    pub ready_network_check_secs: u64,
 }
 
 impl MetricsConfig {
@@ -246,7 +258,15 @@ impl MetricsConfig {
                 "seconds",
                 opi_core::metrics::DEFAULT_READY_MAX_TIP_AGE_SECS,
             )?,
+            ready_network_check_secs: whole("READY_NETWORK_CHECK_SECS", "seconds", 0)?,
         })
+    }
+
+    /// How often `run` compares brc20 with the OPI network, `None` when it
+    /// does not.
+    pub fn network_check_every(&self) -> Option<std::time::Duration> {
+        (self.ready_network_check_secs > 0)
+            .then(|| std::time::Duration::from_secs(self.ready_network_check_secs))
     }
 
     /// The readiness bounds these settings set.
@@ -266,9 +286,10 @@ pub enum ModuleKind {
     Sns,
     Runes,
     Inscriptions,
+    Utxos,
 }
 
-const SUPPORTED_MODULES: &str = "brc20, bitmap, sns, runes, inscriptions";
+const SUPPORTED_MODULES: &str = "brc20, bitmap, sns, runes, inscriptions, utxos";
 
 /// Parses a comma-separated module list, trimming names and dropping repeats.
 fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
@@ -284,6 +305,7 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
             "sns" => ModuleKind::Sns,
             "runes" => ModuleKind::Runes,
             "inscriptions" => ModuleKind::Inscriptions,
+            "utxos" => ModuleKind::Utxos,
             other => {
                 bail!("unknown module `{other}` in OPI_MODULES (supported: {SUPPORTED_MODULES})")
             }
@@ -651,6 +673,24 @@ mod tests {
     }
 
     #[test]
+    fn utxos_requires_its_database_name() {
+        let signet = ("NETWORK_TYPE", "signet");
+        let err = load_modules("utxos", &[signet], brc20_signet())
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("UTXOS_DB_DATABASE"), "{err}");
+        let configs = load_modules(
+            "utxos",
+            &[signet, ("UTXOS_DB_DATABASE", "opi_utxos")],
+            brc20_signet(),
+        )
+        .unwrap();
+        let utxos = configs.utxos.unwrap();
+        assert_eq!(utxos.db_database, "opi_utxos");
+        assert_eq!(utxos.network_type, "signet");
+    }
+
+    #[test]
     fn unknown_module_is_rejected() {
         let mut vars = base();
         vars.insert("OPI_MODULES", "brc20,ordinals");
@@ -840,17 +880,38 @@ mod tests {
                 addr: None,
                 ready_max_lag_blocks: 2,
                 ready_max_tip_age_secs: 600,
+                ready_network_check_secs: 0,
             }
         );
+        assert_eq!(metrics_config(&[]).unwrap().network_check_every(), None);
         assert_eq!(
             metrics_config(&[
                 ("METRICS_ADDR", ""),
                 ("READY_MAX_LAG_BLOCKS", ""),
-                ("READY_MAX_TIP_AGE_SECS", "")
+                ("READY_MAX_TIP_AGE_SECS", ""),
+                ("READY_NETWORK_CHECK_SECS", "")
             ])
             .unwrap(),
             metrics_config(&[]).unwrap()
         );
+    }
+
+    #[test]
+    fn the_network_check_runs_every_ready_network_check_secs() {
+        let config = metrics_config(&[("READY_NETWORK_CHECK_SECS", "60")]).unwrap();
+        assert_eq!(
+            config.network_check_every(),
+            Some(std::time::Duration::from_secs(60))
+        );
+        let off = metrics_config(&[("READY_NETWORK_CHECK_SECS", "0")]).unwrap();
+        assert_eq!(off.network_check_every(), None);
+        for bad in ["-1", "often", "1.5"] {
+            let err = metrics_config(&[("READY_NETWORK_CHECK_SECS", bad)]).unwrap_err();
+            assert!(
+                err.to_string().contains("READY_NETWORK_CHECK_SECS"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -867,6 +928,7 @@ mod tests {
                 addr: Some("127.0.0.1:9100".into()),
                 ready_max_lag_blocks: 6,
                 ready_max_tip_age_secs: 120,
+                ready_network_check_secs: 0,
             }
         );
         assert_eq!(

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select max(block_height) as \"h?\" from utxos_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "h?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dbf4045c27fa6ecbfe32f5865c84c4618ac495efed12dd57d2466db0a5f8e252"
+}

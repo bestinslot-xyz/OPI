@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select max(block_height) as \"h?\" from brc20_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "h?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "25be1e77c08c910ee3eabd9afc41173fcbe950300fcb0c7e8f8ac7d122b7e16b"
+}

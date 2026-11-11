@@ -275,6 +275,9 @@ fn parameter_bounds_are_the_routes_rules() {
                 (_, "rune") if bounded => json!({"minLength": 1, "maxLength": MAX_RUNE_LEN}),
                 ("/v1/runes/runes", "search") => json!({"maxLength": MAX_RUNE_LEN}),
                 (_, "search") => json!({"maxLength": MAX_TICKER_LEN}),
+                ("/v1/utxos/wallet", "type") => {
+                    json!({"pattern": "^(all|cardinal|inscribed|runic)?$"})
+                }
                 (_, "type") => json!({"maxLength": MAX_TYPE_LEN}),
                 ("/v1/runes/rune/events" | "/v1/runes/wallet/events", "category") => {
                     json!({"maxLength": MAX_TYPE_LEN})
@@ -300,7 +303,8 @@ fn parameter_bounds_are_the_routes_rules() {
                     | "/v1/runes/wallet/balances"
                     | "/v1/runes/wallet/events"
                     | "/v1/inscriptions/wallet"
-                    | "/v1/inscriptions/wallet/history",
+                    | "/v1/inscriptions/wallet/history"
+                    | "/v1/utxos/wallet",
                     "address",
                 ) => json!({"maxLength": MAX_ADDRESS_LEN}),
                 (_, "address") if bounded => json!({"minLength": 1, "maxLength": MAX_ADDRESS_LEN}),

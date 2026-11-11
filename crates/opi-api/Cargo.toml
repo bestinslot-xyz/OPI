@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1.92"
 axum = "0.8.9"
 bitcoin = "0.32.102"
 dotenvy = "0.15"
@@ -18,10 +19,11 @@ opi-inscriptions = { path = "../opi-inscriptions" }
 opi-runes = { path = "../opi-runes" }
 opi-runtime = { path = "../opi-runtime" }
 opi-sns = { path = "../opi-sns" }
+reqwest = { version = "0.13.5", features = ["json"] }
 serde_json = "1"
 sha2 = "0.10"
 sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls"] }
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 utoipa = { version = "6.0.0", features = ["preserve_order", "preserve_path_order"] }

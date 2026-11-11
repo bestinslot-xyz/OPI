@@ -224,6 +224,9 @@ struct State {
     /// The open streams of the API's push feed, [`UNKNOWN`] before the
     /// first.
     stream_subscribers: AtomicI64,
+    /// The last completed comparison with the OPI network and when it
+    /// completed, as time since `created`.
+    network_check: Mutex<Option<(NetworkCheck, Duration)>>,
 }
 
 impl Default for State {
@@ -237,6 +240,7 @@ impl Default for State {
             fills: Mutex::default(),
             pools: Mutex::default(),
             stream_subscribers: AtomicI64::new(UNKNOWN),
+            network_check: Mutex::default(),
         }
     }
 }
@@ -279,6 +283,17 @@ struct FillState {
 pub struct ChainTip {
     pub height: u64,
     pub age: Duration,
+}
+
+/// A completed comparison of brc20's cumulative event and trace hashes with
+/// the OPI network's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkCheck {
+    /// The height compared at: the lower of brc20's height and the
+    /// network's best verified block.
+    pub height: u32,
+    /// Whether the hashes agree at that height.
+    pub agrees: bool,
 }
 
 /// The bounds of [`indexer_readiness`].
@@ -556,8 +571,26 @@ impl Metrics {
             .collect()
     }
 
+    /// Records a completed comparison of brc20's hashes with the OPI
+    /// network's, in place of the last one.
+    pub fn set_network_check(&self, check: NetworkCheck) {
+        let at = self.state.created.elapsed();
+        *self.state.network_check.lock().expect("the metrics lock") = Some((check, at));
+    }
+
+    /// The last completed comparison with the OPI network, `None` before the
+    /// first.
+    pub fn network_check(&self) -> Option<NetworkCheck> {
+        self.state
+            .network_check
+            .lock()
+            .expect("the metrics lock")
+            .map(|(check, _)| check)
+    }
+
     /// Whether `opi-indexer run` (or `brc20 light`) is ready to serve, with
-    /// the reason it is not (see [`indexer_readiness`]).
+    /// the reason it is not: [`indexer_readiness`], then
+    /// [`network_readiness`].
     pub fn indexer_readiness(&self, limits: ReadyLimits) -> Result<(), String> {
         indexer_readiness(
             self.phase(),
@@ -565,7 +598,24 @@ impl Metrics {
             &self.module_heights(),
             &self.running_fills(),
             limits,
-        )
+        )?;
+        network_readiness(self.network_check())
+    }
+}
+
+/// Not ready when the last comparison with the OPI network found brc20's
+/// hashes differ; no comparison yet, or one that agrees, changes nothing.
+/// A comparison that could not complete records nothing, so the last
+/// answer stands while the network cannot be reached.
+pub fn network_readiness(check: Option<NetworkCheck>) -> Result<(), String> {
+    match check {
+        Some(NetworkCheck {
+            height,
+            agrees: false,
+        }) => Err(format!(
+            "brc20 disagrees with the OPI network at height {height}"
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -754,6 +804,31 @@ impl Collector for StateCollector {
                 MetricType::Gauge,
             )?;
             metric.encode_gauge(&tip.age.as_secs_f64())?;
+        }
+
+        let network = *state.network_check.lock().expect("the metrics lock");
+        if let Some((check, at)) = network {
+            let mut metric = encoder.encode_descriptor(
+                "network_check_height",
+                "Height of the last comparison of brc20's hashes with the OPI network's",
+                None,
+                MetricType::Gauge,
+            )?;
+            metric.encode_gauge(&i64::from(check.height))?;
+            let mut metric = encoder.encode_descriptor(
+                "network_agrees",
+                "1 when brc20's hashes agreed with the OPI network's at the last comparison, else 0",
+                None,
+                MetricType::Gauge,
+            )?;
+            metric.encode_gauge(&i64::from(check.agrees))?;
+            let mut metric = encoder.encode_descriptor(
+                "network_check_age_seconds",
+                "Seconds since the last comparison with the OPI network completed",
+                None,
+                MetricType::Gauge,
+            )?;
+            metric.encode_gauge(&state.created.elapsed().saturating_sub(at).as_secs_f64())?;
         }
 
         let module_states: Vec<(ModuleLabels, Arc<ModuleState>)> = state
@@ -1011,6 +1086,63 @@ mod tests {
     }
 
     #[test]
+    fn only_a_disagreement_with_the_network_is_not_ready() {
+        assert_eq!(network_readiness(None), Ok(()));
+        assert_eq!(
+            network_readiness(Some(NetworkCheck {
+                height: 900,
+                agrees: true
+            })),
+            Ok(())
+        );
+        assert_eq!(
+            network_readiness(Some(NetworkCheck {
+                height: 900,
+                agrees: false
+            })),
+            Err("brc20 disagrees with the OPI network at height 900".to_string())
+        );
+    }
+
+    #[test]
+    fn readiness_follows_the_network_check() {
+        let metrics = Metrics::new();
+        metrics.module("brc20").set_height(Some(100));
+        metrics.set_chain_tip(100);
+        metrics.set_phase(Phase::Running);
+        let limits = limits(2);
+        assert_eq!(metrics.network_check(), None);
+        assert_eq!(metrics.indexer_readiness(limits), Ok(()));
+        metrics.set_network_check(NetworkCheck {
+            height: 98,
+            agrees: false,
+        });
+        assert_eq!(
+            metrics.indexer_readiness(limits),
+            Err("brc20 disagrees with the OPI network at height 98".into())
+        );
+        metrics.set_network_check(NetworkCheck {
+            height: 99,
+            agrees: true,
+        });
+        assert_eq!(metrics.indexer_readiness(limits), Ok(()));
+        assert_eq!(
+            metrics.network_check(),
+            Some(NetworkCheck {
+                height: 99,
+                agrees: true
+            })
+        );
+        // Starting comes before the network's answer.
+        let starting = Metrics::new();
+        starting.set_network_check(NetworkCheck {
+            height: 1,
+            agrees: false,
+        });
+        assert_eq!(starting.indexer_readiness(limits), Err("starting".into()));
+    }
+
+    #[test]
     fn readiness_follows_the_recorded_state() {
         let metrics = Metrics::new();
         let limits = limits(2);
@@ -1066,9 +1198,16 @@ mod tests {
             Duration::from_millis(3),
         );
         metrics.api_rate_limited("brc20");
+        metrics.set_network_check(NetworkCheck {
+            height: 900,
+            agrees: false,
+        });
 
         let text = metrics.encode();
         for line in [
+            "opi_network_check_height 900",
+            "opi_network_agrees 0",
+            "opi_network_check_age_seconds ",
             "opi_chain_tip_height 105",
             "opi_chain_tip_age_seconds ",
             r#"opi_indexed_height{module="bitmap"} 100"#,

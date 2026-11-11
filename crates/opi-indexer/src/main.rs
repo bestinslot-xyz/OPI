@@ -1,5 +1,6 @@
 mod brc20;
 mod config;
+mod network_check;
 mod prune;
 mod validate;
 
@@ -24,7 +25,11 @@ use {
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime, RuntimeOptions},
     opi_sns::{SnsConfig, SnsModule},
-    opi_source::driver::{SourceHandle, spawn_source},
+    opi_source::{
+        driver::{SourceConfig, SourceHandle, spawn_source},
+        rpc::BitcoinRpc as BitcoindRpc,
+    },
+    opi_utxos::{BlockFetcher, UtxosConfig, UtxosModule},
     std::{process::ExitCode, sync::Arc, time::Duration},
     tokio::{signal::unix::SignalKind, sync::oneshot},
     tracing_subscriber::EnvFilter,
@@ -133,10 +138,15 @@ fn run() -> Result<()> {
     opi_brc20::fail_stop::install_panic_hook();
     let config = Config::from_env()?;
     let module_configs = ModuleConfigs::load(&config)?;
+    let metrics_config = MetricsConfig::from_env()?;
+    let network_check = metrics_config.network_check_every();
+    if network_check.is_some() && module_configs.brc20.is_none() {
+        bail!("READY_NETWORK_CHECK_SECS compares brc20's hashes; enable brc20 or set it to 0");
+    }
     // Serves from here on, answering "starting" until the modules run, and
     // stops when `run` returns.
-    let metrics = start_metrics(MetricsConfig::from_env()?)?;
-    let result = index(&config, module_configs);
+    let metrics = start_metrics(metrics_config)?;
+    let result = index(&config, module_configs, network_check);
     if let Some(metrics) = metrics {
         metrics.stop();
     }
@@ -144,8 +154,13 @@ fn run() -> Result<()> {
 }
 
 /// Starts the brc20 engine, the source and the modules, and runs until a
-/// signal or a failure.
-fn index(config: &Config, module_configs: ModuleConfigs) -> Result<()> {
+/// signal or a failure. With `network_check` set, brc20 is compared with the
+/// OPI network that often (see [`network_check`]).
+fn index(
+    config: &Config,
+    module_configs: ModuleConfigs,
+    network_check: Option<Duration>,
+) -> Result<()> {
     // The engine and its Bitcoin RPC source open once, before anything
     // starts; module restarts reuse them.
     let brc20_engine = module_configs
@@ -184,6 +199,8 @@ fn index(config: &Config, module_configs: ModuleConfigs) -> Result<()> {
                 module_configs,
                 brc20_engine,
                 config.prune,
+                &config.source,
+                network_check,
             ));
             // Every exit, an error one included, reports shutting down while
             // brc20 goes idle and the RPC server and source stop.
@@ -258,12 +275,16 @@ fn api() -> Result<()> {
 /// Runs the enabled modules over the journal until a signal arrives or the
 /// source driver exits, then stops them. With `prune` set, the modules prune
 /// their history and a pruner task prunes the journal, each keeping the last
-/// `prune` blocks.
+/// `prune` blocks. The utxos module reads blocks from the bitcoind `source`
+/// names. With `network_check` set and brc20 enabled, a task compares brc20
+/// with the OPI network that often.
 async fn supervise(
     handle: &SourceHandle,
     configs: ModuleConfigs,
     brc20_engine: Option<Brc20Engine>,
     prune: Option<u32>,
+    source: &SourceConfig,
+    network_check: Option<Duration>,
 ) -> Result<Exit> {
     let reader = handle.reader();
     let journal: Arc<dyn BlockSource> = Arc::new(reader.clone());
@@ -288,15 +309,34 @@ async fn supervise(
         names.push("sns");
     }
     if let Some(config) = configs.runes {
-        runtime.add("runes", runes_factory(config, journal));
+        runtime.add("runes", runes_factory(config, journal.clone()));
         names.push("runes");
     }
     if let Some(config) = configs.inscriptions {
         runtime.add("inscriptions", inscriptions_factory(config));
         names.push("inscriptions");
     }
+    if let Some(config) = configs.utxos {
+        let blocks = Arc::new(RpcBlocks(BitcoindRpc::new(
+            source.bitcoin_rpc_url.clone(),
+            source.bitcoin_auth.clone(),
+        )?));
+        runtime.add("utxos", utxos_factory(config, blocks, journal.clone()));
+        names.push("utxos");
+    }
     let pruner =
         prune.map(|keep| tokio::spawn(prune::prune_journal(reader.journal().clone(), names, keep)));
+    let network_checker = match (network_check, configs.brc20.as_ref()) {
+        (Some(every), Some(brc20)) => {
+            let sides = network_check::Brc20Sides::new(brc20)?;
+            Some(tokio::spawn(network_check::run(
+                Box::new(sides),
+                brc20.first_brc20_height,
+                every,
+            )))
+        }
+        _ => None,
+    };
 
     let (stop, stopped) = oneshot::channel::<()>();
     let modules = runtime.run(async {
@@ -328,6 +368,10 @@ async fn supervise(
     if let Some(pruner) = pruner {
         pruner.abort();
         pruner.await.ok();
+    }
+    if let Some(checker) = network_checker {
+        checker.abort();
+        checker.await.ok();
     }
     stop.send(()).ok();
     modules.await?;
@@ -528,6 +572,41 @@ fn inscriptions_factory(config: InscriptionsConfig) -> ModuleFactory {
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })
+}
+
+/// Builds a utxos module on a fresh database connection for every start and
+/// restart, and catches it up to the journal's window before it follows the
+/// journal: a pruned journal no longer holds the heights below it.
+fn utxos_factory(
+    config: UtxosConfig,
+    blocks: Arc<dyn BlockFetcher>,
+    journal: Arc<dyn BlockSource>,
+) -> ModuleFactory {
+    Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
+        let (config, blocks, journal) = (config.clone(), blocks.clone(), journal.clone());
+        Box::pin(async move {
+            let mut module = UtxosModule::new(config, blocks, journal).await?;
+            let written = module.catch_up().await?;
+            if written > 0 {
+                tracing::info!(module = "utxos", written, "caught up from bitcoind");
+            }
+            Ok(Box::new(module) as Box<dyn Module>)
+        })
+    })
+}
+
+/// The utxos module's blocks, read from bitcoind outside the gate proxy.
+struct RpcBlocks(BitcoindRpc);
+
+#[async_trait::async_trait]
+impl BlockFetcher for RpcBlocks {
+    async fn block_hash(&self, height: u32) -> Result<bitcoin::BlockHash> {
+        self.0.block_hash(height).await
+    }
+
+    async fn block(&self, hash: bitcoin::BlockHash) -> Result<bitcoin::Block> {
+        self.0.block(hash).await
+    }
 }
 
 async fn source_finished(handle: &SourceHandle) {

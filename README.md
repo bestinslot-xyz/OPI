@@ -25,6 +25,7 @@ One root Cargo workspace holds every crate, the indexer and the API included.
 | `crates/opi-bitmap` | the Bitmap module |
 | `crates/opi-sns` | the SNS module |
 | `crates/opi-runes` | the Runes module |
+| `crates/opi-utxos` | the UTXO set module |
 | `crates/opi-api` | the HTTP API for every enabled module, served by `opi-indexer api` |
 | `tools/parity` | Python reference implementations and comparison tests for the modules, and the API comparison script |
 | `.env_sample` | every setting of `opi-indexer` and the API |
@@ -35,7 +36,8 @@ One root Cargo workspace holds every crate, the indexer and the API included.
 
 ### Modules
 
-`OPI_MODULES` lists the modules to run: any subset of `brc20,bitmap,sns,runes`.
+`OPI_MODULES` lists the modules to run: any subset of
+`brc20,bitmap,sns,runes,inscriptions,utxos`.
 Each module reads the journal and keeps its own Postgres database. The API serves the same list.
 
 | Module | Indexes | Database variables |
@@ -45,6 +47,7 @@ Each module reads the journal and keeps its own Postgres database. The API serve
 | `sns` | Sats Names, by the written spec (see [SNS indexing rules](#sns-indexing-rules)) | `SNS_DB_*` |
 | `runes` | Runes, from ord's rune events | `RUNES_DB_*` |
 | `inscriptions` | Every bound inscription's number, content type, current outpoint and owner (see [Inscriptions module](#inscriptions-module)) | `INSCRIPTIONS_DB_*` |
+| `utxos` | Every unspent output, by outpoint and script (see [UTXO module](#utxo-module)) | `UTXOS_DB_*` |
 
 The `*_DB_*` variables are `USER`, `HOST`, `PORT`, `DATABASE`, `PASSWD` and
 `SSL`, for example `BITMAP_DB_DATABASE`. The runes module reports `event_hash_version` 2 because it orders a
@@ -107,6 +110,62 @@ to. An event id holds its block height in the high 32 bits, so a block's
 events are one primary-key range; addresses derive from the pkScript and the
 network. The module reports no event hashes to the OPI network.
 
+#### UTXO module
+
+The `utxos` module keeps bitcoind's UTXO set in `utxos`: one row per unspent
+output with its txid bytes, vout, value, creating height, coinbase flag and
+raw pkscript, indexed by outpoint and by the pkscript's SHA-256. Addresses
+derive from the pkscript. Like bitcoind, it leaves out the genesis coinbase
+and unspendable outputs (an OP_RETURN script, or one over 10,000 bytes), and a
+repeated coinbase txid replaces the earlier outputs. Spent outputs are
+deleted.
+
+The journal carries no outputs, so the module reads blocks from bitcoind
+(`getblock <hash> 0`, outside the gate proxy) and resolves each spend against
+its own table. It runs in two modes:
+
+- **Catch-up**, while it is more than `MAX_ROLLBACK_DEPTH` (1000) blocks below
+  the journal's tip: it reads blocks by height, writes many per transaction
+  and keeps no undo data. This is how a new module indexes from genesis, on a
+  pruned journal too, and how one that fell behind gets back.
+- **Following**, within the window: it reads each block by the journal's hash
+  and writes it with its undo data, `utxos_created` and `utxos_spent`, which
+  a rollback uses to delete the block's outputs and put back the ones it
+  spent. Every 100 blocks it drops the undo data older than the window,
+  whether `OPI_PRUNE` is set or not.
+
+A block that spends an output the table does not hold fails, and the module
+restarts from its cursor. A rollback below the oldest undo data
+(`utxos_undo.undo_from`) fails too; the database must then be recreated. The
+module reports no event hashes to the OPI network.
+
+The API serves the set as `GET /v1/utxos/wallet?address=|pkscript=&type=`,
+which needs the inscriptions and runes modules too: each of the wallet's
+outputs with the inscriptions and rune balances it carries, and for each
+inscription whether it is a used BRC-20 or BRC2.0 transfer inscription.
+`type=cardinal` (which also needs brc20) keeps the outputs a wallet may spend
+as plain bitcoin: no runes, no inscriptions other than used transfer
+inscriptions, and created at or below `indexed_height`, the lowest height of
+the modules read. `inscribed` and `runic` keep the outputs with inscriptions
+or runes. A wallet with more than 10,000 unspent outputs answers 413.
+
+With `MEMPOOL_ENABLED=true` (and `BITCOIN_RPC_URL` with
+`BITCOIN_RPC_COOKIE` or `BITCOIN_RPC_USER`/`BITCOIN_RPC_PASSWD`), the API
+keeps a mempool view in memory: it reads `getrawmempool` every
+`MEMPOOL_POLL_MS` (default 2000) and fetches each new transaction with
+`getrawtransaction` and `getmempoolentry`. `mempool=true` on the route then
+leaves out the outputs a mempool transaction spends and adds the wallet's
+mempool outputs, with `height` null, the transaction's `fee` and `vsize`,
+and `pending` when their contents are unknown until they confirm: the
+transaction or an in-mempool ancestor opens an inscription envelope or
+holds a runestone, or a confirmed output they spend carries an inscription
+or a rune or lies above `indexed_height`. Only mempool outputs that are not
+pending count as cardinal; `inscribed` and `runic` list none. A transaction
+that leaves the mempool stays in the view until the utxos module reaches
+the bitcoind tip it left at, so a block's outputs never vanish between
+bitcoind and the module. Before the view's first poll, `mempool=true`
+answers 503.
+
 ### Prerequisites
 
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
@@ -135,9 +194,9 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
-| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
+| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`, `utxos`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
 | `OPI_PRUNE` | blocks of history to keep, at least `1000`; unset keeps everything (see [Pruning](#pruning)) |
-| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE` and `INSCRIPTIONS_DB_DATABASE` have no default and are required when the module is enabled |
+| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*`, `UTXOS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`, `INSCRIPTIONS_DB_DATABASE` and `UTXOS_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
 | `RUST_LOG` | log filter, default `info` |
@@ -519,6 +578,7 @@ private network.
 | `API_METRICS_ADDR` | listen address of the metrics listener of `api`; empty or unset runs none |
 | `READY_MAX_LAG_BLOCKS` | the most blocks a module may be behind the chain tip while `run` or `brc20 light` is ready, default `2` |
 | `READY_MAX_TIP_AGE_SECS` | the most seconds since the last chain tip read while `run` or `brc20 light` is ready, default `600` |
+| `READY_NETWORK_CHECK_SECS` | how often `run` compares brc20's cumulative hashes with the OPI network's for readiness, for example `60`; `0` (the default) or unset runs no comparison. Needs brc20 enabled |
 
 A start fails when its metrics address is taken. `run` and `brc20 light`
 serve the listener from the start of the process, on a thread of their own, so
@@ -534,7 +594,14 @@ runs. Each listener serves:
 `run` is ready when no start-up fill runs, bitcoind's best block was read
 within `READY_MAX_TIP_AGE_SECS` (the source reads it before each ord update),
 and every enabled module's indexed height is at most `READY_MAX_LAG_BLOCKS`
-below it. `brc20 light` compares brc20's height with the OPI network's best
+below it. With `READY_NETWORK_CHECK_SECS` set, `run` is also not ready while
+brc20 disagrees with the OPI network: every that many seconds it compares
+brc20's cumulative event and trace hashes with the network's at the lower of
+brc20's height and the network's best verified block, the newest height both
+sides have, as `validate` does. A comparison that cannot complete, such as
+while the network is unreachable, is logged and leaves the last answer
+standing, so an outage of the network does not take a node out of service.
+`brc20 light` compares brc20's height with the OPI network's best
 verified block instead, which it reads while it waits for a new block. A module
 that has not read its height yet, or whose run failed and waits to restart,
 and an unknown tip, are not ready. `api` is ready when every enabled module's
@@ -557,6 +624,9 @@ module's.
 | `opi_chain_tip_age_seconds` | gauge | | seconds since that tip was last read |
 | `opi_indexed_height` | gauge | `module` | last block the module has applied; no sample while the module is down |
 | `opi_lag_blocks` | gauge | `module` | blocks the module is behind the chain tip, 0 when at or above it |
+| `opi_network_check_height` | gauge | | the height of the last completed comparison of brc20 with the OPI network (`READY_NETWORK_CHECK_SECS`); no sample before the first |
+| `opi_network_agrees` | gauge | | 1 when brc20's hashes agreed with the network's at that comparison, 0 when they differed |
+| `opi_network_check_age_seconds` | gauge | | seconds since that comparison completed |
 | `opi_block_seconds` | histogram | `module` | seconds the module takes to apply one block |
 | `opi_engine_seconds` | histogram | `module` (`brc20`) | seconds of one brc20 block spent in the BRC2.0 engine; blocks that make no engine call, such as those below BRC2.0's first height, are not observed |
 | `opi_fill_running` | gauge | `module`, `fill` | runs of the start-up fill in progress, 0 once it has finished; `fill` is `block_time`, `evm_addresses` or `prog_balances` |
@@ -994,6 +1064,12 @@ bracketed parameter).
 | Route | Query parameters | Answers |
 | --- | --- | --- |
 | `POST /v1/outputs` |  | The inscriptions and runes on up to 500 outputs. |
+
+**utxos**: A wallet's unspent outputs and what they carry.
+
+| Route | Query parameters | Answers |
+| --- | --- | --- |
+| `GET /v1/utxos/wallet` | `address`, `pkscript`, `type`, `mempool` | A wallet's unspent outputs, with their inscriptions and runes. |
 
 **stream**: The push feed of each block's events.
 
@@ -1547,7 +1623,7 @@ with `cargo sqlx prepare` (sqlx-cli 0.9) against a database that holds the
 schema, then verify it with `cargo sqlx prepare --check`. The `DATABASE_URL`
 needs an explicit user.
 
-For `opi-api`, build a throwaway database from the five schemas plus the one
+For `opi-api`, build a throwaway database from the six schemas plus the one
 table the API reads that no `db_init.sql` creates (`brc20_extras_block_hashes`),
 whose DDL goes in a local file `api_extra_tables.sql`:
 
@@ -1561,7 +1637,8 @@ CREATE TABLE public.brc20_extras_block_hashes (
 createdb -h /tmp opi_api_sqlx_prepare
 for f in crates/opi-brc20/src/database/sql/db_init.sql crates/opi-bitmap/src/db_init.sql \
          crates/opi-sns/src/db_init.sql crates/opi-runes/src/db_init.sql \
-         crates/opi-inscriptions/src/db_init.sql api_extra_tables.sql; do
+         crates/opi-inscriptions/src/db_init.sql crates/opi-utxos/src/db_init.sql \
+         api_extra_tables.sql; do
   psql -h /tmp -d opi_api_sqlx_prepare -X -q -v ON_ERROR_STOP=1 -f "$f"
 done
 cd crates/opi-api

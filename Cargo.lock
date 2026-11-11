@@ -1856,9 +1856,9 @@ dependencies = [
 
 [[package]]
 name = "brc20-prog"
-version = "0.17.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "400fbef05a26e9d6ffb33a7c44eb9882a67a14927115d01de2128ff3d60e7634"
+checksum = "58a82831f8a5f852a1520d2754af443abd4ad825a1c3b78409a2502810e7e7a7"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -5153,6 +5153,7 @@ name = "opi-api"
 version = "4.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bitcoin",
  "dotenvy",
@@ -5168,6 +5169,7 @@ dependencies = [
  "opi-runes",
  "opi-runtime",
  "opi-sns",
+ "reqwest",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
@@ -5257,6 +5259,7 @@ dependencies = [
  "opi-runtime",
  "opi-sns",
  "opi-source",
+ "opi-utxos",
  "ord",
  "redb",
  "serde_json",
@@ -5356,6 +5359,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "zstd",
+]
+
+[[package]]
+name = "opi-utxos"
+version = "4.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "futures",
+ "opi-core",
+ "sqlx",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
