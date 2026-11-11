@@ -1,26 +1,26 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select tick as \"tick?\", inscription_id as \"inscription_id?\", amount::text as \"amount\", block_height as \"genesis_height?\"\n                from brc20_unused_tx_inscrs\n                where current_holder_pkscript = $1\n                order by tick asc;",
+  "query": "select tick, inscription_id, amount::text as \"amount\", block_height as \"genesis_height\"\n                from brc20_unused_txes\n                where current_holder_pkscript = $1\n                order by tick asc, inscription_id asc;",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "tick?",
-        "type_info": "Varchar",
+        "name": "tick",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "brc20_unused_tx_inscrs",
+            "table": "brc20_unused_txes",
             "name": "tick"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "inscription_id?",
+        "name": "inscription_id",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "brc20_unused_tx_inscrs",
+            "table": "brc20_unused_txes",
             "name": "inscription_id"
           }
         }
@@ -33,11 +33,11 @@
       },
       {
         "ordinal": 3,
-        "name": "genesis_height?",
+        "name": "genesis_height",
         "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "brc20_unused_tx_inscrs",
+            "table": "brc20_unused_txes",
             "name": "block_height"
           }
         }
@@ -55,5 +55,5 @@
       false
     ]
   },
-  "hash": "5fcf77a32a1f14aa09f8a69531c1176a68f84bbfe5744066c9cee90a480b4ac5"
+  "hash": "5ec4bc5a3aac01cb3114336ea484c72f325d207514a607067da40d9b4daa58f7"
 }

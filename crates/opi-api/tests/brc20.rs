@@ -262,10 +262,68 @@ async fn live() -> Option<(Router, sqlx::PgPool)> {
     Some((app(Db::from_pool(pool.clone())), pool))
 }
 
-/// No repository holds the DDL of brc20_unused_tx_inscrs, so a NULL in any
-/// column the API reads keeps JavaScript's null. The test builds it and
-/// evm_addresses as temporary tables with nullable columns on its one session
-/// (they shadow any real ones and vanish with the connection), so the
+/// A wallet's and a ticker's unused transfer inscriptions come from
+/// brc20_unused_txes, the table the brc20 indexer keeps. The test seeds a
+/// temporary copy of it on its one session (it shadows the real one and
+/// vanishes with the connection), so the database is unchanged.
+#[tokio::test]
+async fn live_unused_transfer_inscriptions() {
+    let Ok(url) = std::env::var("OPI_API_TEST_DATABASE_URL") else {
+        eprintln!("OPI_API_TEST_DATABASE_URL is unset; skipping");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy(&url)
+        .unwrap();
+    for statement in [
+        "create temporary table brc20_unused_txes (like public.brc20_unused_txes including all)",
+        "insert into brc20_unused_txes
+            (inscription_id, tick, amount, current_holder_pkscript, current_holder_wallet, event_id, block_height)
+            values ('bi0', 'nul', 2000000000000000000, '00', 'w', 1, 10),
+                   ('ai0', 'abc', 5, '00', 'w', 2, 11),
+                   ('ci0', 'nul', 7, '01', null, 3, 12)",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let app = app(Db::from_pool(pool));
+    for (uri, body) in [
+        (
+            "/v1/brc20/get_valid_tx_notes_of_wallet?address=w",
+            r#"{"error":null,"result":{"unused_txes":[{"tick":"abc","inscription_id":"ai0","amount":"5","genesis_height":11},{"tick":"nul","inscription_id":"bi0","amount":"2000000000000000000","genesis_height":10}],"block_height":"#,
+        ),
+        (
+            "/v1/brc20/get_valid_tx_notes_of_wallet?pkscript=01",
+            r#"{"error":null,"result":{"unused_txes":[{"tick":"nul","inscription_id":"ci0","amount":"7","genesis_height":12}],"block_height":"#,
+        ),
+        (
+            "/v1/brc20/get_valid_tx_notes_of_ticker?ticker=NUL",
+            r#"{"error":null,"result":{"unused_txes":[{"current_holder_pkscript":"00","current_holder_wallet":"w","inscription_id":"bi0","amount":"2000000000000000000","genesis_height":10},{"current_holder_pkscript":"01","current_holder_wallet":null,"inscription_id":"ci0","amount":"7","genesis_height":12}],"block_height":"#,
+        ),
+    ] {
+        let answer = get(&app, uri).await;
+        assert_eq!(answer.status, StatusCode::OK, "{uri}: {}", answer.body);
+        assert_eq!(answer.content_type.as_deref(), Some(JSON), "{uri}");
+        assert!(answer.body.starts_with(body), "{uri}: {}", answer.body);
+    }
+    for uri in [
+        "/v1/brc20/get_valid_tx_notes_of_wallet?address=nobody",
+        "/v1/brc20/get_valid_tx_notes_of_ticker?ticker=none",
+    ] {
+        expect(
+            &app,
+            uri,
+            400,
+            JSON,
+            r#"{"error":"no unused tx found","result":null}"#,
+        )
+        .await;
+    }
+}
+
+/// A NULL in a column the API reads keeps JavaScript's null. The test builds
+/// evm_addresses as a temporary table with nullable columns on its one session
+/// (it shadows any real one and vanishes with the connection), so the
 /// database is unchanged.
 #[tokio::test]
 async fn live_null_columns_read_as_null() {
@@ -280,21 +338,11 @@ async fn live_null_columns_read_as_null() {
     for statement in [
         "create temporary table evm_addresses (evm_address text, btc_address text)",
         "insert into evm_addresses values ('0xab', null)",
-        "create temporary table brc20_unused_tx_inscrs (
-            id bigserial, inscription_id text, tick varchar(4), amount numeric(40),
-            current_holder_pkscript text, current_holder_wallet text, event_id int8,
-            block_height int4)",
-        "insert into brc20_unused_tx_inscrs (current_holder_pkscript, current_holder_wallet, tick)
-            values ('00', 'w', 'nul'), (null, null, 'nul'), ('01', null, null)",
     ] {
         sqlx::query(statement).execute(&pool).await.unwrap();
     }
     let app = app(Db::from_pool(pool));
     for (uri, body) in [
-        (
-            "/v1/brc20/get_valid_tx_notes_of_wallet?pkscript=01",
-            r#"{"error":null,"result":{"unused_txes":[{"tick":null,"inscription_id":null,"amount":null,"genesis_height":null}],"block_height":"#.to_string(),
-        ),
         (
             "/v1/brc20/explorer/btc_address/0xAB",
             r#"{"btc_address":null}"#.to_string(),
@@ -306,18 +354,6 @@ async fn live_null_columns_read_as_null() {
         (
             "/v1/brc20/explorer/address_tabs_counters/0xAB",
             r#"{"internal_transactions_count":0,"logs_count":0,"token_balances_count":0,"token_transfers_count":0,"transactions_count":0,"validations_count":0,"withdrawals_count":0}"#.to_string(),
-        ),
-        (
-            "/v1/brc20/get_valid_tx_notes_of_wallet?pkscript=00",
-            r#"{"error":null,"result":{"unused_txes":[{"tick":"nul","inscription_id":null,"amount":null,"genesis_height":null}],"block_height":"#.to_string(),
-        ),
-        (
-            "/v1/brc20/get_valid_tx_notes_of_wallet?address=w",
-            r#"{"error":null,"result":{"unused_txes":[{"tick":"nul","inscription_id":null,"amount":null,"genesis_height":null}],"block_height":"#.to_string(),
-        ),
-        (
-            "/v1/brc20/get_valid_tx_notes_of_ticker?ticker=NUL",
-            r#"{"error":null,"result":{"unused_txes":[{"current_holder_pkscript":"00","current_holder_wallet":"w","inscription_id":null,"amount":null,"genesis_height":null},{"current_holder_pkscript":null,"current_holder_wallet":null,"inscription_id":null,"amount":null,"genesis_height":null}],"block_height":"#.to_string(),
         ),
     ] {
         let answer = get(&app, uri).await;
