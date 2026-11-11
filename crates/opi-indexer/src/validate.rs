@@ -47,7 +47,7 @@ pub struct Theirs {
 impl Ours {
     /// The event hashes are equal and, when the network has a trace hash, the
     /// trace hashes are equal.
-    fn matches(&self, theirs: &Theirs) -> bool {
+    pub fn matches(&self, theirs: &Theirs) -> bool {
         self.event == theirs.event
             && theirs
                 .trace

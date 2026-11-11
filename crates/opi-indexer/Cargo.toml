@@ -7,7 +7,7 @@ version.workspace = true
 anyhow = "1"
 async-trait = "0.1.92"
 bitcoin = "0.32.5"
-brc20-prog = "0.17.1"
+brc20-prog = "0.17.2"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 futures = "0.3"

@@ -578,6 +578,7 @@ private network.
 | `API_METRICS_ADDR` | listen address of the metrics listener of `api`; empty or unset runs none |
 | `READY_MAX_LAG_BLOCKS` | the most blocks a module may be behind the chain tip while `run` or `brc20 light` is ready, default `2` |
 | `READY_MAX_TIP_AGE_SECS` | the most seconds since the last chain tip read while `run` or `brc20 light` is ready, default `600` |
+| `READY_NETWORK_CHECK_SECS` | how often `run` compares brc20's cumulative hashes with the OPI network's for readiness, for example `60`; `0` (the default) or unset runs no comparison. Needs brc20 enabled |
 
 A start fails when its metrics address is taken. `run` and `brc20 light`
 serve the listener from the start of the process, on a thread of their own, so
@@ -593,7 +594,14 @@ runs. Each listener serves:
 `run` is ready when no start-up fill runs, bitcoind's best block was read
 within `READY_MAX_TIP_AGE_SECS` (the source reads it before each ord update),
 and every enabled module's indexed height is at most `READY_MAX_LAG_BLOCKS`
-below it. `brc20 light` compares brc20's height with the OPI network's best
+below it. With `READY_NETWORK_CHECK_SECS` set, `run` is also not ready while
+brc20 disagrees with the OPI network: every that many seconds it compares
+brc20's cumulative event and trace hashes with the network's at the lower of
+brc20's height and the network's best verified block, the newest height both
+sides have, as `validate` does. A comparison that cannot complete, such as
+while the network is unreachable, is logged and leaves the last answer
+standing, so an outage of the network does not take a node out of service.
+`brc20 light` compares brc20's height with the OPI network's best
 verified block instead, which it reads while it waits for a new block. A module
 that has not read its height yet, or whose run failed and waits to restart,
 and an unknown tip, are not ready. `api` is ready when every enabled module's
@@ -616,6 +624,9 @@ module's.
 | `opi_chain_tip_age_seconds` | gauge | | seconds since that tip was last read |
 | `opi_indexed_height` | gauge | `module` | last block the module has applied; no sample while the module is down |
 | `opi_lag_blocks` | gauge | `module` | blocks the module is behind the chain tip, 0 when at or above it |
+| `opi_network_check_height` | gauge | | the height of the last completed comparison of brc20 with the OPI network (`READY_NETWORK_CHECK_SECS`); no sample before the first |
+| `opi_network_agrees` | gauge | | 1 when brc20's hashes agreed with the network's at that comparison, 0 when they differed |
+| `opi_network_check_age_seconds` | gauge | | seconds since that comparison completed |
 | `opi_block_seconds` | histogram | `module` | seconds the module takes to apply one block |
 | `opi_engine_seconds` | histogram | `module` (`brc20`) | seconds of one brc20 block spent in the BRC2.0 engine; blocks that make no engine call, such as those below BRC2.0's first height, are not observed |
 | `opi_fill_running` | gauge | `module`, `fill` | runs of the start-up fill in progress, 0 once it has finished; `fill` is `block_time`, `evm_addresses` or `prog_balances` |

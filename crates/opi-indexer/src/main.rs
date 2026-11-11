@@ -1,5 +1,6 @@
 mod brc20;
 mod config;
+mod network_check;
 mod prune;
 mod validate;
 
@@ -137,10 +138,15 @@ fn run() -> Result<()> {
     opi_brc20::fail_stop::install_panic_hook();
     let config = Config::from_env()?;
     let module_configs = ModuleConfigs::load(&config)?;
+    let metrics_config = MetricsConfig::from_env()?;
+    let network_check = metrics_config.network_check_every();
+    if network_check.is_some() && module_configs.brc20.is_none() {
+        bail!("READY_NETWORK_CHECK_SECS compares brc20's hashes; enable brc20 or set it to 0");
+    }
     // Serves from here on, answering "starting" until the modules run, and
     // stops when `run` returns.
-    let metrics = start_metrics(MetricsConfig::from_env()?)?;
-    let result = index(&config, module_configs);
+    let metrics = start_metrics(metrics_config)?;
+    let result = index(&config, module_configs, network_check);
     if let Some(metrics) = metrics {
         metrics.stop();
     }
@@ -148,8 +154,13 @@ fn run() -> Result<()> {
 }
 
 /// Starts the brc20 engine, the source and the modules, and runs until a
-/// signal or a failure.
-fn index(config: &Config, module_configs: ModuleConfigs) -> Result<()> {
+/// signal or a failure. With `network_check` set, brc20 is compared with the
+/// OPI network that often (see [`network_check`]).
+fn index(
+    config: &Config,
+    module_configs: ModuleConfigs,
+    network_check: Option<Duration>,
+) -> Result<()> {
     // The engine and its Bitcoin RPC source open once, before anything
     // starts; module restarts reuse them.
     let brc20_engine = module_configs
@@ -189,6 +200,7 @@ fn index(config: &Config, module_configs: ModuleConfigs) -> Result<()> {
                 brc20_engine,
                 config.prune,
                 &config.source,
+                network_check,
             ));
             // Every exit, an error one included, reports shutting down while
             // brc20 goes idle and the RPC server and source stop.
@@ -264,13 +276,15 @@ fn api() -> Result<()> {
 /// source driver exits, then stops them. With `prune` set, the modules prune
 /// their history and a pruner task prunes the journal, each keeping the last
 /// `prune` blocks. The utxos module reads blocks from the bitcoind `source`
-/// names.
+/// names. With `network_check` set and brc20 enabled, a task compares brc20
+/// with the OPI network that often.
 async fn supervise(
     handle: &SourceHandle,
     configs: ModuleConfigs,
     brc20_engine: Option<Brc20Engine>,
     prune: Option<u32>,
     source: &SourceConfig,
+    network_check: Option<Duration>,
 ) -> Result<Exit> {
     let reader = handle.reader();
     let journal: Arc<dyn BlockSource> = Arc::new(reader.clone());
@@ -312,6 +326,17 @@ async fn supervise(
     }
     let pruner =
         prune.map(|keep| tokio::spawn(prune::prune_journal(reader.journal().clone(), names, keep)));
+    let network_checker = match (network_check, configs.brc20.as_ref()) {
+        (Some(every), Some(brc20)) => {
+            let sides = network_check::Brc20Sides::new(brc20)?;
+            Some(tokio::spawn(network_check::run(
+                Box::new(sides),
+                brc20.first_brc20_height,
+                every,
+            )))
+        }
+        _ => None,
+    };
 
     let (stop, stopped) = oneshot::channel::<()>();
     let modules = runtime.run(async {
@@ -343,6 +368,10 @@ async fn supervise(
     if let Some(pruner) = pruner {
         pruner.abort();
         pruner.await.ok();
+    }
+    if let Some(checker) = network_checker {
+        checker.abort();
+        checker.await.ok();
     }
     stop.send(()).ok();
     modules.await?;
