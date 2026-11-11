@@ -17,8 +17,9 @@
 //! The feeds page newest first by key: `limit` (default 100, at most 500)
 //! and `before_id`, the `next_before_id` of the previous page. A page holds
 //! the rows with an id below `before_id`, so pages never repeat or skip a
-//! row when new blocks arrive. A database pruned with `OPI_PRUNE` holds the
-//! events of its window and each inscription's latest event below it.
+//! row when new blocks arrive. A database pruned with `OPI_PRUNE` holds
+//! every event, so the feeds answer as on a full node; `block_time` is null
+//! below the pruned window, whose block hashes are deleted.
 
 use {
     super::{

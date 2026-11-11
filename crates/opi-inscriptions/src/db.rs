@@ -191,33 +191,13 @@ impl Db {
         Ok(())
     }
 
-    /// Deletes, in one transaction, the block hashes below `height` and the
-    /// events below it that a later event below it replaced: the `prev_id`
-    /// of every event between the previous prune's height and `height`.
-    /// Each inscription keeps its latest event below `height`, which a
-    /// rollback to `height` or above reads through the next transfer's
-    /// `prev_id`; the API reads the highest block hash and the events of
-    /// recent blocks only.
+    /// Deletes the block hashes below `height`. Every event stays: the
+    /// history routes read them at any height, and a rollback reads a
+    /// transfer's `prev_id` event however deep it lies.
     pub async fn prune_below(&self, height: u32) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
-        let floor: Option<i32> =
-            sqlx::query_scalar("SELECT min(block_height) FROM inscriptions_block_hashes")
-                .fetch_one(&mut *tx)
-                .await?;
-        let height = i64::from(height);
-        if let Some(floor) = floor.map(i64::from).filter(|floor| *floor < height) {
-            sqlx::query(
-                "DELETE FROM inscriptions_events WHERE id IN ( \
-                 SELECT prev_id FROM inscriptions_events \
-                 WHERE id >= $1 AND id < $2 AND prev_id IS NOT NULL)",
-            )
-            .bind(first_event_id(floor))
-            .bind(first_event_id(height))
-            .execute(&mut *tx)
-            .await?;
-        }
         sqlx::query("DELETE FROM inscriptions_block_hashes WHERE block_height < $1")
-            .bind(height)
+            .bind(i64::from(height))
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;

@@ -35,8 +35,7 @@ CREATE INDEX inscriptions_entries_pkscript_seq_idx ON public.inscriptions_entrie
 -- location and height are what a transfer moved the inscription from, which a
 -- rollback puts back. `txid` is the outpoint's txid as the 32 bytes its hex
 -- spells, `pkscript` the raw script; addresses derive from `pkscript` and the
--- network. Below the OPI_PRUNE window each inscription keeps only its latest
--- event there, which its next transfer's `prev_id` names.
+-- network. OPI_PRUNE keeps every event.
 CREATE TABLE public.inscriptions_events (
 	id int8 NOT NULL,
 	sequence_number int8 NOT NULL,

@@ -369,18 +369,14 @@ async fn a_creation_moved_in_its_own_block_is_stored_at_its_last_location() {
 }
 
 #[tokio::test]
-async fn prune_keeps_each_inscriptions_latest_event_and_drops_the_rest() {
+async fn prune_keeps_every_event_and_drops_old_block_hashes() {
     with_database("prune", |name| async move {
         let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
         three_blocks(&mut module).await;
-        module.prune_below(3).await.unwrap();
         let mut conn = connect(&name).await;
-        // below 3, only A's move to dd and B's burn stay: the latest events
-        // there, which A's move in block 3 and B's next transfer name
-        assert_eq!(
-            event_ids(&mut conn).await,
-            vec![(2 << 32) + 1, (2 << 32) + 2, 3 << 32, (3 << 32) + 1]
-        );
+        let before = event_ids(&mut conn).await;
+        module.prune_below(3).await.unwrap();
+        assert_eq!(event_ids(&mut conn).await, before);
         assert_eq!(module.cursor().await.unwrap().unwrap().height, 3);
         assert_eq!(module.block_hash(2).await.unwrap(), None);
 
@@ -392,15 +388,10 @@ async fn prune_keeps_each_inscriptions_latest_event_and_drops_the_rest() {
             .await
             .unwrap();
         module.prune_below(4).await.unwrap();
-        // A's move in block 3 replaced its move to dd; B's burn is the
-        // event block 4's transfer moved it from
-        assert_eq!(
-            event_ids(&mut conn).await,
-            vec![(2 << 32) + 2, 3 << 32, (3 << 32) + 1, 4 << 32]
-        );
+        assert_eq!(event_ids(&mut conn).await.len(), before.len() + 1);
 
-        // A rollback within the kept window restores a location whose
-        // event lies below it.
+        // A rollback restores a location whose event lies below the pruned
+        // window: B's burn at height 2.
         module.rollback_to(3).await.unwrap();
         assert_eq!(
             entries(&mut conn).await,
@@ -410,9 +401,6 @@ async fn prune_keeps_each_inscriptions_latest_event_and_drops_the_rest() {
                 (id("ff"), format!("{}:0", txid("ff")), 0, addr(&pk1()), 3),
             ]
         );
-        // Below the window the event a rollback needs is gone.
-        let error = module.rollback_to(2).await.unwrap_err();
-        assert!(format!("{error:#}").contains("not stored"), "{error:#}");
     })
     .await;
 }

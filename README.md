@@ -245,7 +245,7 @@ the deepest rollback the scheduler walks.
 | brc20 | `brc20_logs`, which nothing reads | every table the API, the light clients and `validate` read |
 | bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
-| inscriptions | `inscriptions_block_hashes` below the window; `inscriptions_events` below it except each inscription's latest | `inscriptions_entries` |
+| inscriptions | `inscriptions_block_hashes` below the window | `inscriptions_entries` and every `inscriptions_events` row, which the history routes read |
 
 Each module prunes its tables every 100 blocks. ord's index has no history to
 prune: `run` builds it without sat, address or transaction indexes.
@@ -1328,8 +1328,8 @@ it). An event is `{"id","block_height","block_time","event_type",
 "new_offset","new_pkscript","new_address"}`, `event_type` `creation` or
 `transfer`, the `old_` fields null for a creation. Both page by key:
 `limit` (default `100`, at most `500`) and `before_id`, the previous page's
-`next_before_id`. A node pruned with `OPI_PRUNE` holds the events of its
-window and each inscription's latest event below it.
+`next_before_id`. A node pruned with `OPI_PRUNE` keeps every event, so both
+answer as on a full node; `block_time` is null below the pruned window.
 
 **Outputs.** An outpoint is `<txid>:<vout>`: 64 hex digits, any case, and a
 32-bit output index. `/v1/inscriptions/outpoint?outpoint=` answers
