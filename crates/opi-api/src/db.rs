@@ -203,6 +203,13 @@ impl Db {
                 )
                 .fetch_one(pool)
                 .await?,
+                Module::Utxos => {
+                    sqlx::query_scalar!(
+                        "SELECT max(block_height) as max_block_height FROM utxos_block_hashes;"
+                    )
+                    .fetch_one(pool)
+                    .await?
+                }
             };
         Ok(height.to_js())
     }

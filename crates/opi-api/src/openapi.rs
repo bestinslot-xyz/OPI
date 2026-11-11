@@ -44,7 +44,7 @@ use {
 #[openapi(
     info(
         title = "OPI API",
-        description = "The HTTP API of opi-indexer: the BRC-20, Bitmap, SNS, Runes and Inscriptions modules' routes under `/v1/<module>/`. The routes of the Node API answer as it does (node-pg value forms included); the ticker, wallet, lookup, inscription and output routes answer `{\"error\":null,\"result\":...}`. Every route answers `500 {\"error\":\"internal error\",\"result\":null}` when its handler fails, and `429` when RATE_LIMIT_ENABLE is `true` and the client has used up its window.",
+        description = "The HTTP API of opi-indexer: the BRC-20, Bitmap, SNS, Runes, Inscriptions and UTXO modules' routes under `/v1/<module>/`. The routes of the Node API answer as it does (node-pg value forms included); the ticker, wallet, lookup, inscription and output routes answer `{\"error\":null,\"result\":...}`. Every route answers `500 {\"error\":\"internal error\",\"result\":null}` when its handler fails, and `429` when RATE_LIMIT_ENABLE is `true` and the client has used up its window.",
         license(name = "Apache-2.0", identifier = "Apache-2.0"),
     ),
     tags(
@@ -55,6 +55,7 @@ use {
         (name = "runes", description = "Runes"),
         (name = "inscriptions", description = "Inscriptions and their current locations"),
         (name = "outputs", description = "The inscriptions and runes on outputs"),
+        (name = "utxos", description = "A wallet's unspent outputs and what they carry"),
         (name = "stream", description = "The push feed of each block's events"),
     ),
     components(schemas(ErrorBody))

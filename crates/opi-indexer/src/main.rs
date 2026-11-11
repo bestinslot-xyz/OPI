@@ -25,7 +25,11 @@ use {
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime, RuntimeOptions},
     opi_sns::{SnsConfig, SnsModule},
-    opi_source::driver::{SourceHandle, spawn_source},
+    opi_source::{
+        driver::{SourceConfig, SourceHandle, spawn_source},
+        rpc::BitcoinRpc as BitcoindRpc,
+    },
+    opi_utxos::{BlockFetcher, UtxosConfig, UtxosModule},
     std::{process::ExitCode, sync::Arc, time::Duration},
     tokio::{signal::unix::SignalKind, sync::oneshot},
     tracing_subscriber::EnvFilter,
@@ -195,6 +199,7 @@ fn index(
                 module_configs,
                 brc20_engine,
                 config.prune,
+                &config.source,
                 network_check,
             ));
             // Every exit, an error one included, reports shutting down while
@@ -270,13 +275,15 @@ fn api() -> Result<()> {
 /// Runs the enabled modules over the journal until a signal arrives or the
 /// source driver exits, then stops them. With `prune` set, the modules prune
 /// their history and a pruner task prunes the journal, each keeping the last
-/// `prune` blocks. With `network_check` set and brc20 enabled, a task
-/// compares brc20 with the OPI network that often.
+/// `prune` blocks. The utxos module reads blocks from the bitcoind `source`
+/// names. With `network_check` set and brc20 enabled, a task compares brc20
+/// with the OPI network that often.
 async fn supervise(
     handle: &SourceHandle,
     configs: ModuleConfigs,
     brc20_engine: Option<Brc20Engine>,
     prune: Option<u32>,
+    source: &SourceConfig,
     network_check: Option<Duration>,
 ) -> Result<Exit> {
     let reader = handle.reader();
@@ -302,12 +309,20 @@ async fn supervise(
         names.push("sns");
     }
     if let Some(config) = configs.runes {
-        runtime.add("runes", runes_factory(config, journal));
+        runtime.add("runes", runes_factory(config, journal.clone()));
         names.push("runes");
     }
     if let Some(config) = configs.inscriptions {
         runtime.add("inscriptions", inscriptions_factory(config));
         names.push("inscriptions");
+    }
+    if let Some(config) = configs.utxos {
+        let blocks = Arc::new(RpcBlocks(BitcoindRpc::new(
+            source.bitcoin_rpc_url.clone(),
+            source.bitcoin_auth.clone(),
+        )?));
+        runtime.add("utxos", utxos_factory(config, blocks, journal.clone()));
+        names.push("utxos");
     }
     let pruner =
         prune.map(|keep| tokio::spawn(prune::prune_journal(reader.journal().clone(), names, keep)));
@@ -557,6 +572,41 @@ fn inscriptions_factory(config: InscriptionsConfig) -> ModuleFactory {
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })
+}
+
+/// Builds a utxos module on a fresh database connection for every start and
+/// restart, and catches it up to the journal's window before it follows the
+/// journal: a pruned journal no longer holds the heights below it.
+fn utxos_factory(
+    config: UtxosConfig,
+    blocks: Arc<dyn BlockFetcher>,
+    journal: Arc<dyn BlockSource>,
+) -> ModuleFactory {
+    Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
+        let (config, blocks, journal) = (config.clone(), blocks.clone(), journal.clone());
+        Box::pin(async move {
+            let mut module = UtxosModule::new(config, blocks, journal).await?;
+            let written = module.catch_up().await?;
+            if written > 0 {
+                tracing::info!(module = "utxos", written, "caught up from bitcoind");
+            }
+            Ok(Box::new(module) as Box<dyn Module>)
+        })
+    })
+}
+
+/// The utxos module's blocks, read from bitcoind outside the gate proxy.
+struct RpcBlocks(BitcoindRpc);
+
+#[async_trait::async_trait]
+impl BlockFetcher for RpcBlocks {
+    async fn block_hash(&self, height: u32) -> Result<bitcoin::BlockHash> {
+        self.0.block_hash(height).await
+    }
+
+    async fn block(&self, hash: bitcoin::BlockHash) -> Result<bitcoin::Block> {
+        self.0.block(hash).await
+    }
 }
 
 async fn source_finished(handle: &SourceHandle) {

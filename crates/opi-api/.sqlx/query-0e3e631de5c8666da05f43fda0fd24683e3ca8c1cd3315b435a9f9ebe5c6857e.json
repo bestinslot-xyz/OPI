@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select block_height from brc20_historic_balances where id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_historic_balances",
+            "name": "block_height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0e3e631de5c8666da05f43fda0fd24683e3ca8c1cd3315b435a9f9ebe5c6857e"
+}

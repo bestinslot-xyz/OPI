@@ -1,0 +1,158 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.sequence_number, e.inscription_id, e.\"number\", e.content_type,\n                        e.media_type, e.charms,\n                        encode(e.txid, 'hex') || ':' || e.vout as \"outpoint!\", e.\"offset\",\n                        e.pkscript, e.genesis_height, e.last_moved_height,\n                        $9::text as \"network!\"\n                    from inscriptions_entries e\n                    where (e.pkscript, e.sequence_number) < ($1, $2)\n                      and (e.pkscript, e.sequence_number) > ($1, -1)\n                      and ($3::text is null or e.media_type = $3)\n                      and ($4::text is null or e.media_type like $4)\n                      and e.genesis_height between $5 and $6\n                      and ($7::bool is null or (e.\"number\" < 0) = $7)\n                    order by e.pkscript desc, e.sequence_number desc\n                    limit $8;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence_number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "media_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "charms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "charms"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "outpoint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "pkscript",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "genesis_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "genesis_height"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "last_moved_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "last_moved_height"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "network!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Bool",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "176fc5734c4d73d25662e285bc5bb449a52eef58af05cac634555c806b8fc7a2"
+}

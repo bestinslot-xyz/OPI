@@ -2,8 +2,15 @@
 """Compares a reference runes database with a candidate runes database.
 
 The reference is written by modules/runes_index/index_runes.js (see commit
-b3379c5), the candidate by the opi-runes module. Both use
-the schema in crates/opi-runes/src/db_init.sql.
+b3379c5), the candidate by the opi-runes module. Each side's layout of
+runes_events and runes_outpoint_to_balances is read from its columns: the
+text layout of index_runes.js (txid, outpoint and pkscript as hex text, with
+wallet_addr and spent columns), or the layout of
+crates/opi-runes/src/db_init.sql (txids and pkscripts as bytea, an outpoint as
+its txid and vout, no wallet_addr, spent as spent_block_height IS NOT NULL).
+Both are read as the text layout's values. wallet_addr is compared only when
+both sides store it; the bytea layout derives the address from the pkscript,
+which is compared.
 Every table is streamed per height through server-side cursors, so memory use
 is bounded by one block of rows per side.
 
@@ -93,10 +100,48 @@ def is_p2tr(pkscript):
   return pkscript is not None and len(pkscript) == 68 and pkscript.startswith("5120")
 
 
+TEXT_LAYOUT = {
+  "ev_txid": "txid",
+  "ev_outpoint": "outpoint",
+  "pkscript": "pkscript",
+  "wallet": "wallet_addr",
+  "bal_outpoint": "outpoint",
+  "spent": "spent",
+  "has_wallet": True,
+}
+BYTEA_LAYOUT = {
+  "ev_txid": "encode(txid, 'hex')",
+  "ev_outpoint": "encode(outpoint_txid, 'hex') || ':' || outpoint_vout",
+  "pkscript": "encode(pkscript, 'hex')",
+  "wallet": "NULL::text",
+  "bal_outpoint": "encode(txid, 'hex') || ':' || vout",
+  "spent": "spent_block_height IS NOT NULL",
+  "has_wallet": False,
+}
+_layouts = {}
+
+
+def layout(conn):
+  """The column expressions of conn's layout, which read it as the text layout's values."""
+  if id(conn) not in _layouts:
+    text = conn.execute(
+      "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+      "WHERE table_schema = 'public' AND table_name = 'runes_events' AND column_name = 'outpoint')"
+    ).fetchone()[0]
+    conn.rollback()
+    _layouts[id(conn)] = TEXT_LAYOUT if text else BYTEA_LAYOUT
+  return _layouts[id(conn)]
+
+
+def both_store_wallets(ref, cand):
+  return layout(ref)["has_wallet"] and layout(cand)["has_wallet"]
+
+
 def stream(conn, name, sql, params):
+  """`sql` with conn's layout expressions in its `{name}` fields, streamed."""
   cur = conn.cursor(name=name)
   cur.itersize = ITERSIZE
-  cur.execute(sql, params)
+  cur.execute(sql.format(**layout(conn)), params)
   return cur
 
 
@@ -150,9 +195,11 @@ def sort_key(e):
   return (base_key(e), norm(e[4]))
 
 
-def compare_wallet(report, height, ref_e, cand_e):
-  """Returns a failure message or None; a p2tr wallet difference warns."""
-  if norm(ref_e[4]) == norm(cand_e[4]):
+def compare_wallet(report, height, ref_e, cand_e, wallets):
+  """Returns a failure message or None; a p2tr wallet difference warns.
+
+  Without `wallets` (a side stores no wallet_addr) there is nothing to compare."""
+  if not wallets or norm(ref_e[4]) == norm(cand_e[4]):
     return None
   if is_p2tr(ref_e[3]) and is_p2tr(cand_e[3]):
     report.warn("runes_events", height, f"p2tr wallet_addr differs {fmt(base_key(ref_e))} ref={ref_e[4]!r} cand={cand_e[4]!r}")
@@ -160,7 +207,7 @@ def compare_wallet(report, height, ref_e, cand_e):
   return f"wallet_addr differs {fmt(base_key(ref_e))} ref={ref_e[4]!r} cand={cand_e[4]!r}"
 
 
-def compare_event_block(report, height, ref_rows, cand_rows):
+def compare_event_block(report, height, ref_rows, cand_rows, wallets=True):
   try:
     ref_tx = tx_groups(ref_rows)
   except ValueError as e:
@@ -187,7 +234,7 @@ def compare_event_block(report, height, ref_rows, cand_rows):
     for n, (re_, ce) in enumerate(zip(rfix, cfix)):
       if base_key(re_) != base_key(ce):
         raise Difference(height, f"tx {rtx}: ordered event {n} differs: reference {fmt(base_key(re_))}, candidate {fmt(base_key(ce))}")
-      msg = compare_wallet(report, height, re_, ce)
+      msg = compare_wallet(report, height, re_, ce, wallets)
       if msg:
         raise Difference(height, f"tx {rtx}: {msg}")
     # multiset events
@@ -200,22 +247,23 @@ def compare_event_block(report, height, ref_rows, cand_rows):
             height,
             f"tx {rtx}: {EVENT_NAMES[typ]} events differ as multisets: reference {fmt(base_key(re_))}, candidate {fmt(base_key(ce))}",
           )
-        msg = compare_wallet(report, height, re_, ce)
+        msg = compare_wallet(report, height, re_, ce, wallets)
         if msg:
           raise Difference(height, f"tx {rtx}: {msg}")
 
 
 EVENTS_SQL = (
-  "SELECT block_height, txid, event_type, outpoint, pkscript, wallet_addr, rune_id, amount FROM runes_events "
+  "SELECT block_height, {ev_txid}, event_type, {ev_outpoint}, {pkscript}, {wallet}, rune_id, amount FROM runes_events "
   "WHERE block_height BETWEEN %s AND %s ORDER BY block_height, id"
 )
 
 
 def check_events(ref, cand, lo, hi, report):
+  wallets = both_store_wallets(ref, cand)
   rg = height_groups(stream(ref, "ev_ref", EVENTS_SQL, (lo, hi)))
   cg = height_groups(stream(cand, "ev_cand", EVENTS_SQL, (lo, hi)))
   for height, rrows, crows in merge(rg, cg):
-    compare_event_block(report, height, rrows, crows)
+    compare_event_block(report, height, rrows, crows, wallets)
 
 
 # keyed tables -----------------------------------------------------------------
@@ -260,10 +308,11 @@ def check_keyed(ref, cand, lo, hi, report, table, tag, sql, key_index, columns, 
 
 def check_balances(ref, cand, lo, hi, report):
   sql = (
-    "SELECT block_height, outpoint, pkscript, rune_ids, balances, spent, spent_block_height, wallet_addr FROM runes_outpoint_to_balances "
-    'WHERE block_height BETWEEN %s AND %s ORDER BY block_height, outpoint COLLATE "C"'
+    "SELECT block_height, {bal_outpoint}, {pkscript}, rune_ids, balances, {spent}, spent_block_height, {wallet} "
+    "FROM runes_outpoint_to_balances WHERE block_height BETWEEN %s AND %s ORDER BY 1, 2"
   )
-  check_keyed(ref, cand, lo, hi, report, "runes_outpoint_to_balances", "bal", sql, 0, BALANCE_COLUMNS, wallet_index=6, pkscript_index=1)
+  wallet_index = 6 if both_store_wallets(ref, cand) else None
+  check_keyed(ref, cand, lo, hi, report, "runes_outpoint_to_balances", "bal", sql, 0, BALANCE_COLUMNS, wallet_index=wallet_index, pkscript_index=1)
 
 
 def check_entries(ref, cand, lo, hi, report):
@@ -301,7 +350,7 @@ class HeightEvents:
 
   def __init__(self, conn, name, lo, hi):
     sql = (
-      "SELECT block_height, event_type, txid, outpoint, pkscript, rune_id, amount FROM runes_events "
+      "SELECT block_height, event_type, {ev_txid}, {ev_outpoint}, {pkscript}, rune_id, amount FROM runes_events "
       "WHERE block_height BETWEEN %s AND %s ORDER BY block_height, id"
     )
     self.groups = height_groups(stream(conn, name, sql, (lo, hi)))
@@ -344,7 +393,7 @@ def event_hash_string(rows):
 def hash_agreement(ref, lo, hi):
   """Returns (matching heights, mismatching heights) of the reference's block_event_hash against the v1-style hash of its own events."""
   ev_sql = (
-    "SELECT block_height, event_type, outpoint, pkscript, rune_id, amount FROM runes_events "
+    "SELECT block_height, event_type, {ev_outpoint}, {pkscript}, rune_id, amount FROM runes_events "
     "WHERE block_height BETWEEN %s AND %s ORDER BY block_height, id"
   )
   hash_sql = (

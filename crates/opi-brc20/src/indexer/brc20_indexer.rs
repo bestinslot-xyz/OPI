@@ -1443,7 +1443,7 @@ impl Brc20Indexer {
                             event.ticker
                         )
                     })?;
-                let event_id = get_brc20_database().lock().await.add_light_event(
+                get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
                     &mut event,
@@ -1456,7 +1456,6 @@ impl Brc20Indexer {
                     block_time,
                     brc20_prog_tx_idx,
                     inscription_id,
-                    event_id,
                     &event,
                 )
                 .await
@@ -1488,13 +1487,13 @@ impl Brc20Indexer {
                     .ok_or_else(|| {
                         format!("Ticker {} not found for MintInscribeEvent", event.ticker)
                     })?;
-                let event_id = get_brc20_database().lock().await.add_light_event(
+                get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
                     &mut event,
                     ticker.decimals,
                 )?;
-                EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
+                EventProcessor::brc20_mint_inscribe(block_height, &event).await?;
             } else if event_type_id == PreDeployInscribeEvent::event_id() {
                 let mut event = load_event::<PreDeployInscribeEvent>(event_type_id, &event_record)?;
                 get_brc20_database().lock().await.add_light_event(
@@ -1516,19 +1515,14 @@ impl Brc20Indexer {
                             event.ticker
                         )
                     })?;
-                let event_id = get_brc20_database().lock().await.add_light_event(
+                get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
                     &mut event,
                     ticker.decimals,
                 )?;
-                EventProcessor::brc20_transfer_inscribe(
-                    block_height,
-                    event_id,
-                    inscription_id,
-                    &event,
-                )
-                .await?;
+                EventProcessor::brc20_transfer_inscribe(block_height, inscription_id, &event)
+                    .await?;
             } else if event_type_id == TransferTransferEvent::event_id() {
                 let mut event = load_event::<TransferTransferEvent>(event_type_id, &event_record)?;
                 let ticker = get_brc20_database()
@@ -1541,7 +1535,7 @@ impl Brc20Indexer {
                             event.ticker
                         )
                     })?;
-                let event_id = get_brc20_database().lock().await.add_light_event(
+                get_brc20_database().lock().await.add_light_event(
                     block_height,
                     inscription_id,
                     &mut event,
@@ -1554,7 +1548,6 @@ impl Brc20Indexer {
                     block_hash,
                     brc20_prog_tx_idx,
                     inscription_id,
-                    event_id,
                     &event,
                     &self.config,
                 )
@@ -2040,7 +2033,7 @@ impl Brc20Indexer {
                 };
 
                 if transfer.old_satpoint.as_ref().is_some() {
-                    let (event_id, event) = EventGenerator::brc20_prog_withdraw_transfer(
+                    let event = EventGenerator::brc20_prog_withdraw_transfer(
                         block_height,
                         &deployed_ticker,
                         original_ticker,
@@ -2055,7 +2048,6 @@ impl Brc20Indexer {
                         block_time,
                         brc20_prog_tx_idx,
                         &transfer.inscription_id,
-                        event_id,
                         &event,
                     )
                     .await
@@ -2338,8 +2330,8 @@ impl Brc20Indexer {
                 )
                 .await
                 {
-                    Ok((event_id, event)) => {
-                        EventProcessor::brc20_mint_inscribe(block_height, event_id, &event).await?;
+                    Ok(event) => {
+                        EventProcessor::brc20_mint_inscribe(block_height, &event).await?;
                     }
                     Err(_) => {
                         tracing::debug!(
@@ -2386,7 +2378,7 @@ impl Brc20Indexer {
                     )
                     .await
                     {
-                        Ok((event_id, event)) => {
+                        Ok(event) => {
                             match EventProcessor::brc20_transfer_transfer(
                                 &self.brc20_prog,
                                 block_height,
@@ -2394,7 +2386,6 @@ impl Brc20Indexer {
                                 block_hash,
                                 brc20_prog_tx_idx,
                                 &transfer.inscription_id,
-                                event_id,
                                 &event,
                                 &self.config,
                             )
@@ -2430,10 +2421,9 @@ impl Brc20Indexer {
                     )
                     .await
                     {
-                        Ok((event_id, event)) => {
+                        Ok(event) => {
                             EventProcessor::brc20_transfer_inscribe(
                                 block_height,
-                                event_id,
                                 &transfer.inscription_id,
                                 &event,
                             )
@@ -3319,8 +3309,8 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO brc20_historic_balances
-                     (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
-                 VALUES ($1, '', 'meme', 500, 500, 9, 1000000)",
+                     (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+                 VALUES ($1, '', 'meme', 500, 500, 9)",
             )
             .bind(module)
             .execute(&seed.client)

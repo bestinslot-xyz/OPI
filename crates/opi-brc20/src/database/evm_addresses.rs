@@ -588,10 +588,6 @@ mod db_tests {
             event_type_id: event_type,
             block_height,
             inscription_id: format!("{event_id}i0"),
-            inscription_number: event_id as i32,
-            old_satpoint: None,
-            new_satpoint: "sat:0:0".into(),
-            txid: "tx".into(),
             event,
         });
         database.current_event_id += 1;

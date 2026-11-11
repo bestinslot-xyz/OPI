@@ -5150,21 +5150,26 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opi-api"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "bitcoin",
  "dotenvy",
  "futures",
+ "hex",
  "http-body-util",
  "hyper 1.12.0",
  "hyper-util",
  "jiff",
  "jsonschema",
  "opi-core",
+ "opi-inscriptions",
  "opi-runes",
  "opi-runtime",
  "opi-sns",
+ "reqwest",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
@@ -5177,7 +5182,7 @@ dependencies = [
 
 [[package]]
 name = "opi-bitmap"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5194,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "opi-brc20"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -5224,7 +5229,7 @@ dependencies = [
 
 [[package]]
 name = "opi-core"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5234,7 +5239,7 @@ dependencies = [
 
 [[package]]
 name = "opi-indexer"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5254,6 +5259,7 @@ dependencies = [
  "opi-runtime",
  "opi-sns",
  "opi-source",
+ "opi-utxos",
  "ord",
  "redb",
  "serde_json",
@@ -5266,7 +5272,7 @@ dependencies = [
 
 [[package]]
 name = "opi-inscriptions"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5280,7 +5286,7 @@ dependencies = [
 
 [[package]]
 name = "opi-runes"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5299,7 +5305,7 @@ dependencies = [
 
 [[package]]
 name = "opi-runtime"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5311,7 +5317,7 @@ dependencies = [
 
 [[package]]
 name = "opi-sns"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5328,7 +5334,7 @@ dependencies = [
 
 [[package]]
 name = "opi-source"
-version = "3.0.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5353,6 +5359,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "zstd",
+]
+
+[[package]]
+name = "opi-utxos"
+version = "4.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "futures",
+ "opi-core",
+ "sqlx",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

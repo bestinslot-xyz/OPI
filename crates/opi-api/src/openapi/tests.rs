@@ -10,10 +10,11 @@ use {
         routes::{
             self,
             paging::{
-                DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CONTENT_TYPE_LEN,
-                MAX_CURSOR_LEN, MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT,
-                MAX_MODULES_LEN, MAX_NAME_LEN, MAX_OFFSET, MAX_OUTPOINTS, MAX_PKSCRIPT_LEN,
-                MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN, MAX_TYPE_LEN,
+                CATEGORY_PATTERN, DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CATEGORY_LEN,
+                MAX_CONTENT_TYPE_LEN, MAX_CURSOR_LEN, MAX_HOLDERS_CURSOR_LEN,
+                MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_MODULES_LEN, MAX_NAME_LEN, MAX_OFFSET,
+                MAX_OUTPOINTS, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN,
+                MAX_TYPE_LEN,
             },
         },
     },
@@ -274,7 +275,19 @@ fn parameter_bounds_are_the_routes_rules() {
                 (_, "rune") if bounded => json!({"minLength": 1, "maxLength": MAX_RUNE_LEN}),
                 ("/v1/runes/runes", "search") => json!({"maxLength": MAX_RUNE_LEN}),
                 (_, "search") => json!({"maxLength": MAX_TICKER_LEN}),
+                ("/v1/utxos/wallet", "type") => {
+                    json!({"pattern": "^(all|cardinal|inscribed|runic)?$"})
+                }
                 (_, "type") => json!({"maxLength": MAX_TYPE_LEN}),
+                ("/v1/runes/rune/events" | "/v1/runes/wallet/events", "category") => {
+                    json!({"maxLength": MAX_TYPE_LEN})
+                }
+                ("/v1/runes/etchings", "before_number") => {
+                    json!({"minimum": 1, "maximum": MAX_BEFORE_ID})
+                }
+                (_, "category") => {
+                    json!({"maxLength": MAX_CATEGORY_LEN, "pattern": CATEGORY_PATTERN})
+                }
                 (
                     "/v1/runes/runes" | "/v1/runes/wallet/balances" | "/v1/inscriptions/wallet",
                     "after",
@@ -286,9 +299,12 @@ fn parameter_bounds_are_the_routes_rules() {
                 }
                 (
                     "/v1/brc20/wallet/events"
+                    | "/v1/brc20/wallet/balance_history"
                     | "/v1/runes/wallet/balances"
                     | "/v1/runes/wallet/events"
-                    | "/v1/inscriptions/wallet",
+                    | "/v1/inscriptions/wallet"
+                    | "/v1/inscriptions/wallet/history"
+                    | "/v1/utxos/wallet",
                     "address",
                 ) => json!({"maxLength": MAX_ADDRESS_LEN}),
                 (_, "address") if bounded => json!({"minLength": 1, "maxLength": MAX_ADDRESS_LEN}),
@@ -303,10 +319,13 @@ fn parameter_bounds_are_the_routes_rules() {
                 | ("/v1/inscriptions/wallet", "to_height") => {
                     json!({"minimum": 0, "maximum": i32::MAX})
                 }
-                ("/v1/inscriptions/inscription", "id") => {
+                ("/v1/inscriptions/inscription" | "/v1/inscriptions/inscription/history", "id") => {
                     json!({"pattern": "^[0-9a-fA-F]{64}i[0-9]{1,10}$"})
                 }
-                ("/v1/inscriptions/inscription", "number") => {
+                (
+                    "/v1/inscriptions/inscription" | "/v1/inscriptions/inscription/history",
+                    "number",
+                ) => {
                     json!({"minimum": i32::MIN, "maximum": i32::MAX})
                 }
                 ("/v1/inscriptions/outpoint", "outpoint") => {

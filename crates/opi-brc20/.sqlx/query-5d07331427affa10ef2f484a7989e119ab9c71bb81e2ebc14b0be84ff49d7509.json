@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_historic_balances (pkscript, wallet, tick,\n                overall_balance, available_balance, block_height) SELECT * FROM UNNEST\n                ($1::text[], $2::text[], $3::text[], $4::numeric(40)[], $5::numeric(40)[], $6::int4[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "NumericArray",
+        "NumericArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d07331427affa10ef2f484a7989e119ab9c71bb81e2ebc14b0be84ff49d7509"
+}

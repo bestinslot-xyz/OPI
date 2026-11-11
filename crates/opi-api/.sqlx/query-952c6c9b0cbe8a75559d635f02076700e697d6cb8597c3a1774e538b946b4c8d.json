@@ -1,0 +1,165 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.id, v.sequence_number, e.inscription_id,\n                e.\"number\", e.content_type as \"content_type?\",\n                e.media_type as \"media_type?\",\n                encode(p.txid, 'hex') || ':' || p.vout as \"old_outpoint?\",\n                p.\"offset\" as \"old_offset?\", p.pkscript as \"old_pkscript?\",\n                encode(v.txid, 'hex') || ':' || v.vout as \"new_outpoint!\",\n                v.\"offset\" as new_offset, v.pkscript as new_pkscript,\n                n.network_type as \"network_type!\"\n            from inscriptions_events v\n            join inscriptions_entries e on e.sequence_number = v.sequence_number\n            left join inscriptions_events p on p.id = v.prev_id\n            cross join (select network_type from inscriptions_network_type limit 1) n\n            where v.id > $2 and v.id <= $3\n              and v.id >= ($1::int8 << 32) and v.id < (($1::int8 + 1) << 32)\n            order by v.id limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sequence_number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "content_type?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "media_type?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "old_outpoint?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "old_offset?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "old_pkscript?",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "new_outpoint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "new_offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "new_pkscript",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "network_type!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_network_type",
+            "name": "network_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      null,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "952c6c9b0cbe8a75559d635f02076700e697d6cb8597c3a1774e538b946b4c8d"
+}

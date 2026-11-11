@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 pub const INDEXER_VERSION: &str = "opi-runes-full-node v1.0.0";
-pub const DB_VERSION: i32 = 6;
+pub const DB_VERSION: i32 = 7;
 /// Event hashes use the canonical event order inside each transaction.
 pub const EVENT_HASH_VERSION: i32 = 2;
 
@@ -83,7 +83,7 @@ mod tests {
                 "node_type": "full_node",
                 "network_type": "signet",
                 "version": "opi-runes-full-node v1.0.0",
-                "db_version": 6,
+                "db_version": 7,
                 "event_hash_version": 2,
                 "block_height": 5,
                 "block_hash": "h",

@@ -1,0 +1,221 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.prev_id,\n                        encode(r.txid, 'hex') || ':' || r.vout as \"r_outpoint!\",\n                        r.\"offset\" as r_offset, r.pkscript as r_pkscript,\n                        encode(rp.txid, 'hex') || ':' || rp.vout as \"rp_outpoint?\",\n                        rp.\"offset\" as \"rp_offset?\", rp.pkscript as \"rp_pkscript?\",\n                        extract(epoch from rh.block_time)::int8 as \"r_time?\",\n                        s.id as \"s_id?\",\n                        encode(s.txid, 'hex') || ':' || s.vout as \"s_outpoint?\",\n                        s.\"offset\" as \"s_offset?\", s.pkscript as \"s_pkscript?\",\n                        extract(epoch from sh.block_time)::int8 as \"s_time?\",\n                        e.sequence_number, e.inscription_id, e.\"number\",\n                        e.content_type as \"content_type?\", e.media_type as \"media_type?\"\n                    from inscriptions_events r\n                    join inscriptions_entries e on e.sequence_number = r.sequence_number\n                    left join inscriptions_events rp on rp.id = r.prev_id\n                    left join lateral (\n                        select n.id, n.txid, n.vout, n.\"offset\", n.pkscript\n                        from inscriptions_events n\n                        where n.sequence_number = r.sequence_number and n.id > r.id\n                        order by n.sequence_number, n.id\n                        limit 1\n                    ) s on true\n                    left join inscriptions_block_hashes rh\n                        on rh.block_height = (r.id >> 32)::int4\n                    left join inscriptions_block_hashes sh\n                        on sh.block_height = (s.id >> 32)::int4\n                    where r.pkscript = $1 and r.id < $2\n                    order by r.pkscript desc, r.id desc\n                    limit $3;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "prev_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "prev_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "r_outpoint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "r_offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "r_pkscript",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "rp_outpoint?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "rp_offset?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "rp_pkscript?",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "r_time?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "s_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "s_outpoint?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "s_offset?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "s_pkscript?",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "s_time?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "sequence_number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "content_type?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "media_type?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "media_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      null,
+      false,
+      false,
+      null,
+      false,
+      false,
+      null,
+      false,
+      null,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "3cf69e7af8a17e41f7e4cb8f53c86089fb6e0932d3a657577f0891c202411720"
+}

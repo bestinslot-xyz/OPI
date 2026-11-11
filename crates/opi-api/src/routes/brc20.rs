@@ -1,7 +1,8 @@
 //! The brc20 module's routes, including the
 //! `/v1/brc20/explorer/...` routes for the BRC2.0 blockscout frontend and the
-//! ticker routes of [`tickers`], the holders snapshot of [`snapshot`] and the
-//! event feeds of [`events`], which have no JavaScript counterpart.
+//! ticker routes of [`tickers`], the holders snapshot of [`snapshot`], the
+//! event feeds of [`events`] and the balance history of [`history`], which
+//! have no JavaScript counterpart.
 //!
 //! Each other handler follows its JavaScript counterpart line by line: query
 //! params keep their JavaScript values ([`JsValue`]) through the checks and
@@ -37,6 +38,7 @@ use {
 };
 
 pub(super) mod events;
+mod history;
 pub(super) mod snapshot;
 mod tickers;
 
@@ -88,6 +90,8 @@ pub fn routes(db: &Db, settings: &super::RouteSettings) -> ModuleRoutes {
         .routes(routes!(tickers::wallet_balances))
         .routes(routes!(events::ticker_events))
         .routes(routes!(events::wallet_events))
+        .routes(routes!(events::deploys))
+        .routes(routes!(history::balance_history))
 }
 
 /// A brc20 event as the block and inscription routes list it: the stored

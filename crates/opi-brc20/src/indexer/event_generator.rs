@@ -39,10 +39,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             None,
         )?;
@@ -114,10 +110,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             None,
         )?;
@@ -190,10 +182,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             None,
         )?;
@@ -224,10 +212,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             None,
         )?;
@@ -252,10 +236,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             None,
         )?;
@@ -324,10 +304,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             None,
         )?;
@@ -342,7 +318,7 @@ impl EventGenerator {
         original_ticker: &str,
         amount: u128,
         transfer: &Brc20Tx,
-    ) -> Result<(i64, Brc20ProgWithdrawTransferEvent), Box<dyn Error>> {
+    ) -> Result<Brc20ProgWithdrawTransferEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer", block_height);
         let TransferValidity::Valid = get_brc20_database()
             .lock()
@@ -382,19 +358,15 @@ impl EventGenerator {
             original_ticker: original_ticker.to_string(),
             amount,
         };
-        let event_id = get_brc20_database().lock().await.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             Some(deployed_ticker.decimals),
         )?;
 
         stop_timer(&function_timer).await;
-        Ok((event_id, event))
+        Ok(event)
     }
 
     pub async fn brc20_prog_withdraw_inscribe(
@@ -415,10 +387,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             Some(deployed_ticker.decimals),
         )?;
@@ -442,10 +410,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &predeploy_event,
             None,
         )?;
@@ -479,10 +443,6 @@ impl EventGenerator {
         get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             Some(decimals),
         )?;
@@ -497,7 +457,7 @@ impl EventGenerator {
         original_ticker: &str,
         mut amount: u128,
         transfer: &Brc20Tx,
-    ) -> Result<(i64, MintInscribeEvent), Box<dyn Error>> {
+    ) -> Result<MintInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_mint_inscribe", block_height);
         if deployed_ticker.is_self_mint {
             let Some(parent_id) = transfer.parent_id.as_ref() else {
@@ -556,19 +516,15 @@ impl EventGenerator {
                 .map(|x| x.to_string())
                 .unwrap_or_default(),
         };
-        let event_id = get_brc20_database().lock().await.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             Some(deployed_ticker.decimals),
         )?;
 
         stop_timer(&function_timer).await;
-        Ok((event_id, event))
+        Ok(event)
     }
 
     pub async fn brc20_transfer_inscribe(
@@ -577,7 +533,7 @@ impl EventGenerator {
         original_ticker: &str,
         amount: u128,
         transfer: &Brc20Tx,
-    ) -> Result<(i64, TransferInscribeEvent), Box<dyn Error>> {
+    ) -> Result<TransferInscribeEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_transfer_inscribe", block_height);
         let balance = get_brc20_database()
             .lock()
@@ -604,19 +560,15 @@ impl EventGenerator {
             amount,
         };
 
-        let event_id = get_brc20_database().lock().await.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             Some(deployed_ticker.decimals),
         )?;
 
         stop_timer(&function_timer).await;
-        Ok((event_id, event))
+        Ok(event)
     }
 
     pub async fn brc20_transfer_transfer(
@@ -625,7 +577,7 @@ impl EventGenerator {
         original_ticker: &str,
         amount: u128,
         transfer: &Brc20Tx,
-    ) -> Result<(i64, TransferTransferEvent), Box<dyn Error>> {
+    ) -> Result<TransferTransferEvent, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_transfer_transfer", block_height);
         tracing::debug!(
             "Processing transfer for inscription ID: {}, new pk script: {}, new wallet: {:?}, ticker: {}, original ticker: {}, amount: {}, sent as fee: {}, tx_id: {}",
@@ -687,18 +639,14 @@ impl EventGenerator {
             tx_id: transfer.tx_id.clone(),
         };
 
-        let event_id = get_brc20_database().lock().await.add_event(
+        get_brc20_database().lock().await.add_event(
             block_height,
             &transfer.inscription_id,
-            &transfer.inscription_number,
-            &transfer.old_satpoint,
-            &transfer.new_satpoint,
-            &transfer.txid,
             &event,
             Some(ticker.decimals),
         )?;
 
         stop_timer(&function_timer).await;
-        Ok((event_id, event))
+        Ok(event)
     }
 }

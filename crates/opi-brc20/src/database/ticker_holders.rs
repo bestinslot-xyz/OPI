@@ -367,7 +367,6 @@ mod db_tests {
     /// write it to brc20_historic_balances.
     async fn historic(
         database: &Brc20Database,
-        event_id: i64,
         pkscript: &str,
         tick: &str,
         balance: i64,
@@ -375,14 +374,13 @@ mod db_tests {
     ) {
         sqlx::query(
             "INSERT INTO brc20_historic_balances
-                 (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
-             VALUES ($1, 'w' || $1, $2, $3, $3, $4, $5)",
+                 (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+             VALUES ($1, 'w' || $1, $2, $3, $3, $4)",
         )
         .bind(pkscript)
         .bind(tick)
         .bind(sqlx::types::BigDecimal::from(balance))
         .bind(block_height)
-        .bind(event_id)
         .execute(&database.client)
         .await
         .unwrap();
@@ -403,11 +401,11 @@ mod db_tests {
             // Block 10: three BRC-20 holders of ordi, one of pepe, and the
             // BRC2.0 module's pkScript, which does not count; ordi on BRC2.0
             // with two holders.
-            historic(&database, 1, "a1", "ordi", 5, 10).await;
-            historic(&database, 2, "b2", "ordi", 3, 10).await;
-            historic(&database, 3, "c3", "ordi", 1, 10).await;
-            historic(&database, 4, "c3", "pepe", 9, 10).await;
-            historic(&database, 6, MODULE, "ordi", 1_000, 10).await;
+            historic(&database, "a1", "ordi", 5, 10).await;
+            historic(&database, "b2", "ordi", 3, 10).await;
+            historic(&database, "c3", "ordi", 1, 10).await;
+            historic(&database, "c3", "pepe", 9, 10).await;
+            historic(&database, MODULE, "ordi", 1_000, 10).await;
             index_block(
                 &mut database,
                 10,
@@ -422,7 +420,7 @@ mod db_tests {
 
             // Block 11: a1 empties its ordi; Bob sends all his ordi back and
             // pepe starts on BRC2.0.
-            historic(&database, 5, "a1", "ordi", 0, 11).await;
+            historic(&database, "a1", "ordi", 0, 11).await;
             index_block(
                 &mut database,
                 11,
@@ -452,9 +450,9 @@ mod db_tests {
     async fn rebuilding_the_brc20_balances_recounts_every_ticker() {
         with_database("rebuild", |name| async move {
             let mut database = database(&name).await;
-            historic(&database, 1, "a1", "ordi", 5, 10).await;
-            historic(&database, 2, "b2", "ordi", 3, 10).await;
-            historic(&database, 3, MODULE, "ordi", 7, 10).await;
+            historic(&database, "a1", "ordi", 5, 10).await;
+            historic(&database, "b2", "ordi", 3, 10).await;
+            historic(&database, MODULE, "ordi", 7, 10).await;
             index_block(&mut database, 10, &[]).await;
             sqlx::raw_sql(
                 "UPDATE brc20_ticker_holders SET holders = 99;
@@ -473,10 +471,10 @@ mod db_tests {
     async fn a_database_without_the_table_gets_it_filled_at_start() {
         with_database("fill", |name| async move {
             let mut first = database(&name).await;
-            historic(&first, 1, "a1", "ordi", 5, 10).await;
-            historic(&first, 2, "b2", "ordi", 0, 10).await;
-            historic(&first, 3, "b2", "pepe", 2, 10).await;
-            historic(&first, 4, MODULE, "ordi", 1_000, 10).await;
+            historic(&first, "a1", "ordi", 5, 10).await;
+            historic(&first, "b2", "ordi", 0, 10).await;
+            historic(&first, "b2", "pepe", 2, 10).await;
+            historic(&first, MODULE, "ordi", 1_000, 10).await;
             index_block(
                 &mut first,
                 10,

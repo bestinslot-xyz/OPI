@@ -9,8 +9,8 @@ use crate::RunesConfig;
 use crate::holders;
 use crate::report::{DB_VERSION, INDEXER_VERSION};
 use crate::rules::{
-    block_event_hash, complete_events, counters, cumulative_hash, event_str, js_safe,
-    outpoint_rows, spent_outpoints, symbol_hex, wallet_addr,
+    OutpointColumns, block_event_hash, complete_events, counters, cumulative_hash, event_str,
+    js_safe, outpoint_columns, outpoint_rows, spent_outpoints, symbol_hex, txid_bytes,
 };
 
 const DB_INIT: &str = include_str!("db_init.sql");
@@ -201,9 +201,9 @@ impl Db {
         }
         for statement in [
             "DELETE FROM runes_outpoint_to_balances WHERE block_height > $1",
-            "UPDATE runes_outpoint_to_balances SET spent = false, spent_block_height = NULL \
-             WHERE outpoint IN (SELECT outpoint FROM runes_events \
-                                WHERE block_height > $1 AND event_type = 0) \
+            "UPDATE runes_outpoint_to_balances SET spent_block_height = NULL \
+             WHERE (txid, vout) IN (SELECT outpoint_txid, outpoint_vout FROM runes_events \
+                                    WHERE block_height > $1 AND event_type = 0) \
              AND spent_block_height > $1",
             "DELETE FROM runes_events WHERE block_height > $1",
             "DELETE FROM runes_id_to_entry WHERE genesis_height > $1",
@@ -231,8 +231,6 @@ impl Db {
             "SELECT setval('runes_id_to_entry_id_seq', max(id)) FROM runes_id_to_entry",
             "SELECT setval('runes_id_to_entry_changes_id_seq', max(id)) \
              FROM runes_id_to_entry_changes",
-            "SELECT setval('runes_outpoint_to_balances_id_seq', max(id)) \
-             FROM runes_outpoint_to_balances",
             "SELECT setval('runes_cumulative_event_hashes_id_seq', max(id)) \
              FROM runes_cumulative_event_hashes",
             "SELECT setval('runes_block_hashes_id_seq', max(id)) FROM runes_block_hashes",
@@ -272,19 +270,18 @@ impl Db {
     pub async fn write_block(
         &self,
         block: &BlockView,
-        network: &str,
         hashed: bool,
     ) -> anyhow::Result<Option<BlockHashes>> {
         let height = block.height as i32;
         let mut tx = self.pool.begin().await?;
         insert_entries(&mut tx, block).await?;
-        insert_outpoints(&mut tx, &block.runes.events, height, network).await?;
+        insert_outpoints(&mut tx, &block.runes.events, height).await?;
         let events = complete_block_events(&mut tx, block).await?;
         let spent = spend_outpoints(&mut tx, &events, height).await?;
         holders::apply_block(&mut tx, height, &spent).await?;
         let counters = block_counters(&mut tx, &events).await?;
         apply_counters(&mut tx, &counters, height).await?;
-        insert_events(&mut tx, &events, height, network).await?;
+        insert_events(&mut tx, &events, height).await?;
 
         let hashes = if hashed {
             let previous: Option<String> = sqlx::query_scalar(
@@ -424,21 +421,21 @@ async fn insert_outpoints(
     tx: &mut Transaction<'_, Postgres>,
     events: &[RuneEvent],
     height: i32,
-    network: &str,
 ) -> anyhow::Result<()> {
     let rows = outpoint_rows(events)?;
     if rows.is_empty() {
         return Ok(());
     }
-    let mut outpoint = Vec::new();
+    let mut txid = Vec::new();
+    let mut vout = Vec::new();
     let mut pkscript = Vec::new();
-    let mut wallet = Vec::new();
     let mut rune_ids = Vec::new();
     let mut balances = Vec::new();
     for row in rows {
-        wallet.push(wallet_addr(&row.pkscript, network));
-        pkscript.push(hex::encode(&row.pkscript));
-        outpoint.push(row.outpoint);
+        let (row_txid, row_vout) = outpoint_columns(&row.outpoint)?;
+        txid.push(row_txid);
+        vout.push(row_vout);
+        pkscript.push(row.pkscript);
         rune_ids.push(row.rune_ids.join(","));
         balances.push(
             row.balances
@@ -449,16 +446,16 @@ async fn insert_outpoints(
         );
     }
     sqlx::query(
-        "INSERT INTO runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, \
-         balances, block_height) \
-         SELECT outpoint, pkscript, wallet_addr, string_to_array(rune_ids, ','), \
+        "INSERT INTO runes_outpoint_to_balances (txid, vout, pkscript, rune_ids, balances, \
+         block_height) \
+         SELECT txid, vout, pkscript, string_to_array(rune_ids, ','), \
          string_to_array(balances, ',')::numeric[], $6 \
-         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) WITH ORDINALITY \
-         AS u(outpoint, pkscript, wallet_addr, rune_ids, balances, ord) ORDER BY ord",
+         FROM UNNEST($1::bytea[], $2::int4[], $3::bytea[], $4::text[], $5::text[]) WITH ORDINALITY \
+         AS u(txid, vout, pkscript, rune_ids, balances, ord) ORDER BY ord",
     )
-    .bind(outpoint)
+    .bind(txid)
+    .bind(vout)
     .bind(pkscript)
-    .bind(wallet)
     .bind(rune_ids)
     .bind(balances)
     .bind(height)
@@ -476,23 +473,30 @@ async fn complete_block_events(
     block: &BlockView,
 ) -> anyhow::Result<Vec<RuneEvent>> {
     let feed = &block.runes;
-    let outpoints: Vec<&str> = feed
+    let outpoints: Vec<String> = feed
         .spent
         .iter()
-        .flat_map(|spend| spend.outpoints.iter().map(String::as_str))
+        .flat_map(|spend| spend.outpoints.iter().cloned())
         .collect();
     let mut held = HashMap::new();
     if !outpoints.is_empty() {
+        let spent = OutpointColumns::lookup(&outpoints);
         let rows = sqlx::query(
-            "SELECT outpoint, pkscript, rune_ids, balances::text[] AS balances \
-             FROM runes_outpoint_to_balances WHERE outpoint = ANY($1) AND NOT spent",
+            "SELECT o.txid, o.vout, o.pkscript, o.rune_ids, o.balances::text[] AS balances \
+             FROM UNNEST($1::bytea[], $2::int4[]) AS s(txid, vout) \
+             JOIN runes_outpoint_to_balances o ON o.txid = s.txid AND o.vout = s.vout \
+             WHERE o.spent_block_height IS NULL",
         )
-        .bind(&outpoints)
+        .bind(&spent.txids)
+        .bind(&spent.vouts)
         .fetch_all(&mut **tx)
         .await?;
         for row in rows {
-            let outpoint: String = row.try_get("outpoint")?;
-            let pkscript: String = row.try_get("pkscript")?;
+            let txid: Vec<u8> = row.try_get("txid")?;
+            let vout: i32 = row.try_get("vout")?;
+            // the form outpoint_columns read, so the spends' text finds it
+            let outpoint = format!("{}:{vout}", hex::encode(txid));
+            let pkscript: Vec<u8> = row.try_get("pkscript")?;
             let rune_ids: Vec<String> = row.try_get("rune_ids")?;
             let balances: Vec<String> = row.try_get("balances")?;
             let balances = rune_ids
@@ -505,13 +509,7 @@ async fn complete_block_events(
                     Ok((rune_id, amount))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            held.insert(
-                outpoint.clone(),
-                (
-                    hex::decode(&pkscript).with_context(|| format!("pkscript of {outpoint}"))?,
-                    balances,
-                ),
-            );
+            held.insert(outpoint, (pkscript, balances));
         }
     }
     complete_events(&feed.events, &feed.spent, &held)
@@ -561,24 +559,26 @@ async fn spend_outpoints(
     tx: &mut Transaction<'_, Postgres>,
     events: &[RuneEvent],
     height: i32,
-) -> anyhow::Result<Vec<String>> {
-    let spent = spent_outpoints(events)?;
-    if spent.is_empty() {
+) -> anyhow::Result<OutpointColumns> {
+    let spent = OutpointColumns::of(&spent_outpoints(events)?)?;
+    if spent.txids.is_empty() {
         return Ok(spent);
     }
     let updated = sqlx::query(
-        "UPDATE runes_outpoint_to_balances SET spent = true, spent_block_height = $1 \
-         WHERE outpoint = ANY($2) AND NOT spent",
+        "UPDATE runes_outpoint_to_balances o SET spent_block_height = $1 \
+         FROM UNNEST($2::bytea[], $3::int4[]) AS s(txid, vout) \
+         WHERE o.txid = s.txid AND o.vout = s.vout AND o.spent_block_height IS NULL",
     )
     .bind(height)
-    .bind(&spent)
+    .bind(&spent.txids)
+    .bind(&spent.vouts)
     .execute(&mut **tx)
     .await?
     .rows_affected();
-    if updated != spent.len() as u64 {
+    if updated != spent.txids.len() as u64 {
         bail!(
             "block {height} spends {} rune outpoints but {updated} are stored unspent",
-            spent.len(),
+            spent.txids.len(),
         );
     }
     Ok(spent)
@@ -638,40 +638,46 @@ async fn insert_events(
     tx: &mut Transaction<'_, Postgres>,
     events: &[RuneEvent],
     height: i32,
-    network: &str,
 ) -> anyhow::Result<()> {
     if events.is_empty() {
         return Ok(());
     }
     let event_type: Vec<i32> = events.iter().map(|e| i32::from(e.kind.id())).collect();
-    let txid: Vec<String> = events.iter().map(|e| e.txid.clone()).collect();
-    let outpoint: Vec<Option<String>> = events.iter().map(|e| e.outpoint.clone()).collect();
-    let pkscript: Vec<Option<String>> = events
+    let txid = events
         .iter()
-        .map(|e| e.pkscript.as_ref().map(hex::encode))
-        .collect();
-    let wallet: Vec<Option<String>> = events
-        .iter()
-        .map(|e| e.pkscript.as_ref().and_then(|pk| wallet_addr(pk, network)))
-        .collect();
+        .map(|e| txid_bytes(&e.txid).ok_or_else(|| anyhow!("event txid {} is not hex", e.txid)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut outpoint_txid = Vec::with_capacity(events.len());
+    let mut outpoint_vout = Vec::with_capacity(events.len());
+    for event in events {
+        let (txid, vout) = event
+            .outpoint
+            .as_deref()
+            .map(outpoint_columns)
+            .transpose()?
+            .unzip();
+        outpoint_txid.push(txid);
+        outpoint_vout.push(vout);
+    }
+    let pkscript: Vec<Option<Vec<u8>>> = events.iter().map(|e| e.pkscript.clone()).collect();
     let rune_id: Vec<String> = events.iter().map(|e| e.rune_id.clone()).collect();
     let amount: Vec<String> = events.iter().map(|e| e.amount.to_string()).collect();
     sqlx::query(
-        "INSERT INTO runes_events (id, event_type, txid, outpoint, pkscript, wallet_addr, \
+        "INSERT INTO runes_events (id, event_type, txid, outpoint_txid, outpoint_vout, pkscript, \
          rune_id, amount, block_height) \
-         SELECT base.id + u.ord, u.event_type, u.txid, u.outpoint, u.pkscript, u.wallet_addr, \
-         u.rune_id, u.amount::numeric, $8 \
+         SELECT base.id + u.ord, u.event_type, u.txid, u.outpoint_txid, u.outpoint_vout, \
+         u.pkscript, u.rune_id, u.amount::numeric, $8 \
          FROM (SELECT coalesce(max(id), -1) AS id FROM runes_events) base, \
-         UNNEST($1::int4[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], \
+         UNNEST($1::int4[], $2::bytea[], $3::bytea[], $4::int4[], $5::bytea[], $6::text[], \
          $7::text[]) WITH ORDINALITY \
-         AS u(event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount, ord) \
+         AS u(event_type, txid, outpoint_txid, outpoint_vout, pkscript, rune_id, amount, ord) \
          ORDER BY u.ord",
     )
     .bind(event_type)
     .bind(txid)
-    .bind(outpoint)
+    .bind(outpoint_txid)
+    .bind(outpoint_vout)
     .bind(pkscript)
-    .bind(wallet)
     .bind(rune_id)
     .bind(amount)
     .bind(height)

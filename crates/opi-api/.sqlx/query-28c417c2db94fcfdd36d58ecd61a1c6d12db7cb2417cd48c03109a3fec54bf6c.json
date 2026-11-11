@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pkscript as \"pkscript?\", rite.rune_id as \"rune_id?\", rite.rune_name as \"rune_name?\", sum(balance)::text as \"total_balance\"\n            from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)\n            left join runes_id_to_entry rite on rite.rune_id = u.rune_id\n            where pkscript = $1 and spent_block_height is null\n            group by pkscript, rite.rune_id, rite.rune_name;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pkscript?",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rune_id?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rune_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_id_to_entry",
+            "name": "rune_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "total_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "28c417c2db94fcfdd36d58ecd61a1c6d12db7cb2417cd48c03109a3fec54bf6c"
+}

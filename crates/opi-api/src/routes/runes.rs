@@ -7,15 +7,24 @@
 //! numeric columns are cast to text under the column's own name and decoded
 //! with [`pg_json::text`]; numeric[] decodes to numbers, as node-pg's
 //! array parser reads it with parseFloat.
+//!
+//! The module stores txids and pkScripts as bytes, an outpoint as its txid
+//! and vout, and no addresses. The handlers print them as the JavaScript
+//! API's tables held them: lowercase hex, `<txid>:<vout>`, and the address
+//! derived from the pkScript on the database's network ([`address_of`]). A
+//! wallet named by `address` is read by the pkScript it encodes
+//! ([`pkscript_of`]), and a `pkscript` or `transaction_id` matches the
+//! stored bytes whose lowercase hex it is, as a text match did.
 
 use {
     super::ModuleRoutes,
+    super::address::{NetworkTable, address_of, network_type, pkscript_of},
     super::no_row,
     crate::{
         config::Module,
         db::Db,
         extract::{ClientIp, JsQuery},
-        js::{JsObject, JsValue, sort_by_number},
+        js::{JsObject, JsValue},
         js_object,
         openapi::{Answer, DbHeight, ErrorBody, ListBlockHeight, Null, NumericText, QueryEcho},
         params,
@@ -88,11 +97,12 @@ pub fn routes(db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
         .routes(routes!(activity_on_block))
         .routes(routes!(get_current_balance_of_wallet))
         .routes(routes!(get_unspent_rune_outpoints_of_wallet))
-        .routes(routes!(holders))
+        .routes(routes!(holders).with_state(tables.clone()))
         .routes(routes!(get_hash_of_all_activity))
         .routes(routes!(event))
         .routes(routes!(catalog::rune_info).with_state(tables.clone()))
         .routes(routes!(catalog::runes).with_state(tables.clone()))
+        .routes(routes!(catalog::etchings).with_state(tables.clone()))
         .routes(routes!(catalog::rune_holders).with_state(tables.clone()))
         .routes(routes!(catalog::wallet_balances).with_state(tables.clone()))
         .routes(routes!(feeds::rune_events).with_state(tables.clone()))
@@ -246,14 +256,49 @@ fn event_type_name(names: &JsObject, event_type: i32) -> Result<JsValue, ApiErro
     Ok(names.get(&event_type.to_js().to_js_string()?).clone())
 }
 
+/// The stored bytes whose lowercase hex `text` is; `None` for text that is
+/// not lowercase hex, which no stored txid or pkScript prints as.
+pub(super) fn stored_hex(text: Option<String>) -> Option<Vec<u8>> {
+    let text = text?;
+    hex::decode(&text)
+        .ok()
+        .filter(|bytes| hex::encode(bytes) == text)
+}
+
+/// The `pkscript` hex and the address of a stored pkScript on `network`.
+pub(super) fn wallet_fields(
+    pkscript: Option<&[u8]>,
+    network: &str,
+) -> (Option<String>, Option<String>) {
+    (
+        pkscript.map(hex::encode),
+        pkscript.and_then(|pkscript| address_of(pkscript, network)),
+    )
+}
+
+/// The pkScript a legacy wallet route reads: the one `address` encodes when
+/// `address` is not `''`, otherwise the stored bytes `pkscript` names.
+fn legacy_wallet(
+    address: &JsValue,
+    pkscript: &JsValue,
+    network: &str,
+) -> Result<Option<Vec<u8>>, ApiError> {
+    Ok(if !address.loose_eq(&"".into())? {
+        params::text(address)?.and_then(|address| pkscript_of(&address, network))
+    } else {
+        stored_hex(params::text(pkscript)?)
+    })
+}
+
 /// A balance row of balance_on_block and get_current_balance_of_wallet.
 fn balance_entry(
-    pkscript: Option<String>,
-    wallet_addr: Option<String>,
+    pkscript: Option<Vec<u8>>,
+    network: &str,
     rune_id: Option<String>,
     rune_name: Option<String>,
     total_balance: Option<String>,
 ) -> Result<JsValue, ApiError> {
+    let (pkscript, wallet_addr) = wallet_fields(pkscript.as_deref(), network);
     Ok(js_object! {
         "pkscript" => pkscript.to_js(),
         "wallet_addr" => wallet_addr.to_js(),
@@ -322,56 +367,32 @@ async fn balance_on_block(
         return Ok(Reply::error(400, "block not indexed yet"));
     }
 
+    let network = network_type(&db, NetworkTable::Runes).await?;
     let rules = db.int_rules().await?;
-    let pool = db.pool()?;
-    // `address != ''` selects by `wallet_addr` instead of `pkscript`
-    let rows: Vec<JsValue> = if !address.loose_eq(&"".into())? {
-        let rows = sqlx::query!(
-            r#"select pkscript as "pkscript?", wallet_addr as "wallet_addr?", rite.rune_id as "rune_id?", rite.rune_name as "rune_name?", sum(balance)::text as "total_balance"
-                from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)
-                left join runes_id_to_entry rite on rite.rune_id = u.rune_id
-                where wallet_addr = $1 and block_height < $2 and (spent_block_height is null or spent_block_height >= $2)
-                group by pkscript, wallet_addr, rite.rune_id, rite.rune_name;"#,
-            params::text(&address)?,
-            params::int4(rules, &block_height)?,
-        )
-        .fetch_all(pool)
-        .await?;
-        rows.into_iter()
-            .map(|r| {
-                balance_entry(
-                    r.pkscript,
-                    r.wallet_addr,
-                    r.rune_id,
-                    r.rune_name,
-                    r.total_balance,
-                )
-            })
-            .collect::<Result<_, _>>()?
-    } else {
-        let rows = sqlx::query!(
-            r#"select pkscript as "pkscript?", wallet_addr as "wallet_addr?", rite.rune_id as "rune_id?", rite.rune_name as "rune_name?", sum(balance)::text as "total_balance"
-                from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)
-                left join runes_id_to_entry rite on rite.rune_id = u.rune_id
-                where pkscript = $1 and block_height < $2 and (spent_block_height is null or spent_block_height >= $2)
-                group by pkscript, wallet_addr, rite.rune_id, rite.rune_name;"#,
-            params::text(&pkscript)?,
-            params::int4(rules, &block_height)?,
-        )
-        .fetch_all(pool)
-        .await?;
-        rows.into_iter()
-            .map(|r| {
-                balance_entry(
-                    r.pkscript,
-                    r.wallet_addr,
-                    r.rune_id,
-                    r.rune_name,
-                    r.total_balance,
-                )
-            })
-            .collect::<Result<_, _>>()?
-    };
+    let wallet = legacy_wallet(&address, &pkscript, &network)?;
+    let rows = sqlx::query!(
+        r#"select pkscript as "pkscript?", rite.rune_id as "rune_id?", rite.rune_name as "rune_name?", sum(balance)::text as "total_balance"
+            from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)
+            left join runes_id_to_entry rite on rite.rune_id = u.rune_id
+            where pkscript = $1 and block_height < $2 and (spent_block_height is null or spent_block_height >= $2)
+            group by pkscript, rite.rune_id, rite.rune_name;"#,
+        wallet,
+        params::int4(rules, &block_height)?,
+    )
+    .fetch_all(db.pool()?)
+    .await?;
+    let rows: Vec<JsValue> = rows
+        .into_iter()
+        .map(|r| {
+            balance_entry(
+                r.pkscript,
+                &network,
+                r.rune_id,
+                r.rune_name,
+                r.total_balance,
+            )
+        })
+        .collect::<Result<_, _>>()?;
 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
@@ -407,7 +428,8 @@ async fn activity_on_block(
     let names = event_type_names(&db).await?;
     let rules = db.int_rules().await?;
     let rows = sqlx::query!(
-        r#"select event_type, outpoint as "outpoint?", pkscript as "pkscript?", rune_id as "rune_id?", amount::text as "amount"
+        r#"select event_type, encode(outpoint_txid, 'hex') || ':' || outpoint_vout as "outpoint?",
+                encode(pkscript, 'hex') as "pkscript?", rune_id as "rune_id?", amount::text as "amount"
             from runes_events re
             where block_height = $1
             order by id asc;"#,
@@ -453,56 +475,32 @@ async fn get_current_balance_of_wallet(
 ) -> Result<Reply, ApiError> {
     let address = query.get("address").clone().or("".into());
     let pkscript = query.get("pkscript").clone().or("".into());
-    // `address != ''` selects by `wallet_addr` instead of `pkscript`
-    let by_wallet = !address.loose_eq(&"".into())?;
 
     let current_block_height = block_height_of_db(&db).await;
-    let pool = db.pool()?;
-    let rows: Vec<JsValue> = if by_wallet {
-        let rows = sqlx::query!(
-            r#"select pkscript as "pkscript?", wallet_addr as "wallet_addr?", rite.rune_id as "rune_id?", rite.rune_name as "rune_name?", sum(balance)::text as "total_balance"
-                from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)
-                left join runes_id_to_entry rite on rite.rune_id = u.rune_id
-                where wallet_addr = $1 and spent = false
-                group by pkscript, wallet_addr, rite.rune_id, rite.rune_name;"#,
-            params::text(&address)?,
-        )
-        .fetch_all(pool)
-        .await?;
-        rows.into_iter()
-            .map(|r| {
-                balance_entry(
-                    r.pkscript,
-                    r.wallet_addr,
-                    r.rune_id,
-                    r.rune_name,
-                    r.total_balance,
-                )
-            })
-            .collect::<Result<_, _>>()?
-    } else {
-        let rows = sqlx::query!(
-            r#"select pkscript as "pkscript?", wallet_addr as "wallet_addr?", rite.rune_id as "rune_id?", rite.rune_name as "rune_name?", sum(balance)::text as "total_balance"
-                from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)
-                left join runes_id_to_entry rite on rite.rune_id = u.rune_id
-                where pkscript = $1 and spent = false
-                group by pkscript, wallet_addr, rite.rune_id, rite.rune_name;"#,
-            params::text(&pkscript)?,
-        )
-        .fetch_all(pool)
-        .await?;
-        rows.into_iter()
-            .map(|r| {
-                balance_entry(
-                    r.pkscript,
-                    r.wallet_addr,
-                    r.rune_id,
-                    r.rune_name,
-                    r.total_balance,
-                )
-            })
-            .collect::<Result<_, _>>()?
-    };
+    let network = network_type(&db, NetworkTable::Runes).await?;
+    let wallet = legacy_wallet(&address, &pkscript, &network)?;
+    let rows = sqlx::query!(
+        r#"select pkscript as "pkscript?", rite.rune_id as "rune_id?", rite.rune_name as "rune_name?", sum(balance)::text as "total_balance"
+            from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)
+            left join runes_id_to_entry rite on rite.rune_id = u.rune_id
+            where pkscript = $1 and spent_block_height is null
+            group by pkscript, rite.rune_id, rite.rune_name;"#,
+        wallet,
+    )
+    .fetch_all(db.pool()?)
+    .await?;
+    let rows: Vec<JsValue> = rows
+        .into_iter()
+        .map(|r| {
+            balance_entry(
+                r.pkscript,
+                &network,
+                r.rune_id,
+                r.rune_name,
+                r.total_balance,
+            )
+        })
+        .collect::<Result<_, _>>()?;
 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
@@ -513,12 +511,13 @@ async fn get_current_balance_of_wallet(
 
 /// An unspent outpoint row of get_unspent_rune_outpoints_of_wallet.
 fn outpoint_entry(
-    pkscript: Option<String>,
-    wallet_addr: Option<String>,
+    pkscript: Option<Vec<u8>>,
+    network: &str,
     outpoint: Option<String>,
     rune_ids: Option<String>,
     balances: Option<String>,
 ) -> Result<JsValue, ApiError> {
+    let (pkscript, wallet_addr) = wallet_fields(pkscript.as_deref(), network);
     Ok(js_object! {
         "pkscript" => pkscript.to_js(),
         "wallet_addr" => wallet_addr.to_js(),
@@ -549,68 +548,28 @@ async fn get_unspent_rune_outpoints_of_wallet(
 ) -> Result<Reply, ApiError> {
     let address = query.get("address").clone().or("".into());
     let pkscript = query.get("pkscript").clone().or("".into());
-    // `address != ''` selects by `wallet_addr` instead of `pkscript`
-    let by_wallet = !address.loose_eq(&"".into())?;
 
     let current_block_height = block_height_of_db(&db).await;
-    let pool = db.pool()?;
-    let rows: Vec<JsValue> = if by_wallet {
-        let rows = sqlx::query!(
-            r#"select pkscript as "pkscript?", wallet_addr as "wallet_addr?", rotb.outpoint as "outpoint?", rotb.rune_ids::text as "rune_ids", rotb.balances::text as "balances"
-                from runes_outpoint_to_balances rotb
-                where wallet_addr = $1 and spent = false;"#,
-            params::text(&address)?,
-        )
-        .fetch_all(pool)
-        .await?;
-        rows.into_iter()
-            .map(|r| {
-                outpoint_entry(
-                    r.pkscript,
-                    r.wallet_addr,
-                    r.outpoint,
-                    r.rune_ids,
-                    r.balances,
-                )
-            })
-            .collect::<Result<_, _>>()?
-    } else {
-        let rows = sqlx::query!(
-            r#"select pkscript as "pkscript?", wallet_addr as "wallet_addr?", rotb.outpoint as "outpoint?", rotb.rune_ids::text as "rune_ids", rotb.balances::text as "balances"
-                from runes_outpoint_to_balances rotb
-                where pkscript = $1 and spent = false;"#,
-            params::text(&pkscript)?,
-        )
-        .fetch_all(pool)
-        .await?;
-        rows.into_iter()
-            .map(|r| {
-                outpoint_entry(
-                    r.pkscript,
-                    r.wallet_addr,
-                    r.outpoint,
-                    r.rune_ids,
-                    r.balances,
-                )
-            })
-            .collect::<Result<_, _>>()?
-    };
+    let network = network_type(&db, NetworkTable::Runes).await?;
+    let wallet = legacy_wallet(&address, &pkscript, &network)?;
+    let rows = sqlx::query!(
+        r#"select pkscript as "pkscript?", encode(rotb.txid, 'hex') || ':' || rotb.vout as "outpoint?", rotb.rune_ids::text as "rune_ids", rotb.balances::text as "balances"
+            from runes_outpoint_to_balances rotb
+            where pkscript = $1 and spent_block_height is null;"#,
+        wallet,
+    )
+    .fetch_all(db.pool()?)
+    .await?;
+    let rows: Vec<JsValue> = rows
+        .into_iter()
+        .map(|r| outpoint_entry(r.pkscript, &network, r.outpoint, r.rune_ids, r.balances))
+        .collect::<Result<_, _>>()?;
 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
         "result" => rows,
         "db_block_height" => current_block_height,
     }))
-}
-
-/// `rows.sort((a, b) => parseInt(b.total_balance) - parseInt(a.total_balance))`.
-fn order_holders(rows: Vec<JsObject>) -> Result<Vec<JsObject>, ApiError> {
-    let mut keyed = Vec::with_capacity(rows.len());
-    for row in rows {
-        keyed.push((row.get("total_balance").parse_int()?, row));
-    }
-    sort_by_number(&mut keyed, |a, b| b.0 - a.0);
-    Ok(keyed.into_iter().map(|(_, row)| row).collect())
 }
 
 /// Every holder of a rune, largest balance first.
@@ -626,15 +585,24 @@ fn order_holders(rows: Vec<JsObject>) -> Result<Vec<JsObject>, ApiError> {
         ("rune_id" = Option<String>, Query, description = "The rune's id; read when `rune_name` is empty. Both left out, no rune matches (400)."),
     ),
     responses(
-        (status = 200, description = "The holders", body = RunesAnswer<Vec<RunesHolder>>),
+        (status = 200, description = "The holders, largest balance first, then by pkScript, descending", body = RunesAnswer<Vec<RunesHolder>>),
         (status = 400, description = "`rune not found`", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
     ),
 )]
-async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
+async fn holders(
+    State(tables): State<RunesTables>,
+    JsQuery(query): JsQuery,
+) -> Result<Reply, ApiError> {
     let mut rune_name = JsValue::from(query.get("rune_name").to_upper_case()?).or("".into());
     let mut rune_id = query.get("rune_id").clone().or("".into());
 
+    let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let network = network_type(&db, NetworkTable::Runes).await?;
     let pool = db.pool()?;
     if rune_name.loose_eq(&"".into())? {
         let rows = sqlx::query_scalar!(
@@ -661,36 +629,32 @@ async fn holders(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply,
         rune_id = id.into();
     }
 
-    // the order names the sum: a bare `total_balance` would name the text
-    // output column
+    // runes_current_balances holds, per rune and pkScript, the positive sum
+    // of the unspent outpoints' balances, which is the JavaScript route's
+    // group-by: every stored outpoint balance is positive. A backward scan
+    // of runes_current_balances_rune_id_balance_idx answers it largest
+    // first, the order its parseInt sort keeps.
     let rows = sqlx::query!(
-        r#"select pkscript as "pkscript?", wallet_addr as "wallet_addr?", rune_id as "rune_id?", sum(balance)::text as "total_balance"
-            from runes_outpoint_to_balances rotb, unnest(rune_ids, balances) as u(rune_id, balance)
-            where rune_id = $1 and spent = false
-            group by pkscript, wallet_addr, rune_id
-            order by sum(balance) desc;"#,
+        r#"select c.pkscript, c.rune_id, c.balance::text as "total_balance"
+            from runes_current_balances c
+            where c.rune_id = $1
+            order by c.balance desc, c.pkscript desc;"#,
         params::text(&rune_id)?,
     )
     .fetch_all(pool)
     .await?;
-    let mut objects = Vec::with_capacity(rows.len());
+    let mut result = Vec::with_capacity(rows.len());
     for row in rows {
-        objects.push(js_object! {
-            "pkscript" => row.pkscript.to_js(),
-            "wallet_addr" => row.wallet_addr.to_js(),
+        let (pkscript, wallet_addr) = wallet_fields(Some(&row.pkscript), &network);
+        result.push(JsValue::from(js_object! {
+            "pkscript" => pkscript.to_js(),
+            "wallet_addr" => wallet_addr.to_js(),
             "rune_id" => row.rune_id.to_js(),
             "total_balance" => pg_json::text(oid::NUMERIC, row.total_balance.as_deref())?,
-        });
+            "rune_name" => rune_name.clone(),
+        }));
     }
-    // a rune with many holders sorts a large set, off the async workers
-    let rows: Vec<JsValue> = tokio::task::spawn_blocking(move || order_holders(objects))
-        .await??
-        .into_iter()
-        .map(|mut row| {
-            row.set("rune_name", rune_name.clone());
-            JsValue::from(row)
-        })
-        .collect();
+    let rows = result;
 
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
@@ -779,22 +743,24 @@ async fn event(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, A
         return Ok(Reply::error(400, "transaction_id is required"));
     }
 
+    let network = network_type(&db, NetworkTable::Runes).await?;
     let rows = sqlx::query!(
-        r#"select event_type, outpoint as "outpoint?", pkscript as "pkscript?", wallet_addr as "wallet_addr?", rune_id as "rune_id?", amount::text as "amount"
+        r#"select event_type, encode(outpoint_txid, 'hex') || ':' || outpoint_vout as "outpoint?", pkscript as "pkscript?", rune_id as "rune_id?", amount::text as "amount"
             from runes_events re
             where txid = $1
             order by id asc;"#,
-        params::text(&transaction_id)?,
+        stored_hex(params::text(&transaction_id)?),
     )
     .fetch_all(db.pool()?)
     .await?;
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
+        let (pkscript, wallet_addr) = wallet_fields(row.pkscript.as_deref(), &network);
         result.push(JsValue::from(js_object! {
             "event_type" => event_type_name(&names, row.event_type)?,
             "outpoint" => row.outpoint.to_js(),
-            "pkscript" => row.pkscript.to_js(),
-            "wallet_addr" => row.wallet_addr.to_js(),
+            "pkscript" => pkscript.to_js(),
+            "wallet_addr" => wallet_addr.to_js(),
             "rune_id" => row.rune_id.to_js(),
             "amount" => pg_json::text(oid::NUMERIC, row.amount.as_deref())?,
         }));

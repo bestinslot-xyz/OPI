@@ -2,6 +2,7 @@
 //! `/v1/openapi.json`, the push feed `/v1/stream` (see [`stream`]) and
 //! `/v1/outputs` (see [`inscriptions::outputs`]), then each module's routes
 //! when it is enabled, or a 404 for its whole prefix when it is not, then
+//! `/v1/utxos/wallet` (see [`utxos`]) when utxos is enabled, then
 //! finalhandler's 404 for anything else.
 //!
 //! Every route is registered with `.routes(routes!(handler))`, which adds
@@ -10,6 +11,7 @@
 //! [`ModuleRoutes`], which takes nothing else; the disabled modules'
 //! catch-alls here are plain routes, outside the document.
 
+pub mod address;
 mod bitmap;
 mod brc20;
 mod inscriptions;
@@ -19,6 +21,7 @@ mod runes;
 mod sns;
 mod stream;
 mod tip_cache;
+mod utxos;
 
 pub use {
     registry::ModuleRoutes,
@@ -31,6 +34,7 @@ use {
         db::Db,
         js::{JsError, JsObject, JsValue},
         js_object,
+        mempool::Mempool,
         openapi::{self, Answer, ApiDoc, DbHeight, SpecJson},
         reply::{Reply, not_found},
     },
@@ -68,6 +72,8 @@ pub struct RouteSettings {
     pub stream: StreamSettings,
     /// The signal that ends every stream of `/v1/stream`.
     pub stream_stop: StreamStop,
+    /// The mempool view `/v1/utxos/wallet?mempool=true` reads, when it runs.
+    pub mempool: Option<Mempool>,
 }
 
 impl Default for RouteSettings {
@@ -76,6 +82,7 @@ impl Default for RouteSettings {
             snapshot_timeout: Duration::from_millis(600_000),
             stream: StreamSettings::default(),
             stream_stop: StreamStop::never(),
+            mempool: None,
         }
     }
 }
@@ -92,6 +99,7 @@ pub fn module_routes(module: Module) -> RouteModule {
         Module::Sns => sns::routes,
         Module::Runes => runes::routes,
         Module::Inscriptions => inscriptions::routes,
+        Module::Utxos => utxos::routes,
     }
 }
 
@@ -174,6 +182,19 @@ pub fn app(
                 .route(&format!("{prefix}/"), any(disabled))
                 .route(&format!("{prefix}/{{*rest}}"), any(disabled));
         }
+    }
+    // `/v1/utxos/wallet` reads several modules, so it is registered with
+    // their databases rather than through the utxos module's routes
+    if enabled.contains(&Module::Utxos) {
+        let enabled_db = |module: Module| enabled.contains(&module).then(|| db_of(module));
+        let wallets = utxos::Wallets {
+            utxos: db_of(Module::Utxos),
+            inscriptions: enabled_db(Module::Inscriptions),
+            runes: enabled_db(Module::Runes),
+            brc20: enabled_db(Module::Brc20),
+            mempool: settings.mempool.clone(),
+        };
+        router = router.routes(routes!(utxos::wallet).with_state(wallets));
     }
     let (router, mut api) = router.split_for_parts();
     openapi::finish(&mut api);

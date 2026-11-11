@@ -28,6 +28,7 @@ use {
         extract::{State, rejection::BytesRejection},
     },
     opi_runes::names::{spaced_name, symbol_char},
+    sqlx::PgConnection,
     std::collections::HashMap,
     utoipa::ToSchema,
 };
@@ -43,7 +44,7 @@ pub struct Outputs {
 /// A rune balance of an output.
 #[derive(ToSchema)]
 #[allow(dead_code)]
-struct OutputRune {
+pub(in crate::routes) struct OutputRune {
     /// The rune id, `block:tx`.
     rune_id: String,
     /// The name's letters; null for a rune `runes_id_to_entry` does not
@@ -98,14 +99,72 @@ struct OutputsResult {
 }
 
 /// An unspent output's rune balance.
-struct RuneRow {
-    outpoint: String,
+pub(in crate::routes) struct RuneRow {
+    pub outpoint: String,
     rune_id: String,
     rune_name: Option<String>,
     spacers: Option<i64>,
     divisibility: Option<i32>,
     symbol: Option<String>,
     amount: String,
+}
+
+impl RuneRow {
+    /// The balance as an [`OutputRune`].
+    pub fn into_json(self) -> JsValue {
+        let spaced = self
+            .rune_name
+            .as_deref()
+            .map(|name| spaced_name(name, self.spacers.unwrap_or(0)));
+        js_object! {
+            "rune_id" => self.rune_id,
+            "rune_name" => self.rune_name,
+            "spaced_rune_name" => spaced,
+            "divisibility" => self.divisibility,
+            "symbol" => self.symbol.as_deref().and_then(symbol_char).map(String::from),
+            "amount" => self.amount,
+        }
+        .into()
+    }
+}
+
+/// The highest block of `runes_block_hashes`, null for an empty table.
+pub(in crate::routes) async fn runes_height(
+    conn: &mut PgConnection,
+) -> Result<Option<i32>, ApiError> {
+    Ok(
+        sqlx::query_scalar!(r#"select max(block_height) as "h?" from runes_block_hashes;"#)
+            .fetch_one(conn)
+            .await?,
+    )
+}
+
+/// The rune balances of the unspent ones of `outpoints`, by outpoint, each
+/// output's balances in its own order.
+pub(in crate::routes) async fn runes_on(
+    conn: &mut PgConnection,
+    outpoints: &[String],
+) -> Result<Vec<RuneRow>, ApiError> {
+    // the primary key of runes_outpoint_to_balances, (txid, vout)
+    let wanted = opi_runes::OutpointColumns::lookup(outpoints);
+    Ok(sqlx::query_as!(
+        RuneRow,
+        r#"select encode(o.txid, 'hex') || ':' || o.vout as "outpoint!",
+                u.rune_id as "rune_id!", e.rune_name as "rune_name?",
+                e.spacers as "spacers?", e.divisibility as "divisibility?",
+                e.symbol as "symbol?", u.balance::text as "amount!"
+            from (select distinct * from unnest($1::bytea[], $2::int4[])) as w(txid, vout)
+            join runes_outpoint_to_balances o on o.txid = w.txid and o.vout = w.vout
+            cross join lateral unnest(o.rune_ids, o.balances)
+                with ordinality as u(rune_id, balance, n)
+            left join runes_id_to_entry e on e.rune_id = u.rune_id
+            where o.spent_block_height is null
+            order by o.txid, o.vout, u.n;"#,
+        &wanted.txids,
+        &wanted.vouts,
+    )
+    .fetch_all(conn)
+    .await?)
 }
 
 /// The inscriptions and runes on up to 500 outputs.
@@ -150,48 +209,18 @@ pub async fn outputs(
         },
         async {
             let mut tx = snapshot(runes_db).await?;
-            let height =
-                sqlx::query_scalar!(r#"select max(block_height) as "h?" from runes_block_hashes;"#)
-                    .fetch_one(&mut *tx)
-                    .await?;
-            // runes_outpoint_to_balances_outpoint_idx; each balance in the
-            // output's own order
-            let rows = sqlx::query_as!(
-                RuneRow,
-                r#"select o.outpoint, u.rune_id as "rune_id!", e.rune_name as "rune_name?",
-                        e.spacers as "spacers?", e.divisibility as "divisibility?",
-                        e.symbol as "symbol?", u.balance::text as "amount!"
-                    from runes_outpoint_to_balances o
-                    cross join lateral unnest(o.rune_ids, o.balances)
-                        with ordinality as u(rune_id, balance, n)
-                    left join runes_id_to_entry e on e.rune_id = u.rune_id
-                    where o.outpoint = any($1) and o.spent = false
-                    order by o.outpoint, u.n;"#,
-                &outpoints,
-            )
-            .fetch_all(&mut *tx)
-            .await?;
+            let height = runes_height(&mut tx).await?;
+            let rows = runes_on(&mut tx, &outpoints).await?;
             tx.commit().await?;
             Ok::<_, ApiError>((height, rows))
         },
     )?;
     let mut runes_of: HashMap<String, Vec<JsValue>> = HashMap::new();
     for row in runes {
-        let spaced = row
-            .rune_name
-            .as_deref()
-            .map(|name| spaced_name(name, row.spacers.unwrap_or(0)));
-        runes_of.entry(row.outpoint).or_default().push(
-            js_object! {
-                "rune_id" => row.rune_id,
-                "rune_name" => row.rune_name,
-                "spaced_rune_name" => spaced,
-                "divisibility" => row.divisibility,
-                "symbol" => row.symbol.as_deref().and_then(symbol_char).map(String::from),
-                "amount" => row.amount,
-            }
-            .into(),
-        );
+        runes_of
+            .entry(row.outpoint.clone())
+            .or_default()
+            .push(row.into_json());
     }
     let entries: Vec<JsValue> = group_by_outpoint(&outpoints, entries)
         .into_iter()
@@ -220,7 +249,7 @@ pub async fn outputs(
 }
 
 /// The answer without `module`.
-fn not_enabled(module: Module) -> Reply {
+pub(in crate::routes) fn not_enabled(module: Module) -> Reply {
     Reply::error(
         404,
         &format!("{} is not enabled on this node", module.name()),

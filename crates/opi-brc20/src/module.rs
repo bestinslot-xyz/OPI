@@ -371,9 +371,7 @@ pub fn transfers(feed: &InscriptionFeed, network: Network) -> anyhow::Result<Vec
         txes.push(Brc20Tx {
             tx_id: format!("{}:{}", record.height, record.idx),
             inscription_id: record.inscription_id.clone(),
-            inscription_number: info.inscription_number,
             old_satpoint: record.old_satpoint.clone(),
-            new_satpoint: record.new_satpoint.clone(),
             txid: record.txid.clone(),
             new_wallet: get_wallet(&new_pkscript, network),
             new_pkscript,

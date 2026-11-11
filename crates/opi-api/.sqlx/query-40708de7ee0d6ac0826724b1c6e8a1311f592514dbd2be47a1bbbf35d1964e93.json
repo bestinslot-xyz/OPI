@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select min(id) as \"lo?\", max(id) as \"hi?\" from inscriptions_events\n            where id >= ($1::int8 << 32) and id < (($1::int8 + 1) << 32);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lo?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "hi?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "40708de7ee0d6ac0826724b1c6e8a1311f592514dbd2be47a1bbbf35d1964e93"
+}

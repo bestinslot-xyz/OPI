@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select b.id as \"id!\", b.block_height as \"block_height!\", h.block_time as \"block_time?\",\n                        b.overall_balance::text as \"overall_balance!\",\n                        b.available_balance::text as \"available_balance!\"\n                    from brc20_historic_balances b\n                    left join brc20_block_hashes h on h.block_height = b.block_height\n                    where b.pkscript = $1 and b.tick = $2\n                      and ($3::text is null or b.wallet = $3)\n                      and ($4::int8 is null or (b.block_height <= $5 and b.id < $4))\n                    order by b.block_height desc, b.id desc\n                    limit $6;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "brc20_historic_balances",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "block_height!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "brc20_historic_balances",
+            "name": "block_height"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "block_time?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_time"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "overall_balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "available_balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "ee71a579a145e8ff63a3abf66781b6db5b0e28af87cfc59bd62bbb1604385909"
+}

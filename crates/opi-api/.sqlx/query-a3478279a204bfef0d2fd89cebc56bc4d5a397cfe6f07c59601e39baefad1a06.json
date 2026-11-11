@@ -1,0 +1,156 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.sequence_number, e.inscription_id, e.\"number\", e.content_type, e.media_type,\n                e.charms, encode(e.txid, 'hex') || ':' || e.vout as \"outpoint!\", e.\"offset\",\n                e.pkscript, e.genesis_height, e.last_moved_height,\n                n.network_type as \"network!\"\n            from inscriptions_entries e\n            cross join (select network_type from inscriptions_network_type limit 1) n\n            where (e.txid, e.vout) in (select * from unnest($1::bytea[], $2::int4[]))\n            order by e.txid, e.vout, e.\"offset\", e.sequence_number;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sequence_number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "media_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "charms",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "charms"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "outpoint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "pkscript",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "genesis_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "genesis_height"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "last_moved_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_entries",
+            "name": "last_moved_height"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "network!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_network_type",
+            "name": "network_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "ByteaArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a3478279a204bfef0d2fd89cebc56bc4d5a397cfe6f07c59601e39baefad1a06"
+}

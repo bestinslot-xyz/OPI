@@ -5,9 +5,7 @@ use opi_core::{
     BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionRecord, Module, RuneEtching,
     RuneEvent, RuneEventKind, RuneSpend, RuneTerms,
 };
-use opi_runes::{
-    RunesConfig, RunesModule, block_event_hash, cumulative_hash, event_str, wallet_addr,
-};
+use opi_runes::{RunesConfig, RunesModule, block_event_hash, cumulative_hash, event_str};
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection, Row};
 
@@ -106,6 +104,7 @@ where
     }
 }
 
+/// The txid of 32 bytes `byte` (two hex digits), as ord displays it.
 fn txid(byte: &str) -> String {
     byte.repeat(32)
 }
@@ -282,10 +281,11 @@ fn feeds() -> Vec<RuneFeed> {
     ]
 }
 
+/// `(outpoint, pkscript hex, rune_ids, balances, block_height, spent,
+/// spent_block_height)`.
 type OutpointRow = (
     String,
     String,
-    Option<String>,
     Vec<String>,
     Vec<String>,
     i32,
@@ -293,10 +293,12 @@ type OutpointRow = (
     Option<i32>,
 );
 
+/// Every outpoint row, by height and outpoint.
 async fn outpoint_rows(conn: &mut PgConnection) -> Vec<OutpointRow> {
     sqlx::query(
-        "SELECT outpoint, pkscript, wallet_addr, rune_ids, balances::text[], block_height, \
-         spent, spent_block_height FROM runes_outpoint_to_balances ORDER BY id",
+        "SELECT encode(txid, 'hex') || ':' || vout, encode(pkscript, 'hex'), rune_ids, \
+         balances::text[], block_height, spent_block_height IS NOT NULL, spent_block_height \
+         FROM runes_outpoint_to_balances ORDER BY block_height, txid, vout",
     )
     .fetch_all(conn)
     .await
@@ -311,7 +313,6 @@ async fn outpoint_rows(conn: &mut PgConnection) -> Vec<OutpointRow> {
             r.get(4),
             r.get(5),
             r.get(6),
-            r.get(7),
         )
     })
     .collect()
@@ -355,10 +356,6 @@ async fn module_round_trip() {
         );
 
         let mut conn = connect(&name).await;
-        let w1 = wallet_addr(&pk1(), "regtest");
-        let w2 = wallet_addr(&pk2(), "regtest");
-        assert!(w1.as_deref().unwrap().starts_with("bcrt1q"));
-        assert!(w2.as_deref().unwrap().starts_with("bcrt1p"));
         let h1 = hex::encode(pk1());
         let h2 = hex::encode(pk2());
         assert_eq!(
@@ -367,7 +364,6 @@ async fn module_round_trip() {
                 (
                     outpoint("a0", 0),
                     h1.clone(),
-                    w1.clone(),
                     vec![s("1:1")],
                     vec![s("1000")],
                     1,
@@ -377,7 +373,6 @@ async fn module_round_trip() {
                 (
                     outpoint("b0", 0),
                     h2.clone(),
-                    w2.clone(),
                     vec![s("1:1")],
                     vec![s("50")],
                     2,
@@ -387,7 +382,6 @@ async fn module_round_trip() {
                 (
                     outpoint("c0", 0),
                     h1.clone(),
-                    w1.clone(),
                     vec![s("1:1")],
                     vec![s("600")],
                     2,
@@ -397,7 +391,6 @@ async fn module_round_trip() {
                 (
                     outpoint("d0", 0),
                     h2.clone(),
-                    w2.clone(),
                     vec![s("1:1"), s("3:1")],
                     vec![s("650"), s("5")],
                     3,
@@ -407,7 +400,6 @@ async fn module_round_trip() {
                 (
                     outpoint("e0", 0),
                     h1.clone(),
-                    w1.clone(),
                     vec![s("3:1")],
                     vec![s("7")],
                     3,
@@ -417,7 +409,6 @@ async fn module_round_trip() {
                 (
                     outpoint("f0", 1),
                     h1.clone(),
-                    w1.clone(),
                     vec![s("1:1")],
                     vec![s("50")],
                     3,
@@ -427,9 +418,11 @@ async fn module_round_trip() {
             ]
         );
 
-        // Events keep feed order with ascending ids across blocks.
+        // Events keep feed order with ascending ids across blocks, and the
+        // stored bytes print back as the events' text.
         let events = sqlx::query(
-            "SELECT id, event_type, txid, outpoint, pkscript, wallet_addr, rune_id, \
+            "SELECT id, event_type, encode(txid, 'hex'), \
+             encode(outpoint_txid, 'hex') || ':' || outpoint_vout, pkscript, rune_id, \
              amount::text, block_height FROM runes_events ORDER BY id",
         )
         .fetch_all(&mut conn)
@@ -442,21 +435,11 @@ async fn module_round_trip() {
             assert_eq!(row.get::<i32, _>(1), i32::from(event.kind.id()));
             assert_eq!(row.get::<String, _>(2), event.txid);
             assert_eq!(row.get::<Option<String>, _>(3), event.outpoint);
-            assert_eq!(
-                row.get::<Option<String>, _>(4),
-                event.pkscript.as_ref().map(hex::encode)
-            );
-            assert_eq!(
-                row.get::<Option<String>, _>(5),
-                event
-                    .pkscript
-                    .as_ref()
-                    .and_then(|pk| wallet_addr(pk, "regtest"))
-            );
-            assert_eq!(row.get::<String, _>(6), event.rune_id);
-            assert_eq!(row.get::<String, _>(7), event.amount.to_string());
+            assert_eq!(row.get::<Option<Vec<u8>>, _>(4), event.pkscript);
+            assert_eq!(row.get::<String, _>(5), event.rune_id);
+            assert_eq!(row.get::<String, _>(6), event.amount.to_string());
         }
-        let heights: Vec<i32> = events.iter().map(|r| r.get(8)).collect();
+        let heights: Vec<i32> = events.iter().map(|r| r.get(7)).collect();
         assert_eq!(
             heights,
             vec![1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3]
@@ -601,6 +584,7 @@ async fn rollback_restores_entries_and_unspends() {
             module.apply(&block).await.unwrap();
         }
         let mut conn = connect(&name).await;
+        let before = outpoint_rows(&mut conn).await;
 
         module.rollback_to(2).await.unwrap();
         assert_eq!(module.cursor().await.unwrap().unwrap().height, 2);
@@ -610,7 +594,7 @@ async fn rollback_restores_entries_and_unspends() {
         );
         let rows = outpoint_rows(&mut conn).await;
         let state: Vec<(String, bool, Option<i32>)> =
-            rows.iter().map(|r| (r.0.clone(), r.6, r.7)).collect();
+            rows.iter().map(|r| (r.0.clone(), r.5, r.6)).collect();
         assert_eq!(
             state,
             vec![
@@ -640,7 +624,7 @@ async fn rollback_restores_entries_and_unspends() {
         );
         let rows = outpoint_rows(&mut conn).await;
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].6, rows[0].7), (false, None));
+        assert_eq!((rows[0].5, rows[0].6), (false, None));
 
         // Replaying the removed heights rebuilds the same rows and ids.
         for block in blocks().into_iter().skip(1) {
@@ -651,12 +635,7 @@ async fn rollback_restores_entries_and_unspends() {
             .await
             .unwrap();
         assert_eq!(ids, (0..16).collect::<Vec<i64>>());
-        let ids: Vec<i64> =
-            sqlx::query_scalar("SELECT id FROM runes_outpoint_to_balances ORDER BY id")
-                .fetch_all(&mut conn)
-                .await
-                .unwrap();
-        assert_eq!(ids, (1..=6).collect::<Vec<i64>>());
+        assert_eq!(outpoint_rows(&mut conn).await, before);
         assert_eq!(
             entry_totals(&mut conn).await,
             vec![
@@ -705,11 +684,11 @@ async fn prune_keeps_what_a_rollback_reads() {
                 4,
                 RuneFeed {
                     events: vec![
-                        plain(RuneEventKind::Mint, "g0", "1:1", 50),
+                        plain(RuneEventKind::Mint, "0a", "1:1", 50),
                         located(
                             RuneEventKind::Output,
-                            "g0",
-                            outpoint("g0", 0),
+                            "0a",
+                            outpoint("0a", 0),
                             pk1(),
                             "1:1",
                             50,
@@ -770,7 +749,7 @@ async fn prune_keeps_what_a_rollback_reads() {
 }
 
 /// Height 1 creates aa:0, height 2 is empty and height 3 spends aa:0 into
-/// gg:0. Rolling back to 2 unspends aa:0 through height 3's input event.
+/// 0a:0. Rolling back to 2 unspends aa:0 through height 3's input event.
 /// Without a block row and with start height 0, a new instance drops every
 /// row.
 #[tokio::test]
@@ -784,8 +763,8 @@ async fn rollback_unspends_through_input_events() {
             3,
             RuneFeed {
                 events: vec![
-                    located(Input, "g0", outpoint("a0", 0), pk1(), "1:1", 1000),
-                    located(Output, "g0", outpoint("g0", 0), pk2(), "1:1", 1000),
+                    located(Input, "0a", outpoint("a0", 0), pk1(), "1:1", 1000),
+                    located(Output, "0a", outpoint("0a", 0), pk2(), "1:1", 1000),
                 ],
                 etchings: Vec::new(),
             },
@@ -795,13 +774,13 @@ async fn rollback_unspends_through_input_events() {
         }
         let mut conn = connect(&name).await;
         let state = |rows: Vec<OutpointRow>| -> Vec<(String, bool, Option<i32>)> {
-            rows.iter().map(|r| (r.0.clone(), r.6, r.7)).collect()
+            rows.iter().map(|r| (r.0.clone(), r.5, r.6)).collect()
         };
         assert_eq!(
             state(outpoint_rows(&mut conn).await),
             vec![
                 (outpoint("a0", 0), true, Some(3)),
-                (outpoint("g0", 0), false, None),
+                (outpoint("0a", 0), false, None),
             ]
         );
 
@@ -842,12 +821,11 @@ async fn rollback_unspends_through_input_events() {
     .await;
 }
 
-/// `<rune_id> <p1|p2> <balance> <address>` of every current balance, and
+/// `<rune_id> <p1|p2> <balance>` of every current balance, and
 /// `<rune_id> <holders>` of every holder count.
 async fn holder_state(conn: &mut PgConnection) -> (Vec<String>, Vec<String>) {
-    let h1 = hex::encode(pk1());
-    let balances: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT rune_id, pkscript, balance::text, wallet_addr FROM runes_current_balances \
+    let balances: Vec<(String, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT rune_id, pkscript, balance::text FROM runes_current_balances \
          ORDER BY rune_id, pkscript",
     )
     .fetch_all(&mut *conn)
@@ -855,13 +833,13 @@ async fn holder_state(conn: &mut PgConnection) -> (Vec<String>, Vec<String>) {
     .unwrap();
     let balances = balances
         .into_iter()
-        .map(|(rune, pkscript, balance, address)| {
-            let (owner, pk) = if pkscript == h1 {
-                ("p1", pk1())
+        .map(|(rune, pkscript, balance)| {
+            let owner = if pkscript == pk1() {
+                "p1"
             } else {
-                ("p2", pk2())
+                assert_eq!(pkscript, pk2());
+                "p2"
             };
-            assert_eq!(address, wallet_addr(&pk, "regtest"));
             format!("{rune} {owner} {balance}")
         })
         .collect();
@@ -910,10 +888,10 @@ async fn holders_follow_blocks_and_rollbacks() {
             4,
             RuneFeed {
                 events: vec![
-                    located(Input, "h0", outpoint("d0", 0), pk2(), "1:1", 650),
-                    located(Input, "h0", outpoint("d0", 0), pk2(), "3:1", 5),
-                    located(Output, "h0", outpoint("h0", 0), pk1(), "1:1", 650),
-                    located(Output, "h0", outpoint("h0", 0), pk1(), "3:1", 5),
+                    located(Input, "0b", outpoint("d0", 0), pk2(), "1:1", 650),
+                    located(Input, "0b", outpoint("d0", 0), pk2(), "3:1", 5),
+                    located(Output, "0b", outpoint("0b", 0), pk1(), "1:1", 650),
+                    located(Output, "0b", outpoint("0b", 0), pk1(), "3:1", 5),
                 ],
                 etchings: Vec::new(),
             },
@@ -1020,7 +998,7 @@ async fn drift_below_zero_is_logged_and_the_block_goes_on() {
         // p2 truly holds 650 of 1:1 and 5 of 3:1, and 3:1 has 2 holders
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "UPDATE runes_current_balances SET balance = 10 \
-             WHERE rune_id = '1:1' AND pkscript = '{}'; \
+             WHERE rune_id = '1:1' AND pkscript = decode('{}', 'hex'); \
              UPDATE runes_holders SET holders = 0 WHERE rune_id = '3:1';",
             hex::encode(pk2())
         )))
@@ -1031,10 +1009,10 @@ async fn drift_below_zero_is_logged_and_the_block_goes_on() {
             4,
             RuneFeed {
                 events: vec![
-                    located(Input, "h0", outpoint("d0", 0), pk2(), "1:1", 650),
-                    located(Input, "h0", outpoint("d0", 0), pk2(), "3:1", 5),
-                    located(Output, "h0", outpoint("h0", 0), pk1(), "1:1", 650),
-                    located(Output, "h0", outpoint("h0", 0), pk1(), "3:1", 5),
+                    located(Input, "0b", outpoint("d0", 0), pk2(), "1:1", 650),
+                    located(Input, "0b", outpoint("d0", 0), pk2(), "3:1", 5),
+                    located(Output, "0b", outpoint("0b", 0), pk1(), "1:1", 650),
+                    located(Output, "0b", outpoint("0b", 0), pk1(), "3:1", 5),
                 ],
                 etchings: Vec::new(),
             },
@@ -1088,8 +1066,9 @@ async fn random_block(conn: &mut PgConnection, random: &mut Random, height: u32)
     type Outpoint = (String, String, Vec<String>, Vec<String>);
     let owner = |i: u64| hex::decode(format!("0014{i:040x}")).unwrap();
     let mut unspent: Vec<Outpoint> = sqlx::query_as(
-        "SELECT outpoint, pkscript, rune_ids, balances::text[] FROM runes_outpoint_to_balances \
-         WHERE NOT spent ORDER BY id",
+        "SELECT encode(txid, 'hex') || ':' || vout, encode(pkscript, 'hex'), rune_ids, \
+         balances::text[] FROM runes_outpoint_to_balances \
+         WHERE spent_block_height IS NULL ORDER BY block_height, txid, vout",
     )
     .fetch_all(&mut *conn)
     .await
@@ -1301,7 +1280,6 @@ async fn holder_tables_and_indexes_are_created_at_start() {
         let mut drops = String::from(
             "DROP TABLE runes_current_balances; DROP TABLE runes_holders; \
              CREATE INDEX runes_events_rune_id_idx ON runes_events (rune_id); \
-             CREATE INDEX runes_events_wallet_addr_idx ON runes_events (wallet_addr); \
              CREATE INDEX runes_events_pkscript_idx ON runes_events (pkscript);",
         );
         for (index, _) in opi_runes::holders::INDEXES {
@@ -1379,7 +1357,7 @@ async fn holder_mismatches(conn: &mut PgConnection) -> i64 {
         "WITH sums AS ( \
              SELECT u.rune_id, o.pkscript, sum(u.balance) AS balance \
              FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-             WHERE NOT o.spent GROUP BY 1, 2 HAVING sum(u.balance) > 0) \
+             WHERE o.spent_block_height IS NULL GROUP BY 1, 2 HAVING sum(u.balance) > 0) \
          SELECT count(*) FROM sums s FULL JOIN runes_current_balances c \
          ON c.rune_id = s.rune_id AND c.pkscript = s.pkscript \
          WHERE s.balance IS DISTINCT FROM c.balance",
@@ -1391,7 +1369,7 @@ async fn holder_mismatches(conn: &mut PgConnection) -> i64 {
         "WITH recount AS ( \
              SELECT u.rune_id, count(DISTINCT o.pkscript) AS holders \
              FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-             WHERE NOT o.spent AND u.balance > 0 GROUP BY u.rune_id) \
+             WHERE o.spent_block_height IS NULL AND u.balance > 0 GROUP BY u.rune_id) \
          SELECT count(*) FROM recount r FULL JOIN runes_holders h ON h.rune_id = r.rune_id \
          WHERE coalesce(r.holders, 0) <> coalesce(h.holders, 0)",
     )
@@ -1618,7 +1596,7 @@ async fn stored_indexer_version_matches_constant() {
         assert_eq!(row.get::<String, _>(0), opi_runes::INDEXER_VERSION);
         assert_eq!(row.get::<i32, _>(1), opi_runes::DB_VERSION);
         assert_eq!(opi_runes::INDEXER_VERSION, "opi-runes-full-node v1.0.0");
-        assert_eq!(opi_runes::DB_VERSION, 6);
+        assert_eq!(opi_runes::DB_VERSION, 7);
         assert_eq!(opi_runes::EVENT_HASH_VERSION, 2);
         let network: String = sqlx::query_scalar("SELECT network_type FROM runes_network_type")
             .fetch_one(&mut conn)

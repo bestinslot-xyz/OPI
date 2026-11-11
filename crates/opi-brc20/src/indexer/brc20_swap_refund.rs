@@ -49,7 +49,7 @@ impl Brc20SwapRefund {
             let using_tx_id = format!("{}:0", block_height);
 
             if balance.overall_balance > 0 {
-                let (inscribe_event_id, inscribe_event) = EventGenerator::brc20_transfer_inscribe(
+                let inscribe_event = EventGenerator::brc20_transfer_inscribe(
                     block_height,
                     &ticker,
                     &ticker.original_ticker,
@@ -57,9 +57,7 @@ impl Brc20SwapRefund {
                     &Brc20Tx {
                         tx_id: using_tx_id.clone(),
                         inscription_id: inscription_id.clone(),
-                        inscription_number: i32::MAX,
                         old_satpoint: None,
-                        new_satpoint: "".to_string(),
                         txid: EMPTY_TXID.to_string(),
                         new_pkscript: config.brc20_swap_module_pkscript.clone(),
                         new_wallet: NO_WALLET.to_string(),
@@ -78,13 +76,12 @@ impl Brc20SwapRefund {
 
                 EventProcessor::brc20_transfer_inscribe(
                     block_height,
-                    inscribe_event_id,
                     inscription_id.as_str(),
                     &inscribe_event,
                 )
                 .await?;
 
-                let (transfer_event_id, transfer_event) = EventGenerator::brc20_transfer_transfer(
+                let transfer_event = EventGenerator::brc20_transfer_transfer(
                     block_height,
                     &ticker,
                     ticker.original_ticker.as_str(),
@@ -92,9 +89,7 @@ impl Brc20SwapRefund {
                     &Brc20Tx {
                         tx_id: using_tx_id.clone(),
                         inscription_id: inscription_id.clone(),
-                        inscription_number: i32::MAX,
                         old_satpoint: None,
-                        new_satpoint: "".to_string(),
                         txid: EMPTY_TXID.to_string(),
                         new_pkscript: bitcoin::Address::from_str(
                             &config.brc20_swap_refund_address,
@@ -123,7 +118,6 @@ impl Brc20SwapRefund {
                     block_hash,
                     0,
                     &inscription_id,
-                    transfer_event_id,
                     &transfer_event,
                     config,
                 )

@@ -31,6 +31,13 @@ pub const MAX_BEFORE_ID: i64 = 999_999_999_999_999_999;
 /// The longest event `type` a request may name, in bytes.
 pub const MAX_TYPE_LEN: usize = 256;
 
+/// The longest brc20 event `category` list a request may name, in bytes.
+pub const MAX_CATEGORY_LEN: usize = 64;
+
+/// The pattern of a brc20 event `category` list: one or more categories,
+/// comma-separated.
+pub const CATEGORY_PATTERN: &str = "^((deploy|mint|transfer|wrap|unwrap|brc20prog)(,(deploy|mint|transfer|wrap|unwrap|brc20prog))*)?$";
+
 /// The longest `pkscript` an event feed request may name, in hex digits.
 pub const MAX_PKSCRIPT_LEN: usize = 20_000;
 

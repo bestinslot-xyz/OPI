@@ -5,7 +5,9 @@ use opi_core::{BlockRef, BlockView, metrics::PoolStats};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
-use crate::rules::{address, content_type_text, event_id, media_type, split_satpoint};
+use crate::rules::{
+    content_type_text, event_id, first_event_id, media_type, split_outpoint, split_satpoint,
+};
 use crate::{DB_VERSION, INDEXER_VERSION, InscriptionsConfig};
 
 const DB_INIT: &str = include_str!("db_init.sql");
@@ -14,14 +16,15 @@ pub struct Db {
     pool: PgPool,
 }
 
-/// An inscription's location and owner.
+/// An inscription's location after one of its events.
 #[derive(Debug, Clone)]
 struct Location {
-    outpoint: String,
+    txid: Vec<u8>,
+    vout: i32,
     offset: i64,
-    pkscript: String,
-    address: Option<String>,
+    pkscript: Vec<u8>,
     last_moved_height: i32,
+    event_id: i64,
 }
 
 /// An inscription created in the block, at its location after the block.
@@ -35,11 +38,9 @@ struct Created {
 
 /// One `inscriptions_events` row.
 struct Event {
-    id: i64,
     sequence_number: i64,
-    inscription_id: String,
-    old: Option<Location>,
-    new: Location,
+    prev_id: Option<i64>,
+    location: Location,
 }
 
 impl Db {
@@ -143,12 +144,11 @@ impl Db {
 
     /// Highest block height any row refers to. Every creation and transfer
     /// writes an event row in the same transaction as the entry change, so
-    /// the events and the genesis heights cover every row of the block.
+    /// the events cover every entry row of the block.
     pub async fn max_row_height(&self) -> anyhow::Result<Option<u32>> {
         let height: Option<i32> = sqlx::query_scalar(
             "SELECT GREATEST( \
-             (SELECT max(genesis_height) FROM inscriptions_entries), \
-             (SELECT max(block_height) FROM inscriptions_events), \
+             (SELECT (max(id) >> 32)::int4 FROM inscriptions_events), \
              (SELECT max(block_height) FROM inscriptions_block_hashes))",
         )
         .fetch_one(&self.pool)
@@ -158,31 +158,28 @@ impl Db {
 
     /// Drops every block above `height` in one transaction, or every block
     /// when `height` is `None`: each inscription transferred above it gets
-    /// back the location its first transfer above it recorded, inscriptions
-    /// created above it are deleted, and so are the events and block hashes
-    /// above it.
+    /// back the location of the event its first transfer above it names as
+    /// `prev_id`, the inscriptions whose creation event is above it are
+    /// deleted, and so are the events and block hashes above it.
     pub async fn rollback_to(&self, height: Option<u32>) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         let height = height.map_or(-1, i64::from);
-        for statement in [
-            "UPDATE inscriptions_entries e \
-             SET outpoint = t.old_outpoint, \"offset\" = t.old_offset, \
-             pkscript = t.old_pkscript, address = t.old_address, \
-             last_moved_height = t.old_last_moved_height \
-             FROM (SELECT DISTINCT ON (sequence_number) sequence_number, old_outpoint, \
-                   old_offset, old_pkscript, old_address, old_last_moved_height \
-                   FROM inscriptions_events \
-                   WHERE block_height > $1 AND old_outpoint IS NOT NULL \
-                   ORDER BY sequence_number, id) t \
-             WHERE e.sequence_number = t.sequence_number",
-            "DELETE FROM inscriptions_entries WHERE genesis_height > $1",
-            "DELETE FROM inscriptions_events WHERE block_height > $1",
-            "DELETE FROM inscriptions_block_hashes WHERE block_height > $1",
+        let above = first_event_id(height + 1);
+        restore_locations(&mut tx, above).await?;
+        for (statement, bound) in [
+            (
+                "DELETE FROM inscriptions_entries WHERE sequence_number IN ( \
+                 SELECT sequence_number FROM inscriptions_events \
+                 WHERE id >= $1 AND prev_id IS NULL)",
+                above,
+            ),
+            ("DELETE FROM inscriptions_events WHERE id >= $1", above),
+            (
+                "DELETE FROM inscriptions_block_hashes WHERE block_height > $1",
+                height,
+            ),
         ] {
-            sqlx::query(statement)
-                .bind(height)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(statement).bind(bound).execute(&mut *tx).await?;
         }
         sqlx::query(
             "SELECT setval('inscriptions_block_hashes_id_seq', max(id)) \
@@ -194,21 +191,15 @@ impl Db {
         Ok(())
     }
 
-    /// Deletes, in one transaction, the events and block hashes below
-    /// `height`. A rollback to `height` or above reads only events above it,
-    /// and the API reads the highest block hash and the events of recent
-    /// blocks only.
+    /// Deletes the block hashes below `height`. Every event stays: the
+    /// history routes read them at any height, and a rollback reads a
+    /// transfer's `prev_id` event however deep it lies.
     pub async fn prune_below(&self, height: u32) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
-        for statement in [
-            "DELETE FROM inscriptions_events WHERE block_height < $1",
-            "DELETE FROM inscriptions_block_hashes WHERE block_height < $1",
-        ] {
-            sqlx::query(statement)
-                .bind(height as i32)
-                .execute(&mut *tx)
-                .await?;
-        }
+        sqlx::query("DELETE FROM inscriptions_block_hashes WHERE block_height < $1")
+            .bind(i64::from(height))
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -217,11 +208,11 @@ impl Db {
     /// the new entries, the moved entries' final locations, one event row
     /// per move, and the block hash. A transfer of an inscription that is
     /// not stored, or a second creation of one that is, fails the block.
-    pub async fn write_block(&self, block: &BlockView, network: &str) -> anyhow::Result<()> {
+    pub async fn write_block(&self, block: &BlockView) -> anyhow::Result<()> {
         let height = i32::try_from(block.height)?;
         let mut tx = self.pool.begin().await?;
         if !block.inscription_moves.is_empty() {
-            apply_moves(&mut tx, block, height, network).await?;
+            apply_moves(&mut tx, block, height).await?;
         }
         sqlx::query(
             "INSERT INTO inscriptions_block_hashes (block_height, block_hash, block_time) \
@@ -237,11 +228,45 @@ impl Db {
     }
 }
 
+/// The first event at or above event id `above` of each inscription
+/// transferred there, and the event its `prev_id` names, joined.
+const FIRST_TRANSFERS_ABOVE: &str = "FROM (SELECT DISTINCT ON (sequence_number) \
+     sequence_number, prev_id FROM inscriptions_events WHERE id >= $1 \
+     ORDER BY sequence_number, id) t \
+     LEFT JOIN inscriptions_events p ON p.id = t.prev_id \
+     WHERE t.prev_id IS NOT NULL";
+
+/// Puts each inscription transferred at or above event id `above` back at
+/// the location of the event its first transfer there names as `prev_id`.
+/// A missing `prev_id` row fails the rollback.
+async fn restore_locations(tx: &mut Transaction<'_, Postgres>, above: i64) -> anyhow::Result<()> {
+    let missing: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT t.prev_id {FIRST_TRANSFERS_ABOVE} AND p.id IS NULL LIMIT 1"
+    )))
+    .bind(above)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(prev_id) = missing {
+        bail!("rollback reads event {prev_id}, which is not stored");
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE inscriptions_entries e \
+         SET txid = r.txid, vout = r.vout, \"offset\" = r.\"offset\", pkscript = r.pkscript, \
+         last_moved_height = (r.id >> 32)::int4, last_event_id = r.id \
+         FROM (SELECT t.sequence_number, p.id, p.txid, p.vout, p.\"offset\", p.pkscript \
+               {FIRST_TRANSFERS_ABOVE}) r \
+         WHERE e.sequence_number = r.sequence_number"
+    )))
+    .bind(above)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn apply_moves(
     tx: &mut Transaction<'_, Postgres>,
     block: &BlockView,
     height: i32,
-    network: &str,
 ) -> anyhow::Result<()> {
     let moves = &block.inscription_moves;
     let transferred: Vec<i64> = moves
@@ -249,44 +274,40 @@ async fn apply_moves(
         .filter(|m| m.genesis.is_none())
         .map(|m| i64::from(m.sequence_number))
         .collect();
-    let mut locations = HashMap::<i64, Location>::new();
+    // each inscription's latest event: stored, then this block's
+    let mut last_event = HashMap::<i64, i64>::new();
     if !transferred.is_empty() {
         let rows = sqlx::query(
-            "SELECT sequence_number, outpoint, \"offset\", pkscript, address, last_moved_height \
-             FROM inscriptions_entries WHERE sequence_number = ANY($1)",
+            "SELECT sequence_number, last_event_id FROM inscriptions_entries \
+             WHERE sequence_number = ANY($1)",
         )
         .bind(&transferred)
         .fetch_all(&mut **tx)
         .await?;
         for row in rows {
-            locations.insert(
-                row.get(0),
-                Location {
-                    outpoint: row.get(1),
-                    offset: row.get(2),
-                    pkscript: row.get(3),
-                    address: row.get(4),
-                    last_moved_height: row.get(5),
-                },
-            );
+            last_event.insert(row.get(0), row.get(1));
         }
     }
+    let mut locations = HashMap::<i64, Location>::new();
     let mut created = Vec::new();
     let mut moved = Vec::new();
     let mut events = Vec::with_capacity(moves.len());
     for (position, m) in moves.iter().enumerate() {
         let sequence_number = i64::from(m.sequence_number);
+        let id = event_id(block.height, position)?;
         let (outpoint, offset) = split_satpoint(&m.satpoint)?;
-        let new = Location {
-            outpoint,
+        let (txid, vout) = split_outpoint(&outpoint)?;
+        let location = Location {
+            txid,
+            vout,
             offset: i64::try_from(offset)?,
-            pkscript: hex::encode(&m.pkscript),
-            address: address(&m.pkscript, network),
+            pkscript: m.pkscript.to_vec(),
             last_moved_height: height,
+            event_id: id,
         };
-        let old = match &m.genesis {
+        let prev_id = match &m.genesis {
             Some(genesis) => {
-                if locations.contains_key(&sequence_number) {
+                if last_event.contains_key(&sequence_number) {
                     bail!(
                         "block {} creates inscription {} twice",
                         block.height,
@@ -304,7 +325,7 @@ async fn apply_moves(
                 None
             }
             None => {
-                let Some(old) = locations.get(&sequence_number) else {
+                let Some(prev_id) = last_event.get(&sequence_number) else {
                     bail!(
                         "block {} transfers inscription {}, which is not stored",
                         block.height,
@@ -312,16 +333,15 @@ async fn apply_moves(
                     );
                 };
                 moved.push(sequence_number);
-                Some(old.clone())
+                Some(*prev_id)
             }
         };
-        locations.insert(sequence_number, new.clone());
+        last_event.insert(sequence_number, id);
+        locations.insert(sequence_number, location.clone());
         events.push(Event {
-            id: event_id(block.height, position)?,
             sequence_number,
-            inscription_id: m.inscription_id.clone(),
-            old,
-            new,
+            prev_id,
+            location,
         });
     }
     insert_created(tx, &created, &locations, height).await?;
@@ -330,7 +350,7 @@ async fn apply_moves(
     moved.sort_unstable();
     moved.dedup();
     update_moved(tx, &moved, &locations).await?;
-    insert_events(tx, &events, height).await?;
+    insert_events(tx, &events).await?;
     Ok(())
 }
 
@@ -351,11 +371,12 @@ async fn insert_created(
     let mut content_type = Vec::new();
     let mut media = Vec::new();
     let mut charms = Vec::new();
-    let mut outpoint = Vec::new();
+    let mut txid = Vec::new();
+    let mut vout = Vec::new();
     let mut offset = Vec::new();
     let mut pkscript = Vec::new();
-    let mut wallet = Vec::new();
     let mut last_moved = Vec::new();
+    let mut last_event = Vec::new();
     for c in created {
         let location = &locations[&c.sequence_number];
         sequence_number.push(c.sequence_number);
@@ -364,22 +385,23 @@ async fn insert_created(
         media.push(c.content_type.as_deref().and_then(media_type));
         content_type.push(c.content_type.clone());
         charms.push(c.charms);
-        outpoint.push(location.outpoint.clone());
+        txid.push(location.txid.clone());
+        vout.push(location.vout);
         offset.push(location.offset);
         pkscript.push(location.pkscript.clone());
-        wallet.push(location.address.clone());
         last_moved.push(location.last_moved_height);
+        last_event.push(location.event_id);
     }
     sqlx::query(
         "INSERT INTO inscriptions_entries (sequence_number, inscription_id, \"number\", \
-         content_type, media_type, charms, outpoint, \"offset\", pkscript, address, \
-         genesis_height, last_moved_height) \
+         content_type, media_type, charms, txid, vout, \"offset\", pkscript, \
+         genesis_height, last_moved_height, last_event_id) \
          SELECT sequence_number, inscription_id, number, content_type, media_type, charms, \
-         outpoint, \"offset\", pkscript, address, $12, last_moved_height \
+         txid, vout, \"offset\", pkscript, $13, last_moved_height, last_event_id \
          FROM UNNEST($1::int8[], $2::text[], $3::int8[], $4::text[], $5::text[], $6::int4[], \
-         $7::text[], $8::int8[], $9::text[], $10::text[], $11::int4[]) \
+         $7::bytea[], $8::int4[], $9::int8[], $10::bytea[], $11::int4[], $12::int8[]) \
          AS u(sequence_number, inscription_id, number, content_type, media_type, charms, \
-         outpoint, \"offset\", pkscript, address, last_moved_height)",
+         txid, vout, \"offset\", pkscript, last_moved_height, last_event_id)",
     )
     .bind(sequence_number)
     .bind(inscription_id)
@@ -387,11 +409,12 @@ async fn insert_created(
     .bind(content_type)
     .bind(media)
     .bind(charms)
-    .bind(outpoint)
+    .bind(txid)
+    .bind(vout)
     .bind(offset)
     .bind(pkscript)
-    .bind(wallet)
     .bind(last_moved)
+    .bind(last_event)
     .bind(height)
     .execute(&mut **tx)
     .await?;
@@ -408,33 +431,38 @@ async fn update_moved(
     if moved.is_empty() {
         return Ok(());
     }
-    let mut outpoint = Vec::new();
+    let mut txid = Vec::new();
+    let mut vout = Vec::new();
     let mut offset = Vec::new();
     let mut pkscript = Vec::new();
-    let mut wallet = Vec::new();
     let mut last_moved = Vec::new();
+    let mut last_event = Vec::new();
     for seq in moved {
         let location = &locations[seq];
-        outpoint.push(location.outpoint.clone());
+        txid.push(location.txid.clone());
+        vout.push(location.vout);
         offset.push(location.offset);
         pkscript.push(location.pkscript.clone());
-        wallet.push(location.address.clone());
         last_moved.push(location.last_moved_height);
+        last_event.push(location.event_id);
     }
     let updated = sqlx::query(
         "UPDATE inscriptions_entries e \
-         SET outpoint = u.outpoint, \"offset\" = u.\"offset\", pkscript = u.pkscript, \
-         address = u.address, last_moved_height = u.last_moved_height \
-         FROM UNNEST($1::int8[], $2::text[], $3::int8[], $4::text[], $5::text[], $6::int4[]) \
-         AS u(sequence_number, outpoint, \"offset\", pkscript, address, last_moved_height) \
+         SET txid = u.txid, vout = u.vout, \"offset\" = u.\"offset\", pkscript = u.pkscript, \
+         last_moved_height = u.last_moved_height, last_event_id = u.last_event_id \
+         FROM UNNEST($1::int8[], $2::bytea[], $3::int4[], $4::int8[], $5::bytea[], \
+         $6::int4[], $7::int8[]) \
+         AS u(sequence_number, txid, vout, \"offset\", pkscript, last_moved_height, \
+         last_event_id) \
          WHERE e.sequence_number = u.sequence_number",
     )
     .bind(moved)
-    .bind(outpoint)
+    .bind(txid)
+    .bind(vout)
     .bind(offset)
     .bind(pkscript)
-    .bind(wallet)
     .bind(last_moved)
+    .bind(last_event)
     .execute(&mut **tx)
     .await?
     .rows_affected();
@@ -447,64 +475,36 @@ async fn update_moved(
     Ok(())
 }
 
-async fn insert_events(
-    tx: &mut Transaction<'_, Postgres>,
-    events: &[Event],
-    height: i32,
-) -> anyhow::Result<()> {
-    let mut id = Vec::new();
-    let mut sequence_number = Vec::new();
-    let mut inscription_id = Vec::new();
-    let mut old_outpoint = Vec::new();
-    let mut old_offset = Vec::new();
-    let mut old_pkscript = Vec::new();
-    let mut old_address = Vec::new();
-    let mut old_last_moved = Vec::new();
-    let mut new_outpoint = Vec::new();
-    let mut new_offset = Vec::new();
-    let mut new_pkscript = Vec::new();
-    let mut new_address = Vec::new();
+async fn insert_events(tx: &mut Transaction<'_, Postgres>, events: &[Event]) -> anyhow::Result<()> {
+    let mut id = Vec::with_capacity(events.len());
+    let mut sequence_number = Vec::with_capacity(events.len());
+    let mut prev_id = Vec::with_capacity(events.len());
+    let mut offset = Vec::with_capacity(events.len());
+    let mut vout = Vec::with_capacity(events.len());
+    let mut txid = Vec::with_capacity(events.len());
+    let mut pkscript = Vec::with_capacity(events.len());
     for event in events {
-        id.push(event.id);
+        id.push(event.location.event_id);
         sequence_number.push(event.sequence_number);
-        inscription_id.push(event.inscription_id.clone());
-        let old = event.old.as_ref();
-        old_outpoint.push(old.map(|o| o.outpoint.clone()));
-        old_offset.push(old.map(|o| o.offset));
-        old_pkscript.push(old.map(|o| o.pkscript.clone()));
-        old_address.push(old.and_then(|o| o.address.clone()));
-        old_last_moved.push(old.map(|o| o.last_moved_height));
-        new_outpoint.push(event.new.outpoint.clone());
-        new_offset.push(event.new.offset);
-        new_pkscript.push(event.new.pkscript.clone());
-        new_address.push(event.new.address.clone());
+        prev_id.push(event.prev_id);
+        offset.push(event.location.offset);
+        vout.push(event.location.vout);
+        txid.push(event.location.txid.clone());
+        pkscript.push(event.location.pkscript.clone());
     }
     sqlx::query(
-        "INSERT INTO inscriptions_events (id, block_height, sequence_number, inscription_id, \
-         old_outpoint, old_offset, old_pkscript, old_address, old_last_moved_height, \
-         new_outpoint, new_offset, new_pkscript, new_address) \
-         SELECT id, $13, sequence_number, inscription_id, old_outpoint, old_offset, \
-         old_pkscript, old_address, old_last_moved_height, new_outpoint, new_offset, \
-         new_pkscript, new_address \
-         FROM UNNEST($1::int8[], $2::int8[], $3::text[], $4::text[], $5::int8[], $6::text[], \
-         $7::text[], $8::int4[], $9::text[], $10::int8[], $11::text[], $12::text[]) \
-         AS u(id, sequence_number, inscription_id, old_outpoint, old_offset, old_pkscript, \
-         old_address, old_last_moved_height, new_outpoint, new_offset, new_pkscript, \
-         new_address)",
+        "INSERT INTO inscriptions_events (id, sequence_number, prev_id, \"offset\", vout, \
+         txid, pkscript) \
+         SELECT * FROM UNNEST($1::int8[], $2::int8[], $3::int8[], $4::int8[], $5::int4[], \
+         $6::bytea[], $7::bytea[])",
     )
     .bind(id)
     .bind(sequence_number)
-    .bind(inscription_id)
-    .bind(old_outpoint)
-    .bind(old_offset)
-    .bind(old_pkscript)
-    .bind(old_address)
-    .bind(old_last_moved)
-    .bind(new_outpoint)
-    .bind(new_offset)
-    .bind(new_pkscript)
-    .bind(new_address)
-    .bind(height)
+    .bind(prev_id)
+    .bind(offset)
+    .bind(vout)
+    .bind(txid)
+    .bind(pkscript)
     .execute(&mut **tx)
     .await?;
     Ok(())

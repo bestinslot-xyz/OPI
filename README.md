@@ -25,6 +25,7 @@ One root Cargo workspace holds every crate, the indexer and the API included.
 | `crates/opi-bitmap` | the Bitmap module |
 | `crates/opi-sns` | the SNS module |
 | `crates/opi-runes` | the Runes module |
+| `crates/opi-utxos` | the UTXO set module |
 | `crates/opi-api` | the HTTP API for every enabled module, served by `opi-indexer api` |
 | `tools/parity` | Python reference implementations and comparison tests for the modules, and the API comparison script |
 | `.env_sample` | every setting of `opi-indexer` and the API |
@@ -35,7 +36,8 @@ One root Cargo workspace holds every crate, the indexer and the API included.
 
 ### Modules
 
-`OPI_MODULES` lists the modules to run: any subset of `brc20,bitmap,sns,runes`.
+`OPI_MODULES` lists the modules to run: any subset of
+`brc20,bitmap,sns,runes,inscriptions,utxos`.
 Each module reads the journal and keeps its own Postgres database. The API serves the same list.
 
 | Module | Indexes | Database variables |
@@ -45,6 +47,7 @@ Each module reads the journal and keeps its own Postgres database. The API serve
 | `sns` | Sats Names, by the written spec (see [SNS indexing rules](#sns-indexing-rules)) | `SNS_DB_*` |
 | `runes` | Runes, from ord's rune events | `RUNES_DB_*` |
 | `inscriptions` | Every bound inscription's number, content type, current outpoint and owner (see [Inscriptions module](#inscriptions-module)) | `INSCRIPTIONS_DB_*` |
+| `utxos` | Every unspent output, by outpoint and script (see [UTXO module](#utxo-module)) | `UTXOS_DB_*` |
 
 The `*_DB_*` variables are `USER`, `HOST`, `PORT`, `DATABASE`, `PASSWD` and
 `SSL`, for example `BITMAP_DB_DATABASE`. The runes module reports `event_hash_version` 2 because it orders a
@@ -87,9 +90,10 @@ needs `RUNES_DB_DATABASE`), or delete both dirs to run without runes.
 The `inscriptions` module keeps one row per bound inscription in
 `inscriptions_entries`: its id, number, sequence number, content type (as
 inscribed, plus a lowercased `media_type` without parameters for filtering),
-charms, outpoint and offset, pkscript and address, genesis height and last
-moved height. Cursed inscriptions are included (negative `number`). Burned
-ones stay at their OP_RETURN output with no address. Unbound inscriptions have
+charms, outpoint (txid bytes and vout) and offset, raw pkscript, genesis
+height, last moved height and latest event. Addresses derive from the
+pkscript. Cursed inscriptions are included (negative `number`). Burned ones
+stay at their OP_RETURN output, which has no address. Unbound inscriptions have
 no location and are left out. Inscription content is not stored.
 
 It reads every creation and transfer from the journal's `inscription_moves`
@@ -99,9 +103,68 @@ Like runes, the choice is fixed when the journal is created (its
 module on for an existing journal means deleting `OPI_JOURNAL_DIR` and
 `OPI_ORD_DATA_DIR` and indexing from the start. Each block's moves apply in
 ord's emission order, with one update per moved inscription.
-`inscriptions_events` keeps one row per creation and transfer with the prior
-location, which a reorg rolls back to. The module reports no event hashes to
-the OPI network.
+`inscriptions_events` keeps one row per creation and transfer: the location
+the inscription moved to, as txid bytes, vout, offset and raw pkScript, and
+`prev_id`, the inscription's previous event, whose location a reorg rolls back
+to. An event id holds its block height in the high 32 bits, so a block's
+events are one primary-key range; addresses derive from the pkScript and the
+network. The module reports no event hashes to the OPI network.
+
+#### UTXO module
+
+The `utxos` module keeps bitcoind's UTXO set in `utxos`: one row per unspent
+output with its txid bytes, vout, value, creating height, coinbase flag and
+raw pkscript, indexed by outpoint and by the pkscript's SHA-256. Addresses
+derive from the pkscript. Like bitcoind, it leaves out the genesis coinbase
+and unspendable outputs (an OP_RETURN script, or one over 10,000 bytes), and a
+repeated coinbase txid replaces the earlier outputs. Spent outputs are
+deleted.
+
+The journal carries no outputs, so the module reads blocks from bitcoind
+(`getblock <hash> 0`, outside the gate proxy) and resolves each spend against
+its own table. It runs in two modes:
+
+- **Catch-up**, while it is more than `MAX_ROLLBACK_DEPTH` (1000) blocks below
+  the journal's tip: it reads blocks by height, writes many per transaction
+  and keeps no undo data. This is how a new module indexes from genesis, on a
+  pruned journal too, and how one that fell behind gets back.
+- **Following**, within the window: it reads each block by the journal's hash
+  and writes it with its undo data, `utxos_created` and `utxos_spent`, which
+  a rollback uses to delete the block's outputs and put back the ones it
+  spent. Every 100 blocks it drops the undo data older than the window,
+  whether `OPI_PRUNE` is set or not.
+
+A block that spends an output the table does not hold fails, and the module
+restarts from its cursor. A rollback below the oldest undo data
+(`utxos_undo.undo_from`) fails too; the database must then be recreated. The
+module reports no event hashes to the OPI network.
+
+The API serves the set as `GET /v1/utxos/wallet?address=|pkscript=&type=`,
+which needs the inscriptions and runes modules too: each of the wallet's
+outputs with the inscriptions and rune balances it carries, and for each
+inscription whether it is a used BRC-20 or BRC2.0 transfer inscription.
+`type=cardinal` (which also needs brc20) keeps the outputs a wallet may spend
+as plain bitcoin: no runes, no inscriptions other than used transfer
+inscriptions, and created at or below `indexed_height`, the lowest height of
+the modules read. `inscribed` and `runic` keep the outputs with inscriptions
+or runes. A wallet with more than 10,000 unspent outputs answers 413.
+
+With `MEMPOOL_ENABLED=true` (and `BITCOIN_RPC_URL` with
+`BITCOIN_RPC_COOKIE` or `BITCOIN_RPC_USER`/`BITCOIN_RPC_PASSWD`), the API
+keeps a mempool view in memory: it reads `getrawmempool` every
+`MEMPOOL_POLL_MS` (default 2000) and fetches each new transaction with
+`getrawtransaction` and `getmempoolentry`. `mempool=true` on the route then
+leaves out the outputs a mempool transaction spends and adds the wallet's
+mempool outputs, with `height` null, the transaction's `fee` and `vsize`,
+and `pending` when their contents are unknown until they confirm: the
+transaction or an in-mempool ancestor opens an inscription envelope or
+holds a runestone, or a confirmed output they spend carries an inscription
+or a rune or lies above `indexed_height`. Only mempool outputs that are not
+pending count as cardinal; `inscribed` and `runic` list none. A transaction
+that leaves the mempool stays in the view until the utxos module reaches
+the bitcoind tip it left at, so a block's outputs never vanish between
+bitcoind and the module. Before the view's first poll, `mempool=true`
+answers 503.
 
 ### Prerequisites
 
@@ -131,9 +194,9 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
-| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
+| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`, `utxos`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
 | `OPI_PRUNE` | blocks of history to keep, at least `1000`; unset keeps everything (see [Pruning](#pruning)) |
-| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE` and `INSCRIPTIONS_DB_DATABASE` have no default and are required when the module is enabled |
+| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*`, `UTXOS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`, `INSCRIPTIONS_DB_DATABASE` and `UTXOS_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
 | `RUST_LOG` | log filter, default `info` |
@@ -241,7 +304,7 @@ the deepest rollback the scheduler walks.
 | brc20 | `brc20_logs`, which nothing reads | every table the API, the light clients and `validate` read |
 | bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
-| inscriptions | `inscriptions_events` and `inscriptions_block_hashes` below the window | `inscriptions_entries` |
+| inscriptions | `inscriptions_block_hashes` below the window | `inscriptions_entries` and every `inscriptions_events` row, which the history routes read |
 
 Each module prunes its tables every 100 blocks. ord's index has no history to
 prune: `run` builds it without sat, address or transaction indexes.
@@ -784,29 +847,31 @@ set for `input` and `output` events and empty for `new_rune_allocation`,
 `cumulative_hash = sha256_hex(previous_cumulative_hash + block_event_hash)`.
 The first hashed block uses its `block_event_hash` as the cumulative hash.
 
+**Storage.** `runes_events` and `runes_outpoint_to_balances` store txids and
+pkScripts as `bytea` and an outpoint as its txid (`bytea`) and vout
+(`int4`); `runes_current_balances` keys its rows by the pkScript's bytes.
+No table stores an address: the API derives it from the pkScript on the
+database's network (`runes_network_type`), and resolves an `address`
+parameter to the pkScript it encodes. An outpoint is unspent while its
+`spent_block_height` is null, and `runes_outpoint_to_balances` is keyed by
+`(txid, vout)`. The API prints every txid and pkScript as lowercase hex and
+every outpoint as `<txid>:<vout>`, the text the event hash reads.
+`runes_events` is indexed by `block_height`, `txid`, `(rune_id, id)` and
+`(pkscript, id)`; `runes_outpoint_to_balances` by `(txid, vout)`,
+`block_height` and `pkscript`.
+
 **API tables.** For the API's rune routes the module keeps
 `runes_current_balances` (per rune and pkScript, the sum of its unspent
 outpoints' balances) and `runes_holders` (the pkScripts with a positive
 balance per rune) in each block's transaction and on every rollback, from
 that block's balance changes alone; they feed no event, hash or report. A
 database without them gets them filled from the unspent outpoints at start,
-and the indexes the routes read are created at start when missing. On a
-database the module wrote before, the first start builds the runes event
-indexes, which takes a few seconds on signet and minutes on mainnet; it logs
-`building runes event indexes, this can take minutes` at info while it does.
-Until the tables and indexes exist, the API's rune routes answer `503`.
+and the indexes the routes read are created at start when missing (they
+include `runes_id_to_entry_number_idx`, which orders runes by number).
+Until the tables and indexes exist, the API's rune routes and
+`/v1/runes/holders` answer `503`.
 
-**Disk space for the first start.** The event indexes `(rune_id, id)`,
-`(wallet_addr, id)` and `(pkscript, id)` take about 190 bytes per row of
-`runes_events` (193 on signet, against about 45 for the single-column
-indexes they replace): about 19 GB per 100 million events. The old indexes
-are dropped only after the new ones exist, and each build sorts its rows in
-temporary files beside them (`maintenance_work_mem` is set to 1GB for the
-builds), so check that the database's disk has free space of at least twice
-the new indexes' size before upgrading. `SELECT count(*) FROM runes_events`
-gives the row count.
-
-**Versions.** Reports send `opi-runes-full-node v1.0.0` with `db_version` 6. A
+**Versions.** Reports send `opi-runes-full-node v1.0.0` with `db_version` 7. A
 database with another `db_version` is refused and must be indexed from scratch.
 `RUNES_DB_DATABASE` names a new database: one that holds blocks written by
 another indexer is refused.
@@ -911,6 +976,7 @@ bracketed parameter).
 | `GET /v1/brc20/bitcoin_rpc_results_on_block` | `block_height` | Every cached bitcoin RPC result of a block height. |
 | `GET /v1/brc20/block_height` |  | The latest indexed block height. |
 | `GET /v1/brc20/db_version` |  | The database's schema version. |
+| `GET /v1/brc20/deploys` | `type`, `category`, `before_id`, `limit` | A page of the network's events of some categories, newest first. |
 | `GET /v1/brc20/event` | **`inscription_id`** | Every event of an inscription id. |
 | `GET /v1/brc20/event_hash_version` |  | The version of the event hash format. |
 | `GET /v1/brc20/explorer/address_tabs_counters/{evm_address}` |  | The address tab counters of an EVM address, for the BRC2.0 explorer. |
@@ -927,12 +993,13 @@ bracketed parameter).
 | `GET /v1/brc20/ip` |  | The client's IP address, as the API sees it through API_TRUSTED_PROXY_CNT proxies. |
 | `GET /v1/brc20/ticker` | **`ticker`** | A ticker's supply, mint progress, holder counts and BRC2.0 token contract. |
 | `GET /v1/brc20/ticker/by_contract` | **`contract_address`** | The ticker a BRC2.0 token contract carries. |
-| `GET /v1/brc20/ticker/events` | **`ticker`**, `type`, `before_id`, `limit` | A page of a ticker's events, newest first. |
+| `GET /v1/brc20/ticker/events` | **`ticker`**, `type`, `category`, `before_id`, `limit` | A page of a ticker's events, newest first. |
 | `GET /v1/brc20/ticker/holders` | **`ticker`**, `offset`, `limit` | A page of a ticker's holders, BRC-20 and BRC2.0 balances merged. |
 | `GET /v1/brc20/ticker/holders/snapshot` | **`ticker`**, `block_height`, `format` | Every holder of a ticker at the end of a block, streamed. |
 | `GET /v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | A page of tickers, by holders or another order. |
+| `GET /v1/brc20/wallet/balance_history` | `address`, `pkscript`, **`ticker`**, `before_id`, `limit` | A wallet's balance of one ticker after each change, newest first. |
 | `GET /v1/brc20/wallet/balances` | **`address`**, `offset`, `limit` | A page of a wallet's tickers, BRC-20 and BRC2.0 balances side by side. |
-| `GET /v1/brc20/wallet/events` | `address`, `pkscript`, `type`, `before_id`, `limit` | A page of the events a wallet takes part in, newest first. |
+| `GET /v1/brc20/wallet/events` | `address`, `pkscript`, `type`, `category`, `before_id`, `limit` | A page of the events a wallet takes part in, newest first. |
 
 **bitmap**: Bitmap.
 
@@ -967,6 +1034,7 @@ bracketed parameter).
 | `GET /v1/runes/activity_on_block` | `block_height` | Every runes event of a block height. |
 | `GET /v1/runes/balance_on_block` | `block_height`, `pkscript`, `address` | Every rune balance of a pkscript or address at the start of a block height. |
 | `GET /v1/runes/block_height` |  | The latest indexed block height. |
+| `GET /v1/runes/etchings` | `before_number`, `limit` | A page of etched runes, newest first. |
 | `GET /v1/runes/event` | **`transaction_id`** | Every runes event of a transaction id. |
 | `GET /v1/runes/get_current_balance_of_wallet` | `address`, `pkscript` | Every current rune balance of a wallet. |
 | `GET /v1/runes/get_hash_of_all_activity` | **`block_height`** | A block's event hashes, cumulative and its own. |
@@ -974,26 +1042,34 @@ bracketed parameter).
 | `GET /v1/runes/holders` | `rune_name`, `rune_id` | Every holder of a rune, largest balance first. |
 | `GET /v1/runes/ip` |  | The client's IP address, as the API sees it through API_TRUSTED_PROXY_CNT proxies. |
 | `GET /v1/runes/rune` | **`rune`** | A rune's etching, supply, mint terms and progress, and holder count. |
-| `GET /v1/runes/rune/events` | **`rune`**, `type`, `before_id`, `limit` | A page of a rune's events, newest first. |
+| `GET /v1/runes/rune/events` | **`rune`**, `type`, `category`, `before_id`, `limit` | A page of a rune's events, newest first. |
 | `GET /v1/runes/rune/holders` | **`rune`**, `after`, `limit` | A page of a rune's holders, largest balance first. |
 | `GET /v1/runes/runes` | `sort`, `order`, `search`, `after`, `limit` | A page of runes, by holders or another order. |
 | `GET /v1/runes/wallet/balances` | `address`, `pkscript`, `after`, `limit` | A page of the runes a wallet holds, with its balances. |
-| `GET /v1/runes/wallet/events` | `address`, `pkscript`, `type`, `before_id`, `limit` | A page of a wallet's runes events, newest first. |
+| `GET /v1/runes/wallet/events` | `address`, `pkscript`, `rune`, `type`, `category`, `before_id`, `limit` | The `input` and `output` events of the outpoints the wallet owns, named by `address` or `pkscript`; `rune` keeps those of one rune. The feed pages by key, as the rune feed does. |
 
 **inscriptions**: Inscriptions and their current locations.
 
 | Route | Query parameters | Answers |
 | --- | --- | --- |
 | `GET /v1/inscriptions/inscription` | `id`, `number` | One inscription's metadata and current location. |
+| `GET /v1/inscriptions/inscription/history` | `id`, `number`, `before_id`, `limit` | A page of an inscription's creation and transfers, newest first. |
 | `GET /v1/inscriptions/outpoint` | **`outpoint`** | The inscriptions an output holds, with their offsets. |
 | `POST /v1/inscriptions/outpoints` |  | The inscriptions on up to 500 outputs, with their offsets. |
 | `GET /v1/inscriptions/wallet` | `address`, `pkscript`, `content_type`, `from_height`, `to_height`, `cursed`, `after`, `limit` | A page of the inscriptions a wallet holds, newest first. |
+| `GET /v1/inscriptions/wallet/history` | `address`, `pkscript`, `before_id`, `limit` | A page of the inscriptions a wallet received, newest first, each with the transfer that moved it on. |
 
 **outputs**: The inscriptions and runes on outputs.
 
 | Route | Query parameters | Answers |
 | --- | --- | --- |
 | `POST /v1/outputs` |  | The inscriptions and runes on up to 500 outputs. |
+
+**utxos**: A wallet's unspent outputs and what they carry.
+
+| Route | Query parameters | Answers |
+| --- | --- | --- |
+| `GET /v1/utxos/wallet` | `address`, `pkscript`, `type`, `mempool` | A wallet's unspent outputs, with their inscriptions and runes. |
 
 **stream**: The push feed of each block's events.
 
@@ -1129,17 +1205,57 @@ block's time in seconds and is null when the block's time is unknown (a block
 indexed before block times were stored that the journal did not hold at a
 start, or any such block in light mode), `event_type` is the name from
 `brc20_event_types` and `event` is the stored event object. `type` keeps one
-event type by that name. A ticker's events are those whose `tick` is the
-ticker. A wallet's events are those where it is any party (a `*_pkScript` or
-`*_wallet` field: `deployer`, `minted`, `source`, `spent`, `predeployer`);
-`address` is a Bitcoin address or an EVM address that answers as its mapped
-Bitcoin address (an unmapped one has no events), and `pkscript` is hex.
-BRC2.0 deposits are `transfer-transfer` events spent to the module pkScript,
-and withdrawals are `brc20prog-withdraw-*` events. The feeds page by key:
-`before_id` is the previous page's `next_before_id`, and a page holds the
-events with a lower id, so pages neither repeat nor skip events as new ones
-arrive. `has_more` tells whether older events exist; `next_before_id` is null
-on the last page.
+event type by that name. `category` keeps the events of one or more
+categories, comma-separated; every event type has exactly one:
+
+| Category | Events |
+| --- | --- |
+| `deploy` | `deploy-inscribe`, `predeploy-inscribe` |
+| `mint` | `mint-inscribe` |
+| `transfer` | `transfer-inscribe`, and `transfer-transfer` not spent to the BRC2.0 module pkScript |
+| `wrap` | `transfer-transfer` spent to the BRC2.0 module pkScript (`6a09425243323050524f47` on every network): a deposit into BRC2.0 |
+| `unwrap` | `brc20prog-withdraw-inscribe` and `brc20prog-withdraw-transfer`, the two steps of a withdrawal (add `type=brc20prog-withdraw-transfer` for the withdrawals alone) |
+| `brc20prog` | the BRC2.0 deploy, call and transact inscriptions and transfers |
+
+With both `type` and `category`, an event passes both. A ticker's events are
+those whose `tick` is the ticker. A wallet's events are those where it is a
+party (`deployer`, `minted`, `source`, `spent`, `predeployer`): for
+`pkscript`, the party's `*_pkScript` field is that pkScript; for `address`,
+the party's `*_wallet` field is that address. `address` is a Bitcoin address
+or an EVM address that answers as its mapped Bitcoin address (an unmapped one
+has no events), and `pkscript` is hex. `/v1/brc20/deploys` lists the whole
+network's deploy and predeploy events, or with `category` the events of those
+categories (every wrap, say). The feeds page by key: `before_id` is the
+previous page's `next_before_id`, and a page holds the events with a lower
+id, so pages neither repeat nor skip events as new ones arrive. `has_more`
+tells whether older events exist; `next_before_id` is null on the last page.
+
+Each page costs the same at any depth, an index range scan from the cursor.
+A ticker's events come from the `(event ->> 'tick', id)` index, with a
+partial copy per rare category (`deploy`, `wrap`, `unwrap`); the network's
+from partial `(id)` indexes per rare category (`deploy`, `wrap`, `unwrap`,
+`brc20prog`); a wallet's from `brc20_event_parties`, one row per party
+pkScript of each event (bytea, primary key `(pkscript, event_id)`), which the
+indexer writes in the transaction that writes the events and deletes with
+them on a reorg, in both modes. An address is read as the pkScript it
+encodes, and an event of that pkScript passes when one of its `*_wallet`
+fields is the address as given; the indexer writes each wallet field from its
+party's pkScript, so this names the events the wallet fields name, and the
+same pkScript in another network's form names none. A category is
+`brc20_event_category(event_type, event)` and a party list
+`brc20_event_party_pkscripts(event)`, SQL functions db_init.sql creates. A
+filter without its own index (a ticker's `mint` page, say) reads the rows
+until the page fills.
+
+**Balance history.** `/v1/brc20/wallet/balance_history` lists a wallet's
+balance of one `ticker` after each change, newest first: one row
+`{"id","block_height","block_time","overall_balance","available_balance"}`
+per row of `brc20_historic_balances`, with the result's `decimals` (18) and
+`ticker_decimals`. `address` and `pkscript` name the wallet as on
+`/v1/brc20/wallet/events` (by address, a row passes when its `wallet` is the
+address as given). It pages by key with `before_id` as the feeds do, and
+each page is a backward range scan of the `(pkscript, tick, block_height)`
+index from the cursor's block. An unknown ticker answers `404`.
 
 **Bitmap and SNS lookups.** A bitmap is `{"inscription_id",
 "inscription_number","bitmap_number","block_height"}` and a name is
@@ -1157,7 +1273,7 @@ follow and `next_after` is null on the last page.
 ### Rune, holder and wallet routes
 
 The generic runes routes (`/v1/runes/rune`, `/v1/runes/runes`,
-`/v1/runes/rune/holders`, `/v1/runes/wallet/balances`,
+`/v1/runes/etchings`, `/v1/runes/rune/holders`, `/v1/runes/wallet/balances`,
 `/v1/runes/rune/events` and `/v1/runes/wallet/events`) answer
 `{"error":null,"result":...}` with the database's `block_height`, as the
 brc20 ticker routes do. A missing or invalid parameter answers
@@ -1165,8 +1281,12 @@ brc20 ticker routes do. A missing or invalid parameter answers
 `404 {"error":"rune not found","result":null}`. On a database the runes
 module has not built its API tables and indexes in (it builds them when
 `opi-indexer run` starts), they answer
-`503 {"error":"the runes API tables are not built yet; start opi-indexer run once","result":null}`;
-the parity routes above do not need these tables. Lists take `limit` (default
+`503 {"error":"the runes API tables are not built yet; start opi-indexer run once","result":null}`,
+as does the parity route `/v1/runes/holders`, which reads `runes_current_balances`; the other
+parity routes do not need these tables. An `address` is read as the pkScript it
+encodes on the database's network: one that does not parse, belongs to another
+network or encodes a script type without an address form answers no rows.
+Lists take `limit` (default
 `100`, at most `500`). `rune` and `search` are at most 128 bytes and `after`
 at most 256; the other bounds are those of the ticker routes.
 
@@ -1190,7 +1310,10 @@ integers as strings with `divisibility` fractional digits.
 number in the same direction. `search` keeps the runes whose name starts
 with it: written without spacers it matches the letters (`UNCOMMONG` finds
 `UNCOMMON•GOODS`), with spacers the spaced name (`UNCOMMON•G` finds
-`UNCOMMON•GOODS`, not `UNCOMMONG•OODS`).
+`UNCOMMON•GOODS`, not `UNCOMMONG•OODS`). `/v1/runes/etchings` lists the
+same objects newest first, by rune number descending (a rune's number is its
+place in etching order), and pages by `before_number`, the previous page's
+`next_before_number`, as the event feeds page by `before_id`.
 
 **Holders and wallet balances.** A holder is a pkScript with a positive
 balance of the rune over its unspent outpoints, as
@@ -1211,10 +1334,17 @@ page's `next_after`, an opaque cursor, and a page holds the rows after it.
 time in seconds, null for a height whose block hash row pruning removed.
 `event_type` is the name from `runes_event_types` (`input`,
 `new-allocation`, `mint`, `output`, `burn`), and `type` keeps one of them.
+`category` keeps one or more categories, comma-separated: `etch`
+(`new-allocation`), `mint`, `transfer` (`input` and `output`) and `burn`;
+with `type` too, an event must pass both. The answer echoes the filters as
+`event_type` and `category`.
 `outpoint`, `pkscript` and `address` are set for `input` and `output`
 events. A rune's feed lists the events of its id; a wallet's feed, by
 `address` or `pkscript`, lists the `input` and `output` events of its
-outpoints. Both page by `before_id`, as the brc20 feeds do.
+outpoints, and `rune` keeps those of one rune (echoed as `rune_id`; an
+unknown rune answers 404). Both page by `before_id`, as the brc20 feeds do.
+A filter applies to the rows the feed's index walks (a rune's events, or a
+wallet's), so a filter that keeps few of them reads more rows per page.
 
 ### Inscription and output routes
 
@@ -1256,6 +1386,26 @@ list pages by key: `limit` (default `100`, at most `500`) and `after`, the
 previous page's `next_after`; `has_more` tells whether more follow and
 `next_after` is null on the last page. A wallet the database does not know
 answers an empty list.
+
+**Addresses.** An `address` derives from the output's pkScript and the
+database's network, for P2PKH, P2SH, P2WPKH, P2WSH and P2TR scripts (null
+for any other). An `address` parameter resolves to the pkScript it encodes,
+in any case; one that does not parse, belongs to another network or encodes
+another script type matches nothing.
+
+**History.** `/v1/inscriptions/inscription/history` takes `id` or `number`
+and lists the inscription's creation and transfers, newest first.
+`/v1/inscriptions/wallet/history` takes `address` or `pkscript` and lists
+the wallet's stays, newest receipt first: each is
+`{"inscription","received","sent"}`, the event that put an inscription on
+the wallet and the inscription's next transfer (null while the wallet holds
+it). An event is `{"id","block_height","block_time","event_type",
+"old_outpoint","old_offset","old_pkscript","old_address","new_outpoint",
+"new_offset","new_pkscript","new_address"}`, `event_type` `creation` or
+`transfer`, the `old_` fields null for a creation. Both page by key:
+`limit` (default `100`, at most `500`) and `before_id`, the previous page's
+`next_before_id`. A node pruned with `OPI_PRUNE` keeps every event, so both
+answer as on a full node; `block_time` is null below the pruned window.
 
 **Outputs.** An outpoint is `<txid>:<vout>`: 64 hex digits, any case, and a
 32-bit output index. `/v1/inscriptions/outpoint?outpoint=` answers
@@ -1473,7 +1623,7 @@ with `cargo sqlx prepare` (sqlx-cli 0.9) against a database that holds the
 schema, then verify it with `cargo sqlx prepare --check`. The `DATABASE_URL`
 needs an explicit user.
 
-For `opi-api`, build a throwaway database from the five schemas plus the one
+For `opi-api`, build a throwaway database from the six schemas plus the one
 table the API reads that no `db_init.sql` creates (`brc20_extras_block_hashes`),
 whose DDL goes in a local file `api_extra_tables.sql`:
 
@@ -1487,7 +1637,8 @@ CREATE TABLE public.brc20_extras_block_hashes (
 createdb -h /tmp opi_api_sqlx_prepare
 for f in crates/opi-brc20/src/database/sql/db_init.sql crates/opi-bitmap/src/db_init.sql \
          crates/opi-sns/src/db_init.sql crates/opi-runes/src/db_init.sql \
-         crates/opi-inscriptions/src/db_init.sql api_extra_tables.sql; do
+         crates/opi-inscriptions/src/db_init.sql crates/opi-utxos/src/db_init.sql \
+         api_extra_tables.sql; do
   psql -h /tmp -d opi_api_sqlx_prepare -X -q -v ON_ERROR_STOP=1 -f "$f"
 done
 cd crates/opi-api

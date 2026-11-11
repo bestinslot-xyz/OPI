@@ -2,8 +2,11 @@
 
 Each test creates two throwaway Postgres databases (reference and candidate)
 with the runes schema, fills them with small fixtures, runs the tool as a
-subprocess and drops the databases. Needs a local Postgres (127.0.0.1, user
-alper, trust auth) and runs only under OPI_TEST_PG=1.
+subprocess and drops the databases. Both sides hold runes_events and
+runes_outpoint_to_balances in the text layout index_runes.js writes
+(TEXT_TABLES); the bytea tests give the candidate the layout of db_init.sql.
+Needs a local Postgres (127.0.0.1, user alper, trust auth) and runs only under
+OPI_TEST_PG=1.
 """
 
 import hashlib
@@ -34,6 +37,22 @@ P2TR = "5120" + "22" * 32
 HASH_INPUT_A = f"input;{OP_A};{P2WPKH};840000:1;100"
 
 
+TEXT_TABLES = """
+DROP TABLE runes_events;
+DROP TABLE runes_outpoint_to_balances;
+CREATE TABLE public.runes_outpoint_to_balances (
+  id bigserial NOT NULL, outpoint text NOT NULL, pkscript text NOT NULL, wallet_addr text NULL,
+  rune_ids text[] NOT NULL, balances numeric(40)[] NOT NULL, block_height int4 NOT NULL,
+  spent bool NOT NULL DEFAULT false, spent_block_height int4 NULL,
+  CONSTRAINT runes_outpoint_to_balances_pk PRIMARY KEY (id));
+CREATE UNIQUE INDEX runes_outpoint_to_balances_outpoint_idx ON public.runes_outpoint_to_balances USING btree (outpoint);
+CREATE TABLE public.runes_events (
+  id bigserial NOT NULL, event_type int4 NOT NULL, txid text NOT NULL, outpoint text NULL,
+  pkscript text NULL, wallet_addr text NULL, rune_id text NOT NULL, amount numeric(40) NOT NULL,
+  block_height int4 NOT NULL, CONSTRAINT runes_events_pk PRIMARY KEY (id));
+"""
+
+
 def url(name):
   return f"postgresql://{PG_USER}@{PG_HOST}:5432/{name}"
 
@@ -42,8 +61,7 @@ def admin():
   return psycopg.connect(url("postgres"), autocommit=True)
 
 
-@pytest.fixture
-def dbs():
+def databases(bytea_candidate):
   names = [f"runes_cmp_{uuid.uuid4().hex[:10]}_{side}" for side in ("ref", "cand")]
   with admin() as a:
     for n in names:
@@ -53,6 +71,8 @@ def dbs():
     for n in names:
       c = psycopg.connect(url(n), autocommit=True)
       c.execute(SCHEMA.read_text())
+      if not (bytea_candidate and n == names[1]):
+        c.execute(TEXT_TABLES)
       conns.append(c)
     yield conns[0], conns[1], names
   finally:
@@ -63,17 +83,55 @@ def dbs():
         a.execute(f'DROP DATABASE IF EXISTS "{n}" WITH (FORCE)')
 
 
+@pytest.fixture
+def dbs():
+  yield from databases(bytea_candidate=False)
+
+
+@pytest.fixture
+def bytea_dbs():
+  """A text-layout reference and a candidate in the layout of db_init.sql."""
+  yield from databases(bytea_candidate=True)
+
+
+def text_layout(conn):
+  return conn.execute(
+    "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'runes_events' AND column_name = 'outpoint')"
+  ).fetchone()[0]
+
+
+def split(outpoint):
+  if outpoint is None:
+    return None, None
+  txid, vout = outpoint.split(":")
+  return bytes.fromhex(txid), int(vout)
+
+
 def event(conn, height, typ, txid, outpoint, pkscript, rune_id, amount, wallet=None):
+  if text_layout(conn):
+    conn.execute(
+      "INSERT INTO runes_events (event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount, block_height) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+      (typ, txid, outpoint, pkscript, wallet, rune_id, amount, height),
+    )
+    return
+  out_txid, out_vout = split(outpoint)
   conn.execute(
-    "INSERT INTO runes_events (event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount, block_height) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-    (typ, txid, outpoint, pkscript, wallet, rune_id, amount, height),
+    "INSERT INTO runes_events (event_type, txid, outpoint_txid, outpoint_vout, pkscript, rune_id, amount, block_height) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+    (typ, bytes.fromhex(txid), out_txid, out_vout, None if pkscript is None else bytes.fromhex(pkscript), rune_id, amount, height),
   )
 
 
 def balance(conn, outpoint, pkscript, height, rune_ids, balances, wallet=None, spent=False, spent_height=None):
+  if text_layout(conn):
+    conn.execute(
+      "INSERT INTO runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, balances, block_height, spent, spent_block_height) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+      (outpoint, pkscript, wallet, rune_ids, balances, height, spent, spent_height),
+    )
+    return
+  txid, vout = split(outpoint)
   conn.execute(
-    "INSERT INTO runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, balances, block_height, spent, spent_block_height) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-    (outpoint, pkscript, wallet, rune_ids, balances, height, spent, spent_height),
+    "INSERT INTO runes_outpoint_to_balances (txid, vout, pkscript, rune_ids, balances, block_height, spent_block_height) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+    (txid, vout, bytes.fromhex(pkscript), rune_ids, balances, height, spent_height),
   )
 
 
@@ -442,6 +500,37 @@ def test_duplicate_balance_rows_fail(dbs):
   r = run(names)
   assert r.returncode == 1
   assert "runes_outpoint_to_balances" in r.stdout and "duplicate" in r.stdout
+
+
+def test_bytea_candidate_equal_to_a_text_reference_exits_zero(bytea_dbs):
+  ref, cand, names = bytea_dbs
+  populate(ref)
+  populate(cand)
+  good = hashlib.sha256(f"new_rune_allocation;;;840000:1;100|output;{OP_A};{P2WPKH};840000:1;60|output;{OP_B};{P2TR};840000:1;40".encode()).hexdigest()
+  add_hashes(ref, cand, ({840000: good}, {840000: good}))
+  r = run(names)
+  assert r.returncode == 0, r.stdout + r.stderr
+  assert "hash match" in r.stdout.lower() and "840000" in r.stdout
+
+
+def test_bytea_candidate_differences_fail(bytea_dbs):
+  ref, cand, names = bytea_dbs
+  populate(ref)
+  populate(cand)
+  cand.execute("UPDATE runes_events SET outpoint_vout = 5 WHERE block_height = 840001 AND outpoint_vout = 0")
+  r = run(names)
+  assert r.returncode == 1, r.stdout + r.stderr
+  assert "840001" in r.stdout and "runes_events" in r.stdout
+
+
+def test_bytea_candidate_spent_state_is_compared(bytea_dbs):
+  ref, cand, names = bytea_dbs
+  populate(ref)
+  populate(cand)
+  cand.execute("UPDATE runes_outpoint_to_balances SET spent_block_height = NULL WHERE vout = 1")
+  r = run(names)
+  assert r.returncode == 1, r.stdout + r.stderr
+  assert "runes_outpoint_to_balances" in r.stdout and "spent" in r.stdout
 
 
 def test_missing_default_range_hashes_exits_two(dbs):

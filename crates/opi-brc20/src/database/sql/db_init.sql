@@ -16,32 +16,22 @@ CREATE TABLE public.brc20_historic_balances (
 	overall_balance numeric(40) NOT NULL,
 	available_balance numeric(40) NOT NULL,
 	block_height int4 NOT NULL,
-	event_id int8 NOT NULL,
 	CONSTRAINT brc20_historic_balances_pk PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX brc20_historic_balances_event_id_idx ON public.brc20_historic_balances USING btree (event_id);
 CREATE INDEX brc20_historic_balances_block_height_idx ON public.brc20_historic_balances USING btree (block_height);
-CREATE INDEX brc20_historic_balances_pkscript_idx ON public.brc20_historic_balances USING btree (pkscript);
 CREATE INDEX brc20_historic_balances_pkscript_tick_block_height_idx ON public.brc20_historic_balances USING btree (pkscript, tick, block_height);
 CREATE INDEX IF NOT EXISTS brc20_historic_balances_tick_pkscript_block_height_id_idx ON public.brc20_historic_balances USING btree (tick, pkscript, block_height DESC, id DESC) INCLUDE (wallet, overall_balance, available_balance);
-CREATE INDEX brc20_historic_balances_wallet_idx ON public.brc20_historic_balances USING btree (wallet);
 
 CREATE TABLE public.brc20_events (
 	id bigserial NOT NULL,
 	event_type int4 NOT NULL,
 	block_height int4 NOT NULL,
 	inscription_id text NOT NULL,
-	inscription_number int4 NOT NULL,
-	old_satpoint text,
-	new_satpoint text NOT NULL,
-	txid text NOT NULL,
 	"event" jsonb NOT NULL,
 	CONSTRAINT events_pk PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX brc20_events_event_type_inscription_id_idx ON public.brc20_events USING btree (event_type, inscription_id);
+CREATE UNIQUE INDEX brc20_events_inscription_id_event_type_idx ON public.brc20_events USING btree (inscription_id, event_type);
 CREATE INDEX brc20_events_block_height_idx ON public.brc20_events USING btree (block_height);
-CREATE INDEX brc20_events_event_type_idx ON public.brc20_events USING btree (event_type);
-CREATE INDEX brc20_events_inscription_id_idx ON public.brc20_events USING btree (inscription_id);
 
 CREATE TABLE public.brc20_light_events (
 	id bigserial NOT NULL,
@@ -51,10 +41,46 @@ CREATE TABLE public.brc20_light_events (
 	"event" jsonb NOT NULL,
 	CONSTRAINT light_events_pk PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX brc20_light_events_event_type_inscription_id_idx ON public.brc20_light_events USING btree (event_type, inscription_id);
+CREATE UNIQUE INDEX brc20_light_events_inscription_id_event_type_idx ON public.brc20_light_events USING btree (inscription_id, event_type);
 CREATE INDEX brc20_light_events_block_height_idx ON public.brc20_light_events USING btree (block_height);
-CREATE INDEX brc20_light_events_event_type_idx ON public.brc20_light_events USING btree (event_type);
-CREATE INDEX brc20_light_events_inscription_id_idx ON public.brc20_light_events USING btree (inscription_id);
+
+-- The pkScripts of an event's parties (deployer, minted, source, spent,
+-- predeployer), decoded from lowercase hex, without duplicates. A value
+-- that is empty or not lowercase hex is no party.
+CREATE OR REPLACE FUNCTION public.brc20_event_party_pkscripts(e jsonb) RETURNS bytea[]
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+	SELECT coalesce(array_agg(DISTINCT decode(k, 'hex')), '{}')
+	FROM unnest(ARRAY[e ->> 'deployer_pkScript', e ->> 'minted_pkScript', e ->> 'source_pkScript',
+	                  e ->> 'spent_pkScript', e ->> 'predeployer_pkScript']) AS k
+	WHERE k ~ '^([0-9a-f]{2})+$'
+$$;
+
+-- An event's category: deploy (deploy and predeploy inscriptions), mint,
+-- transfer (transfer inscriptions and the transfers not spent to the BRC2.0
+-- module's pkScript), wrap (the transfers spent to it), unwrap (BRC2.0
+-- withdraw inscriptions and transfers) and brc20prog (BRC2.0 deploys, calls
+-- and transactions). Every event type has exactly one category.
+CREATE OR REPLACE FUNCTION public.brc20_event_category(event_type int4, e jsonb) RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+	SELECT CASE
+		WHEN event_type IN (0, 12) THEN 'deploy'
+		WHEN event_type = 1 THEN 'mint'
+		WHEN event_type = 2 THEN 'transfer'
+		WHEN event_type = 3 THEN
+			CASE WHEN (e ->> 'spent_pkScript') = '6a09425243323050524f47' THEN 'wrap' ELSE 'transfer' END
+		WHEN event_type IN (8, 9) THEN 'unwrap'
+		WHEN event_type IN (4, 5, 6, 7, 10, 11) THEN 'brc20prog'
+	END
+$$;
+
+-- One row per party pkScript of each event of brc20_events or
+-- brc20_light_events (a database fills one of the two), written with the
+-- events: a wallet's events newest first are a backward range scan.
+CREATE TABLE public.brc20_event_parties (
+	pkscript bytea NOT NULL,
+	event_id int8 NOT NULL,
+	CONSTRAINT brc20_event_parties_pk PRIMARY KEY (pkscript, event_id)
+);
 
 CREATE TABLE IF NOT EXISTS public.evm_addresses (
 	id serial PRIMARY KEY,
@@ -76,7 +102,6 @@ CREATE TABLE public.brc20_tickers (
 	block_height int4 NOT NULL,
 	CONSTRAINT brc20_tickers_pk PRIMARY KEY (id)
 );
-CREATE UNIQUE INDEX brc20_tickers_original_tick_idx ON public.brc20_tickers USING btree (original_tick);
 CREATE UNIQUE INDEX brc20_tickers_tick_idx ON public.brc20_tickers USING btree (tick);
 
 CREATE TABLE public.brc20_cumulative_event_hashes (
@@ -122,7 +147,7 @@ CREATE TABLE public.brc20_indexer_version (
 	event_hash_version int4 NOT NULL,
 	CONSTRAINT brc20_indexer_version_pk PRIMARY KEY (id)
 );
-INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-rs-node v2.0.0', 7, 3);
+INSERT INTO public.brc20_indexer_version (indexer_version, db_version, event_hash_version) VALUES ('opi-brc20-rs-node v2.0.0', 8, 3);
 
 CREATE TABLE public.brc20_current_balances (
 	id bigserial NOT NULL,
@@ -137,7 +162,6 @@ CREATE TABLE public.brc20_current_balances (
 
 CREATE UNIQUE INDEX brc20_current_balances_pkscript_tick_idx ON public.brc20_current_balances USING btree (pkscript, tick);
 CREATE INDEX brc20_current_balances_block_height_idx ON public.brc20_current_balances USING btree (block_height);
-CREATE INDEX brc20_current_balances_pkscript_idx ON public.brc20_current_balances USING btree (pkscript);
 CREATE INDEX brc20_current_balances_tick_idx ON public.brc20_current_balances USING btree (tick);
 CREATE INDEX brc20_current_balances_wallet_idx ON public.brc20_current_balances USING btree (wallet);
 
@@ -153,6 +177,7 @@ CREATE TABLE public.brc20_unused_txes (
 	CONSTRAINT brc20_unused_txes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_unused_txes_inscription_id_idx ON public.brc20_unused_txes USING btree (inscription_id);
+-- the unused transfer routes: by ticker, by holder pkScript, by holder address
 CREATE INDEX brc20_unused_txes_tick_idx ON public.brc20_unused_txes USING btree (tick);
 CREATE INDEX brc20_unused_txes_pkscript_idx ON public.brc20_unused_txes USING btree (current_holder_pkscript);
 CREATE INDEX brc20_unused_txes_wallet_idx ON public.brc20_unused_txes USING btree (current_holder_wallet);
@@ -218,9 +243,21 @@ CREATE INDEX IF NOT EXISTS brc20_prog_current_balances_ticker_positive_idx ON pu
 CREATE INDEX IF NOT EXISTS brc20_tickers_tick_pattern_idx ON public.brc20_tickers USING btree (tick text_pattern_ops);
 
 CREATE INDEX IF NOT EXISTS brc20_events_ticker_id_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)), id);
-CREATE INDEX IF NOT EXISTS brc20_events_parties_idx ON public.brc20_events USING gin ((array_remove(ARRAY[nullif(("event" ->> 'deployer_pkScript'), ''), nullif(("event" ->> 'minted_pkScript'), ''), nullif(("event" ->> 'source_pkScript'), ''), nullif(("event" ->> 'spent_pkScript'), ''), nullif(("event" ->> 'predeployer_pkScript'), ''), nullif(("event" ->> 'deployer_wallet'), ''), nullif(("event" ->> 'minted_wallet'), ''), nullif(("event" ->> 'source_wallet'), ''), nullif(("event" ->> 'spent_wallet'), ''), nullif(("event" ->> 'predeployer_wallet'), '')], NULL)));
+CREATE INDEX IF NOT EXISTS brc20_events_deploy_ticker_id_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)), id) WHERE (public.brc20_event_category(event_type, "event") = 'deploy'::text);
+CREATE INDEX IF NOT EXISTS brc20_events_wrap_ticker_id_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)), id) WHERE (public.brc20_event_category(event_type, "event") = 'wrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_events_unwrap_ticker_id_idx ON public.brc20_events USING btree ((("event" ->> 'tick'::text)), id) WHERE (public.brc20_event_category(event_type, "event") = 'unwrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_events_deploy_id_idx ON public.brc20_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'deploy'::text);
+CREATE INDEX IF NOT EXISTS brc20_events_wrap_id_idx ON public.brc20_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'wrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_events_unwrap_id_idx ON public.brc20_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'unwrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_events_brc20prog_id_idx ON public.brc20_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'brc20prog'::text);
 CREATE INDEX IF NOT EXISTS brc20_light_events_ticker_id_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)), id);
-CREATE INDEX IF NOT EXISTS brc20_light_events_parties_idx ON public.brc20_light_events USING gin ((array_remove(ARRAY[nullif(("event" ->> 'deployer_pkScript'), ''), nullif(("event" ->> 'minted_pkScript'), ''), nullif(("event" ->> 'source_pkScript'), ''), nullif(("event" ->> 'spent_pkScript'), ''), nullif(("event" ->> 'predeployer_pkScript'), ''), nullif(("event" ->> 'deployer_wallet'), ''), nullif(("event" ->> 'minted_wallet'), ''), nullif(("event" ->> 'source_wallet'), ''), nullif(("event" ->> 'spent_wallet'), ''), nullif(("event" ->> 'predeployer_wallet'), '')], NULL)));
+CREATE INDEX IF NOT EXISTS brc20_light_events_deploy_ticker_id_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)), id) WHERE (public.brc20_event_category(event_type, "event") = 'deploy'::text);
+CREATE INDEX IF NOT EXISTS brc20_light_events_wrap_ticker_id_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)), id) WHERE (public.brc20_event_category(event_type, "event") = 'wrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_light_events_unwrap_ticker_id_idx ON public.brc20_light_events USING btree ((("event" ->> 'tick'::text)), id) WHERE (public.brc20_event_category(event_type, "event") = 'unwrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_light_events_deploy_id_idx ON public.brc20_light_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'deploy'::text);
+CREATE INDEX IF NOT EXISTS brc20_light_events_wrap_id_idx ON public.brc20_light_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'wrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_light_events_unwrap_id_idx ON public.brc20_light_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'unwrap'::text);
+CREATE INDEX IF NOT EXISTS brc20_light_events_brc20prog_id_idx ON public.brc20_light_events USING btree (id) WHERE (public.brc20_event_category(event_type, "event") = 'brc20prog'::text);
 
 CREATE TABLE IF NOT EXISTS public.brc20_extras_verified (
 	id int4 NOT NULL DEFAULT 1,

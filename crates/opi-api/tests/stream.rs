@@ -112,9 +112,8 @@ fn module_block(module: &str, height: i32, tag: &str) -> String {
             for i in 0..events_of(height) {
                 let id = i64::from(height) * 1000 + i64::from(i);
                 sql.push_str(&format!(
-                    "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, inscription_number,
-                                               old_satpoint, new_satpoint, txid, event)
-                         VALUES ({id}, 1, {height}, '{tag}m{id}i0', {id}, NULL, 'sp', 'tx',
+                    "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event)
+                         VALUES ({id}, 1, {height}, '{tag}m{id}i0',
                                  '{{\"minted_pkScript\":\"0014a1\",\"minted_wallet\":\"tb1q{tag}\",\"tick\":\"ordi\",\"original_tick\":\"ORDI\",\"amount\":\"{i}{E18}\",\"parent_id\":\"\"}}');"
                 ));
             }
@@ -338,10 +337,8 @@ async fn add_big_blocks(pool: &PgPool, heights: std::ops::RangeInclusive<i32>, e
     let sql = format!(
         "INSERT INTO brc20_block_hashes (block_height, block_hash, block_time)
              SELECT h, 'b' || h, 1000 + h FROM generate_series({low}, {high}) h;
-         INSERT INTO brc20_events (id, event_type, block_height, inscription_id, inscription_number,
-                                   old_satpoint, new_satpoint, txid, event)
-             SELECT h * 100000 + i, 1, h, 'bm' || (h * 100000 + i) || 'i0', h * 100000 + i,
-                    NULL, 'sp', 'tx',
+         INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event)
+             SELECT h * 100000 + i, 1, h, 'bm' || (h * 100000 + i) || 'i0',
                     jsonb_build_object('minted_pkScript', '0014a1', 'minted_wallet', 'tb1qb',
                         'tick', 'ordi', 'original_tick', 'ORDI', 'amount', i || '{E18}',
                         'parent_id', repeat('p', 300))

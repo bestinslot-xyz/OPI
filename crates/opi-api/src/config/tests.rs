@@ -112,7 +112,73 @@ fn parse_modules_trims_js_whitespace() {
 fn parse_modules_rejects_an_unknown_module() {
     assert_eq!(
         err(parse_modules(Some("brc20,ordinals"))),
-        "unknown module `ordinals` in OPI_MODULES (supported: brc20, bitmap, sns, runes, inscriptions)"
+        "unknown module `ordinals` in OPI_MODULES (supported: brc20, bitmap, sns, runes, inscriptions, utxos)"
+    );
+}
+
+#[test]
+fn the_mempool_view_is_off_unless_enabled() {
+    let base = [("OPI_MODULES", "utxos"), ("UTXOS_DB_DATABASE", "u")];
+    let load = |extra: &[(&str, &str)]| {
+        let vars: std::collections::HashMap<&str, &str> =
+            base.iter().chain(extra).copied().collect();
+        load_config(|key| vars.get(key).map(|v| v.to_string()))
+    };
+    assert_eq!(load(&[]).unwrap().mempool, None);
+    assert_eq!(
+        err(load(&[("MEMPOOL_ENABLED", "true")])),
+        "BITCOIN_RPC_URL is not set (required because MEMPOOL_ENABLED is true)"
+    );
+    let rpc = [
+        ("MEMPOOL_ENABLED", "true"),
+        ("BITCOIN_RPC_URL", "http://127.0.0.1:8332"),
+    ];
+    assert_eq!(
+        err(load(&rpc)),
+        "set BITCOIN_RPC_COOKIE or BITCOIN_RPC_USER and BITCOIN_RPC_PASSWD"
+    );
+    let mempool = load(&[rpc[0], rpc[1], ("BITCOIN_RPC_COOKIE", "/data/.cookie")])
+        .unwrap()
+        .mempool
+        .unwrap();
+    assert_eq!(mempool.rpc_url, "http://127.0.0.1:8332");
+    assert_eq!(mempool.auth, RpcAuth::Cookie("/data/.cookie".into()));
+    assert_eq!(mempool.poll, Duration::from_millis(2000));
+    let mempool = load(&[
+        rpc[0],
+        rpc[1],
+        ("BITCOIN_RPC_USER", "u"),
+        ("BITCOIN_RPC_PASSWD", "p"),
+        ("MEMPOOL_POLL_MS", "500"),
+    ])
+    .unwrap()
+    .mempool
+    .unwrap();
+    assert_eq!(mempool.auth, RpcAuth::UserPass("u".into(), "p".into()));
+    assert_eq!(mempool.poll, Duration::from_millis(500));
+    assert!(
+        err(load(&[
+            rpc[0],
+            rpc[1],
+            ("BITCOIN_RPC_COOKIE", "c"),
+            ("MEMPOOL_POLL_MS", "5")
+        ]))
+        .contains("MEMPOOL_POLL_MS")
+    );
+
+    // The view feeds the utxos route, so it needs the utxos module.
+    let vars: std::collections::HashMap<&str, &str> = [
+        ("OPI_MODULES", "runes"),
+        ("RUNES_DB_DATABASE", "r"),
+        rpc[0],
+        rpc[1],
+        ("BITCOIN_RPC_COOKIE", "c"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        err(load_config(|key| vars.get(key).map(|v| v.to_string()))),
+        "MEMPOOL_ENABLED needs the utxos module in OPI_MODULES"
     );
 }
 
@@ -121,7 +187,7 @@ fn parse_modules_rejects_an_empty_list() {
     for value in [" , ", ""] {
         assert_eq!(
             err(parse_modules(Some(value))),
-            "OPI_MODULES names no module (supported: brc20, bitmap, sns, runes, inscriptions)"
+            "OPI_MODULES names no module (supported: brc20, bitmap, sns, runes, inscriptions, utxos)"
         );
     }
 }
@@ -420,6 +486,7 @@ fn modules_know_their_names_and_tables() {
             ("sns", "sns_block_hashes"),
             ("runes", "runes_block_hashes"),
             ("inscriptions", "inscriptions_block_hashes"),
+            ("utxos", "utxos_block_hashes"),
         ]
     );
 }

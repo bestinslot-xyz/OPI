@@ -64,6 +64,25 @@ pub fn event_id(height: u32, position: usize) -> anyhow::Result<i64> {
     Ok((i64::from(height) << 32) | i64::from(position))
 }
 
+/// The lowest event id a block at `height` can hold; `height` may be 0 or
+/// above.
+pub fn first_event_id(height: i64) -> i64 {
+    height << 32
+}
+
+/// Splits a `txid:vout` outpoint into the 32 bytes its txid hex spells and
+/// its vout.
+pub fn split_outpoint(outpoint: &str) -> anyhow::Result<(Vec<u8>, i32)> {
+    let invalid = || anyhow::anyhow!("invalid outpoint {outpoint}");
+    let (txid, vout) = outpoint.split_once(':').ok_or_else(invalid)?;
+    let txid = hex::decode(txid).map_err(|_| invalid())?;
+    if txid.len() != 32 {
+        return Err(invalid());
+    }
+    let vout = vout.parse().map_err(|_| invalid())?;
+    Ok((txid, vout))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +112,18 @@ mod tests {
             (format!("{txid}:1"), 42)
         );
         assert!(split_satpoint("nope").is_err());
+    }
+
+    #[test]
+    fn outpoint_splits_into_txid_bytes_and_vout() {
+        let txid = "ab".repeat(32);
+        assert_eq!(
+            split_outpoint(&format!("{txid}:7")).unwrap(),
+            (vec![0xab; 32], 7)
+        );
+        assert!(split_outpoint(&format!("{}:7", "ab".repeat(31))).is_err());
+        assert!(split_outpoint(&format!("{txid}:x")).is_err());
+        assert!(split_outpoint("nope").is_err());
     }
 
     #[test]

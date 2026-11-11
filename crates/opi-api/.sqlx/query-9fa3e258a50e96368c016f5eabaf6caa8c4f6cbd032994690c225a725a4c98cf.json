@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pkscript as \"pkscript?\", encode(rotb.txid, 'hex') || ':' || rotb.vout as \"outpoint?\", rotb.rune_ids::text as \"rune_ids\", rotb.balances::text as \"balances\"\n            from runes_outpoint_to_balances rotb\n            where pkscript = $1 and spent_block_height is null;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pkscript?",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "runes_outpoint_to_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "outpoint?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "rune_ids",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "balances",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "9fa3e258a50e96368c016f5eabaf6caa8c4f6cbd032994690c225a725a4c98cf"
+}

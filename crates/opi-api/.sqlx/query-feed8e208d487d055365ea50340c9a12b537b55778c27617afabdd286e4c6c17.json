@@ -1,0 +1,75 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.id as \"id!\", u.block_height as \"block_height!\", h.block_time as \"block_time?\",\n                u.inscription_id as \"inscription_id!\",\n                (select e.event_type_name from brc20_event_types e\n                  where e.event_type_id = u.event_type limit 1) as \"event_type?\",\n                (select k.decimals from brc20_tickers k\n                  where k.tick = u.event ->> 'tick') as \"ticker_decimals?\",\n                u.event::text as \"event!\"\n            from (\n                (select e.id, e.block_height, e.event_type, e.inscription_id, e.event\n                 from brc20_event_parties p\n                 join brc20_events e on e.id = p.event_id\n                 where p.pkscript = decode($1, 'hex')\n                   and ($3::int8 is null or p.event_id < $3)\n                   and ($2::int4 is null or e.event_type = $2)\n                   and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))\n                   and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',\n                        e.event ->> 'source_wallet', e.event ->> 'spent_wallet', e.event ->> 'predeployer_wallet'))\n                 order by p.event_id desc limit $4)\n                union all\n                (select e.id, e.block_height, e.event_type, e.inscription_id, e.event\n                 from brc20_event_parties p\n                 join brc20_light_events e on e.id = p.event_id\n                 where p.pkscript = decode($1, 'hex')\n                   and ($3::int8 is null or p.event_id < $3)\n                   and ($2::int4 is null or e.event_type = $2)\n                   and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))\n                   and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',\n                        e.event ->> 'source_wallet', e.event ->> 'spent_wallet', e.event ->> 'predeployer_wallet'))\n                 order by p.event_id desc limit $4)\n            ) u\n            left join brc20_block_hashes h on h.block_height = u.block_height\n            order by u.id desc\n            limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "block_height!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "block_time?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_time"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "inscription_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "event_type?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "ticker_decimals?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "event!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int8",
+        "Int8",
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      true,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "feed8e208d487d055365ea50340c9a12b537b55778c27617afabdd286e4c6c17"
+}

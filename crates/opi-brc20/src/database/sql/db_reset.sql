@@ -18,3 +18,6 @@ drop table if exists brc20_prog_historical_balances;
 drop table if exists brc20_prog_balances_fill;
 drop table if exists brc20_ticker_holders;
 drop table if exists brc20_extras_verified;
+drop table if exists brc20_event_parties;
+drop function if exists brc20_event_party_pkscripts(jsonb);
+drop function if exists brc20_event_category(int4, jsonb);

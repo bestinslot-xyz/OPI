@@ -13,6 +13,7 @@ pub mod db;
 pub mod extract;
 mod front;
 pub mod js;
+pub mod mempool;
 pub mod metrics;
 pub mod openapi;
 pub mod params;
@@ -30,6 +31,7 @@ use {
     axum::Router,
     config::{Config, Module},
     db::Db,
+    mempool::Mempool,
     opi_core::metrics::Phase,
     rate_limit::RateLimiter,
     routes::StreamStop,
@@ -54,11 +56,17 @@ impl FrontDoor {
 /// in `dbs` (createApp). Every routed request counts in the process metrics
 /// (see [`metrics::instrument`]).
 pub fn router(config: &Config, dbs: Vec<(Module, Db)>) -> Router {
-    router_until(config, dbs, StreamStop::never())
+    router_until(config, dbs, StreamStop::never(), None)
 }
 
-/// [`router`], whose streams end when `stream_stop` fires.
-pub fn router_until(config: &Config, dbs: Vec<(Module, Db)>, stream_stop: StreamStop) -> Router {
+/// [`router`], whose streams end when `stream_stop` fires, and whose utxos
+/// route reads `mempool` when the view runs.
+pub fn router_until(
+    config: &Config,
+    dbs: Vec<(Module, Db)>,
+    stream_stop: StreamStop,
+    mempool: Option<Mempool>,
+) -> Router {
     let defaults = routes::RouteSettings::default();
     front_door(
         metrics::instrument(routes::routes(
@@ -71,6 +79,7 @@ pub fn router_until(config: &Config, dbs: Vec<(Module, Db)>, stream_stop: Stream
                     .unwrap_or(defaults.snapshot_timeout),
                 stream: config.stream.settings().unwrap_or(defaults.stream),
                 stream_stop,
+                mempool,
             },
         )),
         FrontDoor::from_config(config),
@@ -169,7 +178,25 @@ pub async fn serve_listeners(
         opi_core::metrics::global().set_phase(Phase::ShuttingDown);
         stream_stopper.stop();
     };
-    let app = router_until(&config, dbs, stream_stop);
+    // The mempool view polls bitcoind for as long as the API serves.
+    let mempool = match (&config.mempool, config_db(&dbs, Module::Utxos)) {
+        (Some(settings), Some(utxos)) => {
+            let (view, task) = mempool::spawn(settings, utxos)?;
+            tracing::info!(
+                "mempool view: polling {} every {:?}",
+                settings.rpc_url,
+                settings.poll
+            );
+            Some((view, task))
+        }
+        _ => None,
+    };
+    let app = router_until(
+        &config,
+        dbs,
+        stream_stop,
+        mempool.as_ref().map(|(view, _)| view.clone()),
+    );
     let names: Vec<&str> = config.modules.iter().map(|m| m.name()).collect();
     tracing::info!(
         "opi-api ({}) listening on {}",
@@ -183,5 +210,15 @@ pub async fn serve_listeners(
         stop.send(()).ok();
         task.await.ok();
     }
+    if let Some((_, task)) = mempool {
+        task.abort();
+    }
     served
+}
+
+/// `module`'s entry in `dbs`.
+fn config_db(dbs: &[(Module, Db)], module: Module) -> Option<Db> {
+    dbs.iter()
+        .find(|(m, _)| *m == module)
+        .map(|(_, db)| db.clone())
 }

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO brc20_event_parties (pkscript, event_id)\n         SELECT k, e.id\n         FROM UNNEST($1::int8[], $2::jsonb[]) AS e(id, event)\n         CROSS JOIN LATERAL unnest(brc20_event_party_pkscripts(e.event)) AS k",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ee21d36181245dcd3c247d5923e02accd3a283b09fc399ae8112ff79da869394"
+}
