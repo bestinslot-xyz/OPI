@@ -71,7 +71,9 @@ impl EventProviderClient {
         }
     }
 
-    async fn get_block_info(
+    /// The network's best hashes for `block_height`, in one request; an error
+    /// when the network has none or does not answer.
+    pub async fn get_block_info(
         &self,
         block_height: i32,
     ) -> Result<BlockData, Box<dyn std::error::Error>> {
