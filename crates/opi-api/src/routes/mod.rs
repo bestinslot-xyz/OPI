@@ -10,6 +10,7 @@
 //! [`ModuleRoutes`], which takes nothing else; the disabled modules'
 //! catch-alls here are plain routes, outside the document.
 
+pub mod address;
 mod bitmap;
 mod brc20;
 mod inscriptions;

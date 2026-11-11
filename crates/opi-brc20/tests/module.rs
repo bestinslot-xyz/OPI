@@ -69,12 +69,10 @@ fn apply_produces_same_transfers_as_journal_source() {
     let tx = &txes[0];
     assert_eq!(tx.tx_id, "840000:3");
     assert_eq!(tx.inscription_id, inscription_id(0));
-    assert_eq!(tx.inscription_number, 77);
     assert_eq!(
         tx.old_satpoint.as_deref(),
         Some(format!("{TXID}:1:2").as_str())
     );
-    assert_eq!(tx.new_satpoint, format!("{TXID}:0:0"));
     assert_eq!(tx.txid, TXID);
     assert_eq!(tx.new_pkscript, P2TR);
     assert_eq!(tx.new_wallet, get_wallet(P2TR, Network::Bitcoin));

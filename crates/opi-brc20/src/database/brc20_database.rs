@@ -99,10 +99,6 @@ pub struct EventRecord {
     pub event_type_id: i32,
     pub block_height: i32,
     pub inscription_id: String,
-    pub inscription_number: i32,
-    pub old_satpoint: Option<String>,
-    pub new_satpoint: String,
-    pub txid: String,
     pub event: serde_json::Value,
 }
 
@@ -114,7 +110,6 @@ pub struct BalanceUpdateData {
     pub overall_balance: u128,
     pub available_balance: u128,
     pub block_height: i32,
-    pub event_id: i64,
 }
 
 static BRC20_DATABASE: OnceCell<Arc<Mutex<Brc20Database>>> = OnceCell::new();
@@ -234,6 +229,69 @@ pub fn connect_pool(
             ssl_mode
         ))
         .expect("Failed to connect to the database")
+}
+
+/// Writes the `brc20_event_parties` rows of the events `ids` with objects
+/// `events` (one row per party pkScript, `brc20_event_party_pkscripts`).
+async fn insert_parties(
+    tx: &mut PgConnection,
+    ids: &[i64],
+    events: &[serde_json::Value],
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "INSERT INTO brc20_event_parties (pkscript, event_id)
+         SELECT k, e.id
+         FROM UNNEST($1::int8[], $2::jsonb[]) AS e(id, event)
+         CROSS JOIN LATERAL unnest(brc20_event_party_pkscripts(e.event)) AS k",
+        ids,
+        events
+    )
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+/// Deletes the `brc20_event_parties` rows of the events of `events_table`
+/// that `filter` (a condition on its row `e`, with `$1` bound to `bound`)
+/// selects, through the parties' primary key.
+async fn delete_parties(
+    tx: &mut PgConnection,
+    events_table: &str,
+    filter: &str,
+    bound: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(AssertSqlSafe(format!(
+        "DELETE FROM brc20_event_parties p
+         USING (SELECT e.id, k
+                FROM {events_table} e
+                CROSS JOIN LATERAL unnest(brc20_event_party_pkscripts(e.event)) AS k
+                WHERE {filter}) d
+         WHERE p.pkscript = d.k AND p.event_id = d.id"
+    )))
+    .bind(bound)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+/// Writes the `brc20_event_parties` rows of the events of `events_table`
+/// at `block_height`.
+async fn insert_parties_at(
+    tx: &mut PgConnection,
+    events_table: &str,
+    block_height: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(AssertSqlSafe(format!(
+        "INSERT INTO brc20_event_parties (pkscript, event_id)
+         SELECT k, e.id
+         FROM {events_table} e
+         CROSS JOIN LATERAL unnest(brc20_event_party_pkscripts(e.event)) AS k
+         WHERE e.block_height = $1"
+    )))
+    .bind(block_height)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 /// Whether the extra tables (`brc20_current_balances`, `brc20_unused_txes`)
@@ -501,6 +559,9 @@ impl Brc20Database {
 
         let mut tx = self.client.begin().await?;
 
+        // The block's party rows follow its events' new ids.
+        delete_parties(&mut tx, &self.events_table, "e.block_height = $1", 932888).await?;
+
         // Fix the order of refund events at block height 932888
         sqlx::raw_sql(AssertSqlSafe(format!("
             WITH filtered AS (
@@ -539,6 +600,8 @@ impl Brc20Database {
         )))
         .execute(&mut *tx)
         .await?;
+
+        insert_parties_at(&mut tx, &self.events_table, 932888).await?;
 
         tx.commit().await?;
 
@@ -1190,6 +1253,10 @@ impl Brc20Database {
             .execute(&mut *tx)
             .await?;
 
+        for events_table in ["brc20_events", "brc20_light_events"] {
+            delete_parties(&mut tx, events_table, "e.block_height > $1", block_height).await?;
+        }
+
         sqlx::query("DELETE FROM brc20_events WHERE block_height > $1")
             .bind(block_height)
             .execute(&mut *tx)
@@ -1369,15 +1436,10 @@ impl Brc20Database {
     }
 
     /// Returns the event ID of the last event added to the database.
-    #[allow(clippy::too_many_arguments)] // one argument per events table column
     pub fn add_event<T>(
         &mut self,
         block_height: i32,
         inscription_id: &str,
-        inscription_number: &i32,
-        old_satpoint: &Option<String>,
-        new_satpoint: &str,
-        txid: &str,
         event: &T,
         decimals: Option<u8>,
     ) -> Result<i64, Box<dyn Error>>
@@ -1391,10 +1453,6 @@ impl Brc20Database {
             event_type_id: T::event_id(),
             block_height,
             inscription_id: inscription_id.to_string(),
-            inscription_number: *inscription_number,
-            old_satpoint: old_satpoint.clone(),
-            new_satpoint: new_satpoint.to_string(),
-            txid: txid.to_string(),
             event: serde_json::to_value(event)?,
         });
 
@@ -1644,7 +1702,6 @@ impl Brc20Database {
         wallet: &str,
         balance: &Brc20Balance,
         block_height: i32,
-        event_id: i64,
     ) -> Result<(), Box<dyn Error>> {
         self.balance_cache
             .insert(format!("{}:{}", ticker, pkscript), balance.clone());
@@ -1656,7 +1713,6 @@ impl Brc20Database {
             overall_balance: balance.overall_balance,
             available_balance: balance.available_balance,
             block_height,
-            event_id,
         });
 
         Ok(())
@@ -1765,38 +1821,26 @@ impl Brc20Database {
             let mut all_event_type_ids = Vec::new();
             let mut all_block_heights = Vec::new();
             let mut all_inscription_ids = Vec::new();
-            let mut all_inscription_numbers = Vec::new();
-            let mut all_old_satpoints = Vec::new();
-            let mut all_new_satpoints = Vec::new();
-            let mut all_txids = Vec::new();
             let mut all_events = Vec::new();
             for event_data in &self.event_inserts {
                 all_event_ids.push(event_data.event_id);
                 all_event_type_ids.push(event_data.event_type_id);
                 all_block_heights.push(event_data.block_height);
                 all_inscription_ids.push(event_data.inscription_id.clone());
-                all_inscription_numbers.push(event_data.inscription_number);
-                all_old_satpoints
-                    .push(event_data.old_satpoint.clone().unwrap_or_else(|| "".into()));
-                all_new_satpoints.push(event_data.new_satpoint.clone());
-                all_txids.push(event_data.txid.clone());
                 all_events.push(event_data.event.clone());
             }
             sqlx::query!(
-                "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, inscription_number, old_satpoint, new_satpoint, txid, event) SELECT * FROM UNNEST
-                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::int4[], $6::text[], $7::text[], $8::text[], $9::jsonb[])",
+                "INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event) SELECT * FROM UNNEST
+                ($1::bigint[], $2::int4[], $3::int4[], $4::text[], $5::jsonb[])",
                 &all_event_ids,
                 &all_event_type_ids,
                 &all_block_heights,
                 &all_inscription_ids,
-                &all_inscription_numbers,
-                &all_old_satpoints,
-                &all_new_satpoints,
-                &all_txids,
                 &all_events
             )
             .execute(&mut *tx)
             .await?;
+            insert_parties(&mut tx, &all_event_ids, &all_events).await?;
 
             self.event_inserts.clear();
         }
@@ -1825,6 +1869,7 @@ impl Brc20Database {
             )
             .execute(&mut *tx)
             .await?;
+            insert_parties(&mut tx, &all_event_ids, &all_events).await?;
 
             self.light_event_inserts.clear();
         }
@@ -1860,7 +1905,6 @@ impl Brc20Database {
             let mut all_overall_balances = Vec::new();
             let mut all_available_balances = Vec::new();
             let mut all_block_heights = Vec::new();
-            let mut all_event_ids = Vec::new();
             for balance_update in &self.balance_updates {
                 all_pkscripts.push(balance_update.pkscript.clone());
                 all_wallets.push(balance_update.wallet.clone());
@@ -1868,19 +1912,17 @@ impl Brc20Database {
                 all_overall_balances.push(BigDecimal::from(balance_update.overall_balance));
                 all_available_balances.push(BigDecimal::from(balance_update.available_balance));
                 all_block_heights.push(balance_update.block_height);
-                all_event_ids.push(balance_update.event_id);
             }
             sqlx::query!(
                 "INSERT INTO brc20_historic_balances (pkscript, wallet, tick,
-                overall_balance, available_balance, block_height, event_id) SELECT * FROM UNNEST
-                ($1::text[], $2::text[], $3::text[], $4::numeric(40)[], $5::numeric(40)[], $6::int4[], $7::int8[])",
+                overall_balance, available_balance, block_height) SELECT * FROM UNNEST
+                ($1::text[], $2::text[], $3::text[], $4::numeric(40)[], $5::numeric(40)[], $6::int4[])",
                 &all_pkscripts,
                 &all_wallets,
                 &all_tickers,
                 &all_overall_balances,
                 &all_available_balances,
-                &all_block_heights,
-                &all_event_ids
+                &all_block_heights
             )
             .execute(&mut *tx)
             .await?;

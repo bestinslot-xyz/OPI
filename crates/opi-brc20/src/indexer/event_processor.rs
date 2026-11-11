@@ -229,7 +229,6 @@ impl EventProcessor {
         block_time: u64,
         brc20_prog_tx_idx: u64,
         inscription_id: &str,
-        event_id: i64,
         event: &Brc20ProgWithdrawTransferEvent,
     ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_prog_withdraw_transfer", block_height);
@@ -287,7 +286,6 @@ impl EventProcessor {
                     available_balance: brc20_prog_balance.available_balance,
                 },
                 block_height,
-                event_id,
             )?;
 
             let Some(target_pkscript) = event.spent_pk_script.as_ref() else {
@@ -316,7 +314,6 @@ impl EventProcessor {
                     available_balance: target_balance.available_balance,
                 },
                 block_height,
-                -event_id, // Negate to create a unique event ID
             )?;
         }
 
@@ -351,7 +348,6 @@ impl EventProcessor {
 
     pub async fn brc20_mint_inscribe(
         block_height: i32,
-        event_id: i64,
         event: &MintInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
         let function_timer = start_timer(SPAN, "brc20_mint_inscribe", block_height);
@@ -384,7 +380,6 @@ impl EventProcessor {
             &event.minted_wallet,
             &balance,
             block_height,
-            event_id,
         )?;
 
         stop_timer(&function_timer).await;
@@ -393,7 +388,6 @@ impl EventProcessor {
 
     pub async fn brc20_transfer_inscribe(
         block_height: i32,
-        event_id: i64,
         inscription_id: &str,
         event: &TransferInscribeEvent,
     ) -> Result<(), Box<dyn Error>> {
@@ -428,7 +422,6 @@ impl EventProcessor {
             &event.source_wallet,
             &balance,
             block_height,
-            event_id,
         )?;
 
         stop_timer(&function_timer).await;
@@ -443,7 +436,6 @@ impl EventProcessor {
         block_hash: &str,
         brc20_prog_tx_idx: u64,
         inscription_id: &str,
-        event_id: i64,
         event: &TransferTransferEvent,
         config: &Brc20IndexerConfig,
     ) -> Result<Brc20ProgTxesExecuted, Box<dyn Error>> {
@@ -488,7 +480,6 @@ impl EventProcessor {
                 &event.source_wallet,
                 &source_balance,
                 block_height,
-                event_id,
             )?;
         } else if spent_pk_script == BRC20_PROG_OP_RETURN_PKSCRIPT {
             if (block_height < config.first_brc20_prog_all_tickers_height
@@ -503,7 +494,6 @@ impl EventProcessor {
                     &event.source_wallet,
                     &source_balance,
                     block_height,
-                    event_id,
                 )?;
 
                 let Some(mut ticker) = get_brc20_database()
@@ -536,7 +526,6 @@ impl EventProcessor {
                     &event.source_wallet,
                     &source_balance,
                     block_height,
-                    event_id,
                 )?;
 
                 let mut brc20_prog_balance = get_brc20_database()
@@ -554,7 +543,6 @@ impl EventProcessor {
                     NO_WALLET,
                     &brc20_prog_balance,
                     block_height,
-                    -event_id, // Negate to create a unique event ID
                 )?;
 
                 prog_tx_count += 1;
@@ -584,7 +572,6 @@ impl EventProcessor {
                 &event.source_wallet,
                 &source_balance,
                 block_height,
-                event_id,
             )?;
 
             let Some(mut ticker) = get_brc20_database()
@@ -616,7 +603,6 @@ impl EventProcessor {
                 &event.source_wallet,
                 &source_balance,
                 block_height,
-                event_id,
             )?;
 
             let mut target_balance = get_brc20_database()
@@ -634,7 +620,6 @@ impl EventProcessor {
                 &event.spent_wallet.clone().unwrap_or(NO_WALLET.to_string()),
                 &target_balance,
                 block_height,
-                -event_id, // Negate to create a unique event ID
             )?;
         }
         get_brc20_database()

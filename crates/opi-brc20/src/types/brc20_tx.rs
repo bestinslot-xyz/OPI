@@ -8,9 +8,7 @@
 pub struct Brc20Tx {
     pub tx_id: String,
     pub inscription_id: String,
-    pub inscription_number: i32,
     pub old_satpoint: Option<String>,
-    pub new_satpoint: String,
     pub txid: String,
     pub new_pkscript: String,
     pub new_wallet: String,

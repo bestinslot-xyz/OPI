@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select min(id + 0) as \"lo?\", max(id + 0) as \"hi?\" from inscriptions_events where block_height = $1;",
+  "query": "select min(id) as \"lo?\", max(id) as \"hi?\" from inscriptions_events\n            where id >= ($1::int8 << 32) and id < (($1::int8 + 1) << 32);",
   "describe": {
     "columns": [
       {
@@ -18,7 +18,7 @@
     ],
     "parameters": {
       "Left": [
-        "Int4"
+        "Int8"
       ]
     },
     "nullable": [
@@ -26,5 +26,5 @@
       null
     ]
   },
-  "hash": "ff88d5be2595c097e476b22cbe24309904b30041c106ed97ce72e829e70d9f0e"
+  "hash": "40708de7ee0d6ac0826724b1c6e8a1311f592514dbd2be47a1bbbf35d1964e93"
 }

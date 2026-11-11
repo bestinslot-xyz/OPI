@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select v.id, v.block_height, v.sequence_number, v.inscription_id,\n                e.\"number\" as \"number?\", e.content_type as \"content_type?\",\n                e.media_type as \"media_type?\",\n                v.old_outpoint, v.old_offset, v.old_pkscript, v.old_address,\n                v.new_outpoint, v.new_offset, v.new_pkscript, v.new_address\n            from inscriptions_events v\n            left join inscriptions_entries e on e.sequence_number = v.sequence_number\n            where v.id > $2 and v.id <= $3 and v.block_height = $1\n            order by v.id limit $4;",
+  "query": "select v.id, v.sequence_number, e.inscription_id,\n                e.\"number\", e.content_type as \"content_type?\",\n                e.media_type as \"media_type?\",\n                encode(p.txid, 'hex') || ':' || p.vout as \"old_outpoint?\",\n                p.\"offset\" as \"old_offset?\", p.pkscript as \"old_pkscript?\",\n                encode(v.txid, 'hex') || ':' || v.vout as \"new_outpoint!\",\n                v.\"offset\" as new_offset, v.pkscript as new_pkscript,\n                n.network_type as \"network_type!\"\n            from inscriptions_events v\n            join inscriptions_entries e on e.sequence_number = v.sequence_number\n            left join inscriptions_events p on p.id = v.prev_id\n            cross join (select network_type from inscriptions_network_type limit 1) n\n            where v.id > $2 and v.id <= $3\n              and v.id >= ($1::int8 << 32) and v.id < (($1::int8 + 1) << 32)\n            order by v.id limit $4;",
   "describe": {
     "columns": [
       {
@@ -16,17 +16,6 @@
       },
       {
         "ordinal": 1,
-        "name": "block_height",
-        "type_info": "Int4",
-        "origin": {
-          "Table": {
-            "table": "inscriptions_events",
-            "name": "block_height"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
         "name": "sequence_number",
         "type_info": "Int8",
         "origin": {
@@ -37,19 +26,19 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "inscription_id",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "inscriptions_events",
+            "table": "inscriptions_entries",
             "name": "inscription_id"
           }
         }
       },
       {
-        "ordinal": 4,
-        "name": "number?",
+        "ordinal": 3,
+        "name": "number",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "content_type?",
         "type_info": "Text",
         "origin": {
@@ -70,7 +59,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "media_type?",
         "type_info": "Text",
         "origin": {
@@ -81,97 +70,76 @@
         }
       },
       {
-        "ordinal": 7,
-        "name": "old_outpoint",
+        "ordinal": 6,
+        "name": "old_outpoint?",
         "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "old_offset?",
+        "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "inscriptions_events",
-            "name": "old_outpoint"
+            "name": "offset"
           }
         }
       },
       {
         "ordinal": 8,
-        "name": "old_offset",
-        "type_info": "Int8",
+        "name": "old_pkscript?",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "inscriptions_events",
-            "name": "old_offset"
+            "name": "pkscript"
           }
         }
       },
       {
         "ordinal": 9,
-        "name": "old_pkscript",
+        "name": "new_outpoint!",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "inscriptions_events",
-            "name": "old_pkscript"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 10,
-        "name": "old_address",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "inscriptions_events",
-            "name": "old_address"
-          }
-        }
-      },
-      {
-        "ordinal": 11,
-        "name": "new_outpoint",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "inscriptions_events",
-            "name": "new_outpoint"
-          }
-        }
-      },
-      {
-        "ordinal": 12,
         "name": "new_offset",
         "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "inscriptions_events",
-            "name": "new_offset"
+            "name": "offset"
           }
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 11,
         "name": "new_pkscript",
-        "type_info": "Text",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "inscriptions_events",
-            "name": "new_pkscript"
+            "name": "pkscript"
           }
         }
       },
       {
-        "ordinal": 14,
-        "name": "new_address",
+        "ordinal": 12,
+        "name": "network_type!",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "inscriptions_events",
-            "name": "new_address"
+            "table": "inscriptions_network_type",
+            "name": "network_type"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Int4",
+        "Int8",
         "Int8",
         "Int8",
         "Int8"
@@ -182,18 +150,16 @@
       false,
       false,
       false,
-      false,
       true,
       true,
-      true,
-      true,
-      true,
-      true,
+      null,
       false,
       false,
+      null,
       false,
-      true
+      false,
+      false
     ]
   },
-  "hash": "8db38e09a072233239557b800ad783c1829de5ef4c3d3b17465ff3bc6e0a179f"
+  "hash": "952c6c9b0cbe8a75559d635f02076700e697d6cb8597c3a1774e538b946b4c8d"
 }

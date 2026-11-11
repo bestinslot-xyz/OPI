@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select c.rune_id, e.rune_name, e.spacers, e.\"number\"::text as \"number!\",\n                e.divisibility, e.symbol, c.balance::text as \"balance!\"\n            from runes_current_balances c\n            join runes_id_to_entry e on e.rune_id = c.rune_id\n            where ($1::text is null or c.pkscript = $1)\n              and ($2::text is null or c.wallet_addr = $2)\n              and ($3::text is null or e.\"number\" > $3::text::numeric)\n            order by e.\"number\" asc\n            limit $4;",
+  "query": "select c.rune_id, e.rune_name, e.spacers, e.\"number\"::text as \"number!\",\n                e.divisibility, e.symbol, c.balance::text as \"balance!\"\n            from runes_current_balances c\n            join runes_id_to_entry e on e.rune_id = c.rune_id\n            where c.pkscript = $1\n              and ($2::text is null or e.\"number\" > $2::text::numeric)\n            order by e.\"number\" asc\n            limit $3;",
   "describe": {
     "columns": [
       {
@@ -73,8 +73,7 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
+        "Bytea",
         "Text",
         "Int8"
       ]
@@ -89,5 +88,5 @@
       null
     ]
   },
-  "hash": "31adf073f86e2d7f1ae9dc62cd40be2add72737c8029fcda1fcd9b395575f526"
+  "hash": "988db579fa496c0e7d4021e28ca6b02679d81b96eefb65931d2eef5947b0c8e5"
 }

@@ -1909,8 +1909,8 @@ mod db_tests {
     async fn incomplete_current_balances(database: &mut Brc20Database) {
         sqlx::raw_sql(
             "INSERT INTO brc20_historic_balances
-                 (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
-             VALUES ('a1', 'wa1', 'ordi', 5, 5, 1, 1), ('b2', 'wb2', 'ordi', 3, 2, 1, 2);",
+                 (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+             VALUES ('a1', 'wa1', 'ordi', 5, 5, 1), ('b2', 'wb2', 'ordi', 3, 2, 1);",
         )
         .execute(&database.client)
         .await
@@ -1939,14 +1939,17 @@ mod db_tests {
             let mut database = database(&name, false).await;
             sqlx::raw_sql(
                 "INSERT INTO brc20_historic_balances
-                     (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
-                 VALUES ('a1', 'wa1', 'ordi', 5, 5, 1, 1), ('b2', 'wb2', 'ordi', 3, 2, 1, 2);",
+                     (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+                 VALUES ('a1', 'wa1', 'ordi', 5, 5, 1), ('b2', 'wb2', 'ordi', 3, 2, 1);",
             )
             .execute(&database.client)
             .await
             .unwrap();
             database.index_extra_tables(1).await.unwrap();
-            database.set_block_hashes(1, "h1", "", None, &[]).await.unwrap();
+            database
+                .set_block_hashes(1, "h1", "", None, &[])
+                .await
+                .unwrap();
             sqlx::raw_sql(
                 "DELETE FROM brc20_current_balances WHERE pkscript = 'b2';
                  DROP TABLE brc20_extras_verified;",

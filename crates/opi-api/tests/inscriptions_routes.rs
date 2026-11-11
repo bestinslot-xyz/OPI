@@ -222,9 +222,9 @@ type EntryFixture = (
     i32,
 );
 
-/// Fifteen inscriptions: sequence numbers 0 to 11 in wallet A (`addrA`,
-/// pkScript `0014aa`), 12 and 13 in wallet B (pkScript `0014bb`, no
-/// address), 14 burned. 1 and 2 share an output at offsets 0 and 546; 4 and
+/// Fifteen inscriptions: sequence numbers 0 to 11 in wallet A (P2WPKH
+/// [`WALLET_A`]), 12 and 13 in wallet B ([`WALLET_B`], no address), 14
+/// burned. 1 and 2 share an output at offsets 0 and 546; 4 and
 /// 9 are cursed. Blocks 1 to 20 are indexed; blocks 1 to 4 hold events.
 fn inscriptions_fixture() -> String {
     let rows: [EntryFixture; 15] = [
@@ -389,14 +389,15 @@ fn inscriptions_fixture() -> String {
         .iter()
         .map(
             |(seq, number, content_type, media_type, outpoint, offset, wallet, genesis, moved)| {
-                let (pkscript, address, charms) = match wallet {
-                    'A' => ("0014aa", "'addrA'", 0),
-                    'B' => ("0014bb", "NULL", 0),
-                    _ => ("6a", "NULL", 4096),
+                let (pkscript, charms) = match wallet {
+                    'A' => (WALLET_A, 0),
+                    'B' => (WALLET_B, 0),
+                    _ => ("6a", 4096),
                 };
                 let charms = if *number < 0 { charms | 2 } else { charms };
+                let (txid, vout) = outpoint.split_once(':').unwrap();
                 format!(
-                    "({seq}, '{}', {number}, {}, {}, {charms}, '{outpoint}', {offset}, '{pkscript}', {address}, {genesis}, {moved})",
+                    "({seq}, '{}', {number}, {}, {}, {charms}, decode('{txid}', 'hex'), {vout}, {offset}, decode('{pkscript}', 'hex'), {genesis}, {moved}, 0)",
                     id(*seq),
                     text(*content_type),
                     text(*media_type),
@@ -404,34 +405,56 @@ fn inscriptions_fixture() -> String {
             },
         )
         .collect();
-    let event = |id: u32, height: i32, seq: u32, old: Option<&str>, new: &str| {
-        let old = old.map_or("NULL, NULL, NULL, NULL, NULL".to_string(), |old| {
-            format!("'{old}', 0, '0014cc', 'addrC', 2")
-        });
-        format!(
-            "({id}, {height}, {seq}, '{}', {old}, '{new}', 0, '0014aa', 'addrA')",
-            self::id(seq)
-        )
-    };
+    // (height, position, seq, prev, txid number, vout, pkscript)
+    let event =
+        |height: i64, position: i64, seq: u32, prev: Option<i64>, n: u32, vout: u32, pk: &str| {
+            let prev = prev.map_or("NULL".to_string(), |prev| prev.to_string());
+            format!(
+                "({}, {seq}, {prev}, 0, {vout}, decode('{}', 'hex'), decode('{pk}', 'hex'))",
+                event_id(height, position),
+                tx(n),
+            )
+        };
     let events = [
-        event(1, 1, 0, None, &outpoint(200, 0)),
-        event(2, 2, 1, None, &outpoint(150, 0)),
-        event(3, 3, 2, None, &outpoint(100, 0)),
-        event(4, 3, 1, Some(&outpoint(150, 0)), &outpoint(100, 0)),
-        event(5, 4, 3, None, &outpoint(100, 1)),
+        event(1, 0, 0, None, 200, 0, EVENT_PK),
+        event(2, 0, 1, None, 150, 0, EVENT_OLD_PK),
+        event(3, 0, 2, None, 100, 0, EVENT_PK),
+        event(3, 1, 1, Some(event_id(2, 0)), 100, 0, EVENT_PK),
+        event(4, 0, 3, None, 100, 1, EVENT_PK),
     ];
+    // The routes read no `last_event_id`.
     format!(
-        "INSERT INTO inscriptions_block_hashes (block_height, block_hash, block_time)
+        "INSERT INTO inscriptions_network_type (network_type) VALUES ('regtest');
+         INSERT INTO inscriptions_block_hashes (block_height, block_hash, block_time)
              SELECT h, 'b' || h, to_timestamp(1700000000 + h) FROM generate_series(1, 20) h;
          INSERT INTO inscriptions_entries (sequence_number, inscription_id, \"number\", content_type,
-             media_type, charms, outpoint, \"offset\", pkscript, address, genesis_height,
-             last_moved_height) VALUES {};
-         INSERT INTO inscriptions_events (id, block_height, sequence_number, inscription_id,
-             old_outpoint, old_offset, old_pkscript, old_address, old_last_moved_height,
-             new_outpoint, new_offset, new_pkscript, new_address) VALUES {};",
+             media_type, charms, txid, vout, \"offset\", pkscript, genesis_height,
+             last_moved_height, last_event_id) VALUES {};
+         INSERT INTO inscriptions_events (id, sequence_number, prev_id, \"offset\", vout, txid,
+             pkscript) VALUES {};",
         values.join(",\n"),
         events.join(",\n"),
     )
+}
+
+/// The pkScript of the fixture's events, and of the event block 3's transfer
+/// moves sequence number 1 from.
+const EVENT_PK: &str = "0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const EVENT_OLD_PK: &str = "0014cccccccccccccccccccccccccccccccccccccccc";
+
+/// Wallet A's pkScript, a P2WPKH with an address, and wallet B's, a script
+/// without one.
+const WALLET_A: &str = EVENT_PK;
+const WALLET_B: &str = "0014bb";
+
+/// The regtest address of `pkscript` hex.
+fn event_address(pkscript: &str) -> String {
+    opi_inscriptions::address(&hex::decode(pkscript).unwrap(), "regtest").unwrap()
+}
+
+/// The id of the event at `position` among block `height`'s moves.
+fn event_id(height: i64, position: i64) -> i64 {
+    (height << 32) | position
 }
 
 /// Runes at height 18: rune `5:1` (TEST•RUNE, divisibility 2) on the
@@ -446,14 +469,15 @@ fn runes_fixture() -> String {
              last_updated_block_height)
              VALUES ('5:1', 5, 0, 2, repeat('e', 64), 0, 0, 1000, 'TESTRUNE', 8, NULL,
                  to_timestamp(0), false, 5, 5);
-         INSERT INTO runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, balances,
-             block_height, spent, spent_block_height) VALUES
-             ('{}', '0014aa', 'addrA', '{{5:1}}', '{{150}}', 4, false, NULL),
-             ('{}', '0014aa', 'addrA', '{{5:1,6:1}}', '{{7,9}}', 5, false, NULL),
-             ('{}', '0014aa', 'addrA', '{{5:1}}', '{{1}}', 5, true, 6);",
-        outpoint(100, 1),
-        outpoint(300, 0),
-        outpoint(301, 0),
+         INSERT INTO runes_outpoint_to_balances (txid, vout, pkscript, rune_ids, balances,
+             block_height, spent_block_height) VALUES
+             (decode('{}', 'hex'), 1, decode('{pk}', 'hex'), '{{5:1}}', '{{150}}', 4, NULL),
+             (decode('{}', 'hex'), 0, decode('{pk}', 'hex'), '{{5:1,6:1}}', '{{7,9}}', 5, NULL),
+             (decode('{}', 'hex'), 0, decode('{pk}', 'hex'), '{{5:1}}', '{{1}}', 5, 6);",
+        tx(100),
+        tx(300),
+        tx(301),
+        pk = format!("0014{}", "aa".repeat(20)),
     )
 }
 
@@ -511,8 +535,8 @@ fn inscription_1() -> Value {
         "cursed": false,
         "outpoint": outpoint(100, 0),
         "offset": 0,
-        "pkscript": "0014aa",
-        "address": "addrA",
+        "pkscript": WALLET_A,
+        "address": event_address(WALLET_A),
         "genesis_height": 2,
         "last_moved_height": 3,
     })
@@ -588,11 +612,25 @@ async fn wallet_pages(app: &Router, first: &str) -> Vec<Vec<i64>> {
 #[tokio::test]
 async fn a_wallet_pages_newest_first_and_filters_match_a_sql_count() {
     with_fixture("wallet", &[INSCRIPTIONS], |app, pool| async move {
+        let a_sql = format!("pkscript = decode('{WALLET_A}', 'hex')");
+        let b_sql = format!("pkscript = decode('{WALLET_B}', 'hex')");
         for (wallet, wallet_sql) in [
-            ("address=addrA", "address = 'addrA'"),
-            ("pkscript=0014AA", "pkscript = '0014aa'"),
-            ("pkscript=0014bb", "pkscript = '0014bb'"),
-            ("address=nobody", "address = 'nobody'"),
+            (
+                format!("address={}", event_address(WALLET_A)),
+                a_sql.clone(),
+            ),
+            (
+                format!("address={}", event_address(WALLET_A).to_ascii_uppercase()),
+                a_sql.clone(),
+            ),
+            (format!("pkscript={}", WALLET_A.to_ascii_uppercase()), a_sql),
+            (format!("pkscript={WALLET_B}"), b_sql),
+            ("address=nobody".to_string(), "false".to_string()),
+            // a valid address of another network
+            (
+                "address=bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
+                "false".to_string(),
+            ),
         ] {
             for (filter, filter_sql) in [
                 ("", "true"),
@@ -641,11 +679,14 @@ async fn a_wallet_pages_newest_first_and_filters_match_a_sql_count() {
         // the filters as the answer applied them
         let page = result(
             &app,
-            "/v1/inscriptions/wallet?pkscript=0014AA&content_type=Image/&cursed=true&from_height=3",
+            &format!(
+                "/v1/inscriptions/wallet?pkscript={}&content_type=Image/&cursed=true&from_height=3",
+                WALLET_A.to_ascii_uppercase()
+            ),
         )
         .await;
         assert_eq!(page["address"], Value::Null);
-        assert_eq!(page["pkscript"], "0014aa");
+        assert_eq!(page["pkscript"], WALLET_A);
         assert_eq!(page["content_type"], "image/");
         assert_eq!(page["cursed"], true);
         assert_eq!(page["from_height"], 3);
@@ -660,11 +701,144 @@ async fn a_wallet_pages_newest_first_and_filters_match_a_sql_count() {
         // a full row, as /v1/inscriptions/inscription answers it
         let page = result(
             &app,
-            "/v1/inscriptions/wallet?address=addrA&content_type=image/png&cursed=false",
+            &format!(
+                "/v1/inscriptions/wallet?address={}&content_type=image/png&cursed=false",
+                event_address(WALLET_A)
+            ),
         )
         .await;
         assert_eq!(page["inscriptions"], json!([inscription_1()]));
         assert_eq!(page["has_more"], false);
+    })
+    .await;
+}
+
+/// The creation of sequence number 1 at height 2 on `150:0`, as a history
+/// event.
+fn creation_of_1() -> Value {
+    json!({
+        "id": event_id(2, 0), "block_height": 2, "block_time": 1_700_000_002,
+        "event_type": "creation",
+        "old_outpoint": null, "old_offset": null, "old_pkscript": null, "old_address": null,
+        "new_outpoint": outpoint(150, 0), "new_offset": 0,
+        "new_pkscript": EVENT_OLD_PK, "new_address": event_address(EVENT_OLD_PK),
+    })
+}
+
+/// The transfer of sequence number 1 at height 3 from `150:0` to `100:0`.
+fn transfer_of_1() -> Value {
+    json!({
+        "id": event_id(3, 1), "block_height": 3, "block_time": 1_700_000_003,
+        "event_type": "transfer",
+        "old_outpoint": outpoint(150, 0), "old_offset": 0,
+        "old_pkscript": EVENT_OLD_PK, "old_address": event_address(EVENT_OLD_PK),
+        "new_outpoint": outpoint(100, 0), "new_offset": 0,
+        "new_pkscript": EVENT_PK, "new_address": event_address(EVENT_PK),
+    })
+}
+
+#[tokio::test]
+async fn an_inscriptions_history_pages_newest_first() {
+    with_fixture("history", &[INSCRIPTIONS], |app, _| async move {
+        let page = result(&app, "/v1/inscriptions/inscription/history?number=1").await;
+        assert_eq!(page["inscription"], inscription_1());
+        assert_eq!(page["events"], json!([transfer_of_1(), creation_of_1()]));
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["next_before_id"], Value::Null);
+        assert_eq!(page["indexed_height"], 20);
+
+        let first = result(
+            &app,
+            &format!("/v1/inscriptions/inscription/history?id={}&limit=1", id(1)),
+        )
+        .await;
+        assert_eq!(first["events"], json!([transfer_of_1()]));
+        assert_eq!(first["has_more"], true);
+        assert_eq!(first["next_before_id"], event_id(3, 1));
+        let second = result(
+            &app,
+            &format!(
+                "/v1/inscriptions/inscription/history?number=1&limit=1&before_id={}",
+                event_id(3, 1)
+            ),
+        )
+        .await;
+        assert_eq!(second["events"], json!([creation_of_1()]));
+        assert_eq!(second["has_more"], false);
+
+        expect(
+            &app,
+            "/v1/inscriptions/inscription/history?number=-99",
+            404,
+            JSON,
+            &bad("inscription not found"),
+        )
+        .await;
+        expect(
+            &app,
+            "/v1/inscriptions/inscription/history?number=1&before_id=0",
+            400,
+            JSON,
+            &bad("before_id must be an integer from 1 to 999999999999999999"),
+        )
+        .await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_wallets_history_pairs_each_receipt_with_its_next_transfer() {
+    with_fixture("wallet_history", &[INSCRIPTIONS], |app, _| async move {
+        // EVENT_OLD_PK received sequence number 1 at its creation and sent
+        // it on at height 3
+        let page = result(
+            &app,
+            &format!(
+                "/v1/inscriptions/wallet/history?address={}",
+                event_address(EVENT_OLD_PK)
+            ),
+        )
+        .await;
+        assert_eq!(page["address"], event_address(EVENT_OLD_PK));
+        assert_eq!(page["pkscript"], Value::Null);
+        let history = page["history"].as_array().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["inscription"]["inscription_id"], id(1));
+        assert_eq!(history[0]["received"], creation_of_1());
+        assert_eq!(history[0]["sent"], transfer_of_1());
+
+        // EVENT_PK received four events and holds every inscription, newest
+        // receipt first; pages follow next_before_id
+        let mut ids = Vec::new();
+        let mut uri = format!("/v1/inscriptions/wallet/history?pkscript={EVENT_PK}&limit=3");
+        loop {
+            let page = result(&app, &uri).await;
+            for stay in page["history"].as_array().unwrap() {
+                assert_eq!(stay["sent"], Value::Null);
+                ids.push(stay["received"]["id"].as_i64().unwrap());
+            }
+            if !page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            uri = format!(
+                "/v1/inscriptions/wallet/history?pkscript={EVENT_PK}&limit=3&before_id={}",
+                page["next_before_id"]
+            );
+        }
+        assert_eq!(
+            ids,
+            [
+                event_id(4, 0),
+                event_id(3, 1),
+                event_id(3, 0),
+                event_id(1, 0)
+            ]
+        );
+
+        for wallet in ["address=nobody", "pkscript=00"] {
+            let page = result(&app, &format!("/v1/inscriptions/wallet/history?{wallet}")).await;
+            assert_eq!(page["history"], json!([]), "{wallet}");
+        }
     })
     .await;
 }
@@ -830,12 +1004,12 @@ async fn the_stream_carries_creations_and_transfers() {
         assert_eq!(
             blocks[0],
             json!([{
-                "id": 1, "block_height": 1, "event_type": "creation", "sequence_number": 0,
-                "inscription_id": id(0), "number": 0, "cursed": false,
+                "id": event_id(1, 0), "block_height": 1, "event_type": "creation",
+                "sequence_number": 0, "inscription_id": id(0), "number": 0, "cursed": false,
                 "content_type": "text/plain", "media_type": "text/plain",
                 "old_outpoint": null, "old_offset": null, "old_pkscript": null,
                 "old_address": null, "new_outpoint": outpoint(200, 0), "new_offset": 0,
-                "new_pkscript": "0014aa", "new_address": "addrA",
+                "new_address": event_address(EVENT_PK), "new_pkscript": EVENT_PK,
             }])
         );
         let block_3: Vec<(&Value, &Value, &Value)> = blocks[2]
@@ -851,13 +1025,15 @@ async fn the_stream_carries_creations_and_transfers() {
                 (&json!("transfer"), &json!(1), &json!(outpoint(150, 0))),
             ]
         );
-        assert_eq!(blocks[2][1]["old_address"], "addrC");
+        assert_eq!(blocks[2][1]["old_pkscript"], EVENT_OLD_PK);
+        assert_eq!(blocks[2][1]["old_address"], event_address(EVENT_OLD_PK));
+        assert_eq!(blocks[2][1]["old_offset"], 0);
         assert_eq!(blocks[2][1]["new_outpoint"], outpoint(100, 0));
         assert!(blocks[4..].iter().all(|events| events == &json!([])));
         // a reorg replaces blocks 19 and 20
         sqlx::raw_sql(
             "BEGIN;
-             DELETE FROM inscriptions_events WHERE block_height > 18;
+             DELETE FROM inscriptions_events WHERE id >= (19::int8 << 32);
              DELETE FROM inscriptions_block_hashes WHERE block_height > 18;
              INSERT INTO inscriptions_block_hashes (block_height, block_hash, block_time)
                  VALUES (19, 'c19', to_timestamp(1700000019)), (20, 'c20', to_timestamp(1700000020));

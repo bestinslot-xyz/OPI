@@ -6,12 +6,15 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 axum = "0.8.9"
+bitcoin = "0.32.102"
 dotenvy = "0.15"
 futures = "0.3"
+hex = "0.4.3"
 hyper = { version = "1.12", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server-graceful", "tokio"] }
 jiff = "0.2"
 opi-core = { path = "../opi-core" }
+opi-inscriptions = { path = "../opi-inscriptions" }
 opi-runes = { path = "../opi-runes" }
 opi-runtime = { path = "../opi-runtime" }
 opi-sns = { path = "../opi-sns" }

@@ -1,0 +1,111 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.id, v.prev_id,\n                encode(v.txid, 'hex') || ':' || v.vout as \"new_outpoint!\",\n                v.\"offset\" as new_offset, v.pkscript as new_pkscript,\n                encode(p.txid, 'hex') || ':' || p.vout as \"old_outpoint?\",\n                p.\"offset\" as \"old_offset?\", p.pkscript as \"old_pkscript?\",\n                extract(epoch from h.block_time)::int8 as \"block_time?\"\n            from inscriptions_events v\n            left join inscriptions_events p on p.id = v.prev_id\n            left join inscriptions_block_hashes h on h.block_height = (v.id >> 32)::int4\n            where v.sequence_number = $1 and v.id < $2\n            order by v.sequence_number desc, v.id desc\n            limit $3;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "prev_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "prev_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "new_outpoint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "new_offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "new_pkscript",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "old_outpoint?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "old_offset?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "offset"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "old_pkscript?",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "block_time?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      null,
+      false,
+      false,
+      null,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "7c1712b51748331454fec9b8518e1093388c77e0904f3862ec81028192b2f272"
+}

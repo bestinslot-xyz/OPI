@@ -1,6 +1,6 @@
 //! The inscriptions module's routes: `/v1/inscriptions/inscription`,
-//! `/v1/inscriptions/wallet`, `/v1/inscriptions/outpoint` and
-//! `/v1/inscriptions/outpoints`.
+//! `/v1/inscriptions/wallet`, `/v1/inscriptions/outpoint`,
+//! `/v1/inscriptions/outpoints` and the history feeds of [`history`].
 //!
 //! They answer `{"error":null,"result":...}`. A missing or invalid parameter
 //! or body answers `400 {"error":"<reason>","result":null}` and an unknown
@@ -22,12 +22,17 @@
 //! the same lowercased without parameters (both null without one), `charms`
 //! ord's charm bitfield, `cursed` whether `number` is negative, `offset` the
 //! sat's offset in the output, and `pkscript` the output's script in hex.
+//! `address` derives from the pkScript and the database's network, and an
+//! `address` parameter resolves to the pkScript it encodes (see
+//! [`super::address`]).
 
+mod history;
 pub(super) mod outputs;
 
 use {
     super::{
         ModuleRoutes,
+        address::address_of,
         paging::{
             BadParam, DEFAULT_LIMIT, MAX_CONTENT_TYPE_LEN, MAX_CURSOR_LEN, MAX_LIMIT,
             MAX_OUTPOINTS, Wallet, integer, optional_text, prefix_pattern, single, split_page,
@@ -65,6 +70,8 @@ pub fn routes(_db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
         .routes(routes!(wallet))
         .routes(routes!(outpoint))
         .routes(routes!(outpoints))
+        .routes(routes!(history::inscription_history))
+        .routes(routes!(history::wallet_history))
 }
 
 /// The highest block a module's database holds: null before its first
@@ -127,7 +134,8 @@ struct InscriptionInfo {
     indexed_height: IndexedHeight,
 }
 
-/// An `inscriptions_entries` row.
+/// An `inscriptions_entries` row, its outpoint rendered `<txid>:<vout>` and
+/// with the database's network, which its address derives with.
 pub(super) struct EntryRow {
     pub sequence_number: i64,
     pub inscription_id: String,
@@ -137,10 +145,10 @@ pub(super) struct EntryRow {
     pub charms: i32,
     pub outpoint: String,
     pub offset: i64,
-    pub pkscript: String,
-    pub address: Option<String>,
+    pub pkscript: Vec<u8>,
     pub genesis_height: i32,
     pub last_moved_height: i32,
+    pub network: String,
 }
 
 impl EntryRow {
@@ -155,12 +163,35 @@ impl EntryRow {
             "cursed" => self.number < 0,
             "outpoint" => self.outpoint,
             "offset" => self.offset as f64,
-            "pkscript" => self.pkscript,
-            "address" => self.address,
+            "address" => address_of(&self.pkscript, &self.network),
+            "pkscript" => hex::encode(&self.pkscript),
             "genesis_height" => self.genesis_height,
             "last_moved_height" => self.last_moved_height,
         }
     }
+}
+
+/// The network `inscriptions_network_type` names, empty for an empty table.
+pub(super) async fn network_in(conn: &mut PgConnection) -> Result<String, ApiError> {
+    Ok(sqlx::query_scalar!(
+        r#"select network_type as "network_type!" from inscriptions_network_type limit 1;"#
+    )
+    .fetch_optional(conn)
+    .await?
+    .unwrap_or_default())
+}
+
+/// The txids and vouts of `outpoints`, each read by [`parse_outpoint`]; an
+/// outpoint whose vout is above `i32::MAX` names no stored output and is
+/// left out.
+fn outpoint_columns(outpoints: &[String]) -> (Vec<Vec<u8>>, Vec<i32>) {
+    outpoints
+        .iter()
+        .filter_map(|outpoint| {
+            let (txid, vout) = outpoint.split_once(':')?;
+            Some((hex::decode(txid).ok()?, vout.parse::<i32>().ok()?))
+        })
+        .unzip()
 }
 
 /// A read-only snapshot of a module database: the height and the rows of an
@@ -188,14 +219,20 @@ pub(super) async fn entries_on(
     conn: &mut PgConnection,
     outpoints: &[String],
 ) -> Result<Vec<EntryRow>, ApiError> {
+    let (txids, vouts) = outpoint_columns(outpoints);
+    // inscriptions_entries_outpoint_idx
     Ok(sqlx::query_as!(
         EntryRow,
-        r#"select sequence_number, inscription_id, "number", content_type, media_type, charms,
-                outpoint, "offset", pkscript, address, genesis_height, last_moved_height
-            from inscriptions_entries
-            where outpoint = any($1)
-            order by outpoint, "offset", sequence_number;"#,
-        outpoints,
+        r#"select e.sequence_number, e.inscription_id, e."number", e.content_type, e.media_type,
+                e.charms, encode(e.txid, 'hex') || ':' || e.vout as "outpoint!", e."offset",
+                e.pkscript, e.genesis_height, e.last_moved_height,
+                n.network_type as "network!"
+            from inscriptions_entries e
+            cross join (select network_type from inscriptions_network_type limit 1) n
+            where (e.txid, e.vout) in (select * from unnest($1::bytea[], $2::int4[]))
+            order by e.txid, e.vout, e."offset", e.sequence_number;"#,
+        &txids,
+        &vouts,
     )
     .fetch_all(conn)
     .await?)
@@ -364,15 +401,16 @@ fn event_type_schema() -> RefOr<Schema> {
 }
 
 /// The lowest and the highest id of block `height`'s events, `None` for a
-/// block without events. `id + 0` reads the extremes through the
-/// block_height index instead of walking the primary key.
+/// block without events: an event id holds its height in the high 32 bits,
+/// so a block's events are one primary-key range.
 pub(in crate::routes) async fn block_event_ids(
     db: &Db,
     height: i32,
 ) -> Result<Option<(i64, i64)>, ApiError> {
     let row = sqlx::query!(
-        r#"select min(id + 0) as "lo?", max(id + 0) as "hi?" from inscriptions_events where block_height = $1;"#,
-        height,
+        r#"select min(id) as "lo?", max(id) as "hi?" from inscriptions_events
+            where id >= ($1::int8 << 32) and id < (($1::int8 + 1) << 32);"#,
+        i64::from(height),
     )
     .fetch_one(db.pool()?)
     .await?;
@@ -380,7 +418,9 @@ pub(in crate::routes) async fn block_event_ids(
 }
 
 /// Up to `limit` of block `height`'s creations and transfers with an id
-/// above `after` and at most `last`, oldest first, each with its id.
+/// above `after` and at most `last`, oldest first, each with its id. A
+/// transfer's old location is its `prev_id` event's; outpoints, scripts and
+/// addresses render from the stored bytes and the database's network.
 pub(in crate::routes) async fn block_events(
     db: &Db,
     height: i32,
@@ -389,16 +429,22 @@ pub(in crate::routes) async fn block_events(
     limit: i64,
 ) -> Result<Vec<(i64, JsValue)>, ApiError> {
     let rows = sqlx::query!(
-        r#"select v.id, v.block_height, v.sequence_number, v.inscription_id,
-                e."number" as "number?", e.content_type as "content_type?",
+        r#"select v.id, v.sequence_number, e.inscription_id,
+                e."number", e.content_type as "content_type?",
                 e.media_type as "media_type?",
-                v.old_outpoint, v.old_offset, v.old_pkscript, v.old_address,
-                v.new_outpoint, v.new_offset, v.new_pkscript, v.new_address
+                encode(p.txid, 'hex') || ':' || p.vout as "old_outpoint?",
+                p."offset" as "old_offset?", p.pkscript as "old_pkscript?",
+                encode(v.txid, 'hex') || ':' || v.vout as "new_outpoint!",
+                v."offset" as new_offset, v.pkscript as new_pkscript,
+                n.network_type as "network_type!"
             from inscriptions_events v
-            left join inscriptions_entries e on e.sequence_number = v.sequence_number
-            where v.id > $2 and v.id <= $3 and v.block_height = $1
+            join inscriptions_entries e on e.sequence_number = v.sequence_number
+            left join inscriptions_events p on p.id = v.prev_id
+            cross join (select network_type from inscriptions_network_type limit 1) n
+            where v.id > $2 and v.id <= $3
+              and v.id >= ($1::int8 << 32) and v.id < (($1::int8 + 1) << 32)
             order by v.id limit $4;"#,
-        height,
+        i64::from(height),
         after,
         last,
         limit,
@@ -413,24 +459,29 @@ pub(in crate::routes) async fn block_events(
             } else {
                 "transfer"
             };
+            let network = row.network_type.as_str();
+            let old_address = row
+                .old_pkscript
+                .as_deref()
+                .and_then(|pkscript| opi_inscriptions::address(pkscript, network));
             let event = js_object! {
                 "id" => row.id as f64,
-                "block_height" => row.block_height,
+                "block_height" => height,
                 "event_type" => event_type,
                 "sequence_number" => row.sequence_number as f64,
                 "inscription_id" => row.inscription_id,
-                "number" => row.number.map(|n| n as f64),
-                "cursed" => row.number.map(|n| n < 0),
+                "number" => row.number as f64,
+                "cursed" => row.number < 0,
                 "content_type" => row.content_type,
                 "media_type" => row.media_type,
                 "old_outpoint" => row.old_outpoint,
                 "old_offset" => row.old_offset.map(|n| n as f64),
-                "old_pkscript" => row.old_pkscript,
-                "old_address" => row.old_address,
+                "old_pkscript" => row.old_pkscript.as_deref().map(hex::encode),
+                "old_address" => old_address,
                 "new_outpoint" => row.new_outpoint,
                 "new_offset" => row.new_offset as f64,
-                "new_pkscript" => row.new_pkscript,
-                "new_address" => row.new_address,
+                "new_address" => opi_inscriptions::address(&row.new_pkscript, network),
+                "new_pkscript" => hex::encode(&row.new_pkscript),
             };
             (row.id, JsValue::from(event))
         })
@@ -518,11 +569,14 @@ async fn inscription(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Re
     // execution's custom plan folds the condition that does not apply
     let row = sqlx::query_as!(
         EntryRow,
-        r#"select sequence_number, inscription_id, "number", content_type, media_type, charms,
-                outpoint, "offset", pkscript, address, genesis_height, last_moved_height
-            from inscriptions_entries
-            where ($1::text is null or inscription_id = $1)
-              and ($2::int8 is null or "number" = $2);"#,
+        r#"select e.sequence_number, e.inscription_id, e."number", e.content_type, e.media_type,
+                e.charms, encode(e.txid, 'hex') || ':' || e.vout as "outpoint!", e."offset",
+                e.pkscript, e.genesis_height, e.last_moved_height,
+                n.network_type as "network!"
+            from inscriptions_entries e
+            cross join (select network_type from inscriptions_network_type limit 1) n
+            where ($1::text is null or e.inscription_id = $1)
+              and ($2::int8 is null or e."number" = $2);"#,
         id,
         number,
     )
@@ -739,27 +793,35 @@ async fn wallet(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
     let fetch = request.limit + 1;
     let mut tx = snapshot(&db).await?;
     let height = indexed_height(&mut tx).await?;
-    // inscriptions_entries_address_seq_idx or _pkscript_seq_idx, read
-    // backwards from the cursor. The wallet is bounded as a (column,
-    // sequence_number) range and the order names the column, so the planner
-    // reads the composite index instead of walking the primary key.
-    let (address, pkscript, rows) = match request.wallet.clone() {
-        Wallet::Address(address) => {
-            let rows = sqlx::query_as!(
+    let network = network_in(&mut tx).await?;
+    let (address, pkscript) = match &request.wallet {
+        Wallet::Address(address) => (Some(address.clone()), None),
+        Wallet::PkScript(pkscript) => (None, Some(pkscript.clone())),
+    };
+    // inscriptions_entries_pkscript_seq_idx, read backwards from the cursor.
+    // The wallet is bounded as a (pkscript, sequence_number) range and the
+    // order names pkscript, so the planner reads the composite index instead
+    // of walking the primary key. An address resolves to its pkScript first.
+    let rows = match request.wallet.pkscript_bytes(&network) {
+        None => Vec::new(),
+        Some(script) => {
+            sqlx::query_as!(
                 EntryRow,
-                r#"select sequence_number, inscription_id, "number", content_type, media_type,
-                        charms, outpoint, "offset", pkscript, address, genesis_height,
-                        last_moved_height
-                    from inscriptions_entries
-                    where (address, sequence_number) < ($1, $2)
-                      and (address, sequence_number) > ($1, -1)
-                      and ($3::text is null or media_type = $3)
-                      and ($4::text is null or media_type like $4)
-                      and genesis_height between $5 and $6
-                      and ($7::bool is null or ("number" < 0) = $7)
-                    order by address desc, sequence_number desc
+                r#"select e.sequence_number, e.inscription_id, e."number", e.content_type,
+                        e.media_type, e.charms,
+                        encode(e.txid, 'hex') || ':' || e.vout as "outpoint!", e."offset",
+                        e.pkscript, e.genesis_height, e.last_moved_height,
+                        $9::text as "network!"
+                    from inscriptions_entries e
+                    where (e.pkscript, e.sequence_number) < ($1, $2)
+                      and (e.pkscript, e.sequence_number) > ($1, -1)
+                      and ($3::text is null or e.media_type = $3)
+                      and ($4::text is null or e.media_type like $4)
+                      and e.genesis_height between $5 and $6
+                      and ($7::bool is null or (e."number" < 0) = $7)
+                    order by e.pkscript desc, e.sequence_number desc
                     limit $8;"#,
-                address,
+                script,
                 after,
                 exact,
                 prefix,
@@ -767,38 +829,10 @@ async fn wallet(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, 
                 to_height,
                 request.cursed,
                 fetch,
+                network,
             )
             .fetch_all(&mut *tx)
-            .await?;
-            (Some(address), None, rows)
-        }
-        Wallet::PkScript(pkscript) => {
-            let rows = sqlx::query_as!(
-                EntryRow,
-                r#"select sequence_number, inscription_id, "number", content_type, media_type,
-                        charms, outpoint, "offset", pkscript, address, genesis_height,
-                        last_moved_height
-                    from inscriptions_entries
-                    where (pkscript, sequence_number) < ($1, $2)
-                      and (pkscript, sequence_number) > ($1, -1)
-                      and ($3::text is null or media_type = $3)
-                      and ($4::text is null or media_type like $4)
-                      and genesis_height between $5 and $6
-                      and ($7::bool is null or ("number" < 0) = $7)
-                    order by pkscript desc, sequence_number desc
-                    limit $8;"#,
-                pkscript,
-                after,
-                exact,
-                prefix,
-                from_height,
-                to_height,
-                request.cursed,
-                fetch,
-            )
-            .fetch_all(&mut *tx)
-            .await?;
-            (None, Some(pkscript), rows)
+            .await?
         }
     };
     tx.commit().await?;

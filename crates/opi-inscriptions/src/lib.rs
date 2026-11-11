@@ -13,8 +13,8 @@ pub use rules::{address, content_type_text, media_type};
 
 use db::Db;
 
-pub const INDEXER_VERSION: &str = "opi-inscriptions v1.0.0";
-pub const DB_VERSION: i32 = 1;
+pub const INDEXER_VERSION: &str = "opi-inscriptions v2.0.0";
+pub const DB_VERSION: i32 = 2;
 
 const NETWORKS: [&str; 5] = ["mainnet", "testnet", "testnet4", "signet", "regtest"];
 
@@ -72,7 +72,6 @@ pub fn start_height(network: &str) -> u32 {
 }
 
 pub struct InscriptionsModule {
-    config: InscriptionsConfig,
     db: Db,
     start_height: u32,
 }
@@ -86,7 +85,6 @@ impl InscriptionsModule {
         let db = Db::connect(&config).await?;
         let module = InscriptionsModule {
             start_height: start_height(&config.network_type),
-            config,
             db,
         };
         module.drop_residue().await?;
@@ -145,6 +143,6 @@ impl Module for InscriptionsModule {
     }
 
     async fn apply(&mut self, block: &BlockView) -> anyhow::Result<()> {
-        self.db.write_block(block, &self.config.network_type).await
+        self.db.write_block(block).await
     }
 }

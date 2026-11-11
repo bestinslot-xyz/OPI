@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select event_type, outpoint as \"outpoint?\", pkscript as \"pkscript?\", wallet_addr as \"wallet_addr?\", rune_id as \"rune_id?\", amount::text as \"amount\"\n            from runes_events re\n            where txid = $1\n            order by id asc;",
+  "query": "select event_type, encode(outpoint_txid, 'hex') || ':' || outpoint_vout as \"outpoint?\",\n                encode(pkscript, 'hex') as \"pkscript?\", rune_id as \"rune_id?\", amount::text as \"amount\"\n            from runes_events re\n            where block_height = $1\n            order by id asc;",
   "describe": {
     "columns": [
       {
@@ -18,37 +18,16 @@
         "ordinal": 1,
         "name": "outpoint?",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "runes_events",
-            "name": "outpoint"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 2,
         "name": "pkscript?",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "runes_events",
-            "name": "pkscript"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
-        "name": "wallet_addr?",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "runes_events",
-            "name": "wallet_addr"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "rune_id?",
         "type_info": "Text",
         "origin": {
@@ -59,7 +38,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "amount",
         "type_info": "Text",
         "origin": "Expression"
@@ -67,17 +46,16 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Int4"
       ]
     },
     "nullable": [
       false,
-      true,
-      true,
-      true,
+      null,
+      null,
       false,
       null
     ]
   },
-  "hash": "ad3e82f6709f83ddd738363bb79c6272c1f1d6daeac149fe09337615beb4c9cc"
+  "hash": "7f6179a126352eb664e96dd009aad338e5a946b43cd9900a32d43fb792fdf238"
 }

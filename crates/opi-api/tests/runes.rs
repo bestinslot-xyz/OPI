@@ -11,7 +11,7 @@ mod common;
 use {
     common::{
         HTML, INTERNAL_ERROR, JSON, NOT_INDEXED, down, encode, expect, get, height, js_string,
-        live, not_found_page,
+        live, live_runes_wallet, not_found_page,
     },
     opi_api::{config::Module, js::JsValue},
 };
@@ -185,7 +185,7 @@ async fn live_holders_by_name_and_by_id_agree() {
     let (rune_id, rune_name): (String, String) = sqlx::query_as(
         "select e.rune_id, e.rune_name from runes_id_to_entry e
          where exists (select 1 from runes_outpoint_to_balances b
-                       where e.rune_id = any(b.rune_ids) and not b.spent)
+                       where e.rune_id = any(b.rune_ids) and b.spent_block_height is null)
          order by e.id limit 1",
     )
     .fetch_one(&pool)
@@ -240,14 +240,7 @@ async fn live_repeated_requests_keep_the_row_order() {
     let Some((app, pool)) = live(RUNES, "OPI_API_TEST_RUNES_URL") else {
         return;
     };
-    let wallet: String = sqlx::query_scalar(
-        "select wallet_addr from runes_outpoint_to_balances
-         where not spent and wallet_addr is not null
-         group by 1 order by count(*) desc limit 1",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (wallet, _) = live_runes_wallet(&pool).await;
     let uri = format!("/v1/runes/get_current_balance_of_wallet?address={wallet}");
     let first = get(&app, &uri).await.body;
     // two pooled connections, each past its fifth execution
@@ -261,12 +254,12 @@ async fn live_wallet_routes_answer_their_shapes() {
     let Some((app, pool)) = live(RUNES, "OPI_API_TEST_RUNES_URL") else {
         return;
     };
-    let (pkscript, wallet, txid, event_height): (String, String, String, i32) = sqlx::query_as(
-        "select b.pkscript, b.wallet_addr, e.txid, e.block_height
-         from runes_outpoint_to_balances b, runes_events e
-         where not b.spent and b.wallet_addr is not null and e.pkscript = b.pkscript
-         order by b.id limit 1",
+    let (wallet, pkscript) = live_runes_wallet(&pool).await;
+    let (txid, event_height): (String, i32) = sqlx::query_as(
+        "select encode(txid, 'hex'), block_height from runes_events
+         where pkscript = decode($1, 'hex') order by id limit 1",
     )
+    .bind(&pkscript)
     .fetch_one(&pool)
     .await
     .unwrap();

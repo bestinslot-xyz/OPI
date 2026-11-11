@@ -85,7 +85,7 @@ fn the_sort_schema_names_each_sort() {
 fn cursors_name_a_place_in_their_order() {
     assert_eq!(
         holders_cursor("500:0014AB"),
-        Some(("500".into(), "0014ab".into()))
+        Some(("500".into(), vec![0x00, 0x14, 0xab]))
     );
     for bad in ["500", "x:00", "5:0", "5:zz", "-5:00"] {
         assert_eq!(holders_cursor(bad), None, "{bad}");

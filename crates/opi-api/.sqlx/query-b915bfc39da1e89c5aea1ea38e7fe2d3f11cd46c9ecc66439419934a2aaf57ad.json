@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select sequence_number, inscription_id, \"number\", content_type, media_type, charms,\n                outpoint, \"offset\", pkscript, address, genesis_height, last_moved_height\n            from inscriptions_entries\n            where ($1::text is null or inscription_id = $1)\n              and ($2::int8 is null or \"number\" = $2);",
+  "query": "select e.sequence_number, e.inscription_id, e.\"number\", e.content_type, e.media_type,\n                e.charms, encode(e.txid, 'hex') || ':' || e.vout as \"outpoint!\", e.\"offset\",\n                e.pkscript, e.genesis_height, e.last_moved_height,\n                n.network_type as \"network!\"\n            from inscriptions_entries e\n            cross join (select network_type from inscriptions_network_type limit 1) n\n            where ($1::text is null or e.inscription_id = $1)\n              and ($2::int8 is null or e.\"number\" = $2);",
   "describe": {
     "columns": [
       {
@@ -71,14 +71,9 @@
       },
       {
         "ordinal": 6,
-        "name": "outpoint",
+        "name": "outpoint!",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "inscriptions_entries",
-            "name": "outpoint"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 7,
@@ -94,7 +89,7 @@
       {
         "ordinal": 8,
         "name": "pkscript",
-        "type_info": "Text",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "inscriptions_entries",
@@ -104,17 +99,6 @@
       },
       {
         "ordinal": 9,
-        "name": "address",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "inscriptions_entries",
-            "name": "address"
-          }
-        }
-      },
-      {
-        "ordinal": 10,
         "name": "genesis_height",
         "type_info": "Int4",
         "origin": {
@@ -125,13 +109,24 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "last_moved_height",
         "type_info": "Int4",
         "origin": {
           "Table": {
             "table": "inscriptions_entries",
             "name": "last_moved_height"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "network!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_network_type",
+            "name": "network_type"
           }
         }
       }
@@ -149,13 +144,13 @@
       true,
       true,
       false,
+      null,
       false,
       false,
       false,
-      true,
       false,
       false
     ]
   },
-  "hash": "f0f53139e103d4bf023b107b678672a4bf95b267187a564495f015f64d7b7291"
+  "hash": "b915bfc39da1e89c5aea1ea38e7fe2d3f11cd46c9ecc66439419934a2aaf57ad"
 }

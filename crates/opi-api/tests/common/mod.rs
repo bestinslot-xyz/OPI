@@ -446,6 +446,24 @@ pub fn live(module: Module, var: &str) -> Option<(Router, PgPool)> {
     Some((app(module, Db::from_pool(pool.clone())), pool))
 }
 
+/// The address and pkScript hex of a live runes database's P2WPKH or P2TR
+/// pkScript with the most unspent rune outpoints.
+pub async fn live_runes_wallet(pool: &PgPool) -> (String, String) {
+    let (pkscript, network): (Vec<u8>, String) = sqlx::query_as(
+        "select pkscript, (select network_type from runes_network_type limit 1)
+         from runes_outpoint_to_balances
+         where spent_block_height is null
+           and (substring(pkscript from 1 for 2) = '\\x0014'::bytea and length(pkscript) = 22
+             or substring(pkscript from 1 for 2) = '\\x5120'::bytea and length(pkscript) = 34)
+         group by 1 order by count(*) desc limit 1",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let address = opi_runes::wallet_addr(&pkscript, &network).unwrap();
+    (address, hex::encode(pkscript))
+}
+
 /// Runs `body` with `module`'s app on a throwaway database on the local
 /// Postgres (127.0.0.1:5432, the current user) built by running `scripts` in
 /// order, created with `collation` (a LC_COLLATE, the template's when

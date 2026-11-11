@@ -84,6 +84,62 @@ pub fn js_safe(value: u64) -> i64 {
         .min(JS_MAX_SAFE_INTEGER)
 }
 
+/// The bytes of a txid written as ord displays it, 64 lowercase hex digits;
+/// `None` for any other text. Encoding the bytes as lowercase hex gives the
+/// text back.
+pub fn txid_bytes(txid: &str) -> Option<Vec<u8>> {
+    let lower_hex =
+        txid.len() == 64 && txid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    lower_hex.then(|| hex::decode(txid).ok()).flatten()
+}
+
+/// The stored `(txid, vout)` of an outpoint written as ord displays it,
+/// `<txid>:<vout>` with a lowercase hex txid and a canonical decimal vout
+/// that fits an int4. Printing them back as `<hex>:<vout>` gives the text
+/// back; any other text is an error.
+pub fn outpoint_columns(outpoint: &str) -> anyhow::Result<(Vec<u8>, i32)> {
+    let invalid = || anyhow::anyhow!("outpoint {outpoint} is not <lowercase hex txid>:<vout>");
+    let (txid, vout_text) = outpoint.split_once(':').ok_or_else(invalid)?;
+    let txid = txid_bytes(txid).ok_or_else(invalid)?;
+    let vout: i32 = vout_text.parse().map_err(|_| invalid())?;
+    if vout < 0 || vout.to_string() != vout_text {
+        return Err(invalid());
+    }
+    Ok((txid, vout))
+}
+
+/// Outpoints as the parallel `bytea[]` and `int4[]` a statement unnests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutpointColumns {
+    pub txids: Vec<Vec<u8>>,
+    pub vouts: Vec<i32>,
+}
+
+impl OutpointColumns {
+    /// The columns of `outpoints`, in order, by [`outpoint_columns`].
+    pub fn of(outpoints: &[String]) -> anyhow::Result<OutpointColumns> {
+        let mut columns = OutpointColumns::default();
+        for outpoint in outpoints {
+            let (txid, vout) = outpoint_columns(outpoint)?;
+            columns.txids.push(txid);
+            columns.vouts.push(vout);
+        }
+        Ok(columns)
+    }
+
+    /// The columns of the `outpoints` a stored row can have, in order: text
+    /// [`outpoint_columns`] refuses (a coinbase input's null outpoint, whose
+    /// vout is above the int4 range) names no row and is left out.
+    pub fn lookup(outpoints: &[String]) -> OutpointColumns {
+        let mut columns = OutpointColumns::default();
+        for (txid, vout) in outpoints.iter().filter_map(|o| outpoint_columns(o).ok()) {
+            columns.txids.push(txid);
+            columns.vouts.push(vout);
+        }
+        columns
+    }
+}
+
 /// One `runes_outpoint_to_balances` row: an output outpoint with its
 /// balances in rune-id order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,6 +447,31 @@ mod tests {
             .map(|c| (c.rune_id.as_str(), c.burned, c.mints))
             .collect();
         assert_eq!(rows, [("2:1", 16, 6), ("10:1", 0, 1)]);
+    }
+
+    #[test]
+    fn outpoints_store_as_txid_bytes_and_vout() {
+        let txid = "0a".repeat(32);
+        let (bytes, vout) = outpoint_columns(&format!("{txid}:7")).unwrap();
+        assert_eq!(bytes, vec![0x0a; 32]);
+        assert_eq!(vout, 7);
+        assert_eq!(
+            format!("{}:{vout}", hex::encode(&bytes)),
+            format!("{txid}:7")
+        );
+        for bad in [
+            format!("{}:7", "0A".repeat(32)),
+            format!("{txid}:07"),
+            format!("{txid}:+7"),
+            format!("{txid}:-1"),
+            format!("{txid}:2147483648"),
+            format!("{txid}7"),
+            format!("{}:7", "0a".repeat(31)),
+        ] {
+            assert!(outpoint_columns(&bad).is_err(), "{bad}");
+        }
+        assert_eq!(txid_bytes(&"ff".repeat(32)), Some(vec![0xff; 32]));
+        assert_eq!(txid_bytes("ff"), None);
     }
 
     #[test]

@@ -132,17 +132,26 @@ fn view(height: u32, moves: Vec<InscriptionMove>) -> BlockView {
 }
 
 /// (inscription_id, outpoint, offset, address, last_moved_height) of every
-/// entry, by sequence number.
+/// entry, by sequence number, the address derived from the stored pkScript.
 async fn entries(conn: &mut PgConnection) -> Vec<(String, String, i64, Option<String>, i32)> {
     sqlx::query(
-        "SELECT inscription_id, outpoint, \"offset\", address, last_moved_height \
-         FROM inscriptions_entries ORDER BY sequence_number",
+        "SELECT inscription_id, encode(txid, 'hex') || ':' || vout, \"offset\", pkscript, \
+         last_moved_height FROM inscriptions_entries ORDER BY sequence_number",
     )
     .fetch_all(conn)
     .await
     .unwrap()
     .into_iter()
-    .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+    .map(|row| {
+        let pkscript: Vec<u8> = row.get(3);
+        (
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            addr(&pkscript),
+            row.get(4),
+        )
+    })
     .collect()
 }
 
@@ -185,7 +194,7 @@ async fn three_blocks(module: &mut InscriptionsModule) {
             3,
             vec![
                 create("ff", 2, 1, b"application/json", satpoint("ff", 0, 0)),
-                transfer("aa", 0, satpoint("gg", 0, 330), pk1()),
+                transfer("aa", 0, satpoint("a1", 0, 330), pk1()),
             ],
         ))
         .await
@@ -201,7 +210,7 @@ async fn moves_set_the_current_location_and_owner() {
         assert_eq!(
             entries(&mut conn).await,
             vec![
-                (id("aa"), format!("{}:0", txid("gg")), 330, addr(&pk1()), 3),
+                (id("aa"), format!("{}:0", txid("a1")), 330, addr(&pk1()), 3),
                 (id("bb"), format!("{}:0", txid("ee")), 0, None, 2),
                 (id("ff"), format!("{}:0", txid("ff")), 0, addr(&pk1()), 3),
             ]
@@ -231,9 +240,9 @@ async fn moves_set_the_current_location_and_owner() {
                 ),
             ]
         );
-        let events: Vec<(i64, i32, Option<String>, String)> = sqlx::query_as(
-            "SELECT id, block_height, old_outpoint, new_outpoint FROM inscriptions_events \
-             ORDER BY id",
+        let events: Vec<(i64, Option<i64>, String, String)> = sqlx::query_as(
+            "SELECT id, prev_id, encode(txid, 'hex') || ':' || vout, encode(pkscript, 'hex') \
+             FROM inscriptions_events ORDER BY id",
         )
         .fetch_all(&mut conn)
         .await
@@ -251,9 +260,15 @@ async fn moves_set_the_current_location_and_owner() {
                 (3 << 32) + 1
             ]
         );
-        // The second move of A in block 2 starts where the first left it.
-        assert_eq!(events[3].2, Some(format!("{}:1", txid("cc"))));
-        assert_eq!(events[0].2, None);
+        // A creation has no previous event; each transfer names the one it
+        // moved the inscription from, in the same block or an earlier one.
+        assert_eq!(events[0].1, None);
+        assert_eq!(events[2].1, Some(1 << 32));
+        assert_eq!(events[3].1, Some(2 << 32));
+        assert_eq!(events[4].1, Some((1 << 32) + 1));
+        assert_eq!(events[6].1, Some((2 << 32) + 1));
+        assert_eq!(events[2].2, format!("{}:1", txid("cc")));
+        assert_eq!(events[2].3, hex::encode(pk2()));
     })
     .await;
 }
@@ -293,7 +308,7 @@ async fn rollback_restores_the_prior_locations() {
         module
             .apply(&view(
                 2,
-                vec![transfer("bb", 1, satpoint("hh", 0, 0), pk2())],
+                vec![transfer("bb", 1, satpoint("b1", 0, 0), pk2())],
             ))
             .await
             .unwrap();
@@ -301,7 +316,7 @@ async fn rollback_restores_the_prior_locations() {
             entries(&mut conn).await,
             vec![
                 (id("aa"), format!("{}:0", txid("aa")), 0, addr(&pk1()), 1),
-                (id("bb"), format!("{}:0", txid("hh")), 0, addr(&pk2()), 2),
+                (id("bb"), format!("{}:0", txid("b1")), 0, addr(&pk2()), 2),
             ]
         );
     })
@@ -354,31 +369,59 @@ async fn a_creation_moved_in_its_own_block_is_stored_at_its_last_location() {
 }
 
 #[tokio::test]
-async fn prune_drops_old_events_and_block_hashes() {
+async fn prune_keeps_each_inscriptions_latest_event_and_drops_the_rest() {
     with_database("prune", |name| async move {
         let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
         three_blocks(&mut module).await;
         module.prune_below(3).await.unwrap();
         let mut conn = connect(&name).await;
-        let heights: Vec<i32> =
-            sqlx::query_scalar("SELECT DISTINCT block_height FROM inscriptions_events")
-                .fetch_all(&mut conn)
-                .await
-                .unwrap();
-        assert_eq!(heights, vec![3]);
+        // below 3, only A's move to dd and B's burn stay: the latest events
+        // there, which A's move in block 3 and B's next transfer name
+        assert_eq!(
+            event_ids(&mut conn).await,
+            vec![(2 << 32) + 1, (2 << 32) + 2, 3 << 32, (3 << 32) + 1]
+        );
         assert_eq!(module.cursor().await.unwrap().unwrap().height, 3);
         assert_eq!(module.block_hash(2).await.unwrap(), None);
-        // A rollback within the kept window still restores block 3's moves.
-        module.rollback_to(2).await.unwrap();
+
+        module
+            .apply(&view(
+                4,
+                vec![transfer("bb", 1, satpoint("b1", 0, 0), pk2())],
+            ))
+            .await
+            .unwrap();
+        module.prune_below(4).await.unwrap();
+        // A's move in block 3 replaced its move to dd; B's burn is the
+        // event block 4's transfer moved it from
+        assert_eq!(
+            event_ids(&mut conn).await,
+            vec![(2 << 32) + 2, 3 << 32, (3 << 32) + 1, 4 << 32]
+        );
+
+        // A rollback within the kept window restores a location whose
+        // event lies below it.
+        module.rollback_to(3).await.unwrap();
         assert_eq!(
             entries(&mut conn).await,
             vec![
-                (id("aa"), format!("{}:0", txid("dd")), 0, addr(&pk2()), 2),
+                (id("aa"), format!("{}:0", txid("a1")), 330, addr(&pk1()), 3),
                 (id("bb"), format!("{}:0", txid("ee")), 0, None, 2),
+                (id("ff"), format!("{}:0", txid("ff")), 0, addr(&pk1()), 3),
             ]
         );
+        // Below the window the event a rollback needs is gone.
+        let error = module.rollback_to(2).await.unwrap_err();
+        assert!(format!("{error:#}").contains("not stored"), "{error:#}");
     })
     .await;
+}
+
+async fn event_ids(conn: &mut PgConnection) -> Vec<i64> {
+    sqlx::query_scalar("SELECT id FROM inscriptions_events ORDER BY id")
+        .fetch_all(conn)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]

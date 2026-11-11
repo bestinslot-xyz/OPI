@@ -93,27 +93,27 @@ fn fixture() -> String {
                 ('huge', 'huge', 1000000, 18, 1000, 0, 0, false, 'hugei0', 100),
                 ('a"b', 'a"b', 1000, 0, 1000, 1000, 0, false, 'abi0', 100);
          INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance,
-                                              available_balance, block_height, event_id)
-         VALUES ('0014a1', 'tb1qalice', 'ordi', 100, 100, 110, 1),
-                ('0014b2', 'tb1qbob', 'ordi', 300, 300, 110, 2),
-                ('0014a1', 'tb1qalice', 'ordi', 200, 200, 120, 3),
-                ('0014d4', 'tb1qdave', 'ordi', 0, 0, 120, 4),
-                ('0014a1', 'tb1qalice', 'ordi', 500, 400, 120, 5),
-                ('6a01ff', '', 'ordi', 300, 300, 120, 6),
-                ('{MODULE}', '', 'ordi', 550, 550, 130, 7),
-                ('0014f6', 'tb1q"odd,name', 'ordi', 70, 70, 140, 8),
-                ('0014a1', 'tb1qalice', 'pepe', 10, 10, 220, 9),
-                ('0014a1', 'tb1qalice', 'ordi', 900, 800, 250, 10),
-                ('0014b2', 'tb1qbob', 'ordi', 0, 0, 260, 11),
-                ('0014d4', 'tb1qdave', 'ordi', 40, 40, 270, 12),
-                ('{MODULE}', '', 'ordi', 800, 800, 280, 13);
+                                              available_balance, block_height)
+         VALUES ('0014a1', 'tb1qalice', 'ordi', 100, 100, 110),
+                ('0014b2', 'tb1qbob', 'ordi', 300, 300, 110),
+                ('0014a1', 'tb1qalice', 'ordi', 200, 200, 120),
+                ('0014d4', 'tb1qdave', 'ordi', 0, 0, 120),
+                ('0014a1', 'tb1qalice', 'ordi', 500, 400, 120),
+                ('6a01ff', '', 'ordi', 300, 300, 120),
+                ('{MODULE}', '', 'ordi', 550, 550, 130),
+                ('0014f6', 'tb1q"odd,name', 'ordi', 70, 70, 140),
+                ('0014a1', 'tb1qalice', 'pepe', 10, 10, 220),
+                ('0014a1', 'tb1qalice', 'ordi', 900, 800, 250),
+                ('0014b2', 'tb1qbob', 'ordi', 0, 0, 260),
+                ('0014d4', 'tb1qdave', 'ordi', 40, 40, 270),
+                ('{MODULE}', '', 'ordi', 800, 800, 280);
          INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance,
-                                              available_balance, block_height, event_id)
-         SELECT '00' || g, 'tb1qbig' || g, 'big', g % 700, g % 300, 100 + g % 150, 1000 + g
+                                              available_balance, block_height)
+         SELECT '00' || g, 'tb1qbig' || g, 'big', g % 700, g % 300, 100 + g % 150
          FROM generate_series(1, 3000) g;
          INSERT INTO brc20_historic_balances (pkscript, wallet, tick, overall_balance,
-                                              available_balance, block_height, event_id)
-         SELECT '01' || g, 'tb1qhuge' || g, 'huge', g, g, 200, 10000 + g
+                                              available_balance, block_height)
+         SELECT '01' || g, 'tb1qhuge' || g, 'huge', g, g, 200
          FROM generate_series(1, 20000) g;
          INSERT INTO evm_addresses (evm_address, btc_address)
          VALUES ('{ALICE_EVM}', 'tb1qalice'), ('{CAROL_EVM}', 'tb1qcarol');

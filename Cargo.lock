@@ -5150,18 +5150,21 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opi-api"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bitcoin",
  "dotenvy",
  "futures",
+ "hex",
  "http-body-util",
  "hyper 1.12.0",
  "hyper-util",
  "jiff",
  "jsonschema",
  "opi-core",
+ "opi-inscriptions",
  "opi-runes",
  "opi-runtime",
  "opi-sns",
@@ -5177,7 +5180,7 @@ dependencies = [
 
 [[package]]
 name = "opi-bitmap"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5194,7 +5197,7 @@ dependencies = [
 
 [[package]]
 name = "opi-brc20"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -5224,7 +5227,7 @@ dependencies = [
 
 [[package]]
 name = "opi-core"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5234,7 +5237,7 @@ dependencies = [
 
 [[package]]
 name = "opi-indexer"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5266,7 +5269,7 @@ dependencies = [
 
 [[package]]
 name = "opi-inscriptions"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5280,7 +5283,7 @@ dependencies = [
 
 [[package]]
 name = "opi-runes"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5299,7 +5302,7 @@ dependencies = [
 
 [[package]]
 name = "opi-runtime"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5311,7 +5314,7 @@ dependencies = [
 
 [[package]]
 name = "opi-sns"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5328,7 +5331,7 @@ dependencies = [
 
 [[package]]
 name = "opi-source"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "axum",

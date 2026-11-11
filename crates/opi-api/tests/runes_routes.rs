@@ -15,7 +15,9 @@ mod common;
 
 use {
     axum::Router,
-    common::{INTERNAL_ERROR, JSON, encode, expect, get, height, live, with_seeded},
+    common::{
+        INTERNAL_ERROR, JSON, encode, expect, get, height, live, live_runes_wallet, with_seeded,
+    },
     opi_api::config::Module,
     serde_json::{Value, json},
     sqlx::PgPool,
@@ -160,11 +162,34 @@ async fn valid_requests_answer_500_when_the_query_fails() {
     }
 }
 
+/// The txid of 32 bytes `n`, as hex.
+fn tx(n: u8) -> String {
+    format!("{n:02x}").repeat(32)
+}
+
+/// The outpoint `vout` of [`tx`] `n`.
+fn op(n: u8, vout: u32) -> String {
+    format!("{}:{vout}", tx(n))
+}
+
+/// The P2WPKH pkScript of holder `n`, 20 bytes `n`, as hex.
+fn pk(n: u8) -> String {
+    format!("0014{}", format!("{n:02x}").repeat(20))
+}
+
+/// The regtest address of [`pk`] `n`.
+fn addr(n: u8) -> String {
+    opi_runes::wallet_addr(&hex::decode(pk(n)).unwrap(), "regtest").unwrap()
+}
+
 /// Four runes: `1:0` (UNCOMMON•GOODS, the mainnet seed's terms), `10:1`
 /// (FIR•STRUNE, divisibility 2, half minted, seven holders), `20:1`
-/// (SECONDRUNE, no terms) and `30:2` (UNCOMMONGIFTS). Block 11's hash row is
-/// gone, as pruning leaves it.
+/// (SECONDRUNE, no terms) and `30:2` (UNCOMMONGIFTS), on regtest. Holder
+/// `n` is [`pk`] `n` and its outpoints are on [`tx`] `n`; the events are
+/// those of txids `0x10` to `0x12`. Block 11's hash row is gone, as pruning
+/// leaves it.
 const FIXTURE: &str = r#"
+INSERT INTO runes_network_type (network_type) VALUES ('regtest');
 INSERT INTO runes_block_hashes (block_height, block_hash, block_time)
     SELECT h, 'hash' || h, to_timestamp(1700000000 + h) FROM generate_series(1, 40) h WHERE h <> 11;
 INSERT INTO runes_id_to_entry (rune_id, rune_block, burned, divisibility, etching, terms_amount,
@@ -179,31 +204,38 @@ INSERT INTO runes_id_to_entry (rune_id, rune_block, burned, divisibility, etchin
     NULL, to_timestamp(1700000020), false, 20, 20),
 ('30:2', 30, 0, 8, repeat('c', 64), 10, 10, NULL, NULL, NULL, NULL, 1, 3, 0, 'UNCOMMONGIFTS', 0,
     'zz', to_timestamp(1700000030), false, 30, 31);
-INSERT INTO runes_outpoint_to_balances (outpoint, pkscript, wallet_addr, rune_ids, balances,
-    block_height, spent, spent_block_height) VALUES
-('o1:0', '001401', 'addr1', '{10:1,30:2}', '{20,10}', 12, false, NULL),
-('o1:1', '001401', 'addr1', '{10:1,1:0}', '{10,2}', 12, false, NULL),
-('o2:0', '001402', 'addr2', '{10:1}', '{10}', 12, false, NULL),
-('o2:1', '001402', 'addr2', '{10:1}', '{1000}', 11, true, 12),
-('o2:2', '001402', 'addr2', '{20:1}', '{5}', 20, false, NULL),
-('o3:0', '001403', 'addr3', '{10:1}', '{20}', 12, false, NULL),
-('o4:0', '001404', 'addr4', '{10:1}', '{30}', 12, false, NULL),
-('o5:0', '001405', 'addr5', '{10:1}', '{10}', 12, false, NULL),
-('o6:0', '001406', 'addr6', '{10:1}', '{20}', 12, false, NULL),
-('o7:0', '001407', 'addr7', '{10:1}', '{30}', 12, false, NULL),
-('o8:0', 'ffff', NULL, '{1:0}', '{1}', 2, false, NULL),
-('o9:0', '51' || repeat('4104' || repeat('ab', 64), 3) || '53ae', NULL, '{1:0}', '{2}', 2, false, NULL);
-INSERT INTO runes_events (id, event_type, txid, outpoint, pkscript, wallet_addr, rune_id, amount,
-    block_height) VALUES
-(0, 1, 't10', NULL, NULL, NULL, '10:1', 1000, 10),
-(1, 3, 't11', 'o2:1', '001402', 'addr2', '10:1', 1000, 11),
-(2, 2, 't11', NULL, NULL, NULL, '10:1', 50, 11),
-(3, 0, 't12', 'o2:1', '001402', 'addr2', '10:1', 1000, 12),
-(4, 3, 't12', 'o1:0', '001401', 'addr1', '10:1', 20, 12),
-(5, 3, 't12', 'o1:0', '001401', 'addr1', '30:2', 10, 12),
-(6, 3, 't12', 'o1:1', '001401', 'addr1', '10:1', 10, 12),
-(7, 3, 't12', 'o2:0', '001402', 'addr2', '10:1', 10, 12),
-(8, 4, 't12', NULL, NULL, NULL, '10:1', 7, 12);
+INSERT INTO runes_outpoint_to_balances (txid, vout, pkscript, rune_ids, balances, block_height,
+    spent_block_height)
+SELECT decode(repeat(t, 32), 'hex'), vout, decode(pk, 'hex'), ids::text[], bal::numeric[], h, s
+FROM (VALUES
+('01', 0, '0014' || repeat('01', 20), '{10:1,30:2}', '{20,10}', 12, NULL::int4),
+('01', 1, '0014' || repeat('01', 20), '{10:1,1:0}', '{10,2}', 12, NULL),
+('02', 0, '0014' || repeat('02', 20), '{10:1}', '{10}', 12, NULL),
+('02', 1, '0014' || repeat('02', 20), '{10:1}', '{1000}', 11, 12),
+('02', 2, '0014' || repeat('02', 20), '{20:1}', '{5}', 20, NULL),
+('03', 0, '0014' || repeat('03', 20), '{10:1}', '{20}', 12, NULL),
+('04', 0, '0014' || repeat('04', 20), '{10:1}', '{30}', 12, NULL),
+('05', 0, '0014' || repeat('05', 20), '{10:1}', '{10}', 12, NULL),
+('06', 0, '0014' || repeat('06', 20), '{10:1}', '{20}', 12, NULL),
+('07', 0, '0014' || repeat('07', 20), '{10:1}', '{30}', 12, NULL),
+('08', 0, 'ffff', '{1:0}', '{1}', 2, NULL),
+('09', 0, '51' || repeat('4104' || repeat('ab', 64), 3) || '53ae', '{1:0}', '{2}', 2, NULL)
+) v(t, vout, pk, ids, bal, h, s);
+INSERT INTO runes_events (id, event_type, txid, outpoint_txid, outpoint_vout, pkscript, rune_id,
+    amount, block_height)
+SELECT id, kind, decode(repeat(t, 32), 'hex'), decode(repeat(o, 32), 'hex'), vout,
+    decode('0014' || repeat(o, 20), 'hex'), rune, amount, h
+FROM (VALUES
+(0, 1, '10', NULL, NULL::int4, '10:1', 1000, 10),
+(1, 3, '11', '02', 1, '10:1', 1000, 11),
+(2, 2, '11', NULL, NULL, '10:1', 50, 11),
+(3, 0, '12', '02', 1, '10:1', 1000, 12),
+(4, 3, '12', '01', 0, '10:1', 20, 12),
+(5, 3, '12', '01', 0, '30:2', 10, 12),
+(6, 3, '12', '01', 1, '10:1', 10, 12),
+(7, 3, '12', '02', 0, '10:1', 10, 12),
+(8, 4, '12', NULL, NULL, '10:1', 7, 12)
+) v(id, kind, t, o, vout, rune, amount, h);
 DROP TABLE runes_current_balances;
 DROP TABLE runes_holders;
 "#;
@@ -243,37 +275,36 @@ async fn the_routes_answer_503_until_the_tables_are_built() {
         |app, pool| async move {
             let unbuilt = bad("the runes API tables are not built yet; start opi-indexer run once");
             let uris = [
-                "/v1/runes/rune?rune=10%3A1",
-                "/v1/runes/runes",
-                "/v1/runes/rune/holders?rune=FIRSTRUNE",
-                "/v1/runes/wallet/balances?address=addr1",
-                "/v1/runes/rune/events?rune=10%3A1",
-                "/v1/runes/wallet/events?pkscript=001401",
+                "/v1/runes/rune?rune=10%3A1".to_string(),
+                "/v1/runes/runes".into(),
+                "/v1/runes/etchings".into(),
+                "/v1/runes/rune/holders?rune=FIRSTRUNE".into(),
+                format!("/v1/runes/wallet/balances?address={}", addr(1)),
+                "/v1/runes/rune/events?rune=10%3A1".into(),
+                format!("/v1/runes/wallet/events?pkscript={}", pk(1)),
+                // the parity holders route reads runes_current_balances
+                "/v1/runes/holders?rune_name=FIRSTRUNE".into(),
             ];
-            for uri in uris {
+            for uri in &uris {
                 expect(&app, uri, 503, JSON, &unbuilt).await;
             }
             // parameters are still checked first
             expect(&app, "/v1/runes/rune", 400, JSON, &bad("rune is required")).await;
-            // the parity routes do not need the tables
-            assert_eq!(
-                get(&app, "/v1/runes/holders?rune_name=FIRSTRUNE")
-                    .await
-                    .status,
-                200
-            );
+            // the other parity routes do not need the tables
+            let parity = format!("/v1/runes/get_current_balance_of_wallet?pkscript={}", pk(1));
+            assert_eq!(get(&app, &parity).await.status, 200);
             // tables without the indexes are not built yet
             sqlx::raw_sql(sqlx::AssertSqlSafe(opi_runes::holders::TABLES_SQL))
                 .execute(&pool)
                 .await
                 .unwrap();
-            expect(&app, uris[0], 503, JSON, &unbuilt).await;
+            expect(&app, &uris[0], 503, JSON, &unbuilt).await;
             sqlx::raw_sql("DROP TABLE runes_current_balances; DROP TABLE runes_holders;")
                 .execute(&pool)
                 .await
                 .unwrap();
             assert!(opi_runes::holders::create_if_missing(&pool).await.unwrap());
-            for uri in uris {
+            for uri in &uris {
                 assert_eq!(get(&app, uri).await.status, 200, "{uri}");
             }
         },
@@ -498,13 +529,14 @@ async fn a_runes_holders_page_by_balance() {
             "after",
         )
         .await;
+        let order = [[7, 4, 1], [6, 3, 5]];
         assert_eq!(
             ids(&paged, "pkscript"),
-            strings(&[
-                &["001407", "001404", "001401"],
-                &["001406", "001403", "001405"],
-                &["001402"],
-            ])
+            vec![
+                order[0].map(pk).to_vec(),
+                order[1].map(pk).to_vec(),
+                vec![pk(2)],
+            ]
         );
         assert_eq!(
             ids(&paged, "balance").concat(),
@@ -512,13 +544,53 @@ async fn a_runes_holders_page_by_balance() {
         );
         assert_eq!(
             paged[0][2],
-            json!({"address": "addr1", "pkscript": "001401", "balance": "30"})
+            json!({"address": addr(1), "pkscript": pk(1), "balance": "30"})
         );
         let page = result(&app, "/v1/runes/rune/holders?rune=FIR.STRUNE&limit=3").await;
         assert_eq!(page["rune_id"], "10:1");
         assert_eq!(page["spaced_rune_name"], "FIR•STRUNE");
         assert_eq!(page["divisibility"], 2);
-        assert_eq!(page["next_after"], "30:001401");
+        assert_eq!(page["next_after"], format!("30:{}", pk(1)));
+        // a cursor's pkScript may be upper case
+        let upper = result(
+            &app,
+            &format!(
+                "/v1/runes/rune/holders?rune=FIRSTRUNE&limit=3&after=30%3A{}",
+                pk(1).to_uppercase()
+            ),
+        )
+        .await;
+        assert_eq!(upper["holders"], json!(paged[1]));
+
+        // the parity route lists the same holders, largest first, from the
+        // same table, with the address and the rune name
+        let parity = answer(&app, "/v1/runes/holders?rune_name=firstrune", 200).await;
+        let listed: Vec<(String, String)> = parity["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| {
+                assert_eq!(h["rune_id"], "10:1");
+                assert_eq!(h["rune_name"], "FIRSTRUNE");
+                (
+                    h["pkscript"].as_str().unwrap().to_string(),
+                    h["total_balance"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let ours: Vec<(String, String)> = paged
+            .concat()
+            .iter()
+            .map(|h| {
+                (
+                    h["pkscript"].as_str().unwrap().into(),
+                    h["balance"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        assert_eq!(listed, ours);
+        assert_eq!(parity["result"][2]["wallet_addr"], addr(1));
+        assert_eq!(parity["db_block_height"], 40);
         // scripts without an address, one a 402-digit bare multisig, which
         // a page can end on: its cursor is longer than the other lists'
         let multisig = multisig();
@@ -527,7 +599,7 @@ async fn a_runes_holders_page_by_balance() {
             seed["holders"],
             json!([
                 {"address": null, "pkscript": multisig, "balance": "2"},
-                {"address": "addr1", "pkscript": "001401", "balance": "2"},
+                {"address": addr(1), "pkscript": pk(1), "balance": "2"},
                 {"address": null, "pkscript": "ffff", "balance": "1"},
             ])
         );
@@ -540,11 +612,7 @@ async fn a_runes_holders_page_by_balance() {
         .await;
         assert_eq!(
             ids(&paged, "pkscript"),
-            vec![
-                vec![multisig.clone()],
-                vec!["001401".into()],
-                vec!["ffff".into()]
-            ]
+            vec![vec![multisig.clone()], vec![pk(1)], vec!["ffff".into()]]
         );
         let first = result(&app, "/v1/runes/rune/holders?rune=1%3A0&limit=1").await;
         assert_eq!(first["next_after"], format!("2:{multisig}"));
@@ -561,7 +629,7 @@ async fn a_runes_holders_page_by_balance() {
         let recount: Vec<(String, i64)> = sqlx::query_as(
             "select u.rune_id, count(distinct o.pkscript)
              from runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) u(rune_id, balance)
-             where not o.spent and u.balance > 0 group by 1 order by 1",
+             where o.spent_block_height is null and u.balance > 0 group by 1 order by 1",
         )
         .fetch_all(&pool)
         .await
@@ -577,8 +645,12 @@ async fn a_runes_holders_page_by_balance() {
 #[tokio::test]
 async fn a_wallets_balances_list_its_runes() {
     with_runes("wallet", |app, _| async move {
-        let by_address = result(&app, "/v1/runes/wallet/balances?address=addr1").await;
-        assert_eq!(by_address["address"], "addr1");
+        let by_address = result(
+            &app,
+            &format!("/v1/runes/wallet/balances?address={}", addr(1)),
+        )
+        .await;
+        assert_eq!(by_address["address"], addr(1));
         assert_eq!(by_address["pkscript"], Value::Null);
         assert_eq!(
             by_address["balances"],
@@ -591,18 +663,34 @@ async fn a_wallets_balances_list_its_runes() {
                  "number": "3", "divisibility": 8, "symbol": null, "balance": "10"},
             ])
         );
-        let by_pkscript = result(&app, "/v1/runes/wallet/balances?pkscript=001401").await;
-        assert_eq!(by_pkscript["pkscript"], "001401");
+        let by_pkscript = result(
+            &app,
+            &format!("/v1/runes/wallet/balances?pkscript={}", pk(1).to_uppercase()),
+        )
+        .await;
+        assert_eq!(by_pkscript["pkscript"], pk(1));
         assert_eq!(by_pkscript["address"], Value::Null);
         assert_eq!(by_pkscript["balances"], by_address["balances"]);
-        let paged = pages(&app, "/v1/runes/wallet/balances?address=addr1&limit=2", "balances", "after").await;
+        let paged = pages(
+            &app,
+            &format!("/v1/runes/wallet/balances?address={}&limit=2", addr(1)),
+            "balances",
+            "after",
+        )
+        .await;
         assert_eq!(ids(&paged, "rune_id"), strings(&[&["1:0", "10:1"], &["30:2"]]));
-        // the spent outpoint of 001402 does not count
-        let spent = result(&app, "/v1/runes/wallet/balances?pkscript=001402").await;
+        // the spent outpoint of holder 2 does not count
+        let spent = result(&app, &format!("/v1/runes/wallet/balances?pkscript={}", pk(2))).await;
         assert_eq!(ids(&[spent["balances"].as_array().unwrap().clone()], "balance"), strings(&[&["10", "5"]]));
-        let unknown = result(&app, "/v1/runes/wallet/balances?address=nobody").await;
-        assert_eq!(unknown["balances"], json!([]));
-        assert_eq!(unknown["has_more"], false);
+        // an address that encodes no pkScript here: not one, another
+        // network's, a script type without an address form
+        let mainnet = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+        for unknown in ["nobody", mainnet, "bcrt1zw508d6qejxtdg4y5r3zarvaryvg6kdaj"] {
+            let page = result(&app, &format!("/v1/runes/wallet/balances?address={unknown}")).await;
+            assert_eq!(page["address"], unknown);
+            assert_eq!(page["balances"], json!([]));
+            assert_eq!(page["has_more"], false);
+        }
     })
     .await;
 }
@@ -629,17 +717,82 @@ async fn the_event_feeds_page_by_id() {
             page["events"][2],
             json!({
                 "id": 6, "block_height": 12, "block_time": 1700000012, "event_type": "output",
-                "txid": "t12", "outpoint": "o1:1", "pkscript": "001401", "address": "addr1",
+                "txid": tx(0x12), "outpoint": op(1, 1), "pkscript": pk(1), "address": addr(1),
                 "rune_id": "10:1", "rune_name": "FIRSTRUNE", "spaced_rune_name": "FIR•STRUNE",
                 "divisibility": 2, "amount": "10",
             })
         );
+        assert_eq!(page["category"], Value::Null);
         // block 11's time is unknown
         let older = result(&app, "/v1/runes/rune/events?rune=10%3A1&before_id=3").await;
         assert_eq!(older["events"][0]["id"], 2);
         assert_eq!(older["events"][0]["block_time"], Value::Null);
         assert_eq!(older["events"][0]["event_type"], "mint");
         assert_eq!(older["events"][0]["outpoint"], Value::Null);
+        assert_eq!(older["events"][0]["pkscript"], Value::Null);
+        assert_eq!(older["events"][0]["address"], Value::Null);
+        assert_eq!(older["events"][0]["txid"], tx(0x11));
+
+        // categories: etch is new-allocation, transfer is input and output
+        for (category, expected) in [
+            ("etch", vec!["0"]),
+            ("mint", vec!["2"]),
+            ("burn", vec!["8"]),
+            ("transfer", vec!["7", "6", "4", "3", "1"]),
+            ("burn,etch", vec!["8", "0"]),
+            ("mint,mint", vec!["2"]),
+            (
+                "etch,mint,transfer,burn",
+                vec!["8", "7", "6", "4", "3", "2", "1", "0"],
+            ),
+        ] {
+            let paged = pages(
+                &app,
+                &format!(
+                    "/v1/runes/rune/events?rune=10%3A1&category={}&limit=2",
+                    encode(category)
+                ),
+                "events",
+                "before_id",
+            )
+            .await;
+            assert_eq!(ids(&paged, "id").concat(), expected, "{category}");
+        }
+        let page = result(
+            &app,
+            "/v1/runes/rune/events?rune=10%3A1&category=mint%2Cmint%2Cburn",
+        )
+        .await;
+        assert_eq!(page["category"], "mint,burn");
+        // with type, an event passes both
+        let both = result(
+            &app,
+            "/v1/runes/rune/events?rune=10%3A1&category=transfer&type=input",
+        )
+        .await;
+        assert_eq!(
+            ids(&[both["events"].as_array().unwrap().clone()], "id"),
+            strings(&[&["3"]])
+        );
+        let neither = result(
+            &app,
+            "/v1/runes/rune/events?rune=10%3A1&category=mint&type=input",
+        )
+        .await;
+        assert_eq!(neither["events"], json!([]));
+        assert_eq!(neither["has_more"], false);
+        let categories =
+            "category must be one or more of etch, mint, transfer, burn, comma-separated";
+        for bad_category in ["input", "mint%2C", "Mint", "%2C"] {
+            expect(
+                &app,
+                &format!("/v1/runes/rune/events?rune=10%3A1&category={bad_category}"),
+                400,
+                JSON,
+                &bad(categories),
+            )
+            .await;
+        }
 
         let outputs = pages(
             &app,
@@ -669,7 +822,7 @@ async fn the_event_feeds_page_by_id() {
 
         let wallet = pages(
             &app,
-            "/v1/runes/wallet/events?address=addr1&limit=2",
+            &format!("/v1/runes/wallet/events?address={}&limit=2", addr(1)),
             "events",
             "before_id",
         )
@@ -677,15 +830,82 @@ async fn the_event_feeds_page_by_id() {
         assert_eq!(ids(&wallet, "id"), strings(&[&["6", "5"], &["4"]]));
         assert_eq!(wallet[0][1]["rune_id"], "30:2");
         assert_eq!(wallet[0][1]["divisibility"], 8);
-        let by_pkscript = result(&app, "/v1/runes/wallet/events?pkscript=001402&type=input").await;
-        assert_eq!(by_pkscript["pkscript"], "001402");
+        assert_eq!(wallet[0][1]["address"], addr(1));
+        let by_pkscript = result(
+            &app,
+            &format!("/v1/runes/wallet/events?pkscript={}&type=input", pk(2)),
+        )
+        .await;
+        assert_eq!(by_pkscript["pkscript"], pk(2));
         assert_eq!(by_pkscript["event_type"], "input");
+        assert_eq!(by_pkscript["rune_id"], Value::Null);
         assert_eq!(
             ids(&[by_pkscript["events"].as_array().unwrap().clone()], "id"),
             strings(&[&["3"]])
         );
+        assert_eq!(by_pkscript["events"][0]["outpoint"], op(2, 1));
         let none = result(&app, "/v1/runes/wallet/events?address=nobody").await;
         assert_eq!(none["events"], json!([]));
+
+        // one rune of a wallet, by id or name, with the other filters
+        for rune in ["30%3A2", "uncommongifts"] {
+            let page = result(
+                &app,
+                &format!("/v1/runes/wallet/events?address={}&rune={rune}", addr(1)),
+            )
+            .await;
+            assert_eq!(page["rune_id"], "30:2");
+            assert_eq!(
+                ids(&[page["events"].as_array().unwrap().clone()], "id"),
+                strings(&[&["5"]])
+            );
+        }
+        let paged = pages(
+            &app,
+            &format!(
+                "/v1/runes/wallet/events?pkscript={}&rune=FIRSTRUNE&limit=1",
+                pk(2)
+            ),
+            "events",
+            "before_id",
+        )
+        .await;
+        assert_eq!(ids(&paged, "id"), strings(&[&["7"], &["3"], &["1"]]));
+        let outputs = result(
+            &app,
+            &format!(
+                "/v1/runes/wallet/events?pkscript={}&rune=10%3A1&category=transfer&type=output",
+                pk(2)
+            ),
+        )
+        .await;
+        assert_eq!(outputs["category"], "transfer");
+        assert_eq!(
+            ids(&[outputs["events"].as_array().unwrap().clone()], "id"),
+            strings(&[&["7", "1"]])
+        );
+        let other = result(
+            &app,
+            &format!("/v1/runes/wallet/events?pkscript={}&rune=20%3A1", pk(2)),
+        )
+        .await;
+        assert_eq!(other["events"], json!([]));
+        expect(
+            &app,
+            &format!("/v1/runes/wallet/events?pkscript={}&rune=NOSUCHRUNE", pk(2)),
+            404,
+            JSON,
+            NOT_FOUND,
+        )
+        .await;
+        expect(
+            &app,
+            &format!("/v1/runes/wallet/events?pkscript={}&rune=A..B", pk(2)),
+            400,
+            JSON,
+            &bad("rune must be a rune id (block:tx) or a rune name (letters A-Z and spacers)"),
+        )
+        .await;
         expect(
             &app,
             "/v1/runes/wallet/events?address=a&type=x",
@@ -694,6 +914,158 @@ async fn the_event_feeds_page_by_id() {
             &bad(types),
         )
         .await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_etchings_list_newest_first() {
+    with_runes("etchings", |app, _| async move {
+        let all = result(&app, "/v1/runes/etchings").await;
+        assert_eq!(all["has_more"], false);
+        assert_eq!(all["next_before_number"], Value::Null);
+        assert_eq!(all["limit"], 100);
+        assert_eq!(all["block_height"], 40);
+        let listed: Vec<&str> = all["runes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rune| rune["rune_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(listed, ["30:2", "20:1", "10:1", "1:0"]);
+        // each entry is the rune object of /v1/runes/rune
+        let mut rune = result(&app, "/v1/runes/rune?rune=10%3A1").await;
+        rune.as_object_mut().unwrap().remove("block_height");
+        assert_eq!(all["runes"][2], rune);
+
+        let paged = pages(&app, "/v1/runes/etchings?limit=3", "runes", "before_number").await;
+        assert_eq!(
+            ids(&paged, "rune_id"),
+            strings(&[&["30:2", "20:1", "10:1"], &["1:0"]])
+        );
+        let first = result(&app, "/v1/runes/etchings?limit=3").await;
+        assert_eq!(first["next_before_number"], 1);
+        let older = result(&app, "/v1/runes/etchings?before_number=2").await;
+        assert_eq!(
+            ids(&[older["runes"].as_array().unwrap().clone()], "rune_id"),
+            strings(&[&["10:1", "1:0"]])
+        );
+        for (uri, reason) in [
+            (
+                "/v1/runes/etchings?before_number=0",
+                "before_number must be an integer from 1 to 999999999999999999",
+            ),
+            (
+                "/v1/runes/etchings?before_number=x",
+                "before_number must be an integer from 1 to 999999999999999999",
+            ),
+            (
+                "/v1/runes/etchings?limit=501",
+                "limit must be an integer from 1 to 500",
+            ),
+        ] {
+            expect(&app, uri, 400, JSON, &bad(reason)).await;
+        }
+    })
+    .await;
+}
+
+/// The parity routes print stored bytes as the JavaScript API's text
+/// columns held them, with the address derived on the database's network.
+#[tokio::test]
+async fn the_parity_routes_print_hex_outpoints_and_addresses() {
+    with_runes("parity", |app, _| async move {
+        let event = answer(&app, &format!("/v1/runes/event?transaction_id={}", tx(0x12)), 200).await;
+        let events = event["result"].as_array().unwrap();
+        assert_eq!(events.len(), 6);
+        assert_eq!(
+            events[0],
+            json!({"event_type": "input", "outpoint": op(2, 1), "pkscript": pk(2),
+                   "wallet_addr": addr(2), "rune_id": "10:1", "amount": "1000"})
+        );
+        assert_eq!(
+            events[5],
+            json!({"event_type": "burn", "outpoint": null, "pkscript": null,
+                   "wallet_addr": null, "rune_id": "10:1", "amount": "7"})
+        );
+        // a transaction id matches its lowercase hex only, as a text match did
+        for other in [format!("{}0", tx(0x12)), "zz".into(), tx(0x13)] {
+            let none = answer(&app, &format!("/v1/runes/event?transaction_id={other}"), 200).await;
+            assert_eq!(none["result"], json!([]), "{other}");
+        }
+        let activity = answer(&app, "/v1/runes/activity_on_block?block_height=11", 200).await;
+        assert_eq!(
+            activity["result"],
+            json!([
+                {"event_type": "output", "outpoint": op(2, 1), "pkscript": pk(2), "rune_id": "10:1", "amount": "1000"},
+                {"event_type": "mint", "outpoint": null, "pkscript": null, "rune_id": "10:1", "amount": "50"},
+            ])
+        );
+
+        let by_address = answer(
+            &app,
+            &format!("/v1/runes/get_unspent_rune_outpoints_of_wallet?address={}", addr(2)),
+            200,
+        )
+        .await;
+        let mut outpoints: Vec<Value> = by_address["result"].as_array().unwrap().clone();
+        outpoints.sort_by_key(|o| o["outpoint"].as_str().unwrap().to_string());
+        assert_eq!(
+            outpoints,
+            [
+                json!({"pkscript": pk(2), "wallet_addr": addr(2), "outpoint": op(2, 0), "rune_ids": ["10:1"], "balances": [10]}),
+                json!({"pkscript": pk(2), "wallet_addr": addr(2), "outpoint": op(2, 2), "rune_ids": ["20:1"], "balances": [5]}),
+            ]
+        );
+        let by_pkscript = answer(
+            &app,
+            &format!("/v1/runes/get_unspent_rune_outpoints_of_wallet?pkscript={}", pk(2)),
+            200,
+        )
+        .await;
+        assert_eq!(by_pkscript["result"].as_array().unwrap().len(), 2);
+        // a pkscript matches its lowercase hex only, and a script without
+        // an address answers a null wallet_addr
+        let lower = answer(&app, "/v1/runes/get_unspent_rune_outpoints_of_wallet?pkscript=ffff", 200).await;
+        assert_eq!(lower["result"][0]["wallet_addr"], Value::Null);
+        assert_eq!(lower["result"][0]["outpoint"], op(8, 0));
+        let upper = answer(&app, "/v1/runes/get_unspent_rune_outpoints_of_wallet?pkscript=FFFF", 200).await;
+        assert_eq!(upper["result"], json!([]));
+
+        // holder 2 at the start of 12 still holds the outpoint 12 spends
+        let balance = answer(
+            &app,
+            &format!("/v1/runes/balance_on_block?block_height=12&address={}", addr(2)),
+            200,
+        )
+        .await;
+        assert_eq!(
+            balance["result"],
+            json!([{"pkscript": pk(2), "wallet_addr": addr(2), "rune_id": "10:1",
+                    "rune_name": "FIRSTRUNE", "total_balance": "1000"}])
+        );
+        let current = answer(
+            &app,
+            &format!("/v1/runes/get_current_balance_of_wallet?address={}", addr(1)),
+            200,
+        )
+        .await;
+        let mut balances: Vec<(String, String)> = current["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                assert_eq!(b["wallet_addr"], addr(1));
+                (b["rune_id"].as_str().unwrap().into(), b["total_balance"].as_str().unwrap().into())
+            })
+            .collect();
+        balances.sort();
+        assert_eq!(
+            balances,
+            [("10:1".into(), "30".into()), ("1:0".into(), "2".into()), ("30:2".into(), "10".into())]
+        );
+        let nobody = answer(&app, "/v1/runes/get_current_balance_of_wallet?address=nobody", 200).await;
+        assert_eq!(nobody["result"], json!([]));
     })
     .await;
 }
@@ -711,7 +1083,7 @@ async fn live_routes_agree_with_the_parity_routes() {
         "select u.rune_id, e.rune_name, count(distinct o.pkscript)
          from runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) u(rune_id, balance)
          join runes_id_to_entry e on e.rune_id = u.rune_id
-         where not o.spent and u.balance > 0 group by 1, 2 order by 3 desc, 1 limit 5",
+         where o.spent_block_height is null and u.balance > 0 group by 1, 2 order by 3 desc, 1 limit 5",
     )
     .fetch_all(&pool)
     .await
@@ -797,14 +1169,7 @@ async fn live_routes_agree_with_the_parity_routes() {
     }
 
     // a busy wallet's balances against the parity route
-    let (wallet, pkscript): (String, String) = sqlx::query_as(
-        "select wallet_addr, pkscript from runes_outpoint_to_balances
-         where not spent and wallet_addr is not null
-         group by 1, 2 order by count(*) desc limit 1",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (wallet, pkscript) = live_runes_wallet(&pool).await;
     let balances = pages(
         &app,
         &format!(
@@ -867,11 +1232,12 @@ async fn live_routes_agree_with_the_parity_routes() {
         "before_id",
     )
     .await;
-    let count: i64 = sqlx::query_scalar("select count(*) from runes_events where wallet_addr = $1")
-        .bind(&wallet)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("select count(*) from runes_events where pkscript = decode($1, 'hex')")
+            .bind(&pkscript)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(events.concat().len() as i64, count);
 
     // every list order pages without dupes or gaps

@@ -228,7 +228,6 @@ mod db_tests {
     /// brc20_historic_balances.
     async fn historic(
         database: &Brc20Database,
-        event_id: i64,
         pkscript: &str,
         tick: &str,
         balance: i64,
@@ -236,14 +235,13 @@ mod db_tests {
     ) {
         sqlx::query(
             "INSERT INTO brc20_historic_balances
-                 (pkscript, wallet, tick, overall_balance, available_balance, block_height, event_id)
-             VALUES ($1, 'w' || $1, $2, $3, $3, $4, $5)",
+                 (pkscript, wallet, tick, overall_balance, available_balance, block_height)
+             VALUES ($1, 'w' || $1, $2, $3, $3, $4)",
         )
         .bind(pkscript)
         .bind(tick)
         .bind(sqlx::types::BigDecimal::from(balance))
         .bind(block_height)
-        .bind(event_id)
         .execute(&database.client)
         .await
         .unwrap();
@@ -253,12 +251,12 @@ mod db_tests {
     /// balances, extra tables built block by block, no marker.
     async fn old_database(name: &str) -> Brc20Database {
         let mut database = database(name).await;
-        historic(&database, 1, "a1", "ordi", 5, 10).await;
-        historic(&database, 2, "b2", "ordi", 3, 10).await;
-        historic(&database, 3, "c3", "pepe", 9, 10).await;
+        historic(&database, "a1", "ordi", 5, 10).await;
+        historic(&database, "b2", "ordi", 3, 10).await;
+        historic(&database, "c3", "pepe", 9, 10).await;
         database.index_extra_tables(10).await.unwrap();
-        historic(&database, 4, "b2", "ordi", 0, 11).await;
-        historic(&database, 5, "d4", "ordi", 2, 11).await;
+        historic(&database, "b2", "ordi", 0, 11).await;
+        historic(&database, "d4", "ordi", 2, 11).await;
         database.index_extra_tables(11).await.unwrap();
         sqlx::raw_sql("DROP TABLE brc20_extras_verified")
             .execute(&database.client)
@@ -397,7 +395,7 @@ mod db_tests {
     async fn unbuilt_extra_tables_are_marked_and_left_for_their_first_build() {
         with_database("unbuilt", |name| async move {
             let database = database(&name).await;
-            historic(&database, 1, "a1", "ordi", 5, 10).await;
+            historic(&database, "a1", "ordi", 5, 10).await;
             sqlx::raw_sql("DROP TABLE brc20_extras_verified")
                 .execute(&database.client)
                 .await
@@ -437,10 +435,10 @@ mod db_tests {
     async fn the_rebuild_breaks_a_same_block_tie_by_the_higher_id() {
         with_database("tie", |name| async move {
             let database = database(&name).await;
-            historic(&database, 1, "a1", "ordi", 5, 10).await;
-            historic(&database, 2, "a1", "ordi", 3, 10).await;
+            historic(&database, "a1", "ordi", 5, 10).await;
+            historic(&database, "a1", "ordi", 3, 10).await;
             // A later id at an earlier block does not count as newer.
-            historic(&database, 3, "a1", "ordi", 7, 9).await;
+            historic(&database, "a1", "ordi", 7, 9).await;
             database.initial_index_of_extra_tables().await.unwrap();
             assert_eq!(current(&database).await, lines(&["a1 ordi 3 3"]));
             assert_eq!(holders(&database).await, lines(&["ordi 1"]));
@@ -454,9 +452,9 @@ mod db_tests {
     async fn a_reorg_leaves_unbuilt_extra_tables_empty() {
         with_database("reorg_unbuilt", |name| async move {
             let mut database = database(&name).await;
-            historic(&database, 1, "a1", "ordi", 5, 10).await;
-            historic(&database, 2, "b2", "ordi", 3, 11).await;
-            historic(&database, 3, "c3", "pepe", 9, 12).await;
+            historic(&database, "a1", "ordi", 5, 10).await;
+            historic(&database, "b2", "ordi", 3, 11).await;
+            historic(&database, "c3", "pepe", 9, 12).await;
             for height in 10..=12 {
                 database
                     .set_block_hashes(height, &format!("h{height}"), "", None, &[])

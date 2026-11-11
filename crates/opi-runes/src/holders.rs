@@ -1,9 +1,9 @@
 //! Current balances and holder counts per rune, and the indexes of the
 //! API's rune routes.
 //!
-//! - `runes_current_balances` holds, per rune and pkScript, the sum of the
-//!   pkScript's unspent outpoints' balances of the rune, with the
-//!   pkScript's address. Only positive sums have a row.
+//! - `runes_current_balances` holds, per rune and pkScript (bytes), the sum
+//!   of the pkScript's unspent outpoints' balances of the rune. Only
+//!   positive sums have a row.
 //! - `runes_holders` holds, per rune, `holders`: the pkScripts with a row in
 //!   `runes_current_balances`, so the distinct owners with a positive
 //!   balance over unspent outpoints. Only positive counts have a row.
@@ -24,11 +24,12 @@
 
 use sqlx::{PgPool, Postgres, Transaction};
 
+use crate::rules::OutpointColumns;
+
 /// The tables, also in db_init.sql.
 pub const TABLES_SQL: &str = "CREATE TABLE IF NOT EXISTS public.runes_current_balances (
 	rune_id text NOT NULL,
-	pkscript text NOT NULL,
-	wallet_addr text NULL,
+	pkscript bytea NOT NULL,
 	balance numeric(40) NOT NULL,
 	CONSTRAINT runes_current_balances_pk PRIMARY KEY (pkscript, rune_id)
 );
@@ -43,32 +44,28 @@ CREATE TABLE IF NOT EXISTS public.runes_holders (
 /// db_init.sql.
 ///
 /// - `(rune_id, balance, pkscript)` serves a rune's holders by balance,
-///   walked backwards from a cursor.
-/// - `wallet_addr` serves a wallet's balances by address; the primary key,
-///   `(pkscript, rune_id)`, serves them by pkScript.
-/// - `rune_name text_pattern_ops` serves the name prefix search.
-/// - `(rune_id, id)`, `(wallet_addr, id)` and `(pkscript, id)` on
-///   `runes_events` serve the rune and wallet event feeds, newest first.
-pub const INDEXES: [(&str, &str); 6] = [
+///   walked backwards from a cursor; the primary key, `(pkscript, rune_id)`,
+///   serves a wallet's balances, an address resolved to its pkScript.
+/// - `rune_name text_pattern_ops` serves the name prefix search, and
+///   `number` the etchings list and the lists ordered by rune number.
+/// - `(rune_id, id)` and `(pkscript, id)` on `runes_events` serve the rune
+///   and wallet event feeds, newest first.
+pub const INDEXES: [(&str, &str); 5] = [
     (
         "runes_current_balances_rune_id_balance_idx",
         "CREATE INDEX IF NOT EXISTS runes_current_balances_rune_id_balance_idx ON public.runes_current_balances USING btree (rune_id, balance, pkscript)",
-    ),
-    (
-        "runes_current_balances_wallet_addr_idx",
-        "CREATE INDEX IF NOT EXISTS runes_current_balances_wallet_addr_idx ON public.runes_current_balances USING btree (wallet_addr)",
     ),
     (
         "runes_id_to_entry_rune_name_pattern_idx",
         "CREATE INDEX IF NOT EXISTS runes_id_to_entry_rune_name_pattern_idx ON public.runes_id_to_entry USING btree (rune_name text_pattern_ops)",
     ),
     (
-        "runes_events_rune_id_id_idx",
-        "CREATE INDEX IF NOT EXISTS runes_events_rune_id_id_idx ON public.runes_events USING btree (rune_id, id)",
+        "runes_id_to_entry_number_idx",
+        "CREATE INDEX IF NOT EXISTS runes_id_to_entry_number_idx ON public.runes_id_to_entry USING btree (\"number\")",
     ),
     (
-        "runes_events_wallet_addr_id_idx",
-        "CREATE INDEX IF NOT EXISTS runes_events_wallet_addr_id_idx ON public.runes_events USING btree (wallet_addr, id)",
+        "runes_events_rune_id_id_idx",
+        "CREATE INDEX IF NOT EXISTS runes_events_rune_id_id_idx ON public.runes_events USING btree (rune_id, id)",
     ),
     (
         "runes_events_pkscript_id_idx",
@@ -78,21 +75,17 @@ pub const INDEXES: [(&str, &str); 6] = [
 
 /// The single-column event indexes the `(column, id)` ones extend, dropped
 /// at start once those exist.
-pub const SUPERSEDED: [&str; 3] = [
-    "runes_events_rune_id_idx",
-    "runes_events_wallet_addr_idx",
-    "runes_events_pkscript_idx",
-];
+pub const SUPERSEDED: [&str; 2] = ["runes_events_rune_id_idx", "runes_events_pkscript_idx"];
 
 /// The balances of the unspent outpoints of `filter`'s rows, per rune and
 /// pkScript.
 macro_rules! unspent_sums {
     ($filter:literal) => {
         concat!(
-            "INSERT INTO runes_current_balances (rune_id, pkscript, wallet_addr, balance) \
-             SELECT u.rune_id, o.pkscript, max(o.wallet_addr), sum(u.balance) \
+            "INSERT INTO runes_current_balances (rune_id, pkscript, balance) \
+             SELECT u.rune_id, o.pkscript, sum(u.balance) \
              FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-             WHERE NOT o.spent",
+             WHERE o.spent_block_height IS NULL",
             $filter,
             " GROUP BY u.rune_id, o.pkscript HAVING sum(u.balance) > 0"
         )
@@ -184,25 +177,24 @@ pub async fn create_if_missing(pool: &PgPool) -> Result<bool, sqlx::Error> {
 }
 
 /// The statement that applies the balance changes a `changed` CTE lists as
-/// `(rune_id, pkscript, wallet_addr, delta)`. It nets them per rune and
-/// pkScript, upserts each balance, and moves each rune's count by +1 for a
-/// balance that turns positive and -1 for one that reaches zero. The
-/// upsert answers each new balance, and the old one is the new less the
-/// delta (0 for an inserted row), so no statement looks balances up.
-/// It answers the pairs and runes left at zero or below, which the caller
-/// deletes: `('b', rune_id, pkscript, balance)` and
-/// `('h', rune_id, '', holders)`.
+/// `(rune_id, pkscript, delta)`. It nets them per rune and pkScript,
+/// upserts each balance, and moves each rune's count by +1 for a balance
+/// that turns positive and -1 for one that reaches zero. The upsert answers
+/// each new balance, and the old one is the new less the delta (0 for an
+/// inserted row), so no statement looks balances up. It answers the pairs
+/// and runes left at zero or below, which the caller deletes:
+/// `('b', rune_id, pkscript, balance)` and `('h', rune_id, '', holders)`.
 macro_rules! apply_deltas {
     ($changed:literal) => {
         concat!(
             "WITH changed AS (",
             $changed,
             "), net AS ( \
-                 SELECT rune_id, pkscript, max(wallet_addr) AS wallet_addr, sum(delta) AS delta \
+                 SELECT rune_id, pkscript, sum(delta) AS delta \
                  FROM changed GROUP BY rune_id, pkscript HAVING sum(delta) <> 0 \
              ), balances AS ( \
-                 INSERT INTO runes_current_balances AS c (rune_id, pkscript, wallet_addr, balance) \
-                 SELECT rune_id, pkscript, wallet_addr, delta FROM net \
+                 INSERT INTO runes_current_balances AS c (rune_id, pkscript, balance) \
+                 SELECT rune_id, pkscript, delta FROM net \
                  ON CONFLICT (pkscript, rune_id) DO UPDATE SET balance = c.balance + excluded.balance \
                  RETURNING c.rune_id, c.pkscript, c.balance \
              ), moves AS ( \
@@ -220,7 +212,7 @@ macro_rules! apply_deltas {
              ) \
              SELECT 'b'::text, rune_id, pkscript, balance::text FROM balances WHERE balance <= 0 \
              UNION ALL \
-             SELECT 'h'::text, rune_id, ''::text, holders::text FROM counts WHERE holders <= 0"
+             SELECT 'h'::text, rune_id, ''::bytea, holders::text FROM counts WHERE holders <= 0"
         )
     };
 }
@@ -231,7 +223,7 @@ macro_rules! apply_deltas {
 /// like the rest. The block goes on, since these tables only serve the API.
 async fn drop_emptied(
     tx: &mut Transaction<'_, Postgres>,
-    emptied: Vec<(String, String, String, String)>,
+    emptied: Vec<(String, String, Vec<u8>, String)>,
 ) -> Result<(), sqlx::Error> {
     let mut runes = Vec::new();
     let mut pkscripts = Vec::new();
@@ -240,7 +232,8 @@ async fn drop_emptied(
         if value.starts_with('-') {
             if kind == "b" {
                 tracing::error!(
-                    "runes_current_balances drifted: rune {rune_id} pkscript {pkscript} balance {value}; the row is deleted"
+                    "runes_current_balances drifted: rune {rune_id} pkscript {} balance {value}; the row is deleted",
+                    hex::encode(&pkscript)
                 );
             } else {
                 tracing::error!(
@@ -258,7 +251,7 @@ async fn drop_emptied(
     if !runes.is_empty() {
         sqlx::query(
             "DELETE FROM runes_current_balances c \
-             USING UNNEST($1::text[], $2::text[]) AS e(rune_id, pkscript) \
+             USING UNNEST($1::text[], $2::bytea[]) AS e(rune_id, pkscript) \
              WHERE c.rune_id = e.rune_id AND c.pkscript = e.pkscript AND c.balance <= 0",
         )
         .bind(&runes)
@@ -281,19 +274,21 @@ async fn drop_emptied(
 pub async fn apply_block(
     tx: &mut Transaction<'_, Postgres>,
     height: i32,
-    spent: &[String],
+    spent: &OutpointColumns,
 ) -> Result<(), sqlx::Error> {
     let emptied = sqlx::query_as(apply_deltas!(
-        "SELECT u.rune_id, o.pkscript, o.wallet_addr, u.balance AS delta \
+        "SELECT u.rune_id, o.pkscript, u.balance AS delta \
          FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
          WHERE o.block_height = $1 \
          UNION ALL \
-         SELECT u.rune_id, o.pkscript, o.wallet_addr, -u.balance \
-         FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-         WHERE o.outpoint = ANY($2)"
+         SELECT u.rune_id, o.pkscript, -u.balance \
+         FROM UNNEST($2::bytea[], $3::int4[]) AS s(txid, vout) \
+         JOIN runes_outpoint_to_balances o ON o.txid = s.txid AND o.vout = s.vout, \
+         unnest(o.rune_ids, o.balances) AS u(rune_id, balance)"
     ))
     .bind(height)
-    .bind(spent)
+    .bind(&spent.txids)
+    .bind(&spent.vouts)
     .fetch_all(&mut **tx)
     .await?;
     drop_emptied(tx, emptied).await
@@ -306,14 +301,14 @@ pub async fn apply_block(
 /// holds no current balance and changes nothing.
 pub async fn rollback(tx: &mut Transaction<'_, Postgres>, height: i64) -> Result<(), sqlx::Error> {
     let emptied = sqlx::query_as(apply_deltas!(
-        "SELECT u.rune_id, o.pkscript, o.wallet_addr, -u.balance AS delta \
+        "SELECT u.rune_id, o.pkscript, -u.balance AS delta \
          FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-         WHERE o.block_height > $1 AND NOT o.spent \
+         WHERE o.block_height > $1 AND o.spent_block_height IS NULL \
          UNION ALL \
-         SELECT u.rune_id, o.pkscript, o.wallet_addr, u.balance \
+         SELECT u.rune_id, o.pkscript, u.balance \
          FROM runes_outpoint_to_balances o, unnest(o.rune_ids, o.balances) AS u(rune_id, balance) \
-         WHERE o.outpoint IN (SELECT outpoint FROM runes_events \
-                              WHERE block_height > $1 AND event_type = 0) \
+         WHERE (o.txid, o.vout) IN (SELECT outpoint_txid, outpoint_vout FROM runes_events \
+                                    WHERE block_height > $1 AND event_type = 0) \
          AND o.block_height <= $1 AND o.spent_block_height > $1"
     ))
     .bind(height)

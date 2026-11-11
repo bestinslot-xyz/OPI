@@ -1,5 +1,6 @@
 //! The rune routes: `/v1/runes/rune`, `/v1/runes/runes`,
-//! `/v1/runes/rune/holders` and `/v1/runes/wallet/balances`.
+//! `/v1/runes/etchings`, `/v1/runes/rune/holders` and
+//! `/v1/runes/wallet/balances`.
 //!
 //! They answer `{"error":null,"result":...}`. A missing or invalid parameter
 //! answers `400 {"error":"<reason>","result":null}`, an unknown rune
@@ -21,10 +22,13 @@
 //! `next_after` of the previous page, an opaque cursor naming the last row's
 //! place in the order. A page holds the rows after it, so pages never repeat
 //! or skip a row whose place does not change. `has_more` tells whether more
-//! follow and `next_after` is null on the last page.
+//! follow and `next_after` is null on the last page. `/v1/runes/etchings`
+//! pages newest first by `before_number`, as the event feeds page by
+//! `before_id`: a rune's number is its place in etching order.
 
 use {
     super::{RunesTables, block_height_of_db},
+    crate::routes::address::{NetworkTable, address_of, network_type},
     crate::{
         db::Db,
         extract::JsQuery,
@@ -33,8 +37,9 @@ use {
         openapi::{Answer, DbHeight, ErrorBody, LimitParam, with_default},
         reply::{ApiError, Reply},
         routes::paging::{
-            BadParam, DEFAULT_LIMIT, MAX_CURSOR_LEN, MAX_HOLDERS_CURSOR_LEN, MAX_LIMIT,
-            MAX_RUNE_LEN, Wallet, integer, optional_text, prefix_pattern, single, split_page, text,
+            BadParam, DEFAULT_LIMIT, MAX_BEFORE_ID, MAX_CURSOR_LEN, MAX_HOLDERS_CURSOR_LEN,
+            MAX_LIMIT, MAX_RUNE_LEN, Wallet, integer, optional_text, prefix_pattern, single,
+            split_page, text,
         },
     },
     axum::extract::State,
@@ -608,6 +613,131 @@ pub async fn runes(
     }))
 }
 
+/// The `before_number` parameter of `/v1/runes/etchings`.
+#[derive(IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct BeforeNumberParam {
+    /// The previous page's `next_before_number`: the page holds the runes
+    /// with a lower number.
+    #[param(minimum = 1, maximum = 999999999999999999_i64)]
+    before_number: Option<i64>,
+}
+
+/// A page of etched runes, newest first.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct RunesEtchings {
+    /// By rune number, descending: the latest etching first.
+    runes: Vec<RunesRune>,
+    limit: i64,
+    has_more: bool,
+    /// The `before_number` of the next page, null on the last page.
+    #[schema(nullable)]
+    next_before_number: i64,
+    block_height: DbHeight,
+}
+
+/// The `limit` and `before_number` of `/v1/runes/etchings`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EtchingsRequest {
+    pub limit: i64,
+    pub before_number: Option<i64>,
+}
+
+impl EtchingsRequest {
+    pub fn from_query(query: &JsObject) -> Result<EtchingsRequest, BadParam> {
+        let before_number = match single(query, "before_number")? {
+            None => None,
+            Some(_) => Some(integer(query, "before_number", 0, 1, MAX_BEFORE_ID)?),
+        };
+        Ok(EtchingsRequest {
+            limit: integer(query, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT)?,
+            before_number,
+        })
+    }
+}
+
+/// A page of etched runes, newest first.
+///
+/// The runes by number, descending; a rune's number is its place in
+/// etching order. The list pages by key, so pages neither repeat nor skip
+/// runes as new ones are etched.
+#[utoipa::path(
+    get,
+    path = "/v1/runes/etchings",
+    tag = "runes",
+    params(BeforeNumberParam, LimitParam),
+    responses(
+        (status = 200, description = "The page", body = Answer<RunesEtchings>),
+        (status = 400, description = "A missing or invalid parameter", body = ErrorBody),
+        (status = 503, description = "`the runes API tables are not built yet; start opi-indexer run once`: the runes module has not built its tables and indexes in this database", body = ErrorBody),
+    ),
+)]
+pub async fn etchings(
+    State(tables): State<RunesTables>,
+    JsQuery(query): JsQuery,
+) -> Result<Reply, ApiError> {
+    let request = match EtchingsRequest::from_query(&query) {
+        Ok(request) => request,
+        Err(bad) => return Ok(bad.reply()),
+    };
+    if let Some(reply) = tables.unbuilt().await? {
+        return Ok(reply);
+    }
+    let db = tables.db.clone();
+    let current_block_height = block_height_of_db(&db).await;
+    // A backward scan of runes_id_to_entry_number_idx from the cursor, up
+    // to one past the page: a page costs the same at any depth.
+    let rows = sqlx::query_as!(
+        RuneRow,
+        r#"select e.rune_id, e.rune_name, e.spacers, e."number"::text as "number!",
+                e.divisibility, e.symbol, e.etching, e.genesis_height,
+                extract(epoch from e."timestamp")::int8 as "timestamp!", e.turbo,
+                e.premine::text as "premine!", e.mints::text as "mints!",
+                e.burned::text as "burned!",
+                (e.premine + e.mints * coalesce(e.terms_amount, 0))::text as "supply!",
+                (e.premine + coalesce(e.terms_cap, 0) * coalesce(e.terms_amount, 0))::text as "max_supply!",
+                e.terms_amount::text as terms_amount, e.terms_cap::text as terms_cap,
+                e.terms_height_l, e.terms_height_h, e.terms_offset_l, e.terms_offset_h,
+                case when e.terms_cap > 0 then (e.mints / e.terms_cap)::float8 end as mint_progress,
+                coalesce(h.holders, 0) as "holders!",
+                null::text as sort_key
+            from (
+                select * from runes_id_to_entry
+                where $1::int8 is null or "number" < $1::int8::numeric
+                order by "number" desc
+                limit $2
+            ) e
+            left join runes_holders h on h.rune_id = e.rune_id
+            order by e."number" desc;"#,
+        request.before_number,
+        request.limit + 1,
+    )
+    .fetch_all(db.pool()?)
+    .await?;
+    let (rows, has_more) = split_page(rows, request.limit);
+    let next_before_number = if has_more {
+        rows.last().and_then(|row| row.number.parse::<f64>().ok())
+    } else {
+        None
+    };
+    let runes: Vec<JsValue> = rows
+        .into_iter()
+        .map(|row| row.into_object().into())
+        .collect();
+    Ok(Reply::send_json(js_object! {
+        "error" => JsValue::Null,
+        "result" => js_object! {
+            "runes" => runes,
+            "limit" => request.limit as f64,
+            "has_more" => has_more,
+            "next_before_number" => next_before_number,
+            "block_height" => current_block_height,
+        },
+    }))
+}
+
 /// A holder of a rune.
 #[derive(ToSchema)]
 #[allow(dead_code)]
@@ -640,10 +770,10 @@ struct RunesRuneHolders {
 
 /// The `/v1/runes/rune/holders` cursor: the last row's balance and
 /// pkScript.
-fn holders_cursor(text: &str) -> Option<(String, String)> {
+fn holders_cursor(text: &str) -> Option<(String, Vec<u8>)> {
     let (balance, pkscript) = text.split_once(':')?;
-    let hex = pkscript.len() % 2 == 0 && pkscript.bytes().all(|b| b.is_ascii_hexdigit());
-    (is_digits(balance) && hex).then(|| (balance.into(), pkscript.to_ascii_lowercase()))
+    let pkscript = hex::decode(pkscript).ok()?;
+    is_digits(balance).then(|| (balance.into(), pkscript))
 }
 
 /// A page of a rune's holders, largest balance first.
@@ -683,17 +813,18 @@ pub async fn rune_holders(
     let Some(rune) = find_rune(&db, &rune).await? else {
         return Ok(Reply::error(404, "rune not found"));
     };
+    let network = network_type(&db, NetworkTable::Runes).await?;
     let (after_balance, after_pkscript) = match &page.after {
-        Some((balance, pkscript)) => (Some(balance.as_str()), Some(pkscript.as_str())),
+        Some((balance, pkscript)) => (Some(balance.as_str()), Some(pkscript.as_slice())),
         None => (None, None),
     };
     // A backward range scan of runes_current_balances_rune_id_balance_idx
     // from the cursor: a page costs the same at any depth.
     let rows = sqlx::query!(
-        r#"select c.wallet_addr as "wallet_addr?", c.pkscript, c.balance::text as "balance!"
+        r#"select c.pkscript, c.balance::text as "balance!"
             from runes_current_balances c
             where c.rune_id = $1
-              and ($2::text is null or (c.balance, c.pkscript) < ($2::text::numeric, $3::text))
+              and ($2::text is null or (c.balance, c.pkscript) < ($2::text::numeric, $3::bytea))
             order by c.balance desc, c.pkscript desc
             limit $4;"#,
         rune.rune_id,
@@ -706,7 +837,7 @@ pub async fn rune_holders(
     let (rows, has_more) = split_page(rows, page.limit);
     let next_after = if has_more {
         rows.last()
-            .map(|row| format!("{}:{}", row.balance, row.pkscript))
+            .map(|row| format!("{}:{}", row.balance, hex::encode(&row.pkscript)))
     } else {
         None
     };
@@ -714,8 +845,8 @@ pub async fn rune_holders(
         .into_iter()
         .map(|row| {
             js_object! {
-                "address" => row.wallet_addr,
-                "pkscript" => row.pkscript,
+                "address" => address_of(&row.pkscript, &network),
+                "pkscript" => hex::encode(&row.pkscript),
                 "balance" => row.balance,
             }
             .into()
@@ -824,24 +955,25 @@ pub async fn wallet_balances(
     }
     let db = tables.db.clone();
     let current_block_height = block_height_of_db(&db).await;
+    let network = network_type(&db, NetworkTable::Runes).await?;
+    let bytes = wallet.pkscript_bytes(&network);
     let (address, pkscript) = match wallet {
         Wallet::Address(address) => (Some(address), None),
         Wallet::PkScript(pkscript) => (None, Some(pkscript)),
     };
-    // The wallet's rows come through the pkscript or wallet_addr index of
-    // runes_current_balances; a page sorts the wallet's runes.
+    // The wallet's rows come through the primary key of
+    // runes_current_balances, (pkscript, rune_id); a page sorts the
+    // wallet's runes. An address that resolves to no pkScript matches none.
     let rows = sqlx::query!(
         r#"select c.rune_id, e.rune_name, e.spacers, e."number"::text as "number!",
                 e.divisibility, e.symbol, c.balance::text as "balance!"
             from runes_current_balances c
             join runes_id_to_entry e on e.rune_id = c.rune_id
-            where ($1::text is null or c.pkscript = $1)
-              and ($2::text is null or c.wallet_addr = $2)
-              and ($3::text is null or e."number" > $3::text::numeric)
+            where c.pkscript = $1
+              and ($2::text is null or e."number" > $2::text::numeric)
             order by e."number" asc
-            limit $4;"#,
-        pkscript,
-        address,
+            limit $3;"#,
+        bytes,
         page.after,
         page.limit + 1,
     )

@@ -16,8 +16,8 @@ use opi_core::{BlockRef, BlockSource, BlockView, Module};
 
 pub use report::{DB_VERSION, EVENT_HASH_VERSION, INDEXER_VERSION};
 pub use rules::{
-    Held, block_event_hash, complete_events, counters, cumulative_hash, event_str, sha256_hex,
-    symbol_hex, wallet_addr,
+    Held, OutpointColumns, block_event_hash, complete_events, counters, cumulative_hash, event_str,
+    outpoint_columns, sha256_hex, symbol_hex, txid_bytes, wallet_addr,
 };
 
 use db::{BlockHashes, Db};
@@ -225,10 +225,7 @@ impl Module for RunesModule {
     /// never fails the block.
     async fn apply(&mut self, block: &BlockView) -> anyhow::Result<()> {
         let hashed = block.height >= self.hash_start_height;
-        let hashes = self
-            .db
-            .write_block(block, &self.config.network_type, hashed)
-            .await?;
+        let hashes = self.db.write_block(block, hashed).await?;
         if let Some(hashes) = hashes
             && self.reporting_enabled()
             && let Err(error) = self.report(block, &hashes).await

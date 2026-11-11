@@ -154,20 +154,24 @@ pub async fn outputs(
                 sqlx::query_scalar!(r#"select max(block_height) as "h?" from runes_block_hashes;"#)
                     .fetch_one(&mut *tx)
                     .await?;
-            // runes_outpoint_to_balances_outpoint_idx; each balance in the
-            // output's own order
+            // the primary key of runes_outpoint_to_balances, (txid, vout);
+            // each balance in the output's own order
+            let wanted = opi_runes::OutpointColumns::lookup(&outpoints);
             let rows = sqlx::query_as!(
                 RuneRow,
-                r#"select o.outpoint, u.rune_id as "rune_id!", e.rune_name as "rune_name?",
+                r#"select encode(o.txid, 'hex') || ':' || o.vout as "outpoint!",
+                        u.rune_id as "rune_id!", e.rune_name as "rune_name?",
                         e.spacers as "spacers?", e.divisibility as "divisibility?",
                         e.symbol as "symbol?", u.balance::text as "amount!"
-                    from runes_outpoint_to_balances o
+                    from (select distinct * from unnest($1::bytea[], $2::int4[])) as w(txid, vout)
+                    join runes_outpoint_to_balances o on o.txid = w.txid and o.vout = w.vout
                     cross join lateral unnest(o.rune_ids, o.balances)
                         with ordinality as u(rune_id, balance, n)
                     left join runes_id_to_entry e on e.rune_id = u.rune_id
-                    where o.outpoint = any($1) and o.spent = false
-                    order by o.outpoint, u.n;"#,
-                &outpoints,
+                    where o.spent_block_height is null
+                    order by o.txid, o.vout, u.n;"#,
+                &wanted.txids,
+                &wanted.vouts,
             )
             .fetch_all(&mut *tx)
             .await?;

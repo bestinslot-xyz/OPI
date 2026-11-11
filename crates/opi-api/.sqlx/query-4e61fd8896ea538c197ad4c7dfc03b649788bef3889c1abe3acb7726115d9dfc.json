@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select r.id, r.block_height, extract(epoch from h.block_time)::int8 as \"block_time?\",\n                    (select t.event_type_name from runes_event_types t\n                      where t.event_type_id = r.event_type limit 1) as \"event_type?\",\n                    r.txid, r.outpoint, r.pkscript, r.wallet_addr, r.rune_id,\n                    e.rune_name as \"rune_name?\", e.spacers as \"spacers?\",\n                    e.divisibility as \"divisibility?\", r.amount::text as \"amount!\"\n                from (\n                    select * from runes_events\n                    where (pkscript, id) < ($1, $3) and (pkscript, id) > ($1, -1)\n                      and ($2::int4 is null or event_type = $2)\n                    order by pkscript desc, id desc limit $4\n                ) r\n                left join runes_block_hashes h on h.block_height = r.block_height\n                left join runes_id_to_entry e on e.rune_id = r.rune_id\n                order by r.id desc;",
+  "query": "select r.id, r.block_height, extract(epoch from h.block_time)::int8 as \"block_time?\",\n                    (select t.event_type_name from runes_event_types t\n                      where t.event_type_id = r.event_type limit 1) as \"event_type?\",\n                    encode(r.txid, 'hex') as \"txid!\",\n                    encode(r.outpoint_txid, 'hex') || ':' || r.outpoint_vout as \"outpoint?\",\n                    r.pkscript, r.rune_id,\n                    e.rune_name as \"rune_name?\", e.spacers as \"spacers?\",\n                    e.divisibility as \"divisibility?\", r.amount::text as \"amount!\"\n                from (\n                    select * from runes_events\n                    where (pkscript, id) < ($1, $3) and (pkscript, id) > ($1, -1)\n                      and ($2::int4[] is null or event_type = any($2))\n                      and ($5::text is null or rune_id = $5)\n                    order by pkscript desc, id desc limit $4\n                ) r\n                left join runes_block_hashes h on h.block_height = r.block_height\n                left join runes_id_to_entry e on e.rune_id = r.rune_id\n                order by r.id desc;",
   "describe": {
     "columns": [
       {
@@ -39,30 +39,20 @@
       },
       {
         "ordinal": 4,
-        "name": "txid",
+        "name": "txid!",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "runes_events",
-            "name": "txid"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 5,
-        "name": "outpoint",
+        "name": "outpoint?",
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "runes_events",
-            "name": "outpoint"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "pkscript",
-        "type_info": "Text",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "runes_events",
@@ -72,17 +62,6 @@
       },
       {
         "ordinal": 7,
-        "name": "wallet_addr",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "runes_events",
-            "name": "wallet_addr"
-          }
-        }
-      },
-      {
-        "ordinal": 8,
         "name": "rune_id",
         "type_info": "Text",
         "origin": {
@@ -93,7 +72,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "rune_name?",
         "type_info": "Text",
         "origin": {
@@ -104,7 +83,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "spacers?",
         "type_info": "Int8",
         "origin": {
@@ -115,7 +94,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "divisibility?",
         "type_info": "Int4",
         "origin": {
@@ -126,7 +105,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "amount!",
         "type_info": "Text",
         "origin": "Expression"
@@ -134,10 +113,11 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Int4",
+        "Bytea",
+        "Int4Array",
         "Int8",
-        "Int8"
+        "Int8",
+        "Text"
       ]
     },
     "nullable": [
@@ -145,9 +125,8 @@
       false,
       null,
       null,
-      false,
-      true,
-      true,
+      null,
+      null,
       true,
       false,
       false,
@@ -156,5 +135,5 @@
       null
     ]
   },
-  "hash": "e2ad0cba274bb90dbc49f95b38cb07522629e23757dfb3539452652ad182ccd3"
+  "hash": "4e61fd8896ea538c197ad4c7dfc03b649788bef3889c1abe3acb7726115d9dfc"
 }

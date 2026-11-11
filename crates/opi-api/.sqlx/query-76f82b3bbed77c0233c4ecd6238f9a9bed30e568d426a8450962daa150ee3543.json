@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.pkscript, c.rune_id, c.balance::text as \"total_balance\"\n            from runes_current_balances c\n            where c.rune_id = $1\n            order by c.balance desc, c.pkscript desc;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pkscript",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "runes_current_balances",
+            "name": "pkscript"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rune_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runes_current_balances",
+            "name": "rune_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "total_balance",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "76f82b3bbed77c0233c4ecd6238f9a9bed30e568d426a8450962daa150ee3543"
+}
