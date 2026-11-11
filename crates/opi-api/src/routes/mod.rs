@@ -34,6 +34,7 @@ use {
         db::Db,
         js::{JsError, JsObject, JsValue},
         js_object,
+        mempool::Mempool,
         openapi::{self, Answer, ApiDoc, DbHeight, SpecJson},
         reply::{Reply, not_found},
     },
@@ -71,6 +72,8 @@ pub struct RouteSettings {
     pub stream: StreamSettings,
     /// The signal that ends every stream of `/v1/stream`.
     pub stream_stop: StreamStop,
+    /// The mempool view `/v1/utxos/wallet?mempool=true` reads, when it runs.
+    pub mempool: Option<Mempool>,
 }
 
 impl Default for RouteSettings {
@@ -79,6 +82,7 @@ impl Default for RouteSettings {
             snapshot_timeout: Duration::from_millis(600_000),
             stream: StreamSettings::default(),
             stream_stop: StreamStop::never(),
+            mempool: None,
         }
     }
 }
@@ -188,6 +192,7 @@ pub fn app(
             inscriptions: enabled_db(Module::Inscriptions),
             runes: enabled_db(Module::Runes),
             brc20: enabled_db(Module::Brc20),
+            mempool: settings.mempool.clone(),
         };
         router = router.routes(routes!(utxos::wallet).with_state(wallets));
     }

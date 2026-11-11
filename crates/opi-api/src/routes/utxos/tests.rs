@@ -60,3 +60,77 @@ fn the_other_types_filter_by_what_the_output_carries() {
     assert!(keeps(Kind::Runic, runic, 500, None));
     assert!(!keeps(Kind::Runic, inscribed, 1, Some(1)));
 }
+
+#[test]
+fn mempool_is_a_boolean_defaulting_to_false() {
+    assert!(!parse_mempool(&query(&[])).unwrap());
+    assert!(!parse_mempool(&query(&[("mempool", "false")])).unwrap());
+    assert!(parse_mempool(&query(&[("mempool", "true")])).unwrap());
+    assert_eq!(
+        parse_mempool(&query(&[("mempool", "1")])).unwrap_err().0,
+        "mempool must be true or false"
+    );
+}
+
+#[test]
+fn a_mempool_output_is_cardinal_only_when_not_pending() {
+    assert!(keeps_mempool(Kind::All, true));
+    assert!(keeps_mempool(Kind::Cardinal, false));
+    assert!(!keeps_mempool(Kind::Cardinal, true));
+    for kind in [Kind::Inscribed, Kind::Runic] {
+        assert!(!keeps_mempool(kind, false));
+    }
+}
+
+#[test]
+fn a_mempool_output_is_pending_unless_its_lineage_is_known_clean() {
+    use bitcoin::{OutPoint, Txid, hashes::Hash};
+    let input = OutPoint {
+        txid: Txid::from_byte_array([1; 32]),
+        vout: 0,
+    };
+    let lineage = Lineage {
+        marked: false,
+        confirmed_inputs: vec![input],
+    };
+    let clean = InputFacts {
+        height: Some(90),
+        carries_inscriptions: false,
+        carries_runes: false,
+    };
+    let at = Some(100);
+    assert!(!is_pending(&lineage, |_| clean, at));
+    assert!(is_pending(
+        &Lineage {
+            marked: true,
+            ..lineage.clone()
+        },
+        |_| clean,
+        at
+    ));
+    for facts in [
+        InputFacts {
+            carries_inscriptions: true,
+            ..clean
+        },
+        InputFacts {
+            carries_runes: true,
+            ..clean
+        },
+        // the utxos module does not hold the input
+        InputFacts {
+            height: None,
+            ..clean
+        },
+        // created above a module's height: its contents may be unknown
+        InputFacts {
+            height: Some(101),
+            ..clean
+        },
+    ] {
+        assert!(is_pending(&lineage, |_| facts, at), "{facts:?}");
+    }
+    assert!(is_pending(&lineage, |_| clean, None));
+    // a lineage that spends nothing confirmed and opens nothing is clean
+    assert!(!is_pending(&Lineage::default(), |_| clean, at));
+}

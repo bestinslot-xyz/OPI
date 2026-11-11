@@ -6,8 +6,30 @@
 use {
     crate::js::{js_trim, parse_int_str},
     anyhow::{Result, bail},
-    std::{path::Path, time::Duration},
+    std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    },
 };
+
+/// How the mempool view authenticates to bitcoind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpcAuth {
+    UserPass(String, String),
+    /// bitcoind's cookie file, read on every request since bitcoind rewrites
+    /// it on restart.
+    Cookie(PathBuf),
+}
+
+/// The mempool view's settings (MEMPOOL_ENABLED and `BITCOIN_RPC_*`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolSettings {
+    /// BITCOIN_RPC_URL.
+    pub rpc_url: String,
+    pub auth: RpcAuth,
+    /// How often the view reads bitcoind's mempool (MEMPOOL_POLL_MS).
+    pub poll: Duration,
+}
 
 #[cfg(test)]
 mod tests;
@@ -245,6 +267,8 @@ pub struct Config {
     /// API_METRICS_ADDR, the metrics listener's address; `None` when it is
     /// unset or empty, which runs no metrics listener.
     pub metrics_addr: Option<String>,
+    /// The mempool view's settings; `None` unless MEMPOOL_ENABLED is `true`.
+    pub mempool: Option<MempoolSettings>,
 }
 
 impl Config {
@@ -306,7 +330,7 @@ impl Config {
 /// Parses OPI_MODULES: comma-separated, entries trimmed, empty entries
 /// ignored, duplicates dropped. Unset means brc20.
 pub fn parse_modules(value: Option<&str>) -> Result<Vec<Module>> {
-    let supported = "supported: brc20, bitmap, sns, runes, inscriptions";
+    let supported = "supported: brc20, bitmap, sns, runes, inscriptions, utxos";
     let mut modules = Vec::new();
     for name in value
         .unwrap_or("brc20")
@@ -364,6 +388,7 @@ pub fn load_config(get: impl Fn(&str) -> Option<String>) -> Result<Config> {
             },
         ));
     }
+    let mempool = mempool_settings(&get, &modules)?;
     Ok(Config {
         modules,
         dbs,
@@ -388,7 +413,57 @@ pub fn load_config(get: impl Fn(&str) -> Option<String>) -> Result<Config> {
             resume_wait_secs: parse_int_str(&or("STREAM_RESUME_WAIT_SECS", "300")),
         },
         metrics_addr: get("API_METRICS_ADDR").filter(|addr| !addr.is_empty()),
+        mempool,
     })
+}
+
+/// The mempool view's settings when MEMPOOL_ENABLED is `true`: it needs the
+/// utxos module, BITCOIN_RPC_URL and either BITCOIN_RPC_COOKIE or
+/// BITCOIN_RPC_USER and BITCOIN_RPC_PASSWD. MEMPOOL_POLL_MS is from 100 to
+/// 600000, default 2000.
+fn mempool_settings(
+    get: &impl Fn(&str) -> Option<String>,
+    modules: &[Module],
+) -> Result<Option<MempoolSettings>> {
+    let var = |key: &str| get(key).filter(|value| !value.is_empty());
+    if var("MEMPOOL_ENABLED").as_deref() != Some("true") {
+        return Ok(None);
+    }
+    if !modules.contains(&Module::Utxos) {
+        bail!("MEMPOOL_ENABLED needs the utxos module in OPI_MODULES");
+    }
+    let Some(rpc_url) = var("BITCOIN_RPC_URL") else {
+        bail!("BITCOIN_RPC_URL is not set (required because MEMPOOL_ENABLED is true)");
+    };
+    let auth = match (
+        var("BITCOIN_RPC_COOKIE"),
+        var("BITCOIN_RPC_USER"),
+        get("BITCOIN_RPC_PASSWD"),
+    ) {
+        (Some(cookie), None, _) => RpcAuth::Cookie(PathBuf::from(cookie)),
+        (None, Some(user), Some(passwd)) => RpcAuth::UserPass(user, passwd),
+        (Some(_), Some(_), _) => {
+            bail!("set either BITCOIN_RPC_COOKIE or BITCOIN_RPC_USER, not both")
+        }
+        _ => bail!("set BITCOIN_RPC_COOKIE or BITCOIN_RPC_USER and BITCOIN_RPC_PASSWD"),
+    };
+    let poll = match var("MEMPOOL_POLL_MS") {
+        None => 2000,
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|ms| (100..=600_000).contains(ms))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MEMPOOL_POLL_MS must be an integer from 100 to 600000, got {value}"
+                )
+            })?,
+    };
+    Ok(Some(MempoolSettings {
+        rpc_url,
+        auth,
+        poll: Duration::from_millis(poll),
+    }))
 }
 
 /// The variables to add from the env file: the file OPI_ENV_FILE names, or

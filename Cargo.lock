@@ -5153,6 +5153,7 @@ name = "opi-api"
 version = "4.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bitcoin",
  "dotenvy",
@@ -5168,6 +5169,7 @@ dependencies = [
  "opi-runes",
  "opi-runtime",
  "opi-sns",
+ "reqwest",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",

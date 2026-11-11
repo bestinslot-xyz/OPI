@@ -1,7 +1,7 @@
 //! `GET /v1/utxos/wallet`: a wallet's unspent outputs, each with the
 //! inscriptions and runes it carries, filtered to the outputs a wallet may
 //! spend as plain bitcoin (`type=cardinal`), or to the inscribed or runic
-//! ones.
+//! ones, and with `mempool=true` the mempool's changes to them.
 //!
 //! The outputs come from the utxos module, their inscriptions from the
 //! inscriptions module, their runes from the runes module and, for each
@@ -10,6 +10,15 @@
 //! snapshot of its database, and `indexed_height` is the lowest height read:
 //! a cardinal answer leaves out the outputs created above it, since a module
 //! that has not reached their block would show them clean.
+//!
+//! With `mempool=true` the answer leaves out the outputs a mempool
+//! transaction spends and adds the wallet's mempool outputs (see
+//! [`crate::mempool`]). A mempool output is `pending`, its contents unknown
+//! until it confirms, unless its transaction and every in-mempool ancestor
+//! open no inscription envelope and hold no runestone, and every confirmed
+//! output they spend carries no inscription or rune and was created at or
+//! below `indexed_height`. Only a mempool output that is not pending is
+//! cardinal.
 //!
 //! The route needs the utxos, inscriptions and runes modules, and the brc20
 //! module for `type=cardinal`; without one it answers
@@ -31,6 +40,10 @@ use {
         extract::JsQuery,
         js::{JsObject, JsValue},
         js_object,
+        mempool::{
+            Mempool,
+            state::{Lineage, MempoolOutput},
+        },
         openapi::{Answer, ErrorBody},
         reply::{ApiError, Reply},
     },
@@ -56,14 +69,15 @@ pub fn routes(_db: &Db, _settings: &RouteSettings) -> ModuleRoutes {
     ModuleRoutes::new()
 }
 
-/// The databases `/v1/utxos/wallet` reads: the utxos module's, and each of
-/// the others' when it is enabled.
+/// What `/v1/utxos/wallet` reads: the utxos module's database, each of the
+/// others' when it is enabled, and the mempool view when it runs.
 #[derive(Clone)]
 pub struct Wallets {
     pub utxos: Db,
     pub inscriptions: Option<Db>,
     pub runes: Option<Db>,
     pub brc20: Option<Db>,
+    pub mempool: Option<Mempool>,
 }
 
 /// The outputs `type` keeps.
@@ -105,6 +119,15 @@ impl Kind {
     }
 }
 
+/// The `mempool` parameter: `true` or `false`, default `false`.
+pub fn parse_mempool(query: &JsObject) -> Result<bool, BadParam> {
+    match single(query, "mempool")? {
+        None | Some("") | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err(BadParam("mempool must be true or false".into())),
+    }
+}
+
 /// What an output carries, as the filter weighs it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Carries {
@@ -114,8 +137,8 @@ pub struct Carries {
     pub runes: usize,
 }
 
-/// Whether `kind` keeps an output carrying `carries`, created at `height`,
-/// in an answer covering the chain up to `indexed_height`.
+/// Whether `kind` keeps a confirmed output carrying `carries`, created at
+/// `height`, in an answer covering the chain up to `indexed_height`.
 pub fn keeps(kind: Kind, carries: Carries, height: i32, indexed_height: Option<i32>) -> bool {
     match kind {
         Kind::All => true,
@@ -129,7 +152,48 @@ pub fn keeps(kind: Kind, carries: Carries, height: i32, indexed_height: Option<i
     }
 }
 
-/// The wallet and output type of `/v1/utxos/wallet`.
+/// Whether `kind` keeps a mempool output: every kind lists it but the
+/// inscribed and runic ones, which need its contents, and cardinal only
+/// when it is not pending.
+pub fn keeps_mempool(kind: Kind, pending: bool) -> bool {
+    match kind {
+        Kind::All => true,
+        Kind::Cardinal => !pending,
+        Kind::Inscribed | Kind::Runic => false,
+    }
+}
+
+/// What a confirmed output that a mempool transaction spends tells about
+/// the outputs it funds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputFacts {
+    /// The output's creating height; `None` when the utxos module does not
+    /// hold it.
+    pub height: Option<i32>,
+    pub carries_inscriptions: bool,
+    pub carries_runes: bool,
+}
+
+/// Whether a mempool output of `lineage` is pending: its contents are
+/// unknown until it confirms.
+pub fn is_pending(
+    lineage: &Lineage,
+    facts: impl Fn(&str) -> InputFacts,
+    indexed_height: Option<i32>,
+) -> bool {
+    lineage.marked
+        || lineage.confirmed_inputs.iter().any(|input| {
+            let facts = facts(&input.to_string());
+            facts.carries_inscriptions
+                || facts.carries_runes
+                || !facts
+                    .height
+                    .zip(indexed_height)
+                    .is_some_and(|(height, indexed)| height <= indexed)
+        })
+}
+
+/// The wallet, output type and mempool switch of `/v1/utxos/wallet`.
 #[derive(IntoParams)]
 #[into_params(parameter_in = Query)]
 #[allow(dead_code)]
@@ -145,6 +209,9 @@ struct WalletUtxosParams {
     /// or `runic`.
     #[param(pattern = "^(all|cardinal|inscribed|runic)?$")]
     r#type: Option<String>,
+    /// `true` applies the mempool: leaves out the outputs it spends and adds
+    /// the wallet's outputs in it. Needs MEMPOOL_ENABLED.
+    mempool: Option<bool>,
 }
 
 /// An inscription on an output.
@@ -161,6 +228,16 @@ struct UtxoInscription {
     used_brc20_transfer: bool,
 }
 
+/// The mempool transaction that created an unconfirmed output.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct UtxoMempool {
+    /// The transaction's fee, in sats.
+    fee: i64,
+    /// The transaction's virtual size, in vbytes.
+    vsize: i64,
+}
+
 /// An unspent output of the wallet.
 #[derive(ToSchema)]
 #[allow(dead_code)]
@@ -171,13 +248,21 @@ struct WalletUtxo {
     vout: i32,
     /// In sats.
     value: i64,
-    /// The block that created the output.
+    /// The block that created the output; null for a mempool output.
+    #[schema(nullable)]
     height: i32,
     coinbase: bool,
-    /// By offset, then sequence number.
+    /// By offset, then sequence number; empty for a mempool output.
     inscriptions: Vec<UtxoInscription>,
-    /// In the order the output holds them.
+    /// In the order the output holds them; empty for a mempool output.
     runes: Vec<OutputRune>,
+    /// Whether the output's contents are unknown until it confirms: a
+    /// mempool output whose transaction or ancestors may move or create
+    /// inscriptions or runes.
+    pending: bool,
+    /// The transaction of a mempool output; null for a confirmed one.
+    #[schema(nullable)]
+    mempool: UtxoMempool,
 }
 
 /// Each module's indexed height.
@@ -189,6 +274,16 @@ struct WalletUtxosHeights {
     runes: IndexedHeight,
     /// Null when the brc20 module is not enabled.
     brc20: IndexedHeight,
+}
+
+/// The mempool view an answer applied.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct WalletUtxosMempool {
+    /// The transactions the view holds.
+    tx_count: i64,
+    /// Unix seconds of the view's last poll of bitcoind.
+    updated_at: i64,
 }
 
 /// A wallet's unspent outputs.
@@ -210,6 +305,9 @@ struct WalletUtxos {
     /// The lowest of the modules' heights, null while any has no block.
     indexed_height: IndexedHeight,
     heights: WalletUtxosHeights,
+    /// The mempool view applied; null without `mempool=true`.
+    #[schema(nullable)]
+    mempool: WalletUtxosMempool,
 }
 
 /// A `utxos` row.
@@ -222,15 +320,33 @@ struct UtxoRow {
     coinbase: bool,
 }
 
+/// A spent input's creating height.
+struct InputRow {
+    outpoint: String,
+    height: i32,
+}
+
+/// The mempool's part of an answer, read in one go from the view.
+#[derive(Default)]
+struct MempoolPart {
+    /// The confirmed outputs of the wallet a mempool transaction spends.
+    spent: HashSet<String>,
+    /// The wallet's mempool outputs, each with its lineage.
+    outputs: Vec<(MempoolOutput, Lineage)>,
+    tx_count: usize,
+}
+
 /// A wallet's unspent outputs, with their inscriptions and runes.
 ///
 /// The outputs of the wallet, by `address` or `pkscript`, each with the
 /// inscriptions and rune balances it carries. `type=cardinal` keeps the
 /// outputs a wallet may spend as plain bitcoin: no runes, and no
 /// inscriptions other than used BRC-20 or BRC2.0 transfer inscriptions,
-/// created at or below `indexed_height`. A wallet holding more than 10000
-/// unspent outputs answers 413. A wallet the database does not know answers
-/// an empty list.
+/// created at or below `indexed_height`. `mempool=true` leaves out the
+/// outputs the mempool spends and adds the wallet's mempool outputs, which
+/// are cardinal only when they are not `pending`. A wallet holding more than
+/// 10000 unspent outputs answers 413. A wallet the database does not know
+/// answers an empty list.
 #[utoipa::path(
     get,
     path = "/v1/utxos/wallet",
@@ -239,8 +355,9 @@ struct UtxoRow {
     responses(
         (status = 200, description = "The outputs", body = Answer<WalletUtxos>),
         (status = 400, description = "A missing or invalid parameter, or both or neither of `address` and `pkscript`", body = ErrorBody),
-        (status = 404, description = "`inscriptions is not enabled on this node`, `runes is not enabled on this node`, or `brc20 is not enabled on this node` for `type=cardinal`", body = ErrorBody),
+        (status = 404, description = "`inscriptions is not enabled on this node`, `runes is not enabled on this node`, `brc20 is not enabled on this node` for `type=cardinal`, or `mempool is not enabled on this node` for `mempool=true`", body = ErrorBody),
         (status = 413, description = "A wallet holding more than 10000 unspent outputs", body = ErrorBody),
+        (status = 503, description = "`mempool=true` before the mempool view has read bitcoind's mempool once", body = ErrorBody),
     ),
 )]
 pub async fn wallet(
@@ -252,14 +369,23 @@ pub async fn wallet(
         (None, _) => return Ok(not_enabled(Module::Inscriptions)),
         (_, None) => return Ok(not_enabled(Module::Runes)),
     };
-    let (wallet, kind) =
-        match Wallet::from_query(&query).and_then(|w| Ok((w, Kind::parse(&query)?))) {
-            Ok(request) => request,
-            Err(bad) => return Ok(bad.reply()),
-        };
+    let request = Wallet::from_query(&query)
+        .and_then(|wallet| Ok((wallet, Kind::parse(&query)?, parse_mempool(&query)?)));
+    let (wallet, kind, with_mempool) = match request {
+        Ok(request) => request,
+        Err(bad) => return Ok(bad.reply()),
+    };
     if kind == Kind::Cardinal && dbs.brc20.is_none() {
         return Ok(not_enabled(Module::Brc20));
     }
+    let view = match (with_mempool, &dbs.mempool) {
+        (false, _) => None,
+        (true, None) => return Ok(Reply::error(404, "mempool is not enabled on this node")),
+        (true, Some(view)) => match view.updated_at() {
+            None => return Ok(Reply::error(503, "the mempool view is still loading")),
+            Some(updated_at) => Some((view, updated_at)),
+        },
+    };
 
     let mut tx = snapshot(&dbs.utxos).await?;
     let utxos_height =
@@ -272,7 +398,8 @@ pub async fn wallet(
     .fetch_optional(&mut *tx)
     .await?
     .unwrap_or_default();
-    let rows = match wallet.pkscript_bytes(&network) {
+    let script = wallet.pkscript_bytes(&network);
+    let mut rows = match &script {
         None => Vec::new(),
         // utxos_pkscript_idx
         Some(script) => {
@@ -290,15 +417,80 @@ pub async fn wallet(
             .await?
         }
     };
-    tx.commit().await?;
     if rows.len() as i64 > MAX_WALLET_UTXOS {
+        tx.commit().await?;
         return Ok(Reply::error(
             413,
             &format!("the wallet holds more than {MAX_WALLET_UTXOS} unspent outputs"),
         ));
     }
-    let outpoints: Vec<String> = rows.iter().map(|row| row.outpoint.clone()).collect();
+    let part = match (&view, &script) {
+        (Some((view, _)), Some(script)) => view.read(|state| {
+            let confirmed: HashSet<&str> = rows.iter().map(|row| row.outpoint.as_str()).collect();
+            MempoolPart {
+                spent: rows
+                    .iter()
+                    .filter(|row| {
+                        row.outpoint
+                            .parse()
+                            .is_ok_and(|outpoint| state.is_spent(&outpoint))
+                    })
+                    .map(|row| row.outpoint.clone())
+                    .collect(),
+                outputs: state
+                    .outputs_to(script)
+                    .into_iter()
+                    // the utxos module may hold a block the view has not
+                    // seen leave yet: the confirmed copy answers
+                    .filter(|output| !confirmed.contains(output.outpoint.to_string().as_str()))
+                    .map(|output| {
+                        let lineage = state.lineage(&output.outpoint.txid);
+                        (output, lineage)
+                    })
+                    .collect(),
+                tx_count: state.len(),
+            }
+        }),
+        (Some((view, _)), None) => MempoolPart {
+            tx_count: view.read(|state| state.len()),
+            ..MempoolPart::default()
+        },
+        (None, _) => MempoolPart::default(),
+    };
+    rows.retain(|row| !part.spent.contains(&row.outpoint));
+    let inputs: Vec<String> = {
+        let mut inputs: Vec<String> = part
+            .outputs
+            .iter()
+            .flat_map(|(_, lineage)| lineage.confirmed_inputs.iter().map(ToString::to_string))
+            .collect();
+        inputs.sort();
+        inputs.dedup();
+        inputs
+    };
+    let input_heights: HashMap<String, i32> = if inputs.is_empty() {
+        HashMap::new()
+    } else {
+        let wanted = opi_runes::OutpointColumns::lookup(&inputs);
+        // utxos_pk
+        sqlx::query_as!(
+            InputRow,
+            r#"select encode(u.txid, 'hex') || ':' || u.vout as "outpoint!", u.height
+                from utxos u
+                where (u.txid, u.vout) in (select * from unnest($1::bytea[], $2::int4[]));"#,
+            &wanted.txids,
+            &wanted.vouts,
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|row| (row.outpoint, row.height))
+        .collect()
+    };
+    tx.commit().await?;
 
+    let mut outpoints: Vec<String> = rows.iter().map(|row| row.outpoint.clone()).collect();
+    outpoints.extend(inputs.iter().cloned());
     let ((inscriptions_height, entries), (runes_height, runes)) = futures::try_join!(
         async {
             let mut tx = snapshot(inscriptions_db).await?;
@@ -363,7 +555,42 @@ pub async fn wallet(
         runes_of.entry(row.outpoint.clone()).or_default().push(row);
     }
 
-    let mut kept: Vec<(UtxoRow, Vec<EntryRow>, Vec<RuneRow>)> = Vec::new();
+    let mut listed: Vec<(i64, String, JsValue)> = Vec::new();
+    for (output, lineage) in &part.outputs {
+        let pending = is_pending(
+            lineage,
+            |input| InputFacts {
+                height: input_heights.get(input).copied(),
+                carries_inscriptions: inscriptions_of.contains_key(input),
+                carries_runes: runes_of.contains_key(input),
+            },
+            indexed_height,
+        );
+        if !keeps_mempool(kind, pending) {
+            continue;
+        }
+        let outpoint = output.outpoint.to_string();
+        listed.push((
+            output.value as i64,
+            outpoint.clone(),
+            js_object! {
+                "outpoint" => outpoint,
+                "txid" => output.outpoint.txid.to_string(),
+                "vout" => output.outpoint.vout as f64,
+                "value" => output.value as f64,
+                "height" => JsValue::Null,
+                "coinbase" => false,
+                "inscriptions" => Vec::<JsValue>::new(),
+                "runes" => Vec::<JsValue>::new(),
+                "pending" => pending,
+                "mempool" => js_object! {
+                    "fee" => output.fee as f64,
+                    "vsize" => output.vsize as f64,
+                },
+            }
+            .into(),
+        ));
+    }
     for row in rows {
         let inscriptions = inscriptions_of.remove(&row.outpoint).unwrap_or_default();
         let runes = runes_of.remove(&row.outpoint).unwrap_or_default();
@@ -379,35 +606,27 @@ pub async fn wallet(
                 .count(),
             runes: runes.len(),
         };
-        if keeps(kind, carries, row.height, indexed_height) {
-            kept.push((row, inscriptions, runes));
+        if !keeps(kind, carries, row.height, indexed_height) {
+            continue;
         }
-    }
-    kept.sort_by(|(a, ..), (b, ..)| {
-        b.value
-            .cmp(&a.value)
-            .then_with(|| a.outpoint.cmp(&b.outpoint))
-    });
-
-    let total_value: i64 = kept.iter().map(|(row, ..)| row.value).sum();
-    let utxos: Vec<JsValue> = kept
-        .into_iter()
-        .map(|(row, inscriptions, runes)| {
-            let inscriptions: Vec<JsValue> = inscriptions
-                .into_iter()
-                .map(|entry| {
-                    let used = used
-                        .as_ref()
-                        .map(|used| used.contains(&entry.inscription_id));
-                    js_object! {
-                        "inscription_id" => entry.inscription_id,
-                        "offset" => entry.offset as f64,
-                        "used_brc20_transfer" => used,
-                    }
-                    .into()
-                })
-                .collect();
-            let runes: Vec<JsValue> = runes.into_iter().map(RuneRow::into_json).collect();
+        let inscriptions: Vec<JsValue> = inscriptions
+            .into_iter()
+            .map(|entry| {
+                let used = used
+                    .as_ref()
+                    .map(|used| used.contains(&entry.inscription_id));
+                js_object! {
+                    "inscription_id" => entry.inscription_id,
+                    "offset" => entry.offset as f64,
+                    "used_brc20_transfer" => used,
+                }
+                .into()
+            })
+            .collect();
+        let runes: Vec<JsValue> = runes.into_iter().map(RuneRow::into_json).collect();
+        listed.push((
+            row.value,
+            row.outpoint.clone(),
             js_object! {
                 "outpoint" => row.outpoint,
                 "txid" => row.txid,
@@ -417,13 +636,31 @@ pub async fn wallet(
                 "coinbase" => row.coinbase,
                 "inscriptions" => inscriptions,
                 "runes" => runes,
+                "pending" => false,
+                "mempool" => JsValue::Null,
             }
-            .into()
-        })
-        .collect();
+            .into(),
+        ));
+    }
+    listed.sort_by(|(a_value, a_outpoint, _), (b_value, b_outpoint, _)| {
+        b_value
+            .cmp(a_value)
+            .then_with(|| a_outpoint.cmp(b_outpoint))
+    });
+    let total_value: i64 = listed.iter().map(|(value, ..)| value).sum();
+    let utxos: Vec<JsValue> = listed.into_iter().map(|(.., utxo)| utxo).collect();
+
     let (address, pkscript) = match &wallet {
         Wallet::Address(address) => (Some(address.clone()), None),
         Wallet::PkScript(pkscript) => (None, Some(pkscript.clone())),
+    };
+    let mempool: JsValue = match view {
+        None => JsValue::Null,
+        Some((_, updated_at)) => js_object! {
+            "tx_count" => part.tx_count as f64,
+            "updated_at" => updated_at as f64,
+        }
+        .into(),
     };
     Ok(Reply::send_json(js_object! {
         "error" => JsValue::Null,
@@ -440,6 +677,7 @@ pub async fn wallet(
                 "runes" => runes_height,
                 "brc20" => brc20_height,
             },
+            "mempool" => mempool,
         },
     }))
 }

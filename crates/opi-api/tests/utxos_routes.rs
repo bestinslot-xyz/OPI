@@ -1,17 +1,28 @@
 //! `/v1/utxos/wallet` over HTTP.
 //!
-//! The first tests use a database double: the modules the route needs and
-//! its parameters are checked before any query. The seeded test builds a
-//! throwaway database from the brc20, inscriptions, runes and utxos schemas
-//! on the local Postgres and skips unless `OPI_TEST_PG=1`.
+//! The first tests use a database double: the modules the route needs, its
+//! parameters and the mempool view's state are checked before any query.
+//! The seeded tests build a throwaway database from the brc20, inscriptions,
+//! runes and utxos schemas on the local Postgres and skip unless
+//! `OPI_TEST_PG=1`; the mempool one fills the view from a bitcoind double.
 
 mod common;
 
 use {
     axum::Router,
+    bitcoin::{
+        Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        absolute::LockTime, transaction::Version,
+    },
     common::{check_against_document, get, height, modules_app, with_seeded_modules},
-    opi_api::{config::Module, db::Db},
+    opi_api::{
+        config::{Module, load_config},
+        db::Db,
+        mempool::Mempool,
+        routes::StreamStop,
+    },
     serde_json::{Value, json},
+    std::collections::HashMap,
 };
 
 /// A P2WPKH wallet: its script and its mainnet address.
@@ -259,6 +270,202 @@ async fn the_wallet_route_classifies_outputs() {
             .await;
             assert_eq!(empty["utxos"], json!([]));
             assert_eq!(empty["total_value"], 0);
+            assert_eq!(empty["mempool"], Value::Null);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn mempool_true_needs_the_view_and_its_first_poll() {
+    let uri = format!("/v1/utxos/wallet?pkscript={SCRIPT}&mempool=true");
+    let modules = [
+        Module::Brc20,
+        Module::Inscriptions,
+        Module::Runes,
+        Module::Utxos,
+    ];
+    let answer = get(&modules_app(&modules, fake(), &[]), &uri).await;
+    assert_eq!(answer.status, 404);
+    assert!(answer.body.contains("mempool is not enabled on this node"));
+    check_against_document(&uri, &answer);
+
+    let loading = app_with_mempool(fake(), Mempool::default());
+    let answer = get(&loading, &uri).await;
+    assert_eq!(answer.status, 503);
+    assert_eq!(
+        answer.body,
+        json!({"error": "the mempool view is still loading", "result": null}).to_string()
+    );
+    check_against_document(&uri, &answer);
+}
+
+/// The app of the four modules, each reading `db`, with the mempool view
+/// `view`.
+fn app_with_mempool(db: Db, view: Mempool) -> Router {
+    let env: HashMap<&str, &str> = [
+        ("OPI_MODULES", "brc20,inscriptions,runes,utxos"),
+        ("DB_DATABASE", "d"),
+        ("INSCRIPTIONS_DB_DATABASE", "d"),
+        ("RUNES_DB_DATABASE", "d"),
+        ("UTXOS_DB_DATABASE", "d"),
+    ]
+    .into_iter()
+    .collect();
+    let config = load_config(|key| env.get(key).map(|v| v.to_string())).unwrap();
+    let dbs = config.modules.iter().map(|m| (*m, db.clone())).collect();
+    opi_api::router_until(&config, dbs, StreamStop::never(), Some(view))
+}
+
+/// bitcoind with a fixed mempool at tip 20.
+struct Bitcoind(Vec<Transaction>);
+
+#[async_trait::async_trait]
+impl opi_api::mempool::Bitcoind for Bitcoind {
+    async fn mempool_txids(&self) -> anyhow::Result<Vec<Txid>> {
+        Ok(self.0.iter().map(Transaction::compute_txid).collect())
+    }
+    async fn block_count(&self) -> anyhow::Result<u32> {
+        Ok(20)
+    }
+    async fn entries(
+        &self,
+        txids: &[Txid],
+    ) -> anyhow::Result<Vec<Option<(Transaction, u64, u64)>>> {
+        Ok(txids
+            .iter()
+            .map(|txid| {
+                self.0
+                    .iter()
+                    .find(|tx| tx.compute_txid() == *txid)
+                    .map(|tx| (tx.clone(), 200, 141))
+            })
+            .collect())
+    }
+}
+
+fn spend(inputs: &[OutPoint], outputs: &[(u64, &str)], witness: &[&[u8]]) -> Transaction {
+    Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: inputs
+            .iter()
+            .map(|previous_output| TxIn {
+                previous_output: *previous_output,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::from_slice(witness),
+            })
+            .collect(),
+        output: outputs
+            .iter()
+            .map(|(value, script)| TxOut {
+                value: Amount::from_sat(*value),
+                script_pubkey: ScriptBuf::from_bytes(hex::decode(script).unwrap()),
+            })
+            .collect(),
+    }
+}
+
+fn confirmed(n: u32, vout: u32) -> OutPoint {
+    OutPoint {
+        txid: tx(n).parse().unwrap(),
+        vout,
+    }
+}
+
+fn mempool_out(tx: &Transaction, vout: u32) -> String {
+    format!("{}:{vout}", tx.compute_txid())
+}
+
+#[tokio::test]
+async fn mempool_true_applies_the_mempool_to_the_wallet() {
+    // m1 spends the plain tx1:0 back to the wallet: clean.
+    let m1 = spend(&[confirmed(1, 0)], &[(600, SCRIPT), (300, OTHER)], &[]);
+    // m2 spends tx2:0, which carries an inscription: pending.
+    let m2 = spend(&[confirmed(2, 0)], &[(500, SCRIPT)], &[]);
+    // m3 spends m1's other output and opens an envelope: pending.
+    let envelope: &[u8] = &[0x00, 0x63, 0x03, b'o', b'r', b'd', 0x68];
+    let m3 = spend(
+        &[OutPoint {
+            txid: m1.compute_txid(),
+            vout: 1,
+        }],
+        &[(250, SCRIPT)],
+        &[envelope],
+    );
+    let view = Mempool::default();
+    view.poll(
+        &Bitcoind(vec![m1.clone(), m2.clone(), m3.clone()]),
+        Some(20),
+    )
+    .await
+    .unwrap();
+
+    let seed = seed();
+    with_seeded_modules(
+        &[
+            Module::Brc20,
+            Module::Inscriptions,
+            Module::Runes,
+            Module::Utxos,
+        ],
+        "utxos_mempool",
+        None,
+        &[
+            include_str!("../../opi-brc20/src/database/sql/db_init.sql"),
+            include_str!("../../opi-inscriptions/src/db_init.sql"),
+            include_str!("../../opi-runes/src/db_init.sql"),
+            include_str!("../../opi-utxos/src/db_init.sql"),
+            &seed,
+        ],
+        4,
+        move |_, pool| async move {
+            let app = app_with_mempool(Db::from_pool(pool), view);
+            let base = format!("/v1/utxos/wallet?pkscript={SCRIPT}&mempool=true");
+
+            let all = result(&app, &base).await;
+            assert_eq!(
+                outpoints(&all),
+                [
+                    op(4, 1),
+                    op(5, 0),
+                    mempool_out(&m1, 0),
+                    op(3, 0),
+                    mempool_out(&m2, 0),
+                    mempool_out(&m3, 0),
+                ]
+            );
+            let pending: Vec<bool> = all["utxos"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|utxo| utxo["pending"].as_bool().unwrap())
+                .collect();
+            assert_eq!(pending, [false, false, false, false, true, true]);
+            let unconfirmed = &all["utxos"][2];
+            assert_eq!(unconfirmed["height"], Value::Null);
+            assert_eq!(unconfirmed["mempool"], json!({"fee": 200, "vsize": 141}));
+            assert_eq!(all["utxos"][0]["mempool"], Value::Null);
+            assert_eq!(all["mempool"]["tx_count"], 3);
+            assert!(all["mempool"]["updated_at"].as_u64().is_some());
+
+            // The confirmed cardinal outputs are spent; m1's change is clean.
+            let cardinal = result(&app, &format!("{base}&type=cardinal")).await;
+            assert_eq!(outpoints(&cardinal), [mempool_out(&m1, 0)]);
+            assert_eq!(cardinal["total_value"], 600);
+
+            // Mempool outputs carry unknown contents for these two types.
+            let inscribed = result(&app, &format!("{base}&type=inscribed")).await;
+            assert_eq!(outpoints(&inscribed), [op(3, 0)]);
+
+            // Without mempool=true the view is not applied.
+            let confirmed_only = result(
+                &app,
+                &format!("/v1/utxos/wallet?pkscript={SCRIPT}&type=cardinal"),
+            )
+            .await;
+            assert_eq!(outpoints(&confirmed_only), [op(1, 0), op(2, 0)]);
         },
     )
     .await;

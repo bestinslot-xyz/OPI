@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select encode(u.txid, 'hex') || ':' || u.vout as \"outpoint!\", u.height\n                from utxos u\n                where (u.txid, u.vout) in (select * from unnest($1::bytea[], $2::int4[]));",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outpoint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "utxos",
+            "name": "height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "ByteaArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "09200ad0b1fd081d292ce4a3df2f904efeac4188833b01cc08d4787aa502d93d"
+}
