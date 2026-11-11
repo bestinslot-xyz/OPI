@@ -11,7 +11,10 @@
 mod db;
 mod delta;
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, anyhow, bail};
 use bitcoin::{Block, BlockHash};
@@ -31,6 +34,9 @@ const CATCH_UP_BATCH: usize = 250_000;
 const FETCH_AHEAD: usize = 4;
 /// Applied heights between two prunes of the undo data.
 const PRUNE_EVERY: u32 = 100;
+/// Shortest time between two catch-up progress lines; a catch-up close
+/// behind a moving journal tip writes a transaction per block.
+const PROGRESS_EVERY: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct UtxosConfig {
@@ -84,6 +90,8 @@ pub struct UtxosModule {
     db: Db,
     blocks: Arc<dyn BlockFetcher>,
     journal: Arc<dyn BlockSource>,
+    /// When a catch-up last logged its progress.
+    last_progress: Option<Instant>,
 }
 
 impl UtxosModule {
@@ -99,6 +107,7 @@ impl UtxosModule {
             db,
             blocks,
             journal,
+            last_progress: None,
         })
     }
 
@@ -183,7 +192,13 @@ impl UtxosModule {
                     .write_blocks(&batch, std::mem::take(&mut delta), Undo::Skip)
                     .await?;
                 written += batch.len() as u32;
-                tracing::info!(height, target = to, "utxos caught up to block {height}");
+                if self
+                    .last_progress
+                    .is_none_or(|logged| logged.elapsed() >= PROGRESS_EVERY)
+                {
+                    tracing::info!(height, target = to, "utxos caught up to block {height}");
+                    self.last_progress = Some(Instant::now());
+                }
                 batch.clear();
             }
         }
