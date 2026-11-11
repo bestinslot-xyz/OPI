@@ -855,10 +855,10 @@ needs INSERT and DELETE on `evm_addresses` and USAGE on
 (`ALTER TABLE evm_addresses OWNER TO <role>`), and the right to drop the
 progress table (its owner or a superuser).
 
-The unused-transaction routes read the tables `brc20_unused_tx_inscrs` and
-`brc20_extras_block_hashes`, which neither the indexer nor
-`brc20 reindex-extras` creates; they answer the 500 body until those tables
-exist in the brc20 database.
+The unused-transaction routes read `brc20_unused_txes`, which the indexer
+keeps. `/v1/brc20/extras_block_height` reads `brc20_extras_block_hashes`,
+which neither the indexer nor `brc20 reindex-extras` creates; it answers -1
+until that table exists in the brc20 database.
 
 ### OpenAPI document and routes
 
@@ -1547,17 +1547,11 @@ with `cargo sqlx prepare` (sqlx-cli 0.9) against a database that holds the
 schema, then verify it with `cargo sqlx prepare --check`. The `DATABASE_URL`
 needs an explicit user.
 
-For `opi-api`, build a throwaway database from the five schemas plus the two
-tables the API reads that no `db_init.sql` creates (`brc20_unused_tx_inscrs`
-and `brc20_extras_block_hashes`), whose DDL goes in a local file
-`api_extra_tables.sql`:
+For `opi-api`, build a throwaway database from the five schemas plus the one
+table the API reads that no `db_init.sql` creates (`brc20_extras_block_hashes`),
+whose DDL goes in a local file `api_extra_tables.sql`:
 
 ```sql
-CREATE TABLE public.brc20_unused_tx_inscrs (
-	id bigserial NOT NULL, inscription_id text NOT NULL, tick varchar(4) NOT NULL,
-	amount numeric(40) NOT NULL, current_holder_pkscript text NOT NULL,
-	current_holder_wallet text NULL, event_id int8 NOT NULL, block_height int4 NOT NULL,
-	CONSTRAINT brc20_unused_tx_inscrs_pk PRIMARY KEY (id));
 CREATE TABLE public.brc20_extras_block_hashes (
 	id bigserial NOT NULL, block_height int4 NOT NULL, block_hash text NOT NULL,
 	CONSTRAINT brc20_extras_block_hashes_pk PRIMARY KEY (id));

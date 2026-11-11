@@ -1,37 +1,37 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select current_holder_pkscript as \"current_holder_pkscript?\", current_holder_wallet as \"current_holder_wallet?\", inscription_id as \"inscription_id?\", amount::text as \"amount\", block_height as \"genesis_height?\"\n            from brc20_unused_tx_inscrs\n            where tick = $1\n            order by current_holder_pkscript asc;",
+  "query": "select current_holder_pkscript, current_holder_wallet, inscription_id, amount::text as \"amount\", block_height as \"genesis_height\"\n            from brc20_unused_txes\n            where tick = $1\n            order by current_holder_pkscript asc, inscription_id asc;",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "current_holder_pkscript?",
+        "name": "current_holder_pkscript",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "brc20_unused_tx_inscrs",
+            "table": "brc20_unused_txes",
             "name": "current_holder_pkscript"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "current_holder_wallet?",
+        "name": "current_holder_wallet",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "brc20_unused_tx_inscrs",
+            "table": "brc20_unused_txes",
             "name": "current_holder_wallet"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "inscription_id?",
+        "name": "inscription_id",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "brc20_unused_tx_inscrs",
+            "table": "brc20_unused_txes",
             "name": "inscription_id"
           }
         }
@@ -44,11 +44,11 @@
       },
       {
         "ordinal": 4,
-        "name": "genesis_height?",
+        "name": "genesis_height",
         "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "brc20_unused_tx_inscrs",
+            "table": "brc20_unused_txes",
             "name": "block_height"
           }
         }
@@ -67,5 +67,5 @@
       false
     ]
   },
-  "hash": "d76ddaecd309455da2e0639d1aa73a8f7be068be9ef42193ad6f7287950a4f3b"
+  "hash": "cb7e1eb0d49d596420de195193318c6d5b4a754f9f7ebab68223da7ad80c919b"
 }

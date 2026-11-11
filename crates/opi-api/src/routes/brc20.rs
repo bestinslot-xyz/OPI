@@ -135,18 +135,14 @@ struct Brc20RpcResult {
     response: serde_json::Value,
 }
 
-/// An unused transfer inscription of a wallet. `brc20_unused_tx_inscrs` has
-/// no DDL in this repository, so every field may be null.
+/// An unused transfer inscription of a wallet: its ticker, raw 18-decimal
+/// amount and inscription height.
 #[derive(ToSchema)]
 #[allow(dead_code)]
 struct Brc20WalletUnusedTx {
-    #[schema(nullable)]
     tick: String,
-    #[schema(nullable)]
     inscription_id: String,
-    #[schema(nullable)]
     amount: NumericText,
-    #[schema(nullable)]
     genesis_height: i32,
 }
 
@@ -158,20 +154,16 @@ struct Brc20WalletUnusedTxes {
     block_height: DbHeight,
 }
 
-/// An unused transfer inscription of a ticker. Every field may be null, as
-/// for a wallet's.
+/// An unused transfer inscription of a ticker and its holder.
 #[derive(ToSchema)]
 #[allow(dead_code)]
 struct Brc20TickerUnusedTx {
-    #[schema(nullable)]
     current_holder_pkscript: String,
+    /// Null for a pkScript without an address.
     #[schema(nullable)]
     current_holder_wallet: String,
-    #[schema(nullable)]
     inscription_id: String,
-    #[schema(nullable)]
     amount: NumericText,
-    #[schema(nullable)]
     genesis_height: i32,
 }
 
@@ -720,17 +712,16 @@ async fn get_current_balance_of_wallet(
     }))
 }
 
-/// A brc20_unused_tx_inscrs row as get_valid_tx_notes_of_wallet reads it:
-/// tick, inscription_id, amount (as text) and genesis_height. No
-/// repository holds the table's DDL, so every column may be NULL.
-type UnusedTxRow = (Option<String>, Option<String>, Option<String>, Option<i32>);
+/// A brc20_unused_txes row as get_valid_tx_notes_of_wallet reads it:
+/// tick, inscription_id, amount (as text) and genesis_height.
+type UnusedTxRow = (String, String, Option<String>, i32);
 
 /// A wallet's unused transfer inscriptions.
 ///
 /// A non-empty `address` selects the wallet by address, otherwise by
-/// `pkscript`. The route reads `brc20_unused_tx_inscrs`, which neither the
-/// indexer nor `brc20 reindex-extras` creates; it answers 500 until the
-/// table exists.
+/// `pkscript`. The route reads `brc20_unused_txes`, which the brc20 indexer
+/// keeps: an inscribed transfer is listed with its inscriber until its first
+/// move uses it.
 #[utoipa::path(
     get,
     path = "/v1/brc20/get_valid_tx_notes_of_wallet",
@@ -756,10 +747,10 @@ async fn get_valid_tx_notes_of_wallet(
     // `address != ''` swaps the query's first `pkscript` for `wallet`
     let rows: Vec<UnusedTxRow> = if !address.loose_eq(&"".into())? {
         sqlx::query!(
-            r#"select tick as "tick?", inscription_id as "inscription_id?", amount::text as "amount", block_height as "genesis_height?"
-                from brc20_unused_tx_inscrs
+            r#"select tick, inscription_id, amount::text as "amount", block_height as "genesis_height"
+                from brc20_unused_txes
                 where current_holder_wallet = $1
-                order by tick asc;"#,
+                order by tick asc, inscription_id asc;"#,
             params::text(&address)?,
         )
         .fetch_all(pool)
@@ -769,10 +760,10 @@ async fn get_valid_tx_notes_of_wallet(
         .collect()
     } else {
         sqlx::query!(
-            r#"select tick as "tick?", inscription_id as "inscription_id?", amount::text as "amount", block_height as "genesis_height?"
-                from brc20_unused_tx_inscrs
+            r#"select tick, inscription_id, amount::text as "amount", block_height as "genesis_height"
+                from brc20_unused_txes
                 where current_holder_pkscript = $1
-                order by tick asc;"#,
+                order by tick asc, inscription_id asc;"#,
             params::text(&pkscript)?,
         )
         .fetch_all(pool)
@@ -804,8 +795,7 @@ async fn get_valid_tx_notes_of_wallet(
 
 /// A ticker's unused transfer inscriptions.
 ///
-/// The route reads `brc20_unused_tx_inscrs`, which neither the indexer nor
-/// `brc20 reindex-extras` creates; it answers 500 until the table exists.
+/// The route reads `brc20_unused_txes`, which the brc20 indexer keeps.
 #[utoipa::path(
     get,
     path = "/v1/brc20/get_valid_tx_notes_of_ticker",
@@ -826,10 +816,10 @@ async fn get_valid_tx_notes_of_ticker(
 
     let current_block_height = block_height_of_db(&db).await;
     let rows = sqlx::query!(
-        r#"select current_holder_pkscript as "current_holder_pkscript?", current_holder_wallet as "current_holder_wallet?", inscription_id as "inscription_id?", amount::text as "amount", block_height as "genesis_height?"
-            from brc20_unused_tx_inscrs
+        r#"select current_holder_pkscript, current_holder_wallet, inscription_id, amount::text as "amount", block_height as "genesis_height"
+            from brc20_unused_txes
             where tick = $1
-            order by current_holder_pkscript asc;"#,
+            order by current_holder_pkscript asc, inscription_id asc;"#,
         params::text(&tick)?,
     )
     .fetch_all(db.pool()?)
