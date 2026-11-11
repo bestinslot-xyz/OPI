@@ -177,6 +177,10 @@ CREATE TABLE public.brc20_unused_txes (
 	CONSTRAINT brc20_unused_txes_pk PRIMARY KEY (id)
 );
 CREATE UNIQUE INDEX brc20_unused_txes_inscription_id_idx ON public.brc20_unused_txes USING btree (inscription_id);
+-- the unused transfer routes: by ticker, by holder pkScript, by holder address
+CREATE INDEX brc20_unused_txes_tick_idx ON public.brc20_unused_txes USING btree (tick);
+CREATE INDEX brc20_unused_txes_pkscript_idx ON public.brc20_unused_txes USING btree (current_holder_pkscript);
+CREATE INDEX brc20_unused_txes_wallet_idx ON public.brc20_unused_txes USING btree (current_holder_wallet);
 
 CREATE TABLE public.brc20_bitcoin_rpc_result_cache (
 	id bigserial NOT NULL,
