@@ -20,14 +20,16 @@ pub enum Module {
     Sns,
     Runes,
     Inscriptions,
+    Utxos,
 }
 
-pub const MODULES: [Module; 5] = [
+pub const MODULES: [Module; 6] = [
     Module::Brc20,
     Module::Bitmap,
     Module::Sns,
     Module::Runes,
     Module::Inscriptions,
+    Module::Utxos,
 ];
 
 impl Module {
@@ -38,6 +40,7 @@ impl Module {
             Module::Sns => "sns",
             Module::Runes => "runes",
             Module::Inscriptions => "inscriptions",
+            Module::Utxos => "utxos",
         }
     }
 
@@ -50,6 +53,7 @@ impl Module {
             Module::Sns => "SNS_DB",
             Module::Runes => "RUNES_DB",
             Module::Inscriptions => "INSCRIPTIONS_DB",
+            Module::Utxos => "UTXOS_DB",
         }
     }
 
@@ -61,6 +65,7 @@ impl Module {
             Module::Sns => "sns_block_hashes",
             Module::Runes => "runes_block_hashes",
             Module::Inscriptions => "inscriptions_block_hashes",
+            Module::Utxos => "utxos_block_hashes",
         }
     }
 }

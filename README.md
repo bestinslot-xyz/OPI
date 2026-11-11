@@ -139,6 +139,16 @@ restarts from its cursor. A rollback below the oldest undo data
 (`utxos_undo.undo_from`) fails too; the database must then be recreated. The
 module reports no event hashes to the OPI network.
 
+The API serves the set as `GET /v1/utxos/wallet?address=|pkscript=&type=`,
+which needs the inscriptions and runes modules too: each of the wallet's
+outputs with the inscriptions and rune balances it carries, and for each
+inscription whether it is a used BRC-20 or BRC2.0 transfer inscription.
+`type=cardinal` (which also needs brc20) keeps the outputs a wallet may spend
+as plain bitcoin: no runes, no inscriptions other than used transfer
+inscriptions, and created at or below `indexed_height`, the lowest height of
+the modules read. `inscribed` and `runic` keep the outputs with inscriptions
+or runes. A wallet with more than 10,000 unspent outputs answers 413.
+
 ### Prerequisites
 
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
@@ -1027,6 +1037,12 @@ bracketed parameter).
 | --- | --- | --- |
 | `POST /v1/outputs` |  | The inscriptions and runes on up to 500 outputs. |
 
+**utxos**: A wallet's unspent outputs and what they carry.
+
+| Route | Query parameters | Answers |
+| --- | --- | --- |
+| `GET /v1/utxos/wallet` | `address`, `pkscript`, `type` | A wallet's unspent outputs, with their inscriptions and runes. |
+
 **stream**: The push feed of each block's events.
 
 | Route | Query parameters | Answers |
@@ -1579,7 +1595,7 @@ with `cargo sqlx prepare` (sqlx-cli 0.9) against a database that holds the
 schema, then verify it with `cargo sqlx prepare --check`. The `DATABASE_URL`
 needs an explicit user.
 
-For `opi-api`, build a throwaway database from the five schemas plus the one
+For `opi-api`, build a throwaway database from the six schemas plus the one
 table the API reads that no `db_init.sql` creates (`brc20_extras_block_hashes`),
 whose DDL goes in a local file `api_extra_tables.sql`:
 
@@ -1593,7 +1609,8 @@ CREATE TABLE public.brc20_extras_block_hashes (
 createdb -h /tmp opi_api_sqlx_prepare
 for f in crates/opi-brc20/src/database/sql/db_init.sql crates/opi-bitmap/src/db_init.sql \
          crates/opi-sns/src/db_init.sql crates/opi-runes/src/db_init.sql \
-         crates/opi-inscriptions/src/db_init.sql api_extra_tables.sql; do
+         crates/opi-inscriptions/src/db_init.sql crates/opi-utxos/src/db_init.sql \
+         api_extra_tables.sql; do
   psql -h /tmp -d opi_api_sqlx_prepare -X -q -v ON_ERROR_STOP=1 -f "$f"
 done
 cd crates/opi-api

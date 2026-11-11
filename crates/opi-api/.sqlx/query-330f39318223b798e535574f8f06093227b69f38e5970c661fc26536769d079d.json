@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select network_type as \"network_type!\" from utxos_network_type limit 1;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "network_type!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "utxos_network_type",
+            "name": "network_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "330f39318223b798e535574f8f06093227b69f38e5970c661fc26536769d079d"
+}

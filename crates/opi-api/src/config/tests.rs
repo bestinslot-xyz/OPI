@@ -420,6 +420,7 @@ fn modules_know_their_names_and_tables() {
             ("sns", "sns_block_hashes"),
             ("runes", "runes_block_hashes"),
             ("inscriptions", "inscriptions_block_hashes"),
+            ("utxos", "utxos_block_hashes"),
         ]
     );
 }

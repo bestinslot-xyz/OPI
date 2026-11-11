@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select encode(txid, 'hex') || ':' || vout as \"outpoint!\",\n                        encode(txid, 'hex') as \"txid!\", vout, value, height, coinbase\n                    from utxos\n                    where pkscript = $1\n                    limit $2;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outpoint!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "txid!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "vout",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "utxos",
+            "name": "vout"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "value",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "utxos",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "utxos",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "coinbase",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "utxos",
+            "name": "coinbase"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bda4178b7db457d51f9ffdf8d6733d3ad0507406f5256320fd6545ca97c2bc62"
+}

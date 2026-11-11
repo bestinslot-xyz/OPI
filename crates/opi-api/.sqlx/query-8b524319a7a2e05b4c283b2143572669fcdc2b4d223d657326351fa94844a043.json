@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct inscription_id as \"inscription_id!\"\n                    from brc20_events\n                    where inscription_id = any($1::text[]) and event_type = any($2::int4[]);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inscription_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_events",
+            "name": "inscription_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8b524319a7a2e05b4c283b2143572669fcdc2b4d223d657326351fa94844a043"
+}

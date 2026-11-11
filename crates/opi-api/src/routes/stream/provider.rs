@@ -39,6 +39,7 @@ impl Provider {
             Module::Sns => Ok(Provider::Sns),
             Module::Runes => Err("runes is not on the stream yet".into()),
             Module::Inscriptions => Ok(Provider::Inscriptions),
+            Module::Utxos => Err("utxos is not on the stream".into()),
         }
     }
 
