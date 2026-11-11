@@ -14,6 +14,7 @@ use {
         journal::{DEFAULT_MIN_FREE_GB, JournalOptions, MIN_FREE_GB_RANGE, SEGMENT_RANGE},
         proxy::UpstreamAuth,
     },
+    opi_utxos::UtxosConfig,
     ord::Chain,
     std::path::PathBuf,
 };
@@ -133,6 +134,7 @@ pub struct ModuleConfigs {
     pub sns: Option<SnsConfig>,
     pub runes: Option<RunesConfig>,
     pub inscriptions: Option<InscriptionsConfig>,
+    pub utxos: Option<UtxosConfig>,
 }
 
 impl ModuleConfigs {
@@ -163,6 +165,7 @@ impl ModuleConfigs {
             sns: None,
             runes: None,
             inscriptions: None,
+            utxos: None,
         };
         for module in &config.modules {
             match module {
@@ -199,6 +202,12 @@ impl ModuleConfigs {
                         InscriptionsConfig::from_lookup(get).context("inscriptions config")?;
                     config.check_network(&inscriptions.network_type)?;
                     configs.inscriptions = Some(inscriptions);
+                }
+                ModuleKind::Utxos => {
+                    require("UTXOS_DB_DATABASE")?;
+                    let utxos = UtxosConfig::from_lookup(get).context("utxos config")?;
+                    config.check_network(&utxos.network_type)?;
+                    configs.utxos = Some(utxos);
                 }
             }
         }
@@ -266,9 +275,10 @@ pub enum ModuleKind {
     Sns,
     Runes,
     Inscriptions,
+    Utxos,
 }
 
-const SUPPORTED_MODULES: &str = "brc20, bitmap, sns, runes, inscriptions";
+const SUPPORTED_MODULES: &str = "brc20, bitmap, sns, runes, inscriptions, utxos";
 
 /// Parses a comma-separated module list, trimming names and dropping repeats.
 fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
@@ -284,6 +294,7 @@ fn parse_modules(value: &str) -> Result<Vec<ModuleKind>> {
             "sns" => ModuleKind::Sns,
             "runes" => ModuleKind::Runes,
             "inscriptions" => ModuleKind::Inscriptions,
+            "utxos" => ModuleKind::Utxos,
             other => {
                 bail!("unknown module `{other}` in OPI_MODULES (supported: {SUPPORTED_MODULES})")
             }
@@ -648,6 +659,24 @@ mod tests {
         let inscriptions = configs.inscriptions.unwrap();
         assert_eq!(inscriptions.db_database, "opi_inscriptions");
         assert_eq!(inscriptions.network_type, "signet");
+    }
+
+    #[test]
+    fn utxos_requires_its_database_name() {
+        let signet = ("NETWORK_TYPE", "signet");
+        let err = load_modules("utxos", &[signet], brc20_signet())
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("UTXOS_DB_DATABASE"), "{err}");
+        let configs = load_modules(
+            "utxos",
+            &[signet, ("UTXOS_DB_DATABASE", "opi_utxos")],
+            brc20_signet(),
+        )
+        .unwrap();
+        let utxos = configs.utxos.unwrap();
+        assert_eq!(utxos.db_database, "opi_utxos");
+        assert_eq!(utxos.network_type, "signet");
     }
 
     #[test]

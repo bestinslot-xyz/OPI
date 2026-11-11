@@ -25,6 +25,7 @@ One root Cargo workspace holds every crate, the indexer and the API included.
 | `crates/opi-bitmap` | the Bitmap module |
 | `crates/opi-sns` | the SNS module |
 | `crates/opi-runes` | the Runes module |
+| `crates/opi-utxos` | the UTXO set module |
 | `crates/opi-api` | the HTTP API for every enabled module, served by `opi-indexer api` |
 | `tools/parity` | Python reference implementations and comparison tests for the modules, and the API comparison script |
 | `.env_sample` | every setting of `opi-indexer` and the API |
@@ -35,7 +36,8 @@ One root Cargo workspace holds every crate, the indexer and the API included.
 
 ### Modules
 
-`OPI_MODULES` lists the modules to run: any subset of `brc20,bitmap,sns,runes`.
+`OPI_MODULES` lists the modules to run: any subset of
+`brc20,bitmap,sns,runes,inscriptions,utxos`.
 Each module reads the journal and keeps its own Postgres database. The API serves the same list.
 
 | Module | Indexes | Database variables |
@@ -45,6 +47,7 @@ Each module reads the journal and keeps its own Postgres database. The API serve
 | `sns` | Sats Names, by the written spec (see [SNS indexing rules](#sns-indexing-rules)) | `SNS_DB_*` |
 | `runes` | Runes, from ord's rune events | `RUNES_DB_*` |
 | `inscriptions` | Every bound inscription's number, content type, current outpoint and owner (see [Inscriptions module](#inscriptions-module)) | `INSCRIPTIONS_DB_*` |
+| `utxos` | Every unspent output, by outpoint and script (see [UTXO module](#utxo-module)) | `UTXOS_DB_*` |
 
 The `*_DB_*` variables are `USER`, `HOST`, `PORT`, `DATABASE`, `PASSWD` and
 `SSL`, for example `BITMAP_DB_DATABASE`. The runes module reports `event_hash_version` 2 because it orders a
@@ -107,6 +110,35 @@ to. An event id holds its block height in the high 32 bits, so a block's
 events are one primary-key range; addresses derive from the pkScript and the
 network. The module reports no event hashes to the OPI network.
 
+#### UTXO module
+
+The `utxos` module keeps bitcoind's UTXO set in `utxos`: one row per unspent
+output with its txid bytes, vout, value, creating height, coinbase flag and
+raw pkscript, indexed by outpoint and (hash index) by pkscript. Addresses
+derive from the pkscript. Like bitcoind, it leaves out the genesis coinbase
+and unspendable outputs (an OP_RETURN script, or one over 10,000 bytes), and a
+repeated coinbase txid replaces the earlier outputs. Spent outputs are
+deleted.
+
+The journal carries no outputs, so the module reads blocks from bitcoind
+(`getblock <hash> 0`, outside the gate proxy) and resolves each spend against
+its own table. It runs in two modes:
+
+- **Catch-up**, while it is more than `MAX_ROLLBACK_DEPTH` (1000) blocks below
+  the journal's tip: it reads blocks by height, writes many per transaction
+  and keeps no undo data. This is how a new module indexes from genesis, on a
+  pruned journal too, and how one that fell behind gets back.
+- **Following**, within the window: it reads each block by the journal's hash
+  and writes it with its undo data, `utxos_created` and `utxos_spent`, which
+  a rollback uses to delete the block's outputs and put back the ones it
+  spent. Every 100 blocks it drops the undo data older than the window,
+  whether `OPI_PRUNE` is set or not.
+
+A block that spends an output the table does not hold fails, and the module
+restarts from its cursor. A rollback below the oldest undo data
+(`utxos_undo.undo_from`) fails too; the database must then be recreated. The
+module reports no event hashes to the OPI network.
+
 ### Prerequisites
 
 - bitcoind with `-txindex`, not pruned. Finalize may fetch `getblock <hash> 3`,
@@ -135,9 +167,9 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWD` | bitcoind RPC credentials |
 | `BITCOIN_RPC_COOKIE` | bitcoind cookie file, instead of user and password |
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
-| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
+| `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`, `utxos`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
 | `OPI_PRUNE` | blocks of history to keep, at least `1000`; unset keeps everything (see [Pruning](#pruning)) |
-| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE` and `INSCRIPTIONS_DB_DATABASE` have no default and are required when the module is enabled |
+| `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*`, `UTXOS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`, `INSCRIPTIONS_DB_DATABASE` and `UTXOS_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
 | `RUST_LOG` | log filter, default `info` |

@@ -5257,6 +5257,7 @@ dependencies = [
  "opi-runtime",
  "opi-sns",
  "opi-source",
+ "opi-utxos",
  "ord",
  "redb",
  "serde_json",
@@ -5356,6 +5357,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "zstd",
+]
+
+[[package]]
+name = "opi-utxos"
+version = "4.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "futures",
+ "opi-core",
+ "sqlx",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

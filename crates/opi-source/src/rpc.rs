@@ -1,5 +1,5 @@
-//! Minimal bitcoind JSON-RPC client for the driver's own calls, which bypass
-//! the gate proxy.
+//! Minimal bitcoind JSON-RPC client for the calls that bypass the gate proxy:
+//! the driver's own, and the blocks the utxos module reads.
 
 use {
     crate::proxy::{UpstreamAuth, credentials},
@@ -12,14 +12,14 @@ use {
 /// `getblock` verbosity 3 of a full block is the slowest.
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-pub(crate) struct BitcoinRpc {
+pub struct BitcoinRpc {
     url: String,
     auth: UpstreamAuth,
     client: reqwest::Client,
 }
 
 impl BitcoinRpc {
-    pub(crate) fn new(url: String, auth: UpstreamAuth) -> Result<BitcoinRpc> {
+    pub fn new(url: String, auth: UpstreamAuth) -> Result<BitcoinRpc> {
         Ok(BitcoinRpc {
             url,
             auth,
@@ -59,9 +59,16 @@ impl BitcoinRpc {
         Ok(u32::try_from(count)?)
     }
 
-    pub(crate) async fn block(&self, hash: BlockHash) -> Result<Block> {
+    pub async fn block(&self, hash: BlockHash) -> Result<Block> {
         let hex = self.hex("getblock", json!([hash.to_string(), 0])).await?;
         Ok(deserialize_hex(&hex)?)
+    }
+
+    /// Hash of the block at `height` on bitcoind's best chain.
+    pub async fn block_hash(&self, height: u32) -> Result<BlockHash> {
+        let hash = self.hex("getblockhash", json!([height])).await?;
+        hash.parse()
+            .with_context(|| format!("getblockhash {height} returned {hash}"))
     }
 
     pub(crate) async fn header(&self, hash: BlockHash) -> Result<Header> {
