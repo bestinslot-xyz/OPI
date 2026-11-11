@@ -11,8 +11,10 @@ CREATE TABLE public.utxos (
 	pkscript bytea NOT NULL,
 	CONSTRAINT utxos_pk PRIMARY KEY (txid, vout)
 );
--- a wallet's outputs; a hash index takes scripts of any length
-CREATE INDEX utxos_pkscript_idx ON public.utxos USING hash (pkscript);
+-- a wallet's outputs, by the script's SHA-256: a 32-byte key fits btree for a
+-- script of any length, and btree deduplication keeps a script that owns
+-- millions of outputs cheap to insert into
+CREATE INDEX utxos_pkscript_sha256_idx ON public.utxos USING btree (sha256(pkscript));
 
 -- The outputs the last blocks created, which a rollback deletes.
 CREATE TABLE public.utxos_created (

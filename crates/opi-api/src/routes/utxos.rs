@@ -401,14 +401,14 @@ pub async fn wallet(
     let script = wallet.pkscript_bytes(&network);
     let mut rows = match &script {
         None => Vec::new(),
-        // utxos_pkscript_idx
+        // utxos_pkscript_sha256_idx, then the script itself
         Some(script) => {
             sqlx::query_as!(
                 UtxoRow,
                 r#"select encode(txid, 'hex') || ':' || vout as "outpoint!",
                         encode(txid, 'hex') as "txid!", vout, value, height, coinbase
                     from utxos
-                    where pkscript = $1
+                    where sha256(pkscript) = sha256($1) and pkscript = $1
                     limit $2;"#,
                 script,
                 MAX_WALLET_UTXOS + 1,

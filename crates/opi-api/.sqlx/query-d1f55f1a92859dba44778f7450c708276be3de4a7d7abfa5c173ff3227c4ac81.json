@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select encode(txid, 'hex') || ':' || vout as \"outpoint!\",\n                        encode(txid, 'hex') as \"txid!\", vout, value, height, coinbase\n                    from utxos\n                    where pkscript = $1\n                    limit $2;",
+  "query": "select encode(txid, 'hex') || ':' || vout as \"outpoint!\",\n                        encode(txid, 'hex') as \"txid!\", vout, value, height, coinbase\n                    from utxos\n                    where sha256(pkscript) = sha256($1) and pkscript = $1\n                    limit $2;",
   "describe": {
     "columns": [
       {
@@ -75,5 +75,5 @@
       false
     ]
   },
-  "hash": "bda4178b7db457d51f9ffdf8d6733d3ad0507406f5256320fd6545ca97c2bc62"
+  "hash": "d1f55f1a92859dba44778f7450c708276be3de4a7d7abfa5c173ff3227c4ac81"
 }

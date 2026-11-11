@@ -114,7 +114,7 @@ network. The module reports no event hashes to the OPI network.
 
 The `utxos` module keeps bitcoind's UTXO set in `utxos`: one row per unspent
 output with its txid bytes, vout, value, creating height, coinbase flag and
-raw pkscript, indexed by outpoint and (hash index) by pkscript. Addresses
+raw pkscript, indexed by outpoint and by the pkscript's SHA-256. Addresses
 derive from the pkscript. Like bitcoind, it leaves out the genesis coinbase
 and unspendable outputs (an OP_RETURN script, or one over 10,000 bytes), and a
 repeated coinbase txid replaces the earlier outputs. Spent outputs are
