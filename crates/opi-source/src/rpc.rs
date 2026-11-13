@@ -1,5 +1,6 @@
 //! Minimal bitcoind JSON-RPC client for the calls that bypass the gate proxy:
-//! the driver's own, and the blocks the utxos module reads.
+//! the driver's own, the blocks the utxos module reads, and the chain height
+//! the inscriptions module measures its gap against.
 
 use {
     crate::proxy::{UpstreamAuth, credentials},
@@ -51,7 +52,7 @@ impl BitcoinRpc {
     }
 
     /// Height of bitcoind's best block.
-    pub(crate) async fn block_count(&self) -> Result<u32> {
+    pub async fn block_count(&self) -> Result<u32> {
         let count = self.call("getblockcount", json!([])).await?;
         let count = count
             .as_u64()

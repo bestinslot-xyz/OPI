@@ -12,6 +12,30 @@ use crate::{DB_VERSION, INDEXER_VERSION, InscriptionsConfig};
 
 const DB_INIT: &str = include_str!("db_init.sql");
 
+/// The indexes of `db_init.sql` that only the API reads, by name, with the
+/// statement that builds each. Writing a block and rolling one back read
+/// primary keys alone, so a module far behind the chain drops these: every
+/// move then updates its entry in place and appends its event to the end of
+/// the primary key, with no random index writes.
+const SECONDARY_INDEXES: [(&str, &str); 4] = [
+    (
+        "inscriptions_entries_outpoint_idx",
+        "CREATE INDEX inscriptions_entries_outpoint_idx ON public.inscriptions_entries USING btree (txid, vout);",
+    ),
+    (
+        "inscriptions_entries_pkscript_seq_idx",
+        "CREATE INDEX inscriptions_entries_pkscript_seq_idx ON public.inscriptions_entries USING btree (pkscript, sequence_number);",
+    ),
+    (
+        "inscriptions_events_sequence_number_id_idx",
+        "CREATE INDEX inscriptions_events_sequence_number_id_idx ON public.inscriptions_events USING btree (sequence_number, id);",
+    ),
+    (
+        "inscriptions_events_pkscript_id_idx",
+        "CREATE INDEX inscriptions_events_pkscript_id_idx ON public.inscriptions_events USING btree (pkscript, id);",
+    ),
+];
+
 pub struct Db {
     pool: PgPool,
 }
@@ -118,6 +142,47 @@ impl Db {
             ),
             None => bail!("inscriptions_network_type is empty; the database must be recreated"),
         }
+    }
+
+    /// Drops the secondary indexes the database holds.
+    pub async fn drop_secondary_indexes(&self) -> anyhow::Result<()> {
+        for (name, _) in SECONDARY_INDEXES {
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP INDEX IF EXISTS {name}")))
+                .execute(&self.pool)
+                .await
+                .with_context(|| format!("dropping {name}"))?;
+        }
+        Ok(())
+    }
+
+    /// Builds the secondary indexes the database lacks and returns their
+    /// names.
+    pub async fn build_secondary_indexes(&self) -> anyhow::Result<Vec<&'static str>> {
+        let mut built = Vec::new();
+        for (name, create) in SECONDARY_INDEXES {
+            let exists: bool =
+                sqlx::query_scalar("SELECT to_regclass('public.' || $1) IS NOT NULL")
+                    .bind(name)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if exists {
+                continue;
+            }
+            tracing::info!(module = "inscriptions", index = name, "building index");
+            let started = std::time::Instant::now();
+            sqlx::query(sqlx::AssertSqlSafe(create))
+                .execute(&self.pool)
+                .await
+                .with_context(|| format!("building {name}"))?;
+            tracing::info!(
+                module = "inscriptions",
+                index = name,
+                secs = started.elapsed().as_secs(),
+                "built index"
+            );
+            built.push(name);
+        }
+        Ok(built)
     }
 
     pub async fn cursor(&self) -> anyhow::Result<Option<BlockRef>> {
@@ -508,4 +573,19 @@ async fn insert_events(tx: &mut Transaction<'_, Postgres>, events: &[Event]) -> 
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secondary_indexes_are_built_as_db_init_builds_them() {
+        for (name, create) in SECONDARY_INDEXES {
+            assert!(
+                DB_INIT.contains(create),
+                "db_init.sql builds {name} otherwise"
+            );
+        }
+    }
 }
