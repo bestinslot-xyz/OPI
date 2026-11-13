@@ -1,7 +1,13 @@
 use std::future::Future;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 use opi_core::{BlockView, InscriptionFeed, InscriptionGenesis, InscriptionMove, Module};
-use opi_inscriptions::{InscriptionsConfig, InscriptionsModule, address};
+use opi_inscriptions::{
+    CATCH_UP_GAP, ChainHeight, InscriptionsConfig, InscriptionsModule, address,
+};
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection, Row};
 
@@ -204,7 +210,7 @@ async fn three_blocks(module: &mut InscriptionsModule) {
 #[tokio::test]
 async fn moves_set_the_current_location_and_owner() {
     with_database("apply", |name| async move {
-        let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
         three_blocks(&mut module).await;
         let mut conn = connect(&name).await;
         assert_eq!(
@@ -276,7 +282,7 @@ async fn moves_set_the_current_location_and_owner() {
 #[tokio::test]
 async fn rollback_restores_the_prior_locations() {
     with_database("rollback", |name| async move {
-        let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
         three_blocks(&mut module).await;
         let mut conn = connect(&name).await;
 
@@ -326,7 +332,7 @@ async fn rollback_restores_the_prior_locations() {
 #[tokio::test]
 async fn a_transfer_of_an_unknown_inscription_fails_the_block() {
     with_database("unknown", |name| async move {
-        let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
         let block = view(
             1,
             vec![
@@ -346,7 +352,7 @@ async fn a_transfer_of_an_unknown_inscription_fails_the_block() {
 #[tokio::test]
 async fn a_creation_moved_in_its_own_block_is_stored_at_its_last_location() {
     with_database("same_block", |name| async move {
-        let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
         module
             .apply(&view(
                 1,
@@ -371,7 +377,7 @@ async fn a_creation_moved_in_its_own_block_is_stored_at_its_last_location() {
 #[tokio::test]
 async fn prune_keeps_every_event_and_drops_old_block_hashes() {
     with_database("prune", |name| async move {
-        let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
         three_blocks(&mut module).await;
         let mut conn = connect(&name).await;
         let before = event_ids(&mut conn).await;
@@ -415,24 +421,147 @@ async fn event_ids(conn: &mut PgConnection) -> Vec<i64> {
 #[tokio::test]
 async fn a_restart_drops_rows_above_the_cursor_and_refuses_another_network() {
     with_database("restart", |name| async move {
-        let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
         three_blocks(&mut module).await;
         let mut conn = connect(&name).await;
         sqlx::query("DELETE FROM inscriptions_block_hashes WHERE block_height = 3")
             .execute(&mut conn)
             .await
             .unwrap();
-        let mut module = InscriptionsModule::new(config(&name)).await.unwrap();
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
         assert_eq!(module.cursor().await.unwrap().unwrap().height, 2);
         assert_eq!(entries(&mut conn).await.len(), 2);
 
         let mut other = config(&name);
         other.network_type = "signet".into();
-        let error = InscriptionsModule::new(other).await.err().unwrap();
+        let error = InscriptionsModule::new(other, None).await.err().unwrap();
         assert!(
             format!("{error:#}").contains("holds network regtest"),
             "{error:#}"
         );
+    })
+    .await;
+}
+
+/// A chain whose height the test sets.
+struct Chain(AtomicU32);
+
+#[async_trait::async_trait]
+impl ChainHeight for Chain {
+    async fn height(&self) -> anyhow::Result<u32> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+}
+
+fn chain(height: u32) -> Arc<Chain> {
+    Arc::new(Chain(AtomicU32::new(height)))
+}
+
+/// The four location and history indexes the module drops while it catches
+/// up, those of them the database holds.
+async fn secondary_indexes(conn: &mut PgConnection) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT indexname::text FROM pg_indexes WHERE indexname IN \
+         ('inscriptions_entries_outpoint_idx', 'inscriptions_entries_pkscript_seq_idx', \
+          'inscriptions_events_sequence_number_id_idx', 'inscriptions_events_pkscript_id_idx') \
+         ORDER BY indexname",
+    )
+    .fetch_all(conn)
+    .await
+    .unwrap()
+}
+
+const ALL_SECONDARY: [&str; 4] = [
+    "inscriptions_entries_outpoint_idx",
+    "inscriptions_entries_pkscript_seq_idx",
+    "inscriptions_events_pkscript_id_idx",
+    "inscriptions_events_sequence_number_id_idx",
+];
+
+#[tokio::test]
+async fn a_module_far_behind_the_chain_indexes_without_the_secondary_indexes() {
+    with_database("catch_up", |name| async move {
+        let tip = CATCH_UP_GAP + 5;
+        let mut module = InscriptionsModule::new(config(&name), Some(chain(tip)))
+            .await
+            .unwrap();
+        let mut conn = connect(&name).await;
+        assert!(secondary_indexes(&mut conn).await.is_empty());
+
+        // Moves and rollbacks read only primary keys.
+        three_blocks(&mut module).await;
+        assert!(secondary_indexes(&mut conn).await.is_empty());
+        module.rollback_to(2).await.unwrap();
+        assert_eq!(
+            entries(&mut conn).await,
+            vec![
+                (id("aa"), format!("{}:0", txid("dd")), 0, addr(&pk2()), 2),
+                (id("bb"), format!("{}:0", txid("ee")), 0, None, 2),
+            ]
+        );
+
+        // A block within the rollback depth of the chain's tip builds them
+        // before it is written.
+        let near = tip - 999;
+        module
+            .apply(&view(
+                near,
+                vec![transfer("aa", 0, satpoint("a2", 0, 0), pk1())],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(secondary_indexes(&mut conn).await, ALL_SECONDARY);
+        assert_eq!(
+            entries(&mut conn).await[0],
+            (
+                id("aa"),
+                format!("{}:0", txid("a2")),
+                0,
+                addr(&pk1()),
+                near as i32
+            )
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_restart_near_the_chain_tip_builds_the_missing_indexes() {
+    with_database("catch_up_restart", |name| async move {
+        let far = chain(CATCH_UP_GAP + 5);
+        let mut module = InscriptionsModule::new(config(&name), Some(far.clone()))
+            .await
+            .unwrap();
+        three_blocks(&mut module).await;
+        let mut conn = connect(&name).await;
+        assert!(secondary_indexes(&mut conn).await.is_empty());
+
+        // Still far behind: a restart leaves them dropped.
+        InscriptionsModule::new(config(&name), Some(far.clone()))
+            .await
+            .unwrap();
+        assert!(secondary_indexes(&mut conn).await.is_empty());
+
+        far.0.store(3 + CATCH_UP_GAP, Ordering::SeqCst);
+        InscriptionsModule::new(config(&name), Some(far))
+            .await
+            .unwrap();
+        assert_eq!(secondary_indexes(&mut conn).await, ALL_SECONDARY);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_module_without_a_chain_keeps_every_index() {
+    with_database("no_chain", |name| async move {
+        let far = chain(CATCH_UP_GAP + 5);
+        let mut module = InscriptionsModule::new(config(&name), Some(far))
+            .await
+            .unwrap();
+        three_blocks(&mut module).await;
+        InscriptionsModule::new(config(&name), None).await.unwrap();
+        let mut conn = connect(&name).await;
+        assert_eq!(secondary_indexes(&mut conn).await, ALL_SECONDARY);
     })
     .await;
 }

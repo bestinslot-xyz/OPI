@@ -110,6 +110,15 @@ to. An event id holds its block height in the high 32 bits, so a block's
 events are one primary-key range; addresses derive from the pkScript and the
 network. The module reports no event hashes to the OPI network.
 
+More than 10,000 blocks behind bitcoind's tip, the module catches up without
+the four indexes only the API reads (the outpoint and wallet indexes of
+`inscriptions_entries` and `inscriptions_events`): writes and rollbacks read
+primary keys alone, so each move updates its entry in place and appends its
+event. It builds them, which takes hours on a mainnet database, before it
+writes the first block within 1,000 blocks of the tip. Until then the
+inscriptions routes and the utxos wallet route scan these tables, so serve
+them from a node that has caught up.
+
 #### UTXO module
 
 The `utxos` module keeps bitcoind's UTXO set in `utxos`: one row per unspent
