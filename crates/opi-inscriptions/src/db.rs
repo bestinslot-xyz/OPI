@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, bail};
-use opi_core::{BlockRef, BlockView, metrics::PoolStats};
+use opi_core::{BlockRef, BlockView, History, metrics::PoolStats};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -43,6 +43,7 @@ const SECONDARY_INDEXES: [(&str, &str); 4] = [
 
 pub struct Db {
     pool: PgPool,
+    history: History,
 }
 
 /// An inscription's location after one of its events.
@@ -76,7 +77,9 @@ impl Db {
     /// Connects, creates the schema and network row on an empty database and
     /// requires `inscriptions_indexer_version.db_version` and
     /// `inscriptions_network_type` to match otherwise. A database at
-    /// [`FULL_HISTORY_DB_VERSION`] is migrated first.
+    /// [`FULL_HISTORY_DB_VERSION`] is migrated first. A full-history
+    /// database switches to `config.history`'s window; a windowed one
+    /// refuses full history.
     pub async fn connect(config: &InscriptionsConfig) -> anyhow::Result<Db> {
         let mut options = PgConnectOptions::new()
             .host(&config.db_host)
@@ -96,10 +99,58 @@ impl Db {
             .connect_with(options)
             .await
             .context("connecting to the inscriptions database")?;
-        let db = Db { pool };
+        let db = Db {
+            pool,
+            history: config.history,
+        };
         db.stop_index_builds().await?;
         db.ensure_schema(&config.network_type).await?;
+        db.ensure_history().await?;
         Ok(db)
+    }
+
+    /// Reads the history the database keeps from `inscriptions_history`
+    /// (none is full history), switches a full one to a window when the
+    /// config asks for it and refuses full history on a windowed one.
+    async fn ensure_history(&self) -> anyhow::Result<()> {
+        sqlx::query("CREATE TABLE IF NOT EXISTS inscriptions_history (history text NOT NULL)")
+            .execute(&self.pool)
+            .await?;
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT history FROM inscriptions_history LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        match (stored.as_deref(), self.history) {
+            (Some("window"), History::Window) | (None | Some("full"), History::Full) => Ok(()),
+            (Some("window"), History::Full) => bail!(
+                "the inscriptions database keeps a history window; INSCRIPTIONS_HISTORY=full \
+                 needs the database recreated"
+            ),
+            (None | Some("full"), History::Window) => self.switch_to_window().await,
+            (Some(other), _) => bail!("inscriptions_history holds unknown history {other}"),
+        }
+    }
+
+    /// Rewrites the events as a window keeps them, in one transaction.
+    async fn switch_to_window(&self) -> anyhow::Result<()> {
+        tracing::info!(module = "inscriptions", "switching to a history window");
+        let started = std::time::Instant::now();
+        let mut tx = self.pool.begin().await?;
+        let kept = rewrite_events(&mut tx, true).await?;
+        sqlx::query("DELETE FROM inscriptions_history")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO inscriptions_history (history) VALUES ('window')")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        tracing::info!(
+            module = "inscriptions",
+            kept,
+            secs = started.elapsed().as_secs(),
+            "switched to a history window"
+        );
+        Ok(())
     }
 
     /// The pool's open and idle connections.
@@ -153,82 +204,16 @@ impl Db {
     }
 
     /// Rewrites a [`FULL_HISTORY_DB_VERSION`] database's events as
-    /// `write_block` would have kept them, in one transaction: each
-    /// inscription keeps its creation and latest event, and a transfer of a
-    /// [`LOCATION_ONLY_MEDIA_TYPES`] inscription stays only while the
-    /// transfer after it lies within [`LOCATION_ONLY_DEPTH`] blocks of the
-    /// cursor. The kept rows go to a new table that replaces the old one,
-    /// so the migration needs disk for the kept rows only; the secondary
-    /// indexes are built afterwards like any missing index.
+    /// `write_block` would have kept them with full history, in one
+    /// transaction (see [`rewrite_events`]).
     async fn migrate_full_history(&self) -> anyhow::Result<()> {
-        let cursor: Option<i32> =
-            sqlx::query_scalar("SELECT max(block_height) FROM inscriptions_block_hashes")
-                .fetch_one(&self.pool)
-                .await?;
-        // the first height whose transfers' previous events stay
-        let window = cursor.map_or(0, |cursor| {
-            (i64::from(cursor) + 1 - i64::from(LOCATION_ONLY_DEPTH)).max(0)
-        });
-        let window_start = first_event_id(window);
-        let types: Vec<String> = LOCATION_ONLY_MEDIA_TYPES.map(String::from).to_vec();
         tracing::info!(
             module = "inscriptions",
-            ?cursor,
             "migrating the inscriptions database to location-only text and JSON history"
         );
         let started = std::time::Instant::now();
         let mut tx = self.pool.begin().await?;
-        // the full-history scan hashes the full-history inscriptions'
-        // sequence numbers
-        sqlx::query("SET LOCAL work_mem = '1GB'")
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("CREATE TABLE inscriptions_events_kept (LIKE inscriptions_events)")
-            .execute(&mut *tx)
-            .await?;
-        // Each kept row comes from exactly one statement: creations, the
-        // window's events and full-history inscriptions' events, in one
-        // scan; then, of the location-only inscriptions' transfers below the
-        // window, the ones a window transfer moved from (each has a later
-        // event) and the latest ones (none has). The last two read their
-        // rows by primary key, the latest ones in id order, which follows
-        // the table's append order: a join would hash the whole table.
-        let mut kept = 0;
-        for statement in [
-            "INSERT INTO inscriptions_events_kept \
-             SELECT e.* FROM inscriptions_events e \
-             WHERE e.prev_id IS NULL OR e.id >= $1 \
-             OR e.sequence_number IN (SELECT sequence_number FROM inscriptions_entries \
-                 WHERE media_type IS NULL OR NOT (media_type = ANY($2)))",
-            "INSERT INTO inscriptions_events_kept \
-             SELECT p.* FROM inscriptions_events w \
-             CROSS JOIN LATERAL (SELECT p.* FROM inscriptions_events p \
-                 JOIN inscriptions_entries n ON n.sequence_number = p.sequence_number \
-                 WHERE p.id = w.prev_id AND p.id < $1 AND p.prev_id IS NOT NULL \
-                 AND n.media_type = ANY($2) LIMIT 1) p \
-             WHERE w.id >= $1",
-            "INSERT INTO inscriptions_events_kept \
-             SELECT e.* FROM (SELECT last_event_id FROM inscriptions_entries \
-                 WHERE media_type = ANY($2) AND last_event_id < $1 \
-                 ORDER BY last_event_id) n \
-             CROSS JOIN LATERAL (SELECT * FROM inscriptions_events e \
-                 WHERE e.id = n.last_event_id AND e.prev_id IS NOT NULL LIMIT 1) e",
-        ] {
-            kept += sqlx::query(statement)
-                .bind(window_start)
-                .bind(&types)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-        }
-        for statement in [
-            "DROP TABLE inscriptions_events",
-            "ALTER TABLE inscriptions_events_kept RENAME TO inscriptions_events",
-            "ALTER TABLE inscriptions_events ADD CONSTRAINT inscriptions_events_pk \
-             PRIMARY KEY (id)",
-        ] {
-            sqlx::query(statement).execute(&mut *tx).await?;
-        }
+        let kept = rewrite_events(&mut tx, false).await?;
         sqlx::query(
             "UPDATE inscriptions_indexer_version SET indexer_version = $1, db_version = $2",
         )
@@ -409,7 +394,7 @@ impl Db {
             apply_moves(&mut tx, block, height).await?;
         }
         if let Some(deep) = block.height.checked_sub(LOCATION_ONLY_DEPTH) {
-            prune_location_only(&mut tx, deep).await?;
+            prune_location_only(&mut tx, deep, self.history == History::Window).await?;
         }
         sqlx::query(
             "INSERT INTO inscriptions_block_hashes (block_height, block_hash, block_time) \
@@ -426,12 +411,14 @@ impl Db {
 }
 
 /// Deletes the events that block `height`'s transfers of
-/// [`LOCATION_ONLY_MEDIA_TYPES`] inscriptions moved from, creations aside.
-/// Each block prunes the block [`LOCATION_ONLY_DEPTH`] below it, so a
-/// rollback within that depth finds every `prev_id` event it reads.
+/// [`LOCATION_ONLY_MEDIA_TYPES`] inscriptions, or of every inscription when
+/// `all`, moved from, creations aside. Each block prunes the block
+/// [`LOCATION_ONLY_DEPTH`] below it, so a rollback within that depth finds
+/// every `prev_id` event it reads.
 async fn prune_location_only(
     tx: &mut Transaction<'_, Postgres>,
     height: u32,
+    all: bool,
 ) -> anyhow::Result<()> {
     let height = i64::from(height);
     let types: Vec<String> = LOCATION_ONLY_MEDIA_TYPES.map(String::from).to_vec();
@@ -439,14 +426,90 @@ async fn prune_location_only(
         "DELETE FROM inscriptions_events e \
          USING inscriptions_events n, inscriptions_entries en \
          WHERE n.id >= $1 AND n.id < $2 AND e.id = n.prev_id AND e.prev_id IS NOT NULL \
-         AND en.sequence_number = e.sequence_number AND en.media_type = ANY($3)",
+         AND en.sequence_number = e.sequence_number AND ($4 OR en.media_type = ANY($3))",
     )
     .bind(first_event_id(height))
     .bind(first_event_id(height + 1))
     .bind(types)
+    .bind(all)
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Rewrites the events as `write_block` keeps them, in `tx`: each
+/// inscription keeps its creation and latest event, and a transfer of a
+/// [`LOCATION_ONLY_MEDIA_TYPES`] inscription, or of any inscription when
+/// `all`, stays only while the transfer after it lies within
+/// [`LOCATION_ONLY_DEPTH`] blocks of the cursor. The kept rows go to a new
+/// table that replaces the old one, so the rewrite needs disk for the kept
+/// rows only; the secondary indexes are built afterwards like any missing
+/// index. Returns the rows kept.
+async fn rewrite_events(tx: &mut Transaction<'_, Postgres>, all: bool) -> anyhow::Result<u64> {
+    let cursor: Option<i32> =
+        sqlx::query_scalar("SELECT max(block_height) FROM inscriptions_block_hashes")
+            .fetch_one(&mut **tx)
+            .await?;
+    // the first height whose transfers' previous events stay
+    let window = cursor.map_or(0, |cursor| {
+        (i64::from(cursor) + 1 - i64::from(LOCATION_ONLY_DEPTH)).max(0)
+    });
+    let window_start = first_event_id(window);
+    let types: Vec<String> = LOCATION_ONLY_MEDIA_TYPES.map(String::from).to_vec();
+    // the full-history scan hashes the full-history inscriptions' sequence
+    // numbers
+    sqlx::query("SET LOCAL work_mem = '1GB'")
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("CREATE TABLE inscriptions_events_kept (LIKE inscriptions_events)")
+        .execute(&mut **tx)
+        .await?;
+    // Each kept row comes from exactly one statement: creations, the
+    // window's events and full-history inscriptions' events, in one scan;
+    // then, of the location-only inscriptions' transfers below the window,
+    // the ones a window transfer moved from (each has a later event) and the
+    // latest ones (none has). The last two read their rows by primary key,
+    // the latest ones in id order, which follows the table's append order: a
+    // join would hash the whole table.
+    // `$3` is `all`: every inscription is location-only.
+    let mut kept = 0;
+    for statement in [
+        "INSERT INTO inscriptions_events_kept \
+         SELECT e.* FROM inscriptions_events e \
+         WHERE e.prev_id IS NULL OR e.id >= $1 \
+         OR (NOT $3 AND e.sequence_number IN (SELECT sequence_number FROM inscriptions_entries \
+             WHERE media_type IS NULL OR NOT (media_type = ANY($2))))",
+        "INSERT INTO inscriptions_events_kept \
+         SELECT p.* FROM inscriptions_events w \
+         CROSS JOIN LATERAL (SELECT p.* FROM inscriptions_events p \
+             JOIN inscriptions_entries n ON n.sequence_number = p.sequence_number \
+             WHERE p.id = w.prev_id AND p.id < $1 AND p.prev_id IS NOT NULL \
+             AND ($3 OR n.media_type = ANY($2)) LIMIT 1) p \
+         WHERE w.id >= $1",
+        "INSERT INTO inscriptions_events_kept \
+         SELECT e.* FROM (SELECT last_event_id FROM inscriptions_entries \
+             WHERE ($3 OR media_type = ANY($2)) AND last_event_id < $1 \
+             ORDER BY last_event_id) n \
+         CROSS JOIN LATERAL (SELECT * FROM inscriptions_events e \
+             WHERE e.id = n.last_event_id AND e.prev_id IS NOT NULL LIMIT 1) e",
+    ] {
+        kept += sqlx::query(statement)
+            .bind(window_start)
+            .bind(&types)
+            .bind(all)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+    }
+    for statement in [
+        "DROP TABLE inscriptions_events",
+        "ALTER TABLE inscriptions_events_kept RENAME TO inscriptions_events",
+        "ALTER TABLE inscriptions_events ADD CONSTRAINT inscriptions_events_pk \
+         PRIMARY KEY (id)",
+    ] {
+        sqlx::query(statement).execute(&mut **tx).await?;
+    }
+    Ok(kept)
 }
 
 /// The first event at or above event id `above` of each inscription

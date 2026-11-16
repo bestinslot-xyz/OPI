@@ -6,7 +6,8 @@
 //! Every inscription keeps its creation event and its latest event. An
 //! inscription of a [`LOCATION_ONLY_MEDIA_TYPES`] type keeps a transfer
 //! event only until the next transfer is [`LOCATION_ONLY_DEPTH`] blocks
-//! deep; every other inscription keeps all of its transfers.
+//! deep; with `INSCRIPTIONS_HISTORY=window` every inscription does, and
+//! otherwise every other inscription keeps all of its transfers.
 //!
 //! More than [`CATCH_UP_GAP`] blocks behind the chain, the module catches up
 //! without the indexes only the API reads, and builds them before it writes
@@ -19,7 +20,7 @@ mod rules;
 use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
-use opi_core::{BlockRef, BlockView, MAX_ROLLBACK_DEPTH, Module};
+use opi_core::{BlockRef, BlockView, History, MAX_ROLLBACK_DEPTH, Module};
 
 pub use rules::{LOCATION_ONLY_MEDIA_TYPES, address, content_type_text, media_type};
 
@@ -44,10 +45,11 @@ pub struct InscriptionsConfig {
     pub db_password: Option<String>,
     pub db_ssl: bool,
     pub network_type: String,
+    pub history: History,
 }
 
 impl InscriptionsConfig {
-    /// Reads `INSCRIPTIONS_DB_*` and `NETWORK_TYPE`.
+    /// Reads `INSCRIPTIONS_DB_*`, `INSCRIPTIONS_HISTORY` and `NETWORK_TYPE`.
     pub fn from_env() -> anyhow::Result<InscriptionsConfig> {
         InscriptionsConfig::from_lookup(&|key| std::env::var(key).ok())
     }
@@ -73,6 +75,10 @@ impl InscriptionsConfig {
             db_password: var("INSCRIPTIONS_DB_PASSWD"),
             db_ssl: var("INSCRIPTIONS_DB_SSL").is_some_and(|ssl| ssl == "true"),
             network_type,
+            history: History::parse(
+                "INSCRIPTIONS_HISTORY",
+                var("INSCRIPTIONS_HISTORY").as_deref(),
+            )?,
         })
     }
 }

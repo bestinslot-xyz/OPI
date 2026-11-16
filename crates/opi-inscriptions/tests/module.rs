@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use opi_core::{BlockView, InscriptionFeed, InscriptionGenesis, InscriptionMove, Module};
+use opi_core::{BlockView, History, InscriptionFeed, InscriptionGenesis, InscriptionMove, Module};
 use opi_inscriptions::{
     CATCH_UP_GAP, ChainHeight, DB_VERSION, INDEXER_VERSION, InscriptionsConfig, InscriptionsModule,
     LOCATION_ONLY_DEPTH, address,
@@ -29,6 +29,14 @@ fn config(database: &str) -> InscriptionsConfig {
         db_password: None,
         db_ssl: false,
         network_type: "regtest".into(),
+        history: History::Full,
+    }
+}
+
+fn window_config(database: &str) -> InscriptionsConfig {
+    InscriptionsConfig {
+        history: History::Window,
+        ..config(database)
     }
 }
 
@@ -559,6 +567,88 @@ async fn text_and_json_transfers_leave_the_history_below_the_rollback_depth() {
             .unwrap();
         empty_blocks(&mut module, 1005, 2004).await;
         assert_eq!(events_of(&mut conn, 0).await, vec![1 << 32, 1004 << 32]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_window_keeps_every_inscriptions_creation_and_latest_event() {
+    with_database("window", |name| async move {
+        let mut module = InscriptionsModule::new(window_config(&name), None)
+            .await
+            .unwrap();
+        mixed_blocks(&mut module).await;
+        empty_blocks(&mut module, 4, 1003).await;
+        let mut conn = connect(&name).await;
+        // The image loses its height 2 transfer like the text does.
+        assert_eq!(events_of(&mut conn, 0).await, vec![1 << 32, 3 << 32]);
+        assert_eq!(
+            events_of(&mut conn, 1).await,
+            vec![(1 << 32) + 1, (3 << 32) + 1]
+        );
+        assert_eq!(
+            events_of(&mut conn, 2).await,
+            vec![(1 << 32) + 2, (2 << 32) + 2]
+        );
+
+        // A rollback within the window finds the event a transfer moved from.
+        module
+            .apply(&view(
+                1004,
+                vec![transfer("bb", 1, satpoint("b4", 0, 0), pk2())],
+            ))
+            .await
+            .unwrap();
+        module.rollback_to(1003).await.unwrap();
+        assert_eq!(
+            entries(&mut conn).await[1],
+            (id("bb"), format!("{}:0", txid("b3")), 0, addr(&pk1()), 3)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_full_database_switches_to_a_window_and_not_back() {
+    with_database("to_window", |name| async move {
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
+        mixed_blocks(&mut module).await;
+        empty_blocks(&mut module, 4, 1003).await;
+        let mut conn = connect(&name).await;
+        assert_eq!(events_of(&mut conn, 1).await.len(), 3);
+
+        let mut module = InscriptionsModule::new(window_config(&name), None)
+            .await
+            .unwrap();
+        assert_eq!(events_of(&mut conn, 0).await, vec![1 << 32, 3 << 32]);
+        assert_eq!(
+            events_of(&mut conn, 1).await,
+            vec![(1 << 32) + 1, (3 << 32) + 1]
+        );
+        assert_eq!(
+            events_of(&mut conn, 2).await,
+            vec![(1 << 32) + 2, (2 << 32) + 2]
+        );
+        assert_eq!(secondary_indexes(&mut conn).await, ALL_SECONDARY);
+        module
+            .apply(&view(
+                1004,
+                vec![transfer("bb", 1, satpoint("b4", 0, 0), pk2())],
+            ))
+            .await
+            .unwrap();
+        module.rollback_to(1003).await.unwrap();
+        assert_eq!(
+            entries(&mut conn).await[1],
+            (id("bb"), format!("{}:0", txid("b3")), 0, addr(&pk1()), 3)
+        );
+
+        // The history below the window is gone, so full history is refused.
+        let error = InscriptionsModule::new(config(&name), None)
+            .await
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("window"), "{error:#}");
     })
     .await;
 }

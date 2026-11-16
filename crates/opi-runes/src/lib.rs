@@ -1,6 +1,10 @@
 //! The runes metaprotocol as an opi module. It writes the journal's rune feed
 //! into the schema in `db_init.sql`, which the runes API (`opi-api`) reads, and reports the
 //! cumulative event hashes to the OPI network.
+//!
+//! With `RUNES_HISTORY=window` the module keeps the current state (entries,
+//! unspent outpoints, balances, event hashes) and only the events and spent
+//! outpoints of the last `MAX_ROLLBACK_DEPTH` blocks, which a rollback reads.
 
 mod db;
 pub mod holders;
@@ -12,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use opi_core::{BlockRef, BlockSource, BlockView, Module};
+use opi_core::{BlockRef, BlockSource, BlockView, History, Module};
 
 pub use report::{DB_VERSION, EVENT_HASH_VERSION, INDEXER_VERSION};
 pub use rules::{
@@ -39,10 +43,12 @@ pub struct RunesConfig {
     pub report_url: String,
     pub report_retries: u32,
     pub report_name: String,
+    pub history: History,
 }
 
 impl RunesConfig {
-    /// Reads `RUNES_DB_*`, `NETWORK_TYPE` and the shared `REPORT_*` variables.
+    /// Reads `RUNES_DB_*`, `RUNES_HISTORY`, `NETWORK_TYPE` and the shared
+    /// `REPORT_*` variables.
     pub fn from_env() -> anyhow::Result<RunesConfig> {
         RunesConfig::from_lookup(&|key| std::env::var(key).ok())
     }
@@ -74,6 +80,7 @@ impl RunesConfig {
                 .transpose()?
                 .unwrap_or(10),
             report_name: var("REPORT_NAME").unwrap_or_else(|| REPORT_NAME_DEFAULT.into()),
+            history: History::parse("RUNES_HISTORY", var("RUNES_HISTORY").as_deref())?,
         })
     }
 }
