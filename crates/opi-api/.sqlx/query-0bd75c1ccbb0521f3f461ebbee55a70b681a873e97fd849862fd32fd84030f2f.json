@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select v.id, v.sequence_number, e.inscription_id,\n                e.\"number\", e.content_type as \"content_type?\",\n                e.media_type as \"media_type?\",\n                encode(p.txid, 'hex') || ':' || p.vout as \"old_outpoint?\",\n                p.\"offset\" as \"old_offset?\", p.pkscript as \"old_pkscript?\",\n                encode(v.txid, 'hex') || ':' || v.vout as \"new_outpoint!\",\n                v.\"offset\" as new_offset, v.pkscript as new_pkscript,\n                n.network_type as \"network_type!\"\n            from inscriptions_events v\n            join inscriptions_entries e on e.sequence_number = v.sequence_number\n            left join inscriptions_events p on p.id = v.prev_id\n            cross join (select network_type from inscriptions_network_type limit 1) n\n            where v.id > $2 and v.id <= $3\n              and v.id >= ($1::int8 << 32) and v.id < (($1::int8 + 1) << 32)\n            order by v.id limit $4;",
+  "query": "select v.id, v.prev_id, v.sequence_number, e.inscription_id,\n                e.\"number\", e.content_type as \"content_type?\",\n                e.media_type as \"media_type?\",\n                encode(p.txid, 'hex') || ':' || p.vout as \"old_outpoint?\",\n                p.\"offset\" as \"old_offset?\", p.pkscript as \"old_pkscript?\",\n                encode(v.txid, 'hex') || ':' || v.vout as \"new_outpoint!\",\n                v.\"offset\" as new_offset, v.pkscript as new_pkscript,\n                n.network_type as \"network_type!\"\n            from inscriptions_events v\n            join inscriptions_entries e on e.sequence_number = v.sequence_number\n            left join inscriptions_events p on p.id = v.prev_id\n            cross join (select network_type from inscriptions_network_type limit 1) n\n            where v.id > $2 and v.id <= $3\n              and v.id >= ($1::int8 << 32) and v.id < (($1::int8 + 1) << 32)\n            order by v.id limit $4;",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "prev_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inscriptions_events",
+            "name": "prev_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "sequence_number",
         "type_info": "Int8",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "inscription_id",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "number",
         "type_info": "Int8",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "content_type?",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "media_type?",
         "type_info": "Text",
         "origin": {
@@ -70,13 +81,13 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "old_outpoint?",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "old_offset?",
         "type_info": "Int8",
         "origin": {
@@ -87,7 +98,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "old_pkscript?",
         "type_info": "Bytea",
         "origin": {
@@ -98,13 +109,13 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "new_outpoint!",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "new_offset",
         "type_info": "Int8",
         "origin": {
@@ -115,7 +126,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "new_pkscript",
         "type_info": "Bytea",
         "origin": {
@@ -126,7 +137,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "network_type!",
         "type_info": "Text",
         "origin": {
@@ -147,6 +158,7 @@
     },
     "nullable": [
       false,
+      true,
       false,
       false,
       false,
@@ -161,5 +173,5 @@
       false
     ]
   },
-  "hash": "952c6c9b0cbe8a75559d635f02076700e697d6cb8597c3a1774e538b946b4c8d"
+  "hash": "0bd75c1ccbb0521f3f461ebbee55a70b681a873e97fd849862fd32fd84030f2f"
 }

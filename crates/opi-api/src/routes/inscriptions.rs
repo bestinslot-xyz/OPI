@@ -419,8 +419,10 @@ pub(in crate::routes) async fn block_event_ids(
 
 /// Up to `limit` of block `height`'s creations and transfers with an id
 /// above `after` and at most `last`, oldest first, each with its id. A
-/// transfer's old location is its `prev_id` event's; outpoints, scripts and
-/// addresses render from the stored bytes and the database's network.
+/// transfer's old location is its `prev_id` event's, null when the module
+/// no longer keeps that event (text and JSON history below the rollback
+/// depth); outpoints, scripts and addresses render from the stored bytes
+/// and the database's network.
 pub(in crate::routes) async fn block_events(
     db: &Db,
     height: i32,
@@ -429,7 +431,7 @@ pub(in crate::routes) async fn block_events(
     limit: i64,
 ) -> Result<Vec<(i64, JsValue)>, ApiError> {
     let rows = sqlx::query!(
-        r#"select v.id, v.sequence_number, e.inscription_id,
+        r#"select v.id, v.prev_id, v.sequence_number, e.inscription_id,
                 e."number", e.content_type as "content_type?",
                 e.media_type as "media_type?",
                 encode(p.txid, 'hex') || ':' || p.vout as "old_outpoint?",
@@ -454,7 +456,7 @@ pub(in crate::routes) async fn block_events(
     Ok(rows
         .into_iter()
         .map(|row| {
-            let event_type = if row.old_outpoint.is_none() {
+            let event_type = if row.prev_id.is_none() {
                 "creation"
             } else {
                 "transfer"

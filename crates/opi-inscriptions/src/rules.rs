@@ -44,6 +44,12 @@ pub fn media_type(content_type: &str) -> Option<String> {
     (!media.is_empty()).then_some(media)
 }
 
+/// The media types whose inscriptions keep their creation and current
+/// location but not every transfer: text and JSON inscriptions (brc20,
+/// names, mints) move by the billion in batch spends, while the other
+/// types keep their full transfer history.
+pub const LOCATION_ONLY_MEDIA_TYPES: [&str; 2] = ["text/plain", "application/json"];
+
 /// Splits a `txid:vout:offset` satpoint into its `txid:vout` outpoint and
 /// its offset.
 pub fn split_satpoint(satpoint: &str) -> anyhow::Result<(String, u64)> {

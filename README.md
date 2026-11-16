@@ -110,6 +110,27 @@ to. An event id holds its block height in the high 32 bits, so a block's
 events are one primary-key range; addresses derive from the pkScript and the
 network. The module reports no event hashes to the OPI network.
 
+Text and JSON inscriptions (`text/plain` and `application/json` media
+types: brc20, names, mints) keep their location, not their journey. Batch
+spends move them by the billion, so each keeps its creation and latest
+transfer, and an earlier transfer only until the transfer after it is 1,000
+blocks deep, past any rollback. Every other inscription keeps all of its
+transfers. On mainnet this holds the events table to a few percent of the
+full history. A database of `db_version` 2, which holds every transfer,
+migrates on the first start: the kept rows are copied to a new table that
+replaces the old one in one transaction, then the history indexes are
+built, so the migration needs disk for the kept rows and their indexes
+only.
+
+More than 10,000 blocks behind bitcoind's tip, the module catches up without
+the four indexes only the API reads (the outpoint and wallet indexes of
+`inscriptions_entries` and `inscriptions_events`): writes and rollbacks read
+primary keys alone, so each move updates its entry in place and appends its
+event. It builds them, which takes hours on a mainnet database, before it
+writes the first block within 1,000 blocks of the tip. Until then the
+inscriptions routes and the utxos wallet route scan these tables, so serve
+them from a node that has caught up.
+
 #### UTXO module
 
 The `utxos` module keeps bitcoind's UTXO set in `utxos`: one row per unspent
@@ -306,7 +327,7 @@ the deepest rollback the scheduler walks.
 | brc20 | `brc20_logs`, which nothing reads | every table the API, the light clients and `validate` read |
 | bitmap, sns | `*_block_hashes` below the window | names, bitmaps, cumulative event hashes |
 | runes | `runes_block_hashes` below the window; `runes_id_to_entry_changes` below it except each rune's latest | outpoints with their spends, events, entries, cumulative event hashes |
-| inscriptions | `inscriptions_block_hashes` below the window | `inscriptions_entries` and every `inscriptions_events` row, which the history routes read |
+| inscriptions | `inscriptions_block_hashes` below the window | `inscriptions_entries` and the `inscriptions_events` rows the module keeps, which the history routes read |
 
 Each module prunes its tables every 100 blocks. ord's index has no history to
 prune: `run` builds it without sat, address or transaction indexes.
@@ -1404,10 +1425,16 @@ the wallet and the inscription's next transfer (null while the wallet holds
 it). An event is `{"id","block_height","block_time","event_type",
 "old_outpoint","old_offset","old_pkscript","old_address","new_outpoint",
 "new_offset","new_pkscript","new_address"}`, `event_type` `creation` or
-`transfer`, the `old_` fields null for a creation. Both page by key:
-`limit` (default `100`, at most `500`) and `before_id`, the previous page's
-`next_before_id`. A node pruned with `OPI_PRUNE` keeps every event, so both
-answer as on a full node; `block_time` is null below the pruned window.
+`transfer`, the `old_` fields null for a creation and for a transfer whose
+previous event the node no longer keeps. A text/plain or application/json
+inscription's history holds its creation, its latest transfer, and each
+earlier transfer until the transfer after it is 1,000 blocks deep, so a
+wallet's history lists such an inscription only while it holds it or for
+1,000 blocks after it moved on; every other inscription's history is
+complete. Both page by key: `limit` (default `100`, at most `500`) and
+`before_id`, the previous page's `next_before_id`. A node pruned with
+`OPI_PRUNE` keeps the same events, so both answer as on a full node;
+`block_time` is null below the pruned window.
 
 **Outputs.** An outpoint is `<txid>:<vout>`: 64 hex digits, any case, and a
 32-bit output index. `/v1/inscriptions/outpoint?outpoint=` answers

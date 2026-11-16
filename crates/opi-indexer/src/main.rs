@@ -21,7 +21,7 @@ use {
         service_runtime::ServiceRuntime,
     },
     opi_core::{BlockSource, Module, metrics::Phase},
-    opi_inscriptions::{InscriptionsConfig, InscriptionsModule},
+    opi_inscriptions::{ChainHeight, InscriptionsConfig, InscriptionsModule},
     opi_runes::{RunesConfig, RunesModule},
     opi_runtime::{ModuleFactory, Runtime, RuntimeOptions},
     opi_sns::{SnsConfig, SnsModule},
@@ -312,15 +312,19 @@ async fn supervise(
         runtime.add("runes", runes_factory(config, journal.clone()));
         names.push("runes");
     }
+    let bitcoind = || -> Result<Arc<RpcBlocks>> {
+        Ok(Arc::new(RpcBlocks(BitcoindRpc::new(
+            source.bitcoin_rpc_url.clone(),
+            source.bitcoin_auth.clone(),
+        )?)))
+    };
     if let Some(config) = configs.inscriptions {
-        runtime.add("inscriptions", inscriptions_factory(config));
+        let chain: Arc<dyn ChainHeight> = bitcoind()?;
+        runtime.add("inscriptions", inscriptions_factory(config, chain));
         names.push("inscriptions");
     }
     if let Some(config) = configs.utxos {
-        let blocks = Arc::new(RpcBlocks(BitcoindRpc::new(
-            source.bitcoin_rpc_url.clone(),
-            source.bitcoin_auth.clone(),
-        )?));
+        let blocks: Arc<dyn BlockFetcher> = bitcoind()?;
         runtime.add("utxos", utxos_factory(config, blocks, journal.clone()));
         names.push("utxos");
     }
@@ -563,12 +567,13 @@ fn runes_factory(config: RunesConfig, journal: Arc<dyn BlockSource>) -> ModuleFa
 }
 
 /// Builds an inscriptions module on a fresh database connection for every
-/// start and restart.
-fn inscriptions_factory(config: InscriptionsConfig) -> ModuleFactory {
+/// start and restart; `chain` decides whether it catches up without its
+/// secondary indexes.
+fn inscriptions_factory(config: InscriptionsConfig, chain: Arc<dyn ChainHeight>) -> ModuleFactory {
     Arc::new(move || -> BoxFuture<'static, Result<Box<dyn Module>>> {
-        let config = config.clone();
+        let (config, chain) = (config.clone(), chain.clone());
         Box::pin(async move {
-            let module = InscriptionsModule::new(config).await?;
+            let module = InscriptionsModule::new(config, Some(chain)).await?;
             Ok(Box::new(module) as Box<dyn Module>)
         })
     })
@@ -595,8 +600,16 @@ fn utxos_factory(
     })
 }
 
-/// The utxos module's blocks, read from bitcoind outside the gate proxy.
+/// The utxos module's blocks and the inscriptions module's chain height,
+/// read from bitcoind outside the gate proxy.
 struct RpcBlocks(BitcoindRpc);
+
+#[async_trait::async_trait]
+impl ChainHeight for RpcBlocks {
+    async fn height(&self) -> Result<u32> {
+        self.0.block_count().await
+    }
+}
 
 #[async_trait::async_trait]
 impl BlockFetcher for RpcBlocks {
