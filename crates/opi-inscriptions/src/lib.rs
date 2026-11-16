@@ -3,6 +3,11 @@
 //! inscription moves into the schema in `db_init.sql`, which the
 //! inscriptions API (`opi-api`) reads.
 //!
+//! Every inscription keeps its creation event and its latest event. An
+//! inscription of a [`LOCATION_ONLY_MEDIA_TYPES`] type keeps a transfer
+//! event only until the next transfer is [`LOCATION_ONLY_DEPTH`] blocks
+//! deep; every other inscription keeps all of its transfers.
+//!
 //! More than [`CATCH_UP_GAP`] blocks behind the chain, the module catches up
 //! without the indexes only the API reads, and builds them before it writes
 //! a block within `MAX_ROLLBACK_DEPTH` of the chain's tip. Until then the
@@ -16,12 +21,17 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use opi_core::{BlockRef, BlockView, MAX_ROLLBACK_DEPTH, Module};
 
-pub use rules::{address, content_type_text, media_type};
+pub use rules::{LOCATION_ONLY_MEDIA_TYPES, address, content_type_text, media_type};
 
 use db::Db;
 
-pub const INDEXER_VERSION: &str = "opi-inscriptions v2.0.0";
-pub const DB_VERSION: i32 = 2;
+pub const INDEXER_VERSION: &str = "opi-inscriptions v3.0.0";
+pub const DB_VERSION: i32 = 3;
+
+/// Blocks a transfer of a [`LOCATION_ONLY_MEDIA_TYPES`] inscription keeps
+/// the event it moved the inscription from: a rollback within this depth
+/// puts the inscription back there, and below it the event is deleted.
+pub const LOCATION_ONLY_DEPTH: u32 = MAX_ROLLBACK_DEPTH;
 
 const NETWORKS: [&str; 5] = ["mainnet", "testnet", "testnet4", "signet", "regtest"];
 
