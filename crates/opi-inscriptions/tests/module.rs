@@ -6,7 +6,8 @@ use std::sync::{
 
 use opi_core::{BlockView, InscriptionFeed, InscriptionGenesis, InscriptionMove, Module};
 use opi_inscriptions::{
-    CATCH_UP_GAP, ChainHeight, InscriptionsConfig, InscriptionsModule, address,
+    CATCH_UP_GAP, ChainHeight, DB_VERSION, INDEXER_VERSION, InscriptionsConfig, InscriptionsModule,
+    LOCATION_ONLY_DEPTH, address,
 };
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{Connection, PgConnection, Row};
@@ -438,6 +439,193 @@ async fn a_restart_drops_rows_above_the_cursor_and_refuses_another_network() {
         assert!(
             format!("{error:#}").contains("holds network regtest"),
             "{error:#}"
+        );
+    })
+    .await;
+}
+
+/// The event ids of the inscription with `seq`, oldest first.
+async fn events_of(conn: &mut PgConnection, seq: i64) -> Vec<i64> {
+    sqlx::query_scalar("SELECT id FROM inscriptions_events WHERE sequence_number = $1 ORDER BY id")
+        .bind(seq)
+        .fetch_all(conn)
+        .await
+        .unwrap()
+}
+
+/// Applies blocks `from..=to` without moves.
+async fn empty_blocks(module: &mut InscriptionsModule, from: u32, to: u32) {
+    for height in from..=to {
+        module.apply(&view(height, Vec::new())).await.unwrap();
+    }
+}
+
+/// Height 1 creates text A, image B and JSON C; height 2 moves all three;
+/// height 3 moves A and B.
+async fn mixed_blocks(module: &mut InscriptionsModule) {
+    module
+        .apply(&view(
+            1,
+            vec![
+                create(
+                    "aa",
+                    0,
+                    0,
+                    b"text/plain;charset=utf-8",
+                    satpoint("aa", 0, 0),
+                ),
+                create("bb", 1, 1, b"image/png", satpoint("bb", 0, 0)),
+                create("cc", 2, 2, b"application/json", satpoint("cc", 0, 0)),
+            ],
+        ))
+        .await
+        .unwrap();
+    module
+        .apply(&view(
+            2,
+            vec![
+                transfer("aa", 0, satpoint("a2", 0, 0), pk2()),
+                transfer("bb", 1, satpoint("b2", 0, 0), pk2()),
+                transfer("cc", 2, satpoint("c2", 0, 0), pk2()),
+            ],
+        ))
+        .await
+        .unwrap();
+    module
+        .apply(&view(
+            3,
+            vec![
+                transfer("aa", 0, satpoint("a3", 0, 0), pk1()),
+                transfer("bb", 1, satpoint("b3", 0, 0), pk1()),
+            ],
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn text_and_json_transfers_leave_the_history_below_the_rollback_depth() {
+    with_database("location_only", |name| async move {
+        assert_eq!(LOCATION_ONLY_DEPTH, 1000);
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
+        mixed_blocks(&mut module).await;
+        empty_blocks(&mut module, 4, 1002).await;
+        let mut conn = connect(&name).await;
+        // Height 1002 prunes height 2, whose transfers moved from creations.
+        assert_eq!(
+            events_of(&mut conn, 0).await,
+            vec![1 << 32, 2 << 32, 3 << 32]
+        );
+
+        // Height 1003 prunes the text transfer that A's height 3 transfer
+        // moved from; the image keeps every transfer.
+        empty_blocks(&mut module, 1003, 1003).await;
+        assert_eq!(events_of(&mut conn, 0).await, vec![1 << 32, 3 << 32]);
+        assert_eq!(
+            events_of(&mut conn, 1).await,
+            vec![(1 << 32) + 1, (2 << 32) + 1, (3 << 32) + 1]
+        );
+        assert_eq!(
+            events_of(&mut conn, 2).await,
+            vec![(1 << 32) + 2, (2 << 32) + 2]
+        );
+
+        // A rollback within the depth finds the event a transfer moved from.
+        module
+            .apply(&view(
+                1004,
+                vec![transfer("aa", 0, satpoint("a4", 0, 0), pk2())],
+            ))
+            .await
+            .unwrap();
+        empty_blocks(&mut module, 1005, 2003).await;
+        assert_eq!(
+            events_of(&mut conn, 0).await,
+            vec![1 << 32, 3 << 32, 1004 << 32]
+        );
+        module.rollback_to(1003).await.unwrap();
+        assert_eq!(
+            entries(&mut conn).await[0],
+            (id("aa"), format!("{}:0", txid("a3")), 0, addr(&pk1()), 3)
+        );
+
+        // Once the transfer after it is that deep, the event goes.
+        module
+            .apply(&view(
+                1004,
+                vec![transfer("aa", 0, satpoint("a4", 0, 0), pk2())],
+            ))
+            .await
+            .unwrap();
+        empty_blocks(&mut module, 1005, 2004).await;
+        assert_eq!(events_of(&mut conn, 0).await, vec![1 << 32, 1004 << 32]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_full_history_database_migrates_to_location_only_text_and_json() {
+    with_database("migrate", |name| async move {
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
+        mixed_blocks(&mut module).await;
+        module
+            .apply(&view(
+                1002,
+                vec![transfer("cc", 2, satpoint("c9", 0, 0), pk1())],
+            ))
+            .await
+            .unwrap();
+        let mut conn = connect(&name).await;
+        // A db_version 2 database holds every event: the cursor moves to
+        // 1004 without the blocks that would have pruned heights 3 and 4.
+        for statement in [
+            "INSERT INTO inscriptions_block_hashes (block_height, block_hash, block_time) \
+             VALUES (1003, 'hash1003', now()), (1004, 'hash1004', now())",
+            "UPDATE inscriptions_indexer_version \
+             SET indexer_version = 'opi-inscriptions v2.0.0', db_version = 2",
+        ] {
+            sqlx::query(statement).execute(&mut conn).await.unwrap();
+        }
+        assert_eq!(event_ids(&mut conn).await.len(), 9);
+
+        let mut module = InscriptionsModule::new(config(&name), None).await.unwrap();
+        // A's height 2 transfer is gone, its height 3 one is the latest; C's
+        // height 2 transfer is what its height 1002 transfer moved from.
+        assert_eq!(events_of(&mut conn, 0).await, vec![1 << 32, 3 << 32]);
+        assert_eq!(
+            events_of(&mut conn, 1).await,
+            vec![(1 << 32) + 1, (2 << 32) + 1, (3 << 32) + 1]
+        );
+        assert_eq!(
+            events_of(&mut conn, 2).await,
+            vec![(1 << 32) + 2, (2 << 32) + 2, 1002 << 32]
+        );
+        let version: (String, i32) =
+            sqlx::query_as("SELECT indexer_version, db_version FROM inscriptions_indexer_version")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(version, (INDEXER_VERSION.to_string(), DB_VERSION));
+        assert_eq!(secondary_indexes(&mut conn).await, ALL_SECONDARY);
+        let pk: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inscriptions_events_pk')",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert!(pk);
+
+        // The module goes on from the migrated database.
+        module
+            .apply(&view(
+                1005,
+                vec![transfer("aa", 0, satpoint("a5", 0, 0), pk2())],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            events_of(&mut conn, 0).await,
+            vec![1 << 32, 3 << 32, 1005 << 32]
         );
     })
     .await;

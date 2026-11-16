@@ -10,15 +10,21 @@
 //! "old_outpoint","old_offset","old_pkscript","old_address","new_outpoint",
 //! "new_offset","new_pkscript","new_address"}`: `event_type` is `creation`
 //! or `transfer`, the `old_` fields are the location a transfer moved the
-//! inscription from (null for a creation) and `block_time` the block's time
-//! in seconds (null for a block whose hash the database no longer holds).
+//! inscription from (null for a creation, and for a transfer whose previous
+//! event the database no longer keeps) and `block_time` the block's time in
+//! seconds (null for a block whose hash the database no longer holds).
 //! Addresses derive from the pkScripts and the database's network.
+//!
+//! A text/plain or application/json inscription's history holds its
+//! creation, its latest transfer, and each earlier transfer until the
+//! transfer after it is 1000 blocks deep, past any rollback. Every other
+//! inscription's history is complete.
 //!
 //! The feeds page newest first by key: `limit` (default 100, at most 500)
 //! and `before_id`, the `next_before_id` of the previous page. A page holds
 //! the rows with an id below `before_id`, so pages never repeat or skip a
-//! row when new blocks arrive. A database pruned with `OPI_PRUNE` holds
-//! every event, so the feeds answer as on a full node; `block_time` is null
+//! row when new blocks arrive. A database pruned with `OPI_PRUNE` holds the
+//! same events, so the feeds answer as on a full node; `block_time` is null
 //! below the pruned window, whose block hashes are deleted.
 
 use {
