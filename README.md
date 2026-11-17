@@ -1047,7 +1047,7 @@ bracketed parameter).
 | `GET /v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | A page of tickers, by holders or another order. |
 | `GET /v1/brc20/wallet/balance_history` | `address`, `pkscript`, **`ticker`**, `before_id`, `limit` | A wallet's balance of one ticker after each change, newest first. |
 | `GET /v1/brc20/wallet/balances` | **`address`**, `offset`, `limit` | A page of a wallet's tickers, BRC-20 and BRC2.0 balances side by side. |
-| `GET /v1/brc20/wallet/events` | `address`, `pkscript`, `type`, `category`, `before_id`, `limit` | A page of the events a wallet takes part in, newest first. |
+| `GET /v1/brc20/wallet/events` | `address`, `pkscript`, `type`, `category`, `include_prog_transfers`, `before_id`, `before`, `limit` | A page of the events a wallet takes part in, newest first, with its BRC2.0 token transfers when asked for. |
 
 **bitmap**: Bitmap.
 
@@ -1273,6 +1273,7 @@ categories, comma-separated; every event type has exactly one:
 | `wrap` | `transfer-transfer` spent to the BRC2.0 module pkScript (`6a09425243323050524f47` on every network): a deposit into BRC2.0 |
 | `unwrap` | `brc20prog-withdraw-inscribe` and `brc20prog-withdraw-transfer`, the two steps of a withdrawal (add `type=brc20prog-withdraw-transfer` for the withdrawals alone) |
 | `brc20prog` | the BRC2.0 deploy, call and transact inscriptions and transfers |
+| `prog_transfer` | `/v1/brc20/wallet/events` only: the wallet's BRC2.0 token transfers (below) |
 
 With both `type` and `category`, an event passes both. A ticker's events are
 those whose `tick` is the ticker. A wallet's events are those where it is a
@@ -1286,6 +1287,44 @@ categories (every wrap, say). The feeds page by key: `before_id` is the
 previous page's `next_before_id`, and a page holds the events with a lower
 id, so pages neither repeat nor skip events as new ones arrive. `has_more`
 tells whether older events exist; `next_before_id` is null on the last page.
+
+**BRC2.0 transfers in the wallet feed.** With `include_prog_transfers=true`,
+or `category` listing `prog_transfer`, `/v1/brc20/wallet/events` also lists
+the wallet's BRC2.0 token transfers: the rows of `brc20_prog_transfers` from
+or to its EVM address, the one `evm_addresses` maps its Bitcoin address to
+(for `pkscript`, the address the pkScript encodes), or the EVM address asked
+for. A Bitcoin address without an EVM address lists its events alone. A
+transfer is
+
+```json
+{"id": null, "block_height": 840000, "block_time": 1713571767,
+ "inscription_id": null, "event_type": "brc20prog-token-transfer",
+ "ticker_decimals": 18,
+ "event": {"tick": "ordi", "amount": "1000000000000000000",
+           "tx_hash": "0x…", "log_index": 3, "contract_address": "0x…",
+           "from": "0x…", "to": "0x…", "direction": "out",
+           "counterparty": {"evm_address": "0x…", "address": "bc1q…"}}}
+```
+
+with lowercase hex addresses, `tick` the ticker as `brc20_prog_transfers`
+stores it and `amount` in the token's raw units. `direction` is `out` when
+the wallet sends (a transfer to itself is one `out` row) and `in` when it
+receives; the counterparty's `address` is its Bitcoin address from
+`evm_addresses`, null for an unmapped one. A `type` filter keeps events of
+that type, so it leaves the transfers out. Without either parameter the
+answer lists events alone, as above.
+
+The wallet feed also pages by block, which a page with transfers needs (it
+refuses `before_id`): `before=<block_height>:<rows>` is the previous page's
+`next_before`, and a page holds the rows below that block plus the rows of
+that block after its first `rows`. The rows run newest block first, and in a
+block in one fixed order: its events by id descending, then its transfers by
+`(tx_hash, log_index)` descending. `next_before` is the page's last row's
+block and the count of that block's rows given so far over all pages (null
+on the last page), so the same cursor names the same position on every
+database with the same blocks, whatever its event ids. `before` and
+`before_id` together answer 400, and a page that lists transfers has a null
+`next_before_id`.
 
 Each page costs the same at any depth, an index range scan from the cursor.
 A ticker's events come from the `(event ->> 'tick', id)` index, with a
@@ -1302,7 +1341,12 @@ same pkScript in another network's form names none. A category is
 `brc20_event_category(event_type, event)` and a party list
 `brc20_event_party_pkscripts(event)`, SQL functions db_init.sql creates. A
 filter without its own index (a ticker's `mint` page, say) reads the rows
-until the page fills.
+until the page fills. A `before` page reads the wallet's rows of the
+cursor's block (the parties key within the block's id range, and the
+transfers of that one block), skips the first `rows` of them, then reads
+below the block: the parties key below the last event id under the block,
+and the transfers from the `(from_address, block_height, tx_hash, log_index)`
+and `(to_address, …)` indexes, merged newest block first.
 
 **Balance history.** `/v1/brc20/wallet/balance_history` lists a wallet's
 balance of one `ticker` after each change, newest first: one row

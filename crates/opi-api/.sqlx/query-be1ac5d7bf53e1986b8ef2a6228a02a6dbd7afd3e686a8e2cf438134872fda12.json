@@ -1,0 +1,108 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.block_height as \"block_height!\", h.block_time as \"block_time?\",\n                t.tx_hash as \"tx_hash!\", t.log_index as \"log_index!\", t.ticker as \"ticker!\",\n                t.contract_address as \"contract_address!\", t.from_address as \"from_address!\",\n                t.to_address as \"to_address!\", t.amount::text as \"amount!\",\n                (select k.decimals from brc20_tickers k where k.tick = t.ticker) as \"ticker_decimals?\",\n                (t.from_address = $1) as \"outgoing!\",\n                (select a.btc_address from evm_addresses a\n                  where a.evm_address = case when t.from_address = $1 then t.to_address\n                                             else t.from_address end) as \"counterparty_address?\"\n            from (\n                (select block_height, tx_hash, log_index, ticker, contract_address,\n                        from_address, to_address, amount\n                 from brc20_prog_transfers\n                 where from_address = $1\n                   and ($2::int4 is null or block_height >= $2)\n                   and ($3::int4 is null or block_height <= $3)\n                 order by block_height desc, tx_hash desc, log_index desc limit $4)\n                union all\n                (select block_height, tx_hash, log_index, ticker, contract_address,\n                        from_address, to_address, amount\n                 from brc20_prog_transfers\n                 where to_address = $1 and from_address <> $1\n                   and ($2::int4 is null or block_height >= $2)\n                   and ($3::int4 is null or block_height <= $3)\n                 order by block_height desc, tx_hash desc, log_index desc limit $4)\n            ) t\n            left join brc20_block_hashes h on h.block_height = t.block_height\n            order by t.block_height desc, t.tx_hash desc, t.log_index desc\n            limit $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "block_height!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "block_time?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "brc20_block_hashes",
+            "name": "block_time"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "tx_hash!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "log_index!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "ticker!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "contract_address!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "from_address!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "to_address!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "amount!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "ticker_decimals?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "outgoing!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "counterparty_address?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "be1ac5d7bf53e1986b8ef2a6228a02a6dbd7afd3e686a8e2cf438134872fda12"
+}

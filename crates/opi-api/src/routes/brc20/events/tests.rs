@@ -2,7 +2,10 @@
 
 use {
     super::*,
-    crate::{qs::parse_query, routes::paging::CATEGORY_PATTERN},
+    crate::{
+        qs::parse_query,
+        routes::paging::{CATEGORY_PATTERN, WALLET_CATEGORY_PATTERN},
+    },
 };
 
 fn query(text: &str) -> JsObject {
@@ -66,6 +69,135 @@ fn feeds_default_and_cap() {
 }
 
 #[test]
+fn the_wallet_feed_takes_a_block_cursor_and_transfers() {
+    let parse = |text: &str| WalletFeedRequest::from_query(&query(text));
+    assert_eq!(
+        parse(""),
+        Ok(WalletFeedRequest {
+            limit: DEFAULT_LIMIT,
+            before_id: None,
+            before: None,
+            event_type: None,
+            categories: None,
+            transfers: false,
+        })
+    );
+    assert_eq!(
+        parse("include_prog_transfers=true&before=840000:3&limit=200"),
+        Ok(WalletFeedRequest {
+            limit: 200,
+            before_id: None,
+            before: Some(BlockCursor {
+                block_height: 840_000,
+                rows: 3,
+            }),
+            event_type: None,
+            categories: None,
+            transfers: true,
+        })
+    );
+    let listed = |text: &str| {
+        let request = parse(text).unwrap();
+        (request.categories, request.transfers)
+    };
+    // prog_transfer lists the transfers; the rest are event categories
+    assert_eq!(listed("category=prog_transfer"), (Some(vec![]), true));
+    assert_eq!(
+        listed("category=prog_transfer,mint"),
+        (Some(vec!["mint".into()]), true)
+    );
+    assert_eq!(
+        listed("category=mint&include_prog_transfers=true"),
+        (Some(vec!["mint".into()]), true)
+    );
+    assert_eq!(
+        listed("category=mint&include_prog_transfers=false"),
+        (Some(vec!["mint".into()]), false)
+    );
+    assert_eq!(listed("include_prog_transfers="), (None, false));
+    assert_eq!(
+        parse(&format!("before=2147483647:{MAX_BEFORE_ID}"))
+            .unwrap()
+            .before,
+        Some(BlockCursor {
+            block_height: i32::MAX,
+            rows: MAX_BEFORE_ID,
+        })
+    );
+    let cursor = "before must be <block_height>:<rows>, the next_before of the previous page";
+    for (text, expected) in [
+        ("before=", bad(cursor)),
+        ("before=1", bad(cursor)),
+        ("before=1:", bad(cursor)),
+        ("before=:1", bad(cursor)),
+        ("before=+1:1", bad(cursor)),
+        ("before=1:1:1", bad(cursor)),
+        ("before=2147483648:0", bad(cursor)),
+        ("before=1:1000000000000000000", bad(cursor)),
+        (
+            "before=1:2&before=3:4",
+            bad("before must be a single value"),
+        ),
+        (
+            "before=1:2&before_id=3",
+            bad("give before or before_id, not both"),
+        ),
+        (
+            "before_id=3&category=prog_transfer",
+            bad("before_id does not page BRC2.0 transfers; use before"),
+        ),
+        (
+            "include_prog_transfers=1",
+            bad("include_prog_transfers must be true or false"),
+        ),
+        (
+            "category=nope",
+            bad(
+                "category must be one or more of deploy, mint, transfer, wrap, unwrap, brc20prog, prog_transfer, separated by commas",
+            ),
+        ),
+    ] {
+        assert_eq!(parse(text), expected, "{text}");
+    }
+    // the documented pattern takes what the parser takes
+    assert_eq!(
+        WALLET_CATEGORY_PATTERN,
+        format!(
+            "^(({names})(,({names}))*)?$",
+            names = WALLET_CATEGORIES.join("|")
+        )
+    );
+    assert_eq!(&WALLET_CATEGORIES[..CATEGORIES.len()], &CATEGORIES[..]);
+}
+
+#[test]
+fn a_page_ends_at_its_last_rows_block_cursor() {
+    // the rows' blocks, newest first; the count includes the rows of the
+    // cursor's block that earlier pages gave
+    assert_eq!(
+        block_cursor_after(&[301, 301, 250], None, 0),
+        BlockCursor {
+            block_height: 250,
+            rows: 1
+        }
+    );
+    assert_eq!(
+        block_cursor_after(&[301, 301], Some(301), 4),
+        BlockCursor {
+            block_height: 301,
+            rows: 6
+        }
+    );
+    assert_eq!(
+        block_cursor_after(&[250, 200, 200], Some(301), 7),
+        BlockCursor {
+            block_height: 200,
+            rows: 2
+        }
+    );
+}
+
+#[test]
 fn a_wallet_is_an_address_or_a_pkscript() {
     assert_eq!(
         Wallet::from_query(&query("address=tb1qalice")),
@@ -105,7 +237,7 @@ fn a_wallet_is_an_address_or_a_pkscript() {
 
 #[test]
 fn categories_are_a_comma_separated_list() {
-    let categories = |text: &str| categories(&query(text));
+    let categories = |text: &str| category_list(&query(text), &CATEGORIES);
     assert_eq!(categories(""), Ok(None));
     assert_eq!(categories("category="), Ok(None));
     // kept in the order CATEGORIES lists them, without repeats
