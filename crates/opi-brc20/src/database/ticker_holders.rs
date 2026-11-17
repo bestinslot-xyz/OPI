@@ -360,6 +360,8 @@ mod db_tests {
                 to: to.into(),
                 amount,
             }),
+            tx_hash: format!("0x{:064x}", 1),
+            log_index: 0,
         }
     }
 

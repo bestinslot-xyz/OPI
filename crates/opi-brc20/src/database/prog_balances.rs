@@ -97,16 +97,23 @@ pub struct ProgLog {
     pub address: String,
     pub topics: Vec<B256>,
     pub data: Vec<u8>,
+    /// The emitting transaction's hash, `0x` and lowercase hex.
+    pub tx_hash: String,
+    /// The log's index in its block.
+    pub log_index: u32,
 }
 
 impl ProgLog {
     pub fn from_log(log: &LogED) -> Self {
         let block_height: u64 = log.block_number.into();
+        let log_index: u64 = log.log_index.into();
         ProgLog {
             block_height: block_height as i32,
             address: lowercase_address(&log.address.address),
             topics: log.topics.iter().map(|topic| topic.bytes).collect(),
             data: log.data.bytes.to_vec(),
+            tx_hash: format!("0x{}", hex::encode(log.transaction_hash.bytes)),
+            log_index: log_index as u32,
         }
     }
 }
@@ -131,6 +138,8 @@ pub enum ClassifiedLog {
     Transfer {
         contract_address: String,
         transfer: Result<TransferLog, String>,
+        tx_hash: String,
+        log_index: u32,
     },
 }
 
@@ -145,6 +154,8 @@ pub enum BalanceEvent {
     Transfer {
         contract_address: String,
         transfer: Result<TransferLog, String>,
+        tx_hash: String,
+        log_index: u32,
     },
 }
 
@@ -164,12 +175,26 @@ pub struct BalanceRow {
     pub amount: u128,
 }
 
-/// What a block changes: the contracts it registers, and the end-of-block
-/// balance of every (wallet, ticker) it touches, in order of first touch.
+/// A non-zero `Transfer` of a registered contract, mints and burns included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferRow {
+    pub tx_hash: String,
+    pub log_index: u32,
+    pub ticker: String,
+    pub contract_address: String,
+    pub from: String,
+    pub to: String,
+    pub amount: u128,
+}
+
+/// What a block changes: the contracts it registers, the end-of-block
+/// balance of every (wallet, ticker) it touches, in order of first touch, and
+/// its transfers in log order.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BlockChanges {
     pub new_tickers: Vec<TickerRow>,
     pub balances: Vec<BalanceRow>,
+    pub transfers: Vec<TransferRow>,
 }
 
 fn lowercase_address(address: &Address) -> String {
@@ -237,6 +262,8 @@ pub fn classify(log: &ProgLog) -> Result<Option<ClassifiedLog>, String> {
     Ok(Some(ClassifiedLog::Transfer {
         contract_address: log.address.clone(),
         transfer,
+        tx_hash: log.tx_hash.clone(),
+        log_index: log.log_index,
     }))
 }
 
@@ -281,6 +308,8 @@ pub fn apply(
             BalanceEvent::Transfer {
                 contract_address,
                 transfer,
+                tx_hash,
+                log_index,
             } => {
                 let Some(ticker) = tickers.get(contract_address) else {
                     continue;
@@ -314,6 +343,15 @@ pub fn apply(
                         .ok_or_else(|| format!("{ticker}: {} overflows", transfer.to))?;
                     set((transfer.to.clone(), ticker.clone()), to, &mut balances);
                 }
+                changes.transfers.push(TransferRow {
+                    tx_hash: tx_hash.clone(),
+                    log_index: *log_index,
+                    ticker: ticker.clone(),
+                    contract_address: contract_address.clone(),
+                    from: transfer.from.clone(),
+                    to: transfer.to.clone(),
+                    amount: transfer.amount,
+                });
             }
         }
     }
@@ -382,9 +420,13 @@ pub async fn balance_events(
             Some(ClassifiedLog::Transfer {
                 contract_address,
                 transfer,
+                tx_hash,
+                log_index,
             }) => BalanceEvent::Transfer {
                 contract_address,
                 transfer,
+                tx_hash,
+                log_index,
             },
         };
         match blocks.last_mut() {
@@ -447,6 +489,7 @@ pub async fn write_block(
             BalanceEvent::Transfer {
                 contract_address,
                 transfer: Ok(transfer),
+                ..
             } => {
                 if let Some(ticker) = known.get(contract_address) {
                     for wallet in [&transfer.from, &transfer.to] {
@@ -719,6 +762,8 @@ mod tests {
     const ALICE: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const BOB: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
+    const TX: &str = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
     /// An address as an indexed topic: 12 zero bytes, then the address.
     fn address_topic(address: &str) -> B256 {
         let address: Address = address.parse().unwrap();
@@ -739,6 +784,8 @@ mod tests {
                 address_topic(contract),
             ],
             data: Vec::new(),
+            tx_hash: TX.into(),
+            log_index: 0,
         }
     }
 
@@ -752,6 +799,8 @@ mod tests {
                 address_topic(to),
             ],
             data: word(amount),
+            tx_hash: TX.into(),
+            log_index: 3,
         }
     }
 
@@ -764,6 +813,17 @@ mod tests {
     }
 
     fn transfer(contract: &str, from: &str, to: &str, amount: u128) -> BalanceEvent {
+        transfer_at(contract, from, to, amount, TX, 0)
+    }
+
+    fn transfer_at(
+        contract: &str,
+        from: &str,
+        to: &str,
+        amount: u128,
+        tx_hash: &str,
+        log_index: u32,
+    ) -> BalanceEvent {
         BalanceEvent::Transfer {
             contract_address: contract.into(),
             transfer: Ok(TransferLog {
@@ -771,6 +831,21 @@ mod tests {
                 to: to.into(),
                 amount,
             }),
+            tx_hash: tx_hash.into(),
+            log_index,
+        }
+    }
+
+    /// The row `transfer(TOKEN, ..)` leaves, whose ticker is "ordi".
+    fn row(from: &str, to: &str, amount: u128) -> TransferRow {
+        TransferRow {
+            tx_hash: TX.into(),
+            log_index: 0,
+            ticker: "ordi".into(),
+            contract_address: TOKEN.into(),
+            from: from.into(),
+            to: to.into(),
+            amount,
         }
     }
 
@@ -828,6 +903,8 @@ mod tests {
                     to: BOB.into(),
                     amount: u128::MAX,
                 }),
+                tx_hash: TX.into(),
+                log_index: 3,
             }))
         );
     }
@@ -902,8 +979,49 @@ mod tests {
             Ok(BlockChanges {
                 new_tickers: Vec::new(),
                 balances: vec![balance(ALICE, "ordi", 700), balance(BOB, "ordi", 205)],
+                transfers: vec![
+                    row(ZERO_ADDRESS, ALICE, 1_000),
+                    row(ALICE, BOB, 300),
+                    row(BOB, ZERO_ADDRESS, 100),
+                ],
             })
         );
+    }
+
+    #[test]
+    fn apply_records_transfer_rows() {
+        let events = [
+            created("nutkin", OTHER_TOKEN),
+            transfer_at(OTHER_TOKEN, ZERO_ADDRESS, ALICE, 100, TX, 1),
+            transfer_at(OTHER_TOKEN, ALICE, BOB, 40, "0xdd", 7),
+        ];
+        let changes = apply(&events, &registered(), &HashMap::new()).unwrap();
+        assert_eq!(changes.transfers.len(), 2);
+        assert_eq!(
+            changes.transfers[1],
+            TransferRow {
+                tx_hash: "0xdd".into(),
+                log_index: 7,
+                ticker: "nutkin".into(),
+                contract_address: OTHER_TOKEN.into(),
+                from: ALICE.into(),
+                to: BOB.into(),
+                amount: 40,
+            }
+        );
+        assert_eq!(changes.transfers[0].tx_hash, TX);
+        assert_eq!(changes.transfers[0].log_index, 1);
+        assert_eq!(changes.transfers[0].from, ZERO_ADDRESS);
+    }
+
+    #[test]
+    fn apply_skips_unregistered_and_zero_transfers() {
+        let events = [
+            transfer(OTHER_TOKEN, ZERO_ADDRESS, ALICE, 5),
+            transfer(TOKEN, ALICE, BOB, 0),
+        ];
+        let changes = apply(&events, &registered(), &HashMap::new()).unwrap();
+        assert!(changes.transfers.is_empty());
     }
 
     #[test]
@@ -922,6 +1040,11 @@ mod tests {
                     contract_address: OTHER_TOKEN.into(),
                 }],
                 balances: vec![balance(ALICE, "pepe", 50)],
+                transfers: vec![TransferRow {
+                    ticker: "pepe".into(),
+                    contract_address: OTHER_TOKEN.into(),
+                    ..row(ZERO_ADDRESS, ALICE, 50)
+                }],
             })
         );
     }
@@ -937,6 +1060,7 @@ mod tests {
             Ok(BlockChanges {
                 new_tickers: Vec::new(),
                 balances: vec![balance(ALICE, "ordi", 1)],
+                transfers: vec![row(ZERO_ADDRESS, ALICE, 1)],
             })
         );
     }
@@ -946,6 +1070,8 @@ mod tests {
         let malformed = BalanceEvent::Transfer {
             contract_address: OTHER_TOKEN.into(),
             transfer: Err("no data".into()),
+            tx_hash: TX.into(),
+            log_index: 0,
         };
         let events = [
             transfer(TOKEN, ALICE, BOB, 0),
@@ -966,6 +1092,7 @@ mod tests {
             Ok(BlockChanges {
                 new_tickers: Vec::new(),
                 balances: vec![balance(ALICE, "ordi", 100)],
+                transfers: vec![row(ALICE, ALICE, 40)],
             })
         );
     }
@@ -988,6 +1115,8 @@ mod tests {
         let malformed = [BalanceEvent::Transfer {
             contract_address: TOKEN.into(),
             transfer: Err("no data".into()),
+            tx_hash: TX.into(),
+            log_index: 0,
         }];
         assert!(apply(&malformed, &registered(), &HashMap::new()).is_err());
     }
@@ -1132,6 +1261,8 @@ mod db_tests {
                 to: to.into(),
                 amount,
             }),
+            tx_hash: format!("0x{:064x}", 1),
+            log_index: 0,
         }
     }
 
