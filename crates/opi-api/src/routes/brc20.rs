@@ -992,34 +992,71 @@ struct BalanceRow {
     available_balance: JsValue,
 }
 
-/// The sha256 hex of every nonzero balance, in JavaScript string order of
-/// pkscript then tick, as `pkscript;tick;overall;available` joined by `|`.
-fn current_balances_hash(mut rows: Vec<BalanceRow>) -> Result<String, JsError> {
+/// A brc20_prog_current_balances row as get_hash_of_all_current_balances
+/// reads it.
+struct ProgBalanceRow {
+    wallet: String,
+    ticker: String,
+    /// The balance as a plain decimal integer.
+    balance: String,
+}
+
+/// The `pkscript;tick;overall;available` entry of every nonzero balance, in
+/// JavaScript string order of pkscript then tick.
+fn brc20_balance_entries(mut rows: Vec<BalanceRow>) -> Result<Vec<String>, JsError> {
     rows.sort_by(|a, b| {
         compare_strings(&a.pkscript, &b.pkscript).then_with(|| compare_strings(&a.tick, &b.tick))
     });
-    let mut whole_str = String::new();
+    let mut entries = Vec::new();
     for row in &rows {
         if row.overall_balance.parse_int()? != 0.0 {
-            whole_str.push_str(&row.pkscript);
-            whole_str.push(';');
-            whole_str.push_str(&row.tick);
-            whole_str.push(';');
-            whole_str.push_str(&row.overall_balance.to_js_string()?);
-            whole_str.push(';');
-            whole_str.push_str(&row.available_balance.to_js_string()?);
-            whole_str.push_str(EVENT_SEPARATOR);
+            entries.push(format!(
+                "{};{};{};{}",
+                row.pkscript,
+                row.tick,
+                row.overall_balance.to_js_string()?,
+                row.available_balance.to_js_string()?,
+            ));
         }
     }
-    // whole_str.slice(0, -1): the last separator
-    whole_str.pop();
-    Ok(format!("{:x}", Sha256::digest(whole_str.as_bytes())))
+    Ok(entries)
 }
 
-/// The hash of every current balance.
+/// The `prog;wallet;ticker;balance` entry of every nonzero BRC2.0 balance,
+/// in JavaScript string order of wallet then ticker.
+fn prog_balance_entries(mut rows: Vec<ProgBalanceRow>) -> Vec<String> {
+    rows.sort_by(|a, b| {
+        compare_strings(&a.wallet, &b.wallet).then_with(|| compare_strings(&a.ticker, &b.ticker))
+    });
+    rows.iter()
+        .filter(|row| row.balance != "0")
+        .map(|row| format!("prog;{};{};{}", row.wallet, row.ticker, row.balance))
+        .collect()
+}
+
+/// The sha256 hex of every nonzero BRC-20 balance followed by every nonzero
+/// BRC2.0 balance, joined by `|`. Without a BRC2.0 balance the string is the
+/// BRC-20 part alone.
+fn balances_hash(rows: Vec<BalanceRow>, prog: Vec<ProgBalanceRow>) -> Result<String, JsError> {
+    let mut entries = brc20_balance_entries(rows)?;
+    entries.extend(prog_balance_entries(prog));
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(entries.join(EVENT_SEPARATOR).as_bytes())
+    ))
+}
+
+/// The hash of the BRC-20 balances alone.
+#[cfg(test)]
+fn current_balances_hash(rows: Vec<BalanceRow>) -> Result<String, JsError> {
+    balances_hash(rows, Vec::new())
+}
+
+/// The hash of every current balance, BRC-20 and BRC2.0.
 ///
-/// The route reads, sorts and hashes the whole `brc20_current_balances`
-/// table once per indexed block and serves that answer until the tip moves.
+/// The route reads, sorts and hashes the whole `brc20_current_balances` and
+/// `brc20_prog_current_balances` tables once per indexed block and serves
+/// that answer until the tip moves.
 #[utoipa::path(
     get,
     path = "/v1/brc20/get_hash_of_all_current_balances",
@@ -1041,8 +1078,10 @@ fn current_balances_answer(
 ) -> BoxFuture<'_, Result<(Reply, bool), ApiError>> {
     Box::pin(async move {
         let ahead = sqlx::query_scalar!(
-            r#"select exists(select 1 from brc20_current_balances
-                where block_height > coalesce($1::int4, -1)) as "ahead!";"#,
+            r#"select (exists(select 1 from brc20_current_balances
+                    where block_height > coalesce($1::int4, -1))
+                or exists(select 1 from brc20_prog_current_balances
+                    where block_height > coalesce($1::int4, -1))) as "ahead!";"#,
             height,
         )
         .fetch_one(&mut *conn)
@@ -1072,8 +1111,24 @@ async fn current_balances_reply(
             available_balance: pg_json::text(oid::NUMERIC, row.available_balance.as_deref())?,
         });
     }
-    // the whole table is sorted and hashed in memory, off the async workers
-    let hash_hex = tokio::task::spawn_blocking(move || current_balances_hash(balances)).await??;
+    let prog_rows = sqlx::query!(
+        r#"select wallet, ticker, amount::text as "balance!"
+            from brc20_prog_current_balances
+            where amount <> 0;"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let prog_balances = prog_rows
+        .into_iter()
+        .map(|row| ProgBalanceRow {
+            wallet: row.wallet,
+            ticker: row.ticker,
+            balance: row.balance,
+        })
+        .collect();
+    // the whole tables are sorted and hashed in memory, off the async workers
+    let hash_hex =
+        tokio::task::spawn_blocking(move || balances_hash(balances, prog_balances)).await??;
     let indexer_version = indexer_version(&mut *conn).await?;
 
     Ok(Reply::send_json(js_object! {

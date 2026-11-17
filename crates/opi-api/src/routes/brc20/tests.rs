@@ -44,6 +44,42 @@ fn the_current_balances_hash_is_nodes() {
     );
 }
 
+fn prog(wallet: &str, ticker: &str, balance: &str) -> ProgBalanceRow {
+    ProgBalanceRow {
+        wallet: wallet.into(),
+        ticker: ticker.into(),
+        balance: balance.into(),
+    }
+}
+
+#[test]
+fn the_balances_hash_appends_the_brc20_prog_balances() {
+    let rows = || vec![balance("b", "x", "10", "5"), balance("a", "y", "3", "3")];
+    // BRC-20 rows, then `|` and the nonzero BRC2.0 rows by wallet then ticker
+    assert_eq!(
+        balances_hash(
+            rows(),
+            vec![
+                prog("0xb", "abc", "5"),
+                prog("0xa", "usdt", "7"),
+                prog("0xa", "zero", "0"),
+            ]
+        )
+        .unwrap(),
+        "100435d1a6ce852f4abc1e58321d523ad4c57c917695e1960e0cbc6ffaa9bce6"
+    );
+    // no BRC2.0 balance, or only zeros: the BRC-20 hash alone
+    assert_eq!(
+        balances_hash(rows(), vec![prog("0xa", "t", "0")]).unwrap(),
+        current_balances_hash(rows()).unwrap()
+    );
+    // BRC2.0 only: no leading separator
+    assert_eq!(
+        balances_hash(vec![], vec![prog("0xa", "usdt", "7")]).unwrap(),
+        "b49cd8d2cc715b42ad66000db665de30b8e319041f856d519ecb1cdc69813616"
+    );
+}
+
 #[test]
 fn holders_sort_by_parsed_balance_and_drop_zeros() {
     let rows: Vec<JsObject> = [

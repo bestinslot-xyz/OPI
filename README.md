@@ -1034,7 +1034,7 @@ bracketed parameter).
 | `GET /v1/brc20/extras_block_height` |  | The latest block height of `brc20_extras_block_hashes`. |
 | `GET /v1/brc20/get_current_balance_of_wallet` | `address`, `pkscript`, **`ticker`** | A wallet's current balance of a ticker. |
 | `GET /v1/brc20/get_hash_of_all_activity` | **`block_height`** | A block's event and trace hashes, cumulative and its own. |
-| `GET /v1/brc20/get_hash_of_all_current_balances` |  | The hash of every current balance. |
+| `GET /v1/brc20/get_hash_of_all_current_balances` |  | The hash of every current balance, BRC-20 and BRC2.0. |
 | `GET /v1/brc20/get_valid_tx_notes_of_ticker` | **`ticker`** | A ticker's unused transfer inscriptions. |
 | `GET /v1/brc20/get_valid_tx_notes_of_wallet` | `address`, `pkscript` | A wallet's unused transfer inscriptions. |
 | `GET /v1/brc20/holders` | **`ticker`** | A ticker's holders and their current balances. |
@@ -1246,6 +1246,15 @@ database from before them while indexing goes on.
 each is computed once per indexed block (its height and block hash) and
 served from memory until the tip moves. Requests that arrive while it is
 computed wait for that one computation.
+
+`get_hash_of_all_current_balances` covers BRC-20 and BRC2.0 balances, both
+read in one snapshot. Its string is the nonzero `brc20_current_balances` rows
+as `pkscript;tick;overall;available`, ordered by pkscript then tick in
+JavaScript string order, then the nonzero `brc20_prog_current_balances` rows
+as `prog;wallet;ticker;balance` (a plain decimal integer), ordered by wallet
+then ticker the same way, all joined by `|`. A database without a BRC2.0
+balance hashes the BRC-20 part alone. The hash is a drift check between OPI
+hosts; opi.network does not read it.
 
 **Event feeds.** An event is `{"id","block_height","block_time",
 "inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the
