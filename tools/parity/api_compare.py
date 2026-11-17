@@ -45,6 +45,11 @@ The default parameter values are signet values (block height, pkscript,
 ticker, rune, ...). Each can be overridden on the command line when the
 databases hold other data. Run the comparison on databases that are not being
 written to, so both sides see the same rows.
+
+Against an image that predates BRC2.0 transfers, two differences are
+expected: `get_hash_of_all_current_balances` differs on any database with
+BRC2.0 balances, and every `wallet/events` answer carries an extra
+`next_before` key.
 """
 
 import argparse

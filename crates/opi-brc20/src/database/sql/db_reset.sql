@@ -16,6 +16,8 @@ drop table if exists brc20_prog_tickers;
 drop table if exists brc20_prog_current_balances;
 drop table if exists brc20_prog_historical_balances;
 drop table if exists brc20_prog_balances_fill;
+drop table if exists brc20_prog_transfers;
+drop table if exists brc20_prog_transfers_fill;
 drop table if exists brc20_ticker_holders;
 drop table if exists brc20_extras_verified;
 drop table if exists brc20_event_parties;

@@ -38,6 +38,14 @@ pub const MAX_CATEGORY_LEN: usize = 64;
 /// comma-separated.
 pub const CATEGORY_PATTERN: &str = "^((deploy|mint|transfer|wrap|unwrap|brc20prog)(,(deploy|mint|transfer|wrap|unwrap|brc20prog))*)?$";
 
+/// The pattern of `/v1/brc20/wallet/events`' `category` list: the event
+/// categories and `prog_transfer`.
+pub const WALLET_CATEGORY_PATTERN: &str = "^((deploy|mint|transfer|wrap|unwrap|brc20prog|prog_transfer)(,(deploy|mint|transfer|wrap|unwrap|brc20prog|prog_transfer))*)?$";
+
+/// The pattern of `/v1/brc20/wallet/events`' `before` cursor,
+/// `<block_height>:<rows>`.
+pub const BLOCK_CURSOR_PATTERN: &str = "^[0-9]{1,10}:[0-9]{1,18}$";
+
 /// The longest `pkscript` an event feed request may name, in hex digits.
 pub const MAX_PKSCRIPT_LEN: usize = 20_000;
 

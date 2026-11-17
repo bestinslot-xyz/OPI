@@ -232,6 +232,23 @@ CREATE TABLE IF NOT EXISTS public.brc20_prog_historical_balances (
 CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_block_height_idx ON public.brc20_prog_historical_balances USING btree (block_height);
 CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_ticker_wallet_block_height_idx ON public.brc20_prog_historical_balances USING btree (ticker, wallet, block_height DESC) INCLUDE (amount);
 
+CREATE TABLE IF NOT EXISTS public.brc20_prog_transfers (
+	id bigserial NOT NULL,
+	block_height int4 NOT NULL,
+	tx_hash text NOT NULL,
+	log_index int4 NOT NULL,
+	ticker text NOT NULL,
+	contract_address text NOT NULL,
+	from_address text NOT NULL,
+	to_address text NOT NULL,
+	amount numeric(40) NOT NULL,
+	CONSTRAINT brc20_prog_transfers_pk PRIMARY KEY (id),
+	CONSTRAINT brc20_prog_transfers_log_unique UNIQUE (block_height, tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS brc20_prog_transfers_from_idx ON public.brc20_prog_transfers USING btree (from_address, block_height DESC, tx_hash DESC, log_index DESC);
+CREATE INDEX IF NOT EXISTS brc20_prog_transfers_to_idx ON public.brc20_prog_transfers USING btree (to_address, block_height DESC, tx_hash DESC, log_index DESC);
+CREATE INDEX IF NOT EXISTS brc20_prog_transfers_ticker_idx ON public.brc20_prog_transfers USING btree (ticker, block_height DESC, tx_hash DESC, log_index DESC);
+
 CREATE TABLE IF NOT EXISTS public.brc20_ticker_holders (
 	tick text NOT NULL,
 	holders int8 NOT NULL DEFAULT 0,

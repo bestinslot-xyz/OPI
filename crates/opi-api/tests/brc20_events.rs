@@ -28,6 +28,7 @@ fn bad(reason: &str) -> String {
 }
 
 const CATEGORY: &str = "category must be one or more of deploy, mint, transfer, wrap, unwrap, brc20prog, separated by commas";
+const WALLET_CATEGORY: &str = "category must be one or more of deploy, mint, transfer, wrap, unwrap, brc20prog, prog_transfer, separated by commas";
 
 #[tokio::test]
 async fn invalid_parameters_answer_400_before_any_query() {
@@ -78,7 +79,19 @@ async fn invalid_parameters_answer_400_before_any_query() {
         ),
         ("/v1/brc20/wallet/events?address=a&limit=1000", limit),
         ("/v1/brc20/wallet/events?address=a&before_id=-5", before),
-        ("/v1/brc20/wallet/events?address=a&category=Wrap", CATEGORY),
+        (
+            "/v1/brc20/wallet/events?address=a&category=Wrap",
+            WALLET_CATEGORY,
+        ),
+        (
+            "/v1/brc20/ticker/events?ticker=a&category=prog_transfer",
+            CATEGORY,
+        ),
+        ("/v1/brc20/deploys?category=prog_transfer", CATEGORY),
+        (
+            "/v1/brc20/wallet/events?address=a&before=1",
+            "before must be <block_height>:<rows>, the next_before of the previous page",
+        ),
         ("/v1/brc20/deploys?category=deploys", CATEGORY),
         ("/v1/brc20/deploys?limit=0", limit),
         ("/v1/brc20/deploys?before_id=0", before),
@@ -142,7 +155,15 @@ const NOBODY: &str = "tb1q6n2df4x56n2df4x56n2df4x56n2df4x5s4zrtg";
 /// The BRC2.0 module's pkScript, the spent party of a deposit.
 const MODULE: &str = "6a09425243323050524f47";
 const ALICE_EVM: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const BOB_EVM: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const STRANGER_EVM: &str = "0x9999999999999999999999999999999999999999";
+const ORDI_CONTRACT: &str = "0xc1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
+const PEPE_CONTRACT: &str = "0xc2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2";
+
+/// The BRC2.0 transaction hash whose bytes are all `byte`.
+fn tx(byte: &str) -> String {
+    format!("0x{}", byte.repeat(32))
+}
 
 /// One token in raw units.
 const E18: &str = "000000000000000000";
@@ -159,7 +180,14 @@ const E18: &str = "000000000000000000";
 /// continues the other's. The party rows come from the events, as the
 /// indexer writes them. Alice's ordi balance history has four rows and
 /// Bob's two.
+///
+/// BRC2.0 transfers (Alice and Bob have EVM addresses, the stranger none):
+/// in block 301, tx 02 log 0 Alice to herself, tx 01 log 3 the stranger to
+/// Alice, tx 01 log 2 the stranger to Bob and tx 01 log 1 Alice to Bob; in
+/// block 250 (no events) tx 03 log 0 Bob to Alice in pepe; in block 50
+/// (below every event) tx 04 log 2 Alice to the stranger.
 fn fixture() -> String {
+    let (tx1, tx2, tx3, tx4) = (tx("01"), tx("02"), tx("03"), tx("04"));
     format!(
         "INSERT INTO brc20_block_hashes (block_height, block_hash, block_time) VALUES
             (90, 'h90', 900), (100, 'h100', 1000), (120, 'h120', 1200),
@@ -169,7 +197,15 @@ fn fixture() -> String {
                                     deploy_inscription_id, block_height)
          VALUES ('ORDI', 'ordi', 21000000{E18}, 18, 1000{E18}, 1000{E18}, 0, false, 'ordii0', 100),
                 ('pepe', 'pepe', 1000{E18}, 8, 1000{E18}, 0, 0, false, 'pepei0', 200);
-         INSERT INTO evm_addresses (evm_address, btc_address) VALUES ('{ALICE_EVM}', '{ALICE}');
+         INSERT INTO evm_addresses (evm_address, btc_address) VALUES ('{ALICE_EVM}', '{ALICE}'), ('{BOB_EVM}', '{BOB}');
+         INSERT INTO brc20_prog_transfers (block_height, tx_hash, log_index, ticker, contract_address,
+                                           from_address, to_address, amount)
+         VALUES (301, '{tx2}', 0, 'ordi', '{ORDI_CONTRACT}', '{ALICE_EVM}', '{ALICE_EVM}', 1{E18}),
+                (301, '{tx1}', 3, 'ordi', '{ORDI_CONTRACT}', '{STRANGER_EVM}', '{ALICE_EVM}', 3{E18}),
+                (301, '{tx1}', 2, 'ordi', '{ORDI_CONTRACT}', '{STRANGER_EVM}', '{BOB_EVM}', 4{E18}),
+                (301, '{tx1}', 1, 'ordi', '{ORDI_CONTRACT}', '{ALICE_EVM}', '{BOB_EVM}', 2{E18}),
+                (250, '{tx3}', 0, 'pepe', '{PEPE_CONTRACT}', '{BOB_EVM}', '{ALICE_EVM}', 7{E18}),
+                (50, '{tx4}', 2, 'ordi', '{ORDI_CONTRACT}', '{ALICE_EVM}', '{STRANGER_EVM}', 1{E18});
          INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event)
          VALUES
           (1, 12, 90, 'pre0', '{{\"predeployer_pkScript\":\"{P_ALICE}\",\"predeployer_wallet\":\"{ALICE}\",\"hash\":\"hh\",\"block_height\":\"95\"}}'),
@@ -526,7 +562,7 @@ async fn seeded_wallet_events_match_any_party() {
             &format!("/v1/brc20/wallet/events?address={STRANGER_EVM}"),
             200,
             JSON,
-            &ok(&format!(r#"{{"address":"{STRANGER_EVM}","pkscript":null,"decimals":18,"event_type":null,"events":[],"limit":100,"has_more":false,"next_before_id":null,"block_height":301}}"#)),
+            &ok(&format!(r#"{{"address":"{STRANGER_EVM}","pkscript":null,"decimals":18,"event_type":null,"events":[],"limit":100,"has_more":false,"next_before_id":null,"next_before":null,"block_height":301}}"#)),
         )
         .await;
         for address in [NOBODY, "tb1qnobody"] {
@@ -535,7 +571,7 @@ async fn seeded_wallet_events_match_any_party() {
                 &format!("/v1/brc20/wallet/events?address={address}"),
                 200,
                 JSON,
-                &ok(&format!(r#"{{"address":"{address}","pkscript":null,"decimals":18,"event_type":null,"events":[],"limit":100,"has_more":false,"next_before_id":null,"block_height":301}}"#)),
+                &ok(&format!(r#"{{"address":"{address}","pkscript":null,"decimals":18,"event_type":null,"events":[],"limit":100,"has_more":false,"next_before_id":null,"next_before":null,"block_height":301}}"#)),
             )
             .await;
         }
@@ -656,6 +692,321 @@ async fn seeded_wallet_events_page_and_filter() {
         );
         let answer = get(&app, &format!("{base}&type=nope")).await;
         assert_eq!(answer.status, 400);
+    })
+    .await;
+}
+
+/// A wallet feed page: each row's label (an event's id, a transfer's
+/// `<first tx byte>:<log index>`), each row's id-free label (an event's
+/// inscription id and type instead of its id), `has_more` and
+/// `next_before`. The page's body must parse and its result carry
+/// `next_before`.
+async fn wallet_page(app: &Router, uri: &str) -> (Vec<String>, Vec<String>, bool, Option<String>) {
+    let answer = get(app, uri).await;
+    assert_eq!(answer.status, 200, "{uri}: {}", answer.body);
+    let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+    let result = &body["result"];
+    let mut labels = Vec::new();
+    let mut content = Vec::new();
+    for row in result["events"].as_array().unwrap() {
+        if row["event_type"] == "brc20prog-token-transfer" {
+            let event = &row["event"];
+            let label = format!(
+                "{}:{}",
+                &event["tx_hash"].as_str().unwrap()[2..4],
+                event["log_index"]
+            );
+            labels.push(label.clone());
+            content.push(label);
+        } else {
+            labels.push(row["id"].to_string());
+            content.push(format!(
+                "{}/{}",
+                row["inscription_id"].as_str().unwrap(),
+                row["event_type"].as_str().unwrap()
+            ));
+        }
+    }
+    let next_before = result
+        .get("next_before")
+        .unwrap_or_else(|| panic!("{uri}: no next_before: {}", answer.body));
+    (
+        labels,
+        content,
+        result["has_more"].as_bool().unwrap(),
+        next_before.as_str().map(String::from),
+    )
+}
+
+/// Alice's events and BRC2.0 transfers, newest block first; in a block, the
+/// events by id descending, then the transfers by transaction hash and log
+/// index descending.
+const ALICE_ALL: [&str; 14] = [
+    "11", "10", "9", "8", "02:0", "01:3", "01:1", "03:0", "6", "5", "4", "2", "1", "04:2",
+];
+
+#[tokio::test]
+async fn seeded_wallet_events_leave_transfers_out_by_default() {
+    with_seeded("progdefault", |app, _| async move {
+        // the answer is the one the route gave before BRC2.0 transfers, with
+        // the block cursor beside next_before_id
+        let base = format!("/v1/brc20/wallet/events?address={ALICE}");
+        for uri in [
+            base.clone(),
+            format!("{base}&include_prog_transfers=false"),
+            format!("{base}&include_prog_transfers="),
+        ] {
+            assert_eq!(
+                wallet_page(&app, &uri).await.0,
+                ["11", "10", "9", "8", "6", "5", "4", "2", "1"],
+                "{uri}"
+            );
+        }
+        expect(
+            &app,
+            &format!("{base}&category=deploy&limit=1"),
+            200,
+            JSON,
+            &ok(&format!(r#"{{"address":"{ALICE}","pkscript":null,"decimals":18,"event_type":null,"events":[{{"id":2,"block_height":100,"block_time":1000,"inscription_id":"ordii0","event_type":"deploy-inscribe","ticker_decimals":18,"event":{{"tick":"ordi","decimals":"18","max_supply":"21000000{E18}","is_self_mint":"false","original_tick":"ORDI","limit_per_mint":"1000{E18}","deployer_wallet":"{ALICE}","deployer_pkScript":"{P_ALICE}"}}}}],"limit":1,"has_more":true,"next_before_id":2,"next_before":"100:1","block_height":301}}"#)),
+        )
+        .await;
+        expect(
+            &app,
+            &format!("/v1/brc20/wallet/events?address={STRANGER_EVM}"),
+            200,
+            JSON,
+            &ok(&format!(r#"{{"address":"{STRANGER_EVM}","pkscript":null,"decimals":18,"event_type":null,"events":[],"limit":100,"has_more":false,"next_before_id":null,"next_before":null,"block_height":301}}"#)),
+        )
+        .await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn seeded_wallet_events_mix_in_prog_transfers() {
+    with_seeded("progmix", |app, _| async move {
+        let all: Vec<String> = ALICE_ALL.map(String::from).to_vec();
+        // by address, pkScript and EVM address alike
+        for wallet in [
+            format!("address={ALICE}"),
+            format!("pkscript={P_ALICE}"),
+            format!("address={ALICE_EVM}"),
+        ] {
+            let page = wallet_page(
+                &app,
+                &format!("/v1/brc20/wallet/events?{wallet}&include_prog_transfers=true"),
+            )
+            .await;
+            assert_eq!((page.0, page.2, page.3), (all.clone(), false, None), "{wallet}");
+        }
+        let base = format!("/v1/brc20/wallet/events?address={ALICE}");
+        // the category alone, and beside an event category
+        assert_eq!(
+            wallet_page(&app, &format!("{base}&category=prog_transfer")).await.0,
+            ["02:0", "01:3", "01:1", "03:0", "04:2"]
+        );
+        assert_eq!(
+            wallet_page(&app, &format!("{base}&category=mint,prog_transfer")).await.0,
+            ["02:0", "01:3", "01:1", "03:0", "4", "04:2"]
+        );
+        assert_eq!(
+            wallet_page(&app, &format!("{base}&category=mint&include_prog_transfers=true"))
+                .await
+                .0,
+            ["02:0", "01:3", "01:1", "03:0", "4", "04:2"]
+        );
+        // a type keeps events of that type only
+        assert_eq!(
+            wallet_page(&app, &format!("{base}&type=mint-inscribe&include_prog_transfers=true"))
+                .await
+                .0,
+            ["4"]
+        );
+        // a transfer row: the wallet's side and the counterparty's
+        let answer = get(&app, &format!("{base}&category=prog_transfer&limit=3")).await;
+        let (tx1, tx2) = (tx("01"), tx("02"));
+        assert_eq!(
+            answer.body,
+            ok(&format!(
+                r#"{{"address":"{ALICE}","pkscript":null,"decimals":18,"event_type":null,"events":[{{"id":null,"block_height":301,"block_time":null,"inscription_id":null,"event_type":"brc20prog-token-transfer","ticker_decimals":18,"event":{{"tick":"ordi","amount":"1{E18}","tx_hash":"{tx2}","log_index":0,"contract_address":"{ORDI_CONTRACT}","from":"{ALICE_EVM}","to":"{ALICE_EVM}","direction":"out","counterparty":{{"evm_address":"{ALICE_EVM}","address":"{ALICE}"}}}}}},{{"id":null,"block_height":301,"block_time":null,"inscription_id":null,"event_type":"brc20prog-token-transfer","ticker_decimals":18,"event":{{"tick":"ordi","amount":"3{E18}","tx_hash":"{tx1}","log_index":3,"contract_address":"{ORDI_CONTRACT}","from":"{STRANGER_EVM}","to":"{ALICE_EVM}","direction":"in","counterparty":{{"evm_address":"{STRANGER_EVM}","address":null}}}}}},{{"id":null,"block_height":301,"block_time":null,"inscription_id":null,"event_type":"brc20prog-token-transfer","ticker_decimals":18,"event":{{"tick":"ordi","amount":"2{E18}","tx_hash":"{tx1}","log_index":1,"contract_address":"{ORDI_CONTRACT}","from":"{ALICE_EVM}","to":"{BOB_EVM}","direction":"out","counterparty":{{"evm_address":"{BOB_EVM}","address":"{BOB}"}}}}}}],"limit":3,"has_more":true,"next_before_id":null,"next_before":"301:3","block_height":301}}"#
+            ))
+        );
+        // Bob's pepe receipt in a block with a time and another precision
+        let answer = get(&app, &format!("/v1/brc20/wallet/events?address={BOB}&category=prog_transfer")).await;
+        assert!(
+            answer.body.contains(r#""block_height":250,"block_time":null,"inscription_id":null,"event_type":"brc20prog-token-transfer","ticker_decimals":8,"event":{"tick":"pepe""#),
+            "{}",
+            answer.body
+        );
+        // a Bitcoin address without an EVM address has its events only
+        let page = wallet_page(
+            &app,
+            &format!("/v1/brc20/wallet/events?address={CAROL}&include_prog_transfers=true"),
+        )
+        .await;
+        assert_eq!((page.0, page.2, page.3), (vec!["1001".to_string()], false, None));
+        // an EVM address with no Bitcoin address has its transfers
+        assert_eq!(
+            wallet_page(
+                &app,
+                &format!("/v1/brc20/wallet/events?address={STRANGER_EVM}&include_prog_transfers=true")
+            )
+            .await
+            .0,
+            ["01:3", "01:2", "04:2"]
+        );
+    })
+    .await;
+}
+
+/// Walks Alice's feed page by page with `before`, `limit` rows a page, and
+/// answers each page's request and id-free labels.
+async fn walk(
+    app: &Router,
+    query: &str,
+    limit: usize,
+) -> Vec<(String, Vec<String>, Option<String>)> {
+    let base = format!("/v1/brc20/wallet/events?address={ALICE}&{query}&limit={limit}");
+    let mut pages = Vec::new();
+    let mut uri = base.clone();
+    loop {
+        let (_, content, has_more, next) = wallet_page(app, &uri).await;
+        assert!(content.len() <= limit, "{uri}");
+        assert_eq!(has_more, next.is_some(), "{uri}");
+        pages.push((uri.clone(), content, next.clone()));
+        match next {
+            Some(next) => uri = format!("{base}&before={next}"),
+            None => return pages,
+        }
+    }
+}
+
+#[tokio::test]
+async fn seeded_wallet_events_page_by_block_cursor() {
+    with_seeded("progpage", |app, pool| async move {
+        let base = format!("/v1/brc20/wallet/events?address={ALICE}&include_prog_transfers=true");
+        // block 301 splits across pages; next_before counts the block's rows
+        // across pages
+        for (before, expected, next) in [
+            ("", vec!["11", "10"], Some("301:2")),
+            ("&before=301:2", vec!["9", "8"], Some("301:4")),
+            ("&before=301:4", vec!["02:0", "01:3"], Some("301:6")),
+            ("&before=301:6", vec!["01:1", "03:0"], Some("250:1")),
+            ("&before=250:1", vec!["6", "5"], Some("200:2")),
+            ("&before=200:2", vec!["4", "2"], Some("100:1")),
+            ("&before=100:1", vec!["1", "04:2"], None),
+            // a cursor past a block's rows starts below it; one above the
+            // tip starts at the top
+            ("&before=301:99", vec!["03:0", "6"], Some("200:1")),
+            ("&before=900:0", vec!["11", "10"], Some("301:2")),
+            ("&before=0:0", vec![], None),
+        ] {
+            let page = wallet_page(&app, &format!("{base}&limit=2{before}")).await;
+            assert_eq!(
+                (page.0, page.3),
+                (expected.iter().map(|s| s.to_string()).collect(), next.map(String::from)),
+                "{before}"
+            );
+        }
+        // every page size walks the feed without a repeat or a gap
+        let all: Vec<String> = ALICE_ALL.map(String::from).to_vec();
+        let mut walks = Vec::new();
+        for limit in 1..=15 {
+            let pages = walk(&app, "include_prog_transfers=true", limit).await;
+            let rows: Vec<String> = pages.iter().flat_map(|(_, rows, _)| rows.clone()).collect();
+            let (_, expected, _, _) = wallet_page(&app, &format!("{base}&limit=500")).await;
+            assert_eq!(rows, expected, "limit {limit}");
+            assert_eq!(rows.len(), all.len());
+            walks.push(pages);
+        }
+        // the events alone page by block too, in the order of one page
+        let (_, events, _, _) = wallet_page(
+            &app,
+            &format!("/v1/brc20/wallet/events?address={ALICE}&type=&limit=500"),
+        )
+        .await;
+        assert_eq!(events.len(), 9);
+        for limit in 1..=4 {
+            let rows: Vec<String> = walk(&app, "type=", limit)
+                .await
+                .into_iter()
+                .flat_map(|(_, rows, _)| rows)
+                .collect();
+            assert_eq!(rows, events, "limit {limit}");
+        }
+        // the same cursors on a database whose event ids differ (gaps
+        // within and between blocks) answer the same pages
+        sqlx::raw_sql(
+            "UPDATE brc20_light_events SET id = id + 2000;
+             UPDATE brc20_event_parties SET event_id = event_id + 2000 WHERE event_id = 1001;
+             UPDATE brc20_events SET id = id + 1000 WHERE id >= 10;
+             UPDATE brc20_events SET id = id + 50 WHERE id BETWEEN 4 AND 9;
+             UPDATE brc20_event_parties SET event_id = event_id + 1000 WHERE event_id BETWEEN 10 AND 11;
+             UPDATE brc20_event_parties SET event_id = event_id + 50 WHERE event_id BETWEEN 4 AND 9;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            wallet_page(&app, &format!("{base}&limit=2")).await.0,
+            ["1011", "1010"]
+        );
+        for pages in walks {
+            for (uri, content, next) in pages {
+                let (_, again, _, next_again) = wallet_page(&app, &uri).await;
+                assert_eq!((again, next_again), (content, next), "{uri}");
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn seeded_wallet_events_refuse_a_bad_block_cursor() {
+    with_seeded("progbad", |app, _| async move {
+        let base = format!("/v1/brc20/wallet/events?address={ALICE}");
+        let cursor = "before must be <block_height>:<rows>, the next_before of the previous page";
+        for (query, reason) in [
+            ("before=", cursor),
+            ("before=abc", cursor),
+            ("before=301", cursor),
+            ("before=301:", cursor),
+            ("before=:2", cursor),
+            ("before=-1:2", cursor),
+            ("before=301:-2", cursor),
+            ("before=301:2:3", cursor),
+            ("before=2147483648:0", cursor),
+            ("before=301:1000000000000000000", cursor),
+            ("before=1&before=2", "before must be a single value"),
+            (
+                "before=301:2&before_id=5",
+                "give before or before_id, not both",
+            ),
+            (
+                "before_id=5&include_prog_transfers=true",
+                "before_id does not page BRC2.0 transfers; use before",
+            ),
+            (
+                "before_id=5&category=prog_transfer",
+                "before_id does not page BRC2.0 transfers; use before",
+            ),
+            (
+                "include_prog_transfers=yes",
+                "include_prog_transfers must be true or false",
+            ),
+            ("category=prog_transfers", WALLET_CATEGORY),
+        ] {
+            expect(&app, &format!("{base}&{query}"), 400, JSON, &bad(reason)).await;
+        }
+        // a before_id page still gives the block cursor of its last row
+        let page = wallet_page(&app, &format!("{base}&before_id=10&limit=2")).await;
+        assert_eq!(
+            (page.0, page.3),
+            (
+                vec!["9".to_string(), "8".to_string()],
+                Some("301:4".to_string())
+            )
+        );
     })
     .await;
 }

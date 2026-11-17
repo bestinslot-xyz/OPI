@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select wallet, ticker, amount::text as \"balance!\"\n            from brc20_prog_current_balances\n            where amount <> 0;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wallet",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_prog_current_balances",
+            "name": "wallet"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ticker",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "brc20_prog_current_balances",
+            "name": "ticker"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "balance!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "03f74e4f382df8295932a0c5bd2dcb7f92c8bf7e75f255efb6a0f2eeaf9cb1c5"
+}

@@ -17,6 +17,10 @@
 //! above its height and restores each affected current balance from its
 //! latest historical row. Both keep the BRC2.0 holder counts of
 //! `ticker_holders` current.
+//!
+//! `brc20_prog_transfers` holds one row per non-zero `Transfer` of a
+//! registered contract (mints and burns included), keyed by block, transaction
+//! hash and log index. It is written and reorged with the balance tables.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -43,8 +47,32 @@ pub const CONTROLLER_ADDRESS: &str = "0xc54dd4581af2dbf18e4d90840226756e9d2b3cdb
 /// The zero address, the source of a mint and the target of a burn.
 pub const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
+/// The transfers table and its indexes, written once for `TABLES_SQL` and
+/// `TRANSFERS_SQL`.
+macro_rules! transfers_sql {
+    () => {
+        "CREATE TABLE IF NOT EXISTS public.brc20_prog_transfers (
+	id bigserial NOT NULL,
+	block_height int4 NOT NULL,
+	tx_hash text NOT NULL,
+	log_index int4 NOT NULL,
+	ticker text NOT NULL,
+	contract_address text NOT NULL,
+	from_address text NOT NULL,
+	to_address text NOT NULL,
+	amount numeric(40) NOT NULL,
+	CONSTRAINT brc20_prog_transfers_pk PRIMARY KEY (id),
+	CONSTRAINT brc20_prog_transfers_log_unique UNIQUE (block_height, tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS brc20_prog_transfers_from_idx ON public.brc20_prog_transfers USING btree (from_address, block_height DESC, tx_hash DESC, log_index DESC);
+CREATE INDEX IF NOT EXISTS brc20_prog_transfers_to_idx ON public.brc20_prog_transfers USING btree (to_address, block_height DESC, tx_hash DESC, log_index DESC);
+CREATE INDEX IF NOT EXISTS brc20_prog_transfers_ticker_idx ON public.brc20_prog_transfers USING btree (ticker, block_height DESC, tx_hash DESC, log_index DESC);
+"
+    };
+}
+
 /// The tables and indexes, also in db_init.sql.
-pub const TABLES_SQL: &str = "CREATE TABLE IF NOT EXISTS public.brc20_prog_tickers (
+pub const TABLES_SQL: &str = concat!("CREATE TABLE IF NOT EXISTS public.brc20_prog_tickers (
 	contract_address text NOT NULL,
 	ticker text NOT NULL,
 	ticker_hash text NOT NULL,
@@ -73,18 +101,29 @@ CREATE TABLE IF NOT EXISTS public.brc20_prog_historical_balances (
 );
 CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_block_height_idx ON public.brc20_prog_historical_balances USING btree (block_height);
 CREATE INDEX IF NOT EXISTS brc20_prog_historical_balances_ticker_wallet_block_height_idx ON public.brc20_prog_historical_balances USING btree (ticker, wallet, block_height DESC) INCLUDE (amount);
-";
+
+", transfers_sql!());
+
+/// The transfers table and its indexes, the last part of `TABLES_SQL`; it is
+/// created alone on a database that has the balance tables without it.
+pub const TRANSFERS_SQL: &str = transfers_sql!();
 
 /// The tables a block writes.
-pub const TABLES: [&str; 3] = [
+pub const TABLES: [&str; 4] = [
     "brc20_prog_tickers",
     "brc20_prog_current_balances",
     "brc20_prog_historical_balances",
+    "brc20_prog_transfers",
 ];
 
-/// Present while the tables wait to be filled from the engine's logs; its one
-/// row holds the highest height filled so far, NULL before the first batch.
+/// Present while the balance tables wait to be filled from the engine's logs;
+/// its one row holds the highest height filled so far, NULL before the first
+/// batch. The fill also writes the transfers of its blocks.
 pub const FILL_TABLE: &str = "brc20_prog_balances_fill";
+
+/// Present while the transfers table alone waits to be filled, on a database
+/// that already had the balance tables; same shape as `FILL_TABLE`.
+pub const TRANSFERS_FILL_TABLE: &str = "brc20_prog_transfers_fill";
 
 /// Blocks per fill transaction.
 pub const FILL_BLOCKS: i32 = 1_000;
@@ -97,16 +136,23 @@ pub struct ProgLog {
     pub address: String,
     pub topics: Vec<B256>,
     pub data: Vec<u8>,
+    /// The emitting transaction's hash, `0x` and lowercase hex.
+    pub tx_hash: String,
+    /// The log's index in its block.
+    pub log_index: u32,
 }
 
 impl ProgLog {
     pub fn from_log(log: &LogED) -> Self {
         let block_height: u64 = log.block_number.into();
+        let log_index: u64 = log.log_index.into();
         ProgLog {
             block_height: block_height as i32,
             address: lowercase_address(&log.address.address),
             topics: log.topics.iter().map(|topic| topic.bytes).collect(),
             data: log.data.bytes.to_vec(),
+            tx_hash: format!("0x{}", hex::encode(log.transaction_hash.bytes)),
+            log_index: log_index as u32,
         }
     }
 }
@@ -131,6 +177,8 @@ pub enum ClassifiedLog {
     Transfer {
         contract_address: String,
         transfer: Result<TransferLog, String>,
+        tx_hash: String,
+        log_index: u32,
     },
 }
 
@@ -145,6 +193,8 @@ pub enum BalanceEvent {
     Transfer {
         contract_address: String,
         transfer: Result<TransferLog, String>,
+        tx_hash: String,
+        log_index: u32,
     },
 }
 
@@ -164,12 +214,65 @@ pub struct BalanceRow {
     pub amount: u128,
 }
 
-/// What a block changes: the contracts it registers, and the end-of-block
-/// balance of every (wallet, ticker) it touches, in order of first touch.
+/// A non-zero `Transfer` of a registered contract, mints and burns included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferRow {
+    pub tx_hash: String,
+    pub log_index: u32,
+    pub ticker: String,
+    pub contract_address: String,
+    pub from: String,
+    pub to: String,
+    pub amount: u128,
+}
+
+impl TransferRow {
+    fn new(
+        ticker: &str,
+        contract_address: &str,
+        tx_hash: &str,
+        log_index: u32,
+        transfer: &TransferLog,
+    ) -> Self {
+        Self {
+            tx_hash: tx_hash.to_string(),
+            log_index,
+            ticker: ticker.to_string(),
+            contract_address: contract_address.to_string(),
+            from: transfer.from.clone(),
+            to: transfer.to.clone(),
+            amount: transfer.amount,
+        }
+    }
+}
+
+/// The rule that decides which `Transfer` logs count, shared by block
+/// indexing (`apply`) and the transfers fill (`transfer_rows`): a contract
+/// absent from `tickers` is skipped, a malformed log of a registered contract
+/// is an error, and a zero value is skipped. Returns the contract's ticker and
+/// the parsed transfer otherwise.
+fn counted_transfer<'a>(
+    tickers: &'a HashMap<String, String>,
+    contract_address: &str,
+    transfer: &'a Result<TransferLog, String>,
+) -> Result<Option<(&'a String, &'a TransferLog)>, String> {
+    let Some(ticker) = tickers.get(contract_address) else {
+        return Ok(None);
+    };
+    let transfer = transfer
+        .as_ref()
+        .map_err(|error| format!("{contract_address} ({ticker}): {error}"))?;
+    Ok((transfer.amount != 0).then_some((ticker, transfer)))
+}
+
+/// What a block changes: the contracts it registers, the end-of-block
+/// balance of every (wallet, ticker) it touches, in order of first touch, and
+/// its transfers in log order.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BlockChanges {
     pub new_tickers: Vec<TickerRow>,
     pub balances: Vec<BalanceRow>,
+    pub transfers: Vec<TransferRow>,
 }
 
 fn lowercase_address(address: &Address) -> String {
@@ -237,6 +340,8 @@ pub fn classify(log: &ProgLog) -> Result<Option<ClassifiedLog>, String> {
     Ok(Some(ClassifiedLog::Transfer {
         contract_address: log.address.clone(),
         transfer,
+        tx_hash: log.tx_hash.clone(),
+        log_index: log.log_index,
     }))
 }
 
@@ -281,16 +386,14 @@ pub fn apply(
             BalanceEvent::Transfer {
                 contract_address,
                 transfer,
+                tx_hash,
+                log_index,
             } => {
-                let Some(ticker) = tickers.get(contract_address) else {
+                let Some((ticker, transfer)) =
+                    counted_transfer(&tickers, contract_address, transfer)?
+                else {
                     continue;
                 };
-                let transfer = transfer
-                    .as_ref()
-                    .map_err(|error| format!("{contract_address} ({ticker}): {error}"))?;
-                if transfer.amount == 0 {
-                    continue;
-                }
                 let balance = |wallet: &str, balances: &HashMap<(String, String), u128>| -> u128 {
                     balances
                         .get(&(wallet.to_string(), ticker.clone()))
@@ -314,6 +417,13 @@ pub fn apply(
                         .ok_or_else(|| format!("{ticker}: {} overflows", transfer.to))?;
                     set((transfer.to.clone(), ticker.clone()), to, &mut balances);
                 }
+                changes.transfers.push(TransferRow::new(
+                    ticker,
+                    contract_address,
+                    tx_hash,
+                    *log_index,
+                    transfer,
+                ));
             }
         }
     }
@@ -382,9 +492,13 @@ pub async fn balance_events(
             Some(ClassifiedLog::Transfer {
                 contract_address,
                 transfer,
+                tx_hash,
+                log_index,
             }) => BalanceEvent::Transfer {
                 contract_address,
                 transfer,
+                tx_hash,
+                log_index,
             },
         };
         match blocks.last_mut() {
@@ -447,6 +561,7 @@ pub async fn write_block(
             BalanceEvent::Transfer {
                 contract_address,
                 transfer: Ok(transfer),
+                ..
             } => {
                 if let Some(ticker) = known.get(contract_address) {
                     for wallet in [&transfer.from, &transfer.to] {
@@ -533,6 +648,66 @@ pub async fn write_block(
         .await?;
         super::ticker_holders::recount_prog(conn, tickers).await?;
     }
+
+    insert_transfers(conn, block_height, &changes.transfers, false).await?;
+    Ok(())
+}
+
+/// Stores block `block_height`'s `transfers`. With `skip_existing` a row the
+/// table already holds is left as it is, else it is an error.
+async fn insert_transfers(
+    conn: &mut PgConnection,
+    block_height: i32,
+    transfers: &[TransferRow],
+    skip_existing: bool,
+) -> Result<(), sqlx::Error> {
+    if transfers.is_empty() {
+        return Ok(());
+    }
+    let mut tx_hashes = Vec::new();
+    let mut log_indexes = Vec::new();
+    let mut tickers = Vec::new();
+    let mut contracts = Vec::new();
+    let mut froms = Vec::new();
+    let mut tos = Vec::new();
+    let mut amounts = Vec::new();
+    for row in transfers {
+        tx_hashes.push(row.tx_hash.as_str());
+        log_indexes.push(i32::try_from(row.log_index).map_err(|_| {
+            sqlx::Error::Protocol(format!(
+                "log index {} of transaction {} exceeds int4",
+                row.log_index, row.tx_hash
+            ))
+        })?);
+        tickers.push(row.ticker.as_str());
+        contracts.push(row.contract_address.as_str());
+        froms.push(row.from.as_str());
+        tos.push(row.to.as_str());
+        amounts.push(row.amount.to_string());
+    }
+    let on_conflict = if skip_existing {
+        "ON CONFLICT (block_height, tx_hash, log_index) DO NOTHING"
+    } else {
+        ""
+    };
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO brc20_prog_transfers
+             (block_height, tx_hash, log_index, ticker, contract_address, from_address, to_address, amount)
+         SELECT $1, t.tx_hash, t.log_index, t.ticker, t.contract_address, t.from_address, t.to_address, t.amount::numeric
+         FROM UNNEST($2::text[], $3::int4[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[])
+              AS t(tx_hash, log_index, ticker, contract_address, from_address, to_address, amount)
+         {on_conflict}"
+    )))
+    .bind(block_height)
+    .bind(&tx_hashes)
+    .bind(&log_indexes)
+    .bind(&tickers)
+    .bind(&contracts)
+    .bind(&froms)
+    .bind(&tos)
+    .bind(&amounts)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -546,6 +721,10 @@ pub async fn reorg(conn: &mut PgConnection, block_height: i32) -> Result<(), sql
         .execute(&mut *conn)
         .await?;
     sqlx::query("DELETE FROM brc20_prog_historical_balances WHERE block_height > $1")
+        .bind(block_height)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM brc20_prog_transfers WHERE block_height > $1")
         .bind(block_height)
         .execute(&mut *conn)
         .await?;
@@ -576,23 +755,45 @@ pub async fn reorg(conn: &mut PgConnection, block_height: i32) -> Result<(), sql
     Ok(())
 }
 
-/// Creates the tables when any is missing, on a database indexed before they
-/// existed, together with the fill table that marks them for filling. Returns
-/// whether it created them.
-pub async fn create_if_missing(pool: &Pool<Postgres>) -> Result<bool, sqlx::Error> {
-    let missing: bool = sqlx::query(
+/// Creates the tables that are missing, on a database indexed before they
+/// existed, together with the fill table that marks them for filling. When any
+/// balance table is missing, all four tables are created empty and
+/// `FILL_TABLE` marks them; the balance fill writes the transfers too. When
+/// only the transfers table is missing, the balance tables stay as they are
+/// and `TRANSFERS_FILL_TABLE` marks the new table for its own fill. Returns
+/// which of the cases ran.
+pub async fn create_if_missing(pool: &Pool<Postgres>) -> Result<Created, sqlx::Error> {
+    let row = sqlx::query(
         "SELECT to_regclass('brc20_prog_tickers') IS NULL
-             OR to_regclass('brc20_prog_current_balances') IS NULL
-             OR to_regclass('brc20_prog_historical_balances') IS NULL",
+                 OR to_regclass('brc20_prog_current_balances') IS NULL
+                 OR to_regclass('brc20_prog_historical_balances') IS NULL,
+                to_regclass('brc20_prog_transfers') IS NULL",
     )
     .fetch_one(pool)
-    .await?
-    .get(0);
-    if !missing {
-        return Ok(false);
+    .await?;
+    let (balances_missing, transfers_missing): (bool, bool) = (row.get(0), row.get(1));
+    if !balances_missing {
+        if !transfers_missing {
+            return Ok(Created::Nothing);
+        }
+        let mut tx = pool.begin().await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TABLE IF EXISTS {TRANSFERS_FILL_TABLE}"
+        )))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::raw_sql(TRANSFERS_SQL).execute(&mut *tx).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE TABLE {TRANSFERS_FILL_TABLE} (filled_height int4);
+             INSERT INTO {TRANSFERS_FILL_TABLE} (filled_height) VALUES (NULL);"
+        )))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(Created::TransfersOnly);
     }
     let mut tx = pool.begin().await?;
-    for table in TABLES.iter().chain([&FILL_TABLE]) {
+    for table in TABLES.iter().chain([&FILL_TABLE, &TRANSFERS_FILL_TABLE]) {
         sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
             .execute(&mut *tx)
             .await?;
@@ -618,14 +819,30 @@ pub async fn create_if_missing(pool: &Pool<Postgres>) -> Result<bool, sqlx::Erro
             .await?;
     }
     tx.commit().await?;
-    Ok(true)
+    Ok(Created::AllTables)
 }
 
-/// The fill's progress: `None` when no fill is pending, else the highest
-/// height filled so far (`None` before the first batch).
-pub async fn fill_progress(pool: &Pool<Postgres>) -> Result<Option<Option<i32>>, sqlx::Error> {
+/// What `create_if_missing` created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Created {
+    /// Every table existed.
+    Nothing,
+    /// Only the transfers table was missing; it waits for its own fill.
+    TransfersOnly,
+    /// A balance table was missing; all the tables are new and wait for the
+    /// balance fill.
+    AllTables,
+}
+
+/// The progress of the fill marked by `marker`: `None` when no fill is
+/// pending, else the highest height filled so far (`None` before the first
+/// batch).
+async fn marker_progress(
+    pool: &Pool<Postgres>,
+    marker: &str,
+) -> Result<Option<Option<i32>>, sqlx::Error> {
     let pending: bool = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT to_regclass('{FILL_TABLE}') IS NOT NULL"
+        "SELECT to_regclass('{marker}') IS NOT NULL"
     )))
     .fetch_one(pool)
     .await?
@@ -634,7 +851,7 @@ pub async fn fill_progress(pool: &Pool<Postgres>) -> Result<Option<Option<i32>>,
         return Ok(None);
     }
     let filled: Option<i32> = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT max(filled_height) FROM {FILL_TABLE}"
+        "SELECT max(filled_height) FROM {marker}"
     )))
     .fetch_one(pool)
     .await?
@@ -642,15 +859,79 @@ pub async fn fill_progress(pool: &Pool<Postgres>) -> Result<Option<Option<i32>>,
     Ok(Some(filled))
 }
 
-/// Fills the tables from the engine's logs of blocks `first_height..=to_height`
-/// when a fill is pending, and returns whether one was. Each transaction
-/// writes `fill_blocks` blocks and records the last of them in the fill
-/// table, so an interrupted fill resumes after the last committed block. Log
-/// reads span at most `max_log_blocks` blocks. The finished fill drops the
-/// fill table. `should_stop` is read after each committed transaction; when
-/// it holds, the fill returns and keeps the fill table, so the next fill
-/// resumes. The process metrics show the fill running, with its last
-/// committed block and `to_height`.
+/// The balance fill's progress: `None` when no balance fill is pending, else
+/// the highest height filled so far (`None` before the first batch).
+pub async fn fill_progress(pool: &Pool<Postgres>) -> Result<Option<Option<i32>>, sqlx::Error> {
+    marker_progress(pool, FILL_TABLE).await
+}
+
+/// The transfers-only fill's progress, as `fill_progress` reports the balance
+/// fill's.
+pub async fn transfers_fill_progress(
+    pool: &Pool<Postgres>,
+) -> Result<Option<Option<i32>>, sqlx::Error> {
+    marker_progress(pool, TRANSFERS_FILL_TABLE).await
+}
+
+/// Whether any fill is pending.
+pub async fn fill_pending(pool: &Pool<Postgres>) -> Result<bool, sqlx::Error> {
+    Ok(fill_progress(pool).await?.is_some() || transfers_fill_progress(pool).await?.is_some())
+}
+
+/// The transfers of one block's `events` in log order, by the rule `apply`
+/// follows (`counted_transfer`) and registering a contract at its first
+/// `Created` event. `tickers` holds the contracts registered at earlier
+/// blocks and gains the block's own.
+pub fn transfer_rows(
+    events: &[BalanceEvent],
+    tickers: &mut HashMap<String, String>,
+) -> Result<Vec<TransferRow>, String> {
+    let mut rows = Vec::new();
+    for event in events {
+        match event {
+            BalanceEvent::Created {
+                ticker,
+                contract_address,
+                ..
+            } => {
+                tickers
+                    .entry(contract_address.clone())
+                    .or_insert_with(|| ticker.clone());
+            }
+            BalanceEvent::Transfer {
+                contract_address,
+                transfer,
+                tx_hash,
+                log_index,
+            } => {
+                if let Some((ticker, transfer)) =
+                    counted_transfer(tickers, contract_address, transfer)?
+                {
+                    rows.push(TransferRow::new(
+                        ticker,
+                        contract_address,
+                        tx_hash,
+                        *log_index,
+                        transfer,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Fills the pending tables from the engine's logs of blocks
+/// `first_height..=to_height` and returns whether a fill was pending: first
+/// the balance tables (with the transfers of their blocks), then the transfers
+/// table alone when it has its own marker. Each transaction writes
+/// `fill_blocks` blocks and records the last of them in the fill table, so an
+/// interrupted fill resumes after the last committed block. Log reads span at
+/// most `max_log_blocks` blocks. A finished fill drops its fill table.
+/// `should_stop` is read after each committed transaction; when it holds, the
+/// fill returns and keeps the fill table, so the next fill resumes. The
+/// process metrics show each fill running, with its last committed block and
+/// `to_height`.
 pub async fn fill(
     pool: &Pool<Postgres>,
     prog: &Brc20Prog,
@@ -660,9 +941,136 @@ pub async fn fill(
     fill_blocks: i32,
     should_stop: impl Fn() -> bool,
 ) -> Result<bool, Box<dyn Error>> {
-    let Some(filled) = fill_progress(pool).await? else {
-        return Ok(false);
-    };
+    let mut pending = false;
+    if let Some(filled) = fill_progress(pool).await? {
+        pending = true;
+        let stopped = fill_balances(
+            pool,
+            prog,
+            filled,
+            first_height,
+            to_height,
+            max_log_blocks,
+            fill_blocks,
+            &should_stop,
+        )
+        .await?;
+        if stopped {
+            return Ok(true);
+        }
+    }
+    if let Some(filled) = transfers_fill_progress(pool).await? {
+        pending = true;
+        fill_transfers(
+            pool,
+            prog,
+            filled,
+            first_height,
+            to_height,
+            max_log_blocks,
+            fill_blocks,
+            &should_stop,
+        )
+        .await?;
+    }
+    Ok(pending)
+}
+
+/// Fills the transfers table alone from the engine's logs, resuming after
+/// `filled`; a row already present is kept. The registered contracts come from
+/// `brc20_prog_tickers`, which holds the whole history up to the tip.
+/// Returns whether `should_stop` ended it before the last block.
+#[allow(clippy::too_many_arguments)]
+async fn fill_transfers(
+    pool: &Pool<Postgres>,
+    prog: &Brc20Prog,
+    filled: Option<i32>,
+    first_height: i32,
+    to_height: i32,
+    max_log_blocks: u64,
+    fill_blocks: i32,
+    should_stop: &impl Fn() -> bool,
+) -> Result<bool, Box<dyn Error>> {
+    let metrics = opi_core::metrics::global().fill("brc20", "prog_transfers");
+    metrics.target(i64::from(to_height));
+    let mut next = filled.map_or(first_height, |filled| (filled + 1).max(first_height));
+    metrics.progress(i64::from(next) - 1);
+    let log_span = max_log_blocks.clamp(1, i32::MAX as u64) as i32;
+    let fill_blocks = fill_blocks.max(1);
+    // The contracts by registration height; `known` takes those below each
+    // block's height as the blocks ascend.
+    let registered: Vec<(String, String, i32)> = sqlx::query(
+        "SELECT contract_address, ticker, block_height FROM brc20_prog_tickers
+         ORDER BY block_height",
+    )
+    .fetch_all(pool)
+    .await?
+    .iter()
+    .map(|row| (row.get(0), row.get(1), row.get(2)))
+    .collect();
+    let mut known: HashMap<String, String> = HashMap::new();
+    let mut cursor = 0;
+    tracing::info!("Filling BRC2.0 transfers from block {next} to {to_height}");
+    while next <= to_height {
+        let end = next.saturating_add(fill_blocks - 1).min(to_height);
+        let mut tx = pool.begin().await?;
+        let mut from = next;
+        while from <= end {
+            let to = from.saturating_add(log_span - 1).min(end);
+            for (height, events) in balance_events(prog, from, to).await? {
+                while let Some((contract, ticker, _)) =
+                    registered.get(cursor).filter(|(_, _, at)| *at < height)
+                {
+                    known.insert(contract.clone(), ticker.clone());
+                    cursor += 1;
+                }
+                let rows = transfer_rows(&events, &mut known)
+                    .map_err(|error| format!("BRC2.0 transfers at block {height}: {error}"))?;
+                insert_transfers(&mut tx, height, &rows, true).await?;
+            }
+            from = to + 1;
+        }
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE {TRANSFERS_FILL_TABLE} SET filled_height = $1"
+        )))
+        .bind(end)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        metrics.progress(i64::from(end));
+        if end % 10_000 < fill_blocks {
+            tracing::info!("BRC2.0 transfers: filled to block {end}");
+        }
+        next = end + 1;
+        if next <= to_height && should_stop() {
+            tracing::info!(
+                "Stopping the BRC2.0 transfer fill after block {end}; it resumes at the next start"
+            );
+            return Ok(true);
+        }
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP TABLE {TRANSFERS_FILL_TABLE}"
+    )))
+    .execute(pool)
+    .await?;
+    tracing::info!("Filled BRC2.0 transfers");
+    Ok(false)
+}
+
+/// Fills the balance tables, resuming after `filled`, as `fill` describes.
+/// Returns whether `should_stop` ended it before the last block.
+#[allow(clippy::too_many_arguments)]
+async fn fill_balances(
+    pool: &Pool<Postgres>,
+    prog: &Brc20Prog,
+    filled: Option<i32>,
+    first_height: i32,
+    to_height: i32,
+    max_log_blocks: u64,
+    fill_blocks: i32,
+    should_stop: &impl Fn() -> bool,
+) -> Result<bool, Box<dyn Error>> {
     let metrics = opi_core::metrics::global().fill("brc20", "prog_balances");
     metrics.target(i64::from(to_height));
     let mut next = filled.map_or(first_height, |filled| (filled + 1).max(first_height));
@@ -705,7 +1113,7 @@ pub async fn fill(
         .execute(pool)
         .await?;
     tracing::info!("Filled BRC2.0 balances");
-    Ok(true)
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -718,6 +1126,8 @@ mod tests {
     const OTHER_TOKEN: &str = "0x2222222222222222222222222222222222222222";
     const ALICE: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const BOB: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    const TX: &str = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
     /// An address as an indexed topic: 12 zero bytes, then the address.
     fn address_topic(address: &str) -> B256 {
@@ -739,6 +1149,8 @@ mod tests {
                 address_topic(contract),
             ],
             data: Vec::new(),
+            tx_hash: TX.into(),
+            log_index: 0,
         }
     }
 
@@ -752,6 +1164,8 @@ mod tests {
                 address_topic(to),
             ],
             data: word(amount),
+            tx_hash: TX.into(),
+            log_index: 3,
         }
     }
 
@@ -764,6 +1178,17 @@ mod tests {
     }
 
     fn transfer(contract: &str, from: &str, to: &str, amount: u128) -> BalanceEvent {
+        transfer_at(contract, from, to, amount, TX, 0)
+    }
+
+    fn transfer_at(
+        contract: &str,
+        from: &str,
+        to: &str,
+        amount: u128,
+        tx_hash: &str,
+        log_index: u32,
+    ) -> BalanceEvent {
         BalanceEvent::Transfer {
             contract_address: contract.into(),
             transfer: Ok(TransferLog {
@@ -771,6 +1196,21 @@ mod tests {
                 to: to.into(),
                 amount,
             }),
+            tx_hash: tx_hash.into(),
+            log_index,
+        }
+    }
+
+    /// The row `transfer(TOKEN, ..)` leaves, whose ticker is "ordi".
+    fn row(from: &str, to: &str, amount: u128) -> TransferRow {
+        TransferRow {
+            tx_hash: TX.into(),
+            log_index: 0,
+            ticker: "ordi".into(),
+            contract_address: TOKEN.into(),
+            from: from.into(),
+            to: to.into(),
+            amount,
         }
     }
 
@@ -828,6 +1268,8 @@ mod tests {
                     to: BOB.into(),
                     amount: u128::MAX,
                 }),
+                tx_hash: TX.into(),
+                log_index: 3,
             }))
         );
     }
@@ -902,8 +1344,49 @@ mod tests {
             Ok(BlockChanges {
                 new_tickers: Vec::new(),
                 balances: vec![balance(ALICE, "ordi", 700), balance(BOB, "ordi", 205)],
+                transfers: vec![
+                    row(ZERO_ADDRESS, ALICE, 1_000),
+                    row(ALICE, BOB, 300),
+                    row(BOB, ZERO_ADDRESS, 100),
+                ],
             })
         );
+    }
+
+    #[test]
+    fn apply_records_transfer_rows() {
+        let events = [
+            created("nutkin", OTHER_TOKEN),
+            transfer_at(OTHER_TOKEN, ZERO_ADDRESS, ALICE, 100, TX, 1),
+            transfer_at(OTHER_TOKEN, ALICE, BOB, 40, "0xdd", 7),
+        ];
+        let changes = apply(&events, &registered(), &HashMap::new()).unwrap();
+        assert_eq!(changes.transfers.len(), 2);
+        assert_eq!(
+            changes.transfers[1],
+            TransferRow {
+                tx_hash: "0xdd".into(),
+                log_index: 7,
+                ticker: "nutkin".into(),
+                contract_address: OTHER_TOKEN.into(),
+                from: ALICE.into(),
+                to: BOB.into(),
+                amount: 40,
+            }
+        );
+        assert_eq!(changes.transfers[0].tx_hash, TX);
+        assert_eq!(changes.transfers[0].log_index, 1);
+        assert_eq!(changes.transfers[0].from, ZERO_ADDRESS);
+    }
+
+    #[test]
+    fn apply_skips_unregistered_and_zero_transfers() {
+        let events = [
+            transfer(OTHER_TOKEN, ZERO_ADDRESS, ALICE, 5),
+            transfer(TOKEN, ALICE, BOB, 0),
+        ];
+        let changes = apply(&events, &registered(), &HashMap::new()).unwrap();
+        assert!(changes.transfers.is_empty());
     }
 
     #[test]
@@ -922,6 +1405,11 @@ mod tests {
                     contract_address: OTHER_TOKEN.into(),
                 }],
                 balances: vec![balance(ALICE, "pepe", 50)],
+                transfers: vec![TransferRow {
+                    ticker: "pepe".into(),
+                    contract_address: OTHER_TOKEN.into(),
+                    ..row(ZERO_ADDRESS, ALICE, 50)
+                }],
             })
         );
     }
@@ -937,6 +1425,7 @@ mod tests {
             Ok(BlockChanges {
                 new_tickers: Vec::new(),
                 balances: vec![balance(ALICE, "ordi", 1)],
+                transfers: vec![row(ZERO_ADDRESS, ALICE, 1)],
             })
         );
     }
@@ -946,6 +1435,8 @@ mod tests {
         let malformed = BalanceEvent::Transfer {
             contract_address: OTHER_TOKEN.into(),
             transfer: Err("no data".into()),
+            tx_hash: TX.into(),
+            log_index: 0,
         };
         let events = [
             transfer(TOKEN, ALICE, BOB, 0),
@@ -966,6 +1457,7 @@ mod tests {
             Ok(BlockChanges {
                 new_tickers: Vec::new(),
                 balances: vec![balance(ALICE, "ordi", 100)],
+                transfers: vec![row(ALICE, ALICE, 40)],
             })
         );
     }
@@ -988,6 +1480,8 @@ mod tests {
         let malformed = [BalanceEvent::Transfer {
             contract_address: TOKEN.into(),
             transfer: Err("no data".into()),
+            tx_hash: TX.into(),
+            log_index: 0,
         }];
         assert!(apply(&malformed, &registered(), &HashMap::new()).is_err());
     }
@@ -996,9 +1490,10 @@ mod tests {
     fn db_init_creates_the_tables() {
         let init = crate::database::brc20_database::SqlFiles::get_sql_file("db_init.sql").unwrap();
         assert!(init.contains(TABLES_SQL));
+        assert!(TABLES_SQL.contains(TRANSFERS_SQL));
         let reset =
             crate::database::brc20_database::SqlFiles::get_sql_file("db_reset.sql").unwrap();
-        for table in TABLES.iter().chain([&FILL_TABLE]) {
+        for table in TABLES.iter().chain([&FILL_TABLE, &TRANSFERS_FILL_TABLE]) {
             assert!(
                 reset.contains(&format!("drop table if exists {table};")),
                 "{table}"
@@ -1132,7 +1627,170 @@ mod db_tests {
                 to: to.into(),
                 amount,
             }),
+            tx_hash: format!("0x{:064x}", 1),
+            log_index: NEXT_LOG_INDEX.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    /// Hands every test transfer its own log index, as a block's logs have.
+    static NEXT_LOG_INDEX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// The rows of `brc20_prog_transfers` as text, newest block last.
+    async fn transfer_rows(database: &Brc20Database) -> Vec<String> {
+        sqlx::query(
+            "SELECT block_height || ' ' || tx_hash || ' ' || log_index || ' ' || ticker || ' ' ||
+                    contract_address || ' ' || from_address || ' ' || to_address || ' ' || amount
+             FROM brc20_prog_transfers ORDER BY block_height, tx_hash, log_index",
+        )
+        .fetch_all(&database.client)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>(0))
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn write_block_stores_transfers() {
+        with_database("transfers_write", |name| async move {
+            let mut database = database(&name, false).await;
+            let events = [
+                created("ordi", TOKEN),
+                transfer(TOKEN, ZERO_ADDRESS, ALICE, 1_000),
+                transfer(TOKEN, ALICE, BOB, 100),
+                transfer(TOKEN, ALICE, BOB, 0),
+            ];
+            database
+                .set_block_hashes(10, "h10", "", None, &events)
+                .await
+                .unwrap();
+            let rows = transfer_rows(&database).await;
+            assert_eq!(rows.len(), 2, "{rows:?}");
+            let transfer_row = &rows[1];
+            assert!(transfer_row.starts_with("10 0x"), "{transfer_row}");
+            assert!(
+                transfer_row.ends_with(&format!(" ordi {TOKEN} {ALICE} {BOB} 100")),
+                "{transfer_row}"
+            );
+            assert!(
+                rows[0].ends_with(&format!(" ordi {TOKEN} {ZERO_ADDRESS} {ALICE} 1000")),
+                "{}",
+                rows[0]
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reorg_deletes_transfers_above_height() {
+        with_database("transfers_reorg", |name| async move {
+            let mut database = database(&name, false).await;
+            database
+                .set_block_hashes(
+                    10,
+                    "h10",
+                    "",
+                    None,
+                    &[
+                        created("ordi", TOKEN),
+                        transfer(TOKEN, ZERO_ADDRESS, ALICE, 5),
+                    ],
+                )
+                .await
+                .unwrap();
+            database
+                .set_block_hashes(11, "h11", "", None, &[transfer(TOKEN, ALICE, BOB, 1)])
+                .await
+                .unwrap();
+            assert_eq!(transfer_rows(&database).await.len(), 2);
+            database.reorg(10).await.unwrap();
+            let rows = transfer_rows(&database).await;
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert!(rows[0].starts_with("10 "), "{}", rows[0]);
+        })
+        .await;
+    }
+
+    /// A database that has the balance tables but not the transfers table
+    /// gets it filled from the engine's logs, and its balance rows stay.
+    #[tokio::test]
+    async fn fill_backfills_transfers() {
+        let engine = TestEngine::open();
+        let prog = engine.prog.clone();
+        with_database("transfers_fill", move |name| async move {
+            mine_three_blocks(&prog).await;
+            let mut per_block = database(&name, false).await;
+            let mut expected_count = 0;
+            for height in 1..=3 {
+                let events: Vec<BalanceEvent> = balance_events(&prog, height, height)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .flat_map(|(_, events)| events)
+                    .collect();
+                expected_count += events
+                    .iter()
+                    .filter(|event| {
+                        matches!(event, BalanceEvent::Transfer { transfer: Ok(t), .. } if t.amount > 0)
+                    })
+                    .count();
+                per_block
+                    .set_block_hashes(height, &format!("h{height}"), "", None, &events)
+                    .await
+                    .unwrap();
+            }
+            let indexed = transfer_rows(&per_block).await;
+            assert_eq!(indexed.len(), expected_count);
+            assert_eq!(expected_count, 6);
+            let balances = snapshot(&per_block).await;
+
+            sqlx::raw_sql("DROP TABLE brc20_prog_transfers")
+                .execute(&per_block.client)
+                .await
+                .unwrap();
+            let restarted = database(&name, false).await;
+            assert_eq!(fill_progress(&restarted.client).await.unwrap(), None);
+            assert_eq!(
+                transfers_fill_progress(&restarted.client).await.unwrap(),
+                Some(None)
+            );
+            assert!(transfer_rows(&restarted).await.is_empty());
+            // A second start keeps the pending fill.
+            assert_eq!(
+                transfers_fill_progress(&database(&name, false).await.client)
+                    .await
+                    .unwrap(),
+                Some(None)
+            );
+
+            // A fill stopped after its first one-block batch resumes.
+            assert!(
+                fill(&restarted.client, &prog, 0, 3, 2, 1, || true)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                transfers_fill_progress(&restarted.client).await.unwrap(),
+                Some(Some(0))
+            );
+            assert!(
+                fill(&restarted.client, &prog, 0, 3, 2, 2, || false)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                transfers_fill_progress(&restarted.client).await.unwrap(),
+                None
+            );
+            assert_eq!(transfer_rows(&restarted).await, indexed);
+            assert_eq!(snapshot(&restarted).await, balances);
+            assert!(
+                !fill(&restarted.client, &prog, 0, 3, 2, 2, || false)
+                    .await
+                    .unwrap()
+            );
+        })
+        .await;
     }
 
     fn lines(lines: &[&str]) -> Vec<String> {
@@ -1460,6 +2118,8 @@ mod db_tests {
                     .unwrap();
             }
             let indexed = snapshot(&per_block).await;
+            let transfers_indexed = transfer_rows(&per_block).await;
+            assert_eq!(transfers_indexed.len(), 6);
 
             let current: Vec<(String, String, String)> = sqlx::query(
                 "SELECT wallet, ticker, amount::text FROM brc20_prog_current_balances ORDER BY 1, 2",
@@ -1508,6 +2168,11 @@ mod db_tests {
             );
             assert_eq!(snapshot(&restarted).await, indexed);
             assert_eq!(fill_progress(&restarted.client).await.unwrap(), None);
+            assert_eq!(
+                transfers_fill_progress(&restarted.client).await.unwrap(),
+                None
+            );
+            assert_eq!(transfer_rows(&restarted).await, transfers_indexed);
             assert!(
                 !fill(&restarted.client, &prog, 0, 3, 2, 2, || false)
                     .await

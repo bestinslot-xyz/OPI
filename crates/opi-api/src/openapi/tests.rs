@@ -10,11 +10,11 @@ use {
         routes::{
             self,
             paging::{
-                CATEGORY_PATTERN, DEFAULT_LIMIT, MAX_ADDRESS_LEN, MAX_BEFORE_ID, MAX_CATEGORY_LEN,
-                MAX_CONTENT_TYPE_LEN, MAX_CURSOR_LEN, MAX_HOLDERS_CURSOR_LEN,
-                MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_MODULES_LEN, MAX_NAME_LEN, MAX_OFFSET,
-                MAX_OUTPOINTS, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN,
-                MAX_TYPE_LEN,
+                BLOCK_CURSOR_PATTERN, CATEGORY_PATTERN, DEFAULT_LIMIT, MAX_ADDRESS_LEN,
+                MAX_BEFORE_ID, MAX_CATEGORY_LEN, MAX_CONTENT_TYPE_LEN, MAX_CURSOR_LEN,
+                MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_MODULES_LEN,
+                MAX_NAME_LEN, MAX_OFFSET, MAX_OUTPOINTS, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS,
+                MAX_RUNE_LEN, MAX_TICKER_LEN, MAX_TYPE_LEN, WALLET_CATEGORY_PATTERN,
             },
         },
     },
@@ -285,6 +285,10 @@ fn parameter_bounds_are_the_routes_rules() {
                 ("/v1/runes/etchings", "before_number") => {
                     json!({"minimum": 1, "maximum": MAX_BEFORE_ID})
                 }
+                ("/v1/brc20/wallet/events", "category") => {
+                    json!({"maxLength": MAX_CATEGORY_LEN, "pattern": WALLET_CATEGORY_PATTERN})
+                }
+                ("/v1/brc20/wallet/events", "before") => json!({"pattern": BLOCK_CURSOR_PATTERN}),
                 (_, "category") => {
                     json!({"maxLength": MAX_CATEGORY_LEN, "pattern": CATEGORY_PATTERN})
                 }

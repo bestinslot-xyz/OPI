@@ -50,6 +50,7 @@ lazy_static! {
         "brc20_prog_tickers",
         "brc20_prog_current_balances",
         "brc20_prog_historical_balances",
+        "brc20_prog_transfers",
     ];
 }
 
@@ -481,9 +482,18 @@ impl Brc20Database {
         .await
         .map_err(|error| format!("evm_addresses: {error}"))?;
 
-        let prog_tables_created = prog_balances::create_if_missing(&self.client).await?;
-        if prog_tables_created {
-            tracing::info!("Created the BRC2.0 balance tables; they fill before indexing resumes");
+        match prog_balances::create_if_missing(&self.client).await? {
+            prog_balances::Created::Nothing => {}
+            prog_balances::Created::TransfersOnly => {
+                tracing::info!(
+                    "Created the BRC2.0 transfers table; it fills before indexing resumes"
+                );
+            }
+            prog_balances::Created::AllTables => {
+                tracing::info!(
+                    "Created the BRC2.0 balance and transfers tables; they fill before indexing resumes"
+                );
+            }
         }
 
         if ticker_holders::create_if_missing(&self.client).await? {

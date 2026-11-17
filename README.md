@@ -677,9 +677,9 @@ module's.
 | `opi_network_check_age_seconds` | gauge | | seconds since that comparison completed |
 | `opi_block_seconds` | histogram | `module` | seconds the module takes to apply one block |
 | `opi_engine_seconds` | histogram | `module` (`brc20`) | seconds of one brc20 block spent in the BRC2.0 engine; blocks that make no engine call, such as those below BRC2.0's first height, are not observed |
-| `opi_fill_running` | gauge | `module`, `fill` | runs of the start-up fill in progress, 0 once it has finished; `fill` is `block_time`, `evm_addresses` or `prog_balances` |
-| `opi_fill_progress` | gauge | `module`, `fill` | last block filled (`block_time`, `prog_balances`), or events read (`evm_addresses`) |
-| `opi_fill_target` | gauge | `module`, `fill` | the block the fill ends at (`prog_balances`) |
+| `opi_fill_running` | gauge | `module`, `fill` | runs of the start-up fill in progress, 0 once it has finished; `fill` is `block_time`, `evm_addresses`, `prog_balances` or `prog_transfers` |
+| `opi_fill_progress` | gauge | `module`, `fill` | last block filled (`block_time`, `prog_balances`, `prog_transfers`), or events read (`evm_addresses`) |
+| `opi_fill_target` | gauge | `module`, `fill` | the block the fill ends at (`prog_balances`, `prog_transfers`) |
 | `opi_db_pool_connections` | gauge | `module` | open connections of the module's database pool |
 | `opi_db_pool_idle_connections` | gauge | `module` | idle connections of the module's database pool |
 | `opi_api_requests_total` | counter | `module`, `route`, `status` | API requests answered |
@@ -1034,7 +1034,7 @@ bracketed parameter).
 | `GET /v1/brc20/extras_block_height` |  | The latest block height of `brc20_extras_block_hashes`. |
 | `GET /v1/brc20/get_current_balance_of_wallet` | `address`, `pkscript`, **`ticker`** | A wallet's current balance of a ticker. |
 | `GET /v1/brc20/get_hash_of_all_activity` | **`block_height`** | A block's event and trace hashes, cumulative and its own. |
-| `GET /v1/brc20/get_hash_of_all_current_balances` |  | The hash of every current balance. |
+| `GET /v1/brc20/get_hash_of_all_current_balances` |  | The hash of every current balance, BRC-20 and BRC2.0. |
 | `GET /v1/brc20/get_valid_tx_notes_of_ticker` | **`ticker`** | A ticker's unused transfer inscriptions. |
 | `GET /v1/brc20/get_valid_tx_notes_of_wallet` | `address`, `pkscript` | A wallet's unused transfer inscriptions. |
 | `GET /v1/brc20/holders` | **`ticker`** | A ticker's holders and their current balances. |
@@ -1047,7 +1047,7 @@ bracketed parameter).
 | `GET /v1/brc20/tickers` | `sort`, `order`, `search`, `offset`, `limit` | A page of tickers, by holders or another order. |
 | `GET /v1/brc20/wallet/balance_history` | `address`, `pkscript`, **`ticker`**, `before_id`, `limit` | A wallet's balance of one ticker after each change, newest first. |
 | `GET /v1/brc20/wallet/balances` | **`address`**, `offset`, `limit` | A page of a wallet's tickers, BRC-20 and BRC2.0 balances side by side. |
-| `GET /v1/brc20/wallet/events` | `address`, `pkscript`, `type`, `category`, `before_id`, `limit` | A page of the events a wallet takes part in, newest first. |
+| `GET /v1/brc20/wallet/events` | `address`, `pkscript`, `type`, `category`, `include_prog_transfers`, `before_id`, `before`, `limit` | A page of the events a wallet takes part in, newest first, with its BRC2.0 token transfers when asked for. |
 
 **bitmap**: Bitmap.
 
@@ -1166,6 +1166,15 @@ logs, from the BRC2.0 activation height up, on the next start before indexing
 resumes (a few seconds on signet). The fill needs the engine and brc20 at the
 same height and refuses to start otherwise.
 
+A database also carries `brc20_prog_transfers`, one row per ERC-20 `Transfer`
+log of a BRC2.0 token. A database without it creates it and fills it from the
+BRC2.0 activation height on the next start: indexing pauses, `/health/ready`
+answers 503 meanwhile, and a stop resumes the fill later. Before running an
+image that predates the table, stop the indexer and run
+`DROP TABLE IF EXISTS brc20_prog_transfers, brc20_prog_transfers_fill;`. An
+older image neither writes nor rolls back the table, and a later upgrade
+does not refill a table that already exists.
+
 **Tickers.** `/v1/brc20/ticker` answers the ticker's `tick`, `original_tick`,
 `decimals`, `ticker_decimals`, `max_supply`, `minted_supply`,
 `remaining_supply`, `burned_supply`, `limit_per_mint`, `is_self_mint`,
@@ -1247,6 +1256,15 @@ each is computed once per indexed block (its height and block hash) and
 served from memory until the tip moves. Requests that arrive while it is
 computed wait for that one computation.
 
+`get_hash_of_all_current_balances` covers BRC-20 and BRC2.0 balances, both
+read in one snapshot. Its string is the nonzero `brc20_current_balances` rows
+as `pkscript;tick;overall;available`, ordered by pkscript then tick in
+JavaScript string order, then the nonzero `brc20_prog_current_balances` rows
+as `prog;wallet;ticker;balance` (a plain decimal integer), ordered by wallet
+then ticker the same way, all joined by `|`. A database without a BRC2.0
+balance hashes the BRC-20 part alone. The hash is a drift check between OPI
+hosts; opi.network does not read it.
+
 **Event feeds.** An event is `{"id","block_height","block_time",
 "inscription_id","event_type","ticker_decimals","event"}`: `block_time` is the
 block's time in seconds and is null when the block's time is unknown (a block
@@ -1264,6 +1282,7 @@ categories, comma-separated; every event type has exactly one:
 | `wrap` | `transfer-transfer` spent to the BRC2.0 module pkScript (`6a09425243323050524f47` on every network): a deposit into BRC2.0 |
 | `unwrap` | `brc20prog-withdraw-inscribe` and `brc20prog-withdraw-transfer`, the two steps of a withdrawal (add `type=brc20prog-withdraw-transfer` for the withdrawals alone) |
 | `brc20prog` | the BRC2.0 deploy, call and transact inscriptions and transfers |
+| `prog_transfer` | `/v1/brc20/wallet/events` only: the wallet's BRC2.0 token transfers (below) |
 
 With both `type` and `category`, an event passes both. A ticker's events are
 those whose `tick` is the ticker. A wallet's events are those where it is a
@@ -1271,12 +1290,53 @@ party (`deployer`, `minted`, `source`, `spent`, `predeployer`): for
 `pkscript`, the party's `*_pkScript` field is that pkScript; for `address`,
 the party's `*_wallet` field is that address. `address` is a Bitcoin address
 or an EVM address that answers as its mapped Bitcoin address (an unmapped one
-has no events), and `pkscript` is hex. `/v1/brc20/deploys` lists the whole
+has no inscription events; with transfers asked for, it lists its BRC2.0
+transfers), and `pkscript` is hex. `/v1/brc20/deploys` lists the whole
 network's deploy and predeploy events, or with `category` the events of those
 categories (every wrap, say). The feeds page by key: `before_id` is the
 previous page's `next_before_id`, and a page holds the events with a lower
 id, so pages neither repeat nor skip events as new ones arrive. `has_more`
 tells whether older events exist; `next_before_id` is null on the last page.
+
+**BRC2.0 transfers in the wallet feed.** With `include_prog_transfers=true`,
+or `category` listing `prog_transfer`, `/v1/brc20/wallet/events` also lists
+the wallet's BRC2.0 token transfers: the rows of `brc20_prog_transfers` from
+or to its EVM address, the one `evm_addresses` maps its Bitcoin address to
+(for `pkscript`, the address the pkScript encodes), or the EVM address asked
+for. A Bitcoin address without an EVM address lists its events alone. A
+transfer is
+
+```json
+{"id": null, "block_height": 840000, "block_time": 1713571767,
+ "inscription_id": null, "event_type": "brc20prog-token-transfer",
+ "ticker_decimals": 18,
+ "event": {"tick": "ordi", "amount": "1000000000000000000",
+           "tx_hash": "0x…", "log_index": 3, "contract_address": "0x…",
+           "from": "0x…", "to": "0x…", "direction": "out",
+           "counterparty": {"evm_address": "0x…", "address": "bc1q…"}}}
+```
+
+with lowercase hex addresses, `tick` the ticker as `brc20_prog_transfers`
+stores it and `amount` in the token's raw units. `direction` is `out` when
+the wallet sends (a transfer to itself is one `out` row) and `in` when it
+receives; the counterparty's `address` is its Bitcoin address from
+`evm_addresses`, null for an unmapped one. A `type` filter keeps events of
+that type, so it leaves the transfers out. Without either parameter the
+answer lists events alone, as above. The transfers are complete once the
+BRC2.0 transfers fill finishes: while `brc20_prog_transfers_fill` exists,
+older transfers may be missing.
+
+The wallet feed also pages by block, which a page with transfers needs (it
+refuses `before_id`): `before=<block_height>:<rows>` is the previous page's
+`next_before`, and a page holds the rows below that block plus the rows of
+that block after its first `rows`. The rows run newest block first, and in a
+block in one fixed order: its events by id descending, then its transfers by
+`(tx_hash, log_index)` descending. `next_before` is the page's last row's
+block and the count of that block's rows given so far over all pages (null
+on the last page), so the same cursor names the same position on every
+database with the same blocks, whatever its event ids. `before` and
+`before_id` together answer 400, and a page that lists transfers has a null
+`next_before_id`.
 
 Each page costs the same at any depth, an index range scan from the cursor.
 A ticker's events come from the `(event ->> 'tick', id)` index, with a
@@ -1293,7 +1353,12 @@ same pkScript in another network's form names none. A category is
 `brc20_event_category(event_type, event)` and a party list
 `brc20_event_party_pkscripts(event)`, SQL functions db_init.sql creates. A
 filter without its own index (a ticker's `mint` page, say) reads the rows
-until the page fills.
+until the page fills. A `before` page reads the wallet's rows of the
+cursor's block (the parties key within the block's id range, and the
+transfers of that one block), skips the first `rows` of them, then reads
+below the block: the parties key below the last event id under the block,
+and the transfers from the `(from_address, block_height, tx_hash, log_index)`
+and `(to_address, …)` indexes, merged newest block first.
 
 **Balance history.** `/v1/brc20/wallet/balance_history` lists a wallet's
 balance of one `ticker` after each change, newest first: one row

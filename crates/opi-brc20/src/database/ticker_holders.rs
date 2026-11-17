@@ -360,8 +360,13 @@ mod db_tests {
                 to: to.into(),
                 amount,
             }),
+            tx_hash: format!("0x{:064x}", 1),
+            log_index: NEXT_LOG_INDEX.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
+
+    /// Hands every test transfer its own log index, as a block's logs have.
+    static NEXT_LOG_INDEX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
     /// A BRC-20 balance change at `block_height`, as the block's events
     /// write it to brc20_historic_balances.
