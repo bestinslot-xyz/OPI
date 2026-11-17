@@ -1054,7 +1054,10 @@ async fn wallet_event_count(
 /// The highest event id below block `height`, over both event tables: the
 /// last id of the highest block below it that has events (see
 /// [`block_event_ids`]). `None` when no event is below the block.
-async fn last_event_id_below(conn: &mut PgConnection, height: i32) -> Result<Option<i64>, ApiError> {
+async fn last_event_id_below(
+    conn: &mut PgConnection,
+    height: i32,
+) -> Result<Option<i64>, ApiError> {
     // The block_height index finds the highest block below the cursor's,
     // then reads that block's ids alone.
     Ok(sqlx::query_scalar!(
@@ -1130,7 +1133,10 @@ async fn wallet_transfer_rows(
 /// wallet's Bitcoin address to (for a pkScript, the address it encodes in
 /// mainnet or testnet form, the forms the indexer writes). `None` without
 /// one.
-async fn wallet_evm_address(conn: &mut PgConnection, wallet: &Wallet) -> Result<Option<String>, ApiError> {
+async fn wallet_evm_address(
+    conn: &mut PgConnection,
+    wallet: &Wallet,
+) -> Result<Option<String>, ApiError> {
     let addresses: Vec<String> = match wallet {
         Wallet::Address(address) if is_evm_address(address) => {
             return Ok(Some(address.to_lowercase()));
