@@ -301,7 +301,7 @@ impl Brc20Indexer {
                 database.get_current_block_height().await?,
             )
         };
-        if prog_balances::fill_progress(&pool).await?.is_none() {
+        if !prog_balances::fill_pending(&pool).await? {
             return Ok(());
         }
         let prog_height = parse_hex_number(&self.brc20_prog.eth_block_number().await?)?;

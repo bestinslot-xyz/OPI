@@ -50,6 +50,7 @@ lazy_static! {
         "brc20_prog_tickers",
         "brc20_prog_current_balances",
         "brc20_prog_historical_balances",
+        "brc20_prog_transfers",
     ];
 }
 
