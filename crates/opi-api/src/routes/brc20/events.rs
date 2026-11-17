@@ -123,6 +123,7 @@ use {
         },
     },
     axum::extract::State,
+    sqlx::PgConnection,
     std::{iter::Peekable, str::FromStr},
     utoipa::{IntoParams, ToSchema},
 };
@@ -642,6 +643,15 @@ pub(super) async fn wallet_key(
     db: &Db,
     wallet: Wallet,
 ) -> Result<(Option<String>, Option<String>, Option<WalletKey>), ApiError> {
+    let mut conn = db.pool()?.acquire().await?;
+    wallet_key_in(&mut conn, wallet).await
+}
+
+/// [`wallet_key`] on `conn`.
+async fn wallet_key_in(
+    conn: &mut PgConnection,
+    wallet: Wallet,
+) -> Result<(Option<String>, Option<String>, Option<WalletKey>), ApiError> {
     Ok(match wallet {
         Wallet::Address(address) if is_evm_address(&address) => {
             let evm_address = address.to_lowercase();
@@ -649,7 +659,7 @@ pub(super) async fn wallet_key(
                 "select btc_address from evm_addresses where evm_address = $1;",
                 evm_address
             )
-            .fetch_optional(db.pool()?)
+            .fetch_optional(&mut *conn)
             .await?;
             // a mapped EVM address answers as its Bitcoin address, an
             // unmapped one (no rows) as the address asked for
@@ -688,6 +698,15 @@ pub(in crate::routes) async fn block_event_ids(
     db: &Db,
     height: i32,
 ) -> Result<Option<(i64, i64)>, ApiError> {
+    let mut conn = db.pool()?.acquire().await?;
+    block_event_ids_in(&mut conn, height).await
+}
+
+/// [`block_event_ids`] on `conn`.
+async fn block_event_ids_in(
+    conn: &mut PgConnection,
+    height: i32,
+) -> Result<Option<(i64, i64)>, ApiError> {
     // `id + 0` keeps the planner from walking the primary key for the
     // extremes and filtering on the height, which reads every event below
     // the block; the block_height index reads only the block's rows.
@@ -699,7 +718,7 @@ pub(in crate::routes) async fn block_event_ids(
             ) u;"#,
         height,
     )
-    .fetch_one(db.pool()?)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(row.lo.zip(row.hi))
 }
@@ -923,7 +942,7 @@ struct WalletEventFilter<'a> {
 /// Up to `limit` of the wallet's events with an id at least `from` and below
 /// `before`, newest first.
 async fn wallet_event_rows(
-    db: &Db,
+    conn: &mut PgConnection,
     filter: &WalletEventFilter<'_>,
     from: Option<i64>,
     before: Option<i64>,
@@ -983,14 +1002,14 @@ async fn wallet_event_rows(
         filter.key.wallet,
         from,
     )
-    .fetch_all(db.pool()?)
+    .fetch_all(&mut *conn)
     .await?)
 }
 
 /// The count of the wallet's events with an id at least `from` and below
 /// `before`, under the filters of [`wallet_event_rows`].
 async fn wallet_event_count(
-    db: &Db,
+    conn: &mut PgConnection,
     filter: &WalletEventFilter<'_>,
     from: i64,
     before: i64,
@@ -1028,14 +1047,14 @@ async fn wallet_event_count(
         filter.categories as Option<&[String]>,
         filter.key.wallet,
     )
-    .fetch_one(db.pool()?)
+    .fetch_one(&mut *conn)
     .await?)
 }
 
 /// The highest event id below block `height`, over both event tables: the
 /// last id of the highest block below it that has events (see
 /// [`block_event_ids`]). `None` when no event is below the block.
-async fn last_event_id_below(db: &Db, height: i32) -> Result<Option<i64>, ApiError> {
+async fn last_event_id_below(conn: &mut PgConnection, height: i32) -> Result<Option<i64>, ApiError> {
     // The block_height index finds the highest block below the cursor's,
     // then reads that block's ids alone.
     Ok(sqlx::query_scalar!(
@@ -1048,7 +1067,7 @@ async fn last_event_id_below(db: &Db, height: i32) -> Result<Option<i64>, ApiErr
             ) u;"#,
         height,
     )
-    .fetch_one(db.pool()?)
+    .fetch_one(&mut *conn)
     .await?)
 }
 
@@ -1056,7 +1075,7 @@ async fn last_event_id_below(db: &Db, height: i32) -> Result<Option<i64>, ApiErr
 /// blocks from `lowest` to `highest` (each unbounded when `None`), newest
 /// first: by block, transaction hash and log index, descending.
 async fn wallet_transfer_rows(
-    db: &Db,
+    conn: &mut PgConnection,
     evm_address: &str,
     lowest: Option<i32>,
     highest: Option<i32>,
@@ -1102,7 +1121,7 @@ async fn wallet_transfer_rows(
         highest,
         limit,
     )
-    .fetch_all(db.pool()?)
+    .fetch_all(&mut *conn)
     .await?)
 }
 
@@ -1111,7 +1130,7 @@ async fn wallet_transfer_rows(
 /// wallet's Bitcoin address to (for a pkScript, the address it encodes in
 /// mainnet or testnet form, the forms the indexer writes). `None` without
 /// one.
-async fn wallet_evm_address(db: &Db, wallet: &Wallet) -> Result<Option<String>, ApiError> {
+async fn wallet_evm_address(conn: &mut PgConnection, wallet: &Wallet) -> Result<Option<String>, ApiError> {
     let addresses: Vec<String> = match wallet {
         Wallet::Address(address) if is_evm_address(address) => {
             return Ok(Some(address.to_lowercase()));
@@ -1136,7 +1155,7 @@ async fn wallet_evm_address(db: &Db, wallet: &Wallet) -> Result<Option<String>, 
         "select evm_address from evm_addresses where btc_address = any($1) limit 1;",
         &addresses,
     )
-    .fetch_optional(db.pool()?)
+    .fetch_optional(&mut *conn)
     .await?)
 }
 
@@ -1220,13 +1239,18 @@ pub async fn wallet_events(
         Ok(id) => id,
         Err(bad) => return Ok(bad.reply()),
     };
+    // the page's events and transfers come from one snapshot
+    let mut tx = db
+        .pool()?
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .await?;
     // a type keeps events of that type, which no transfer is
     let evm_address = if request.transfers && request.event_type.is_none() {
-        wallet_evm_address(&db, &wallet).await?
+        wallet_evm_address(&mut tx, &wallet).await?
     } else {
         None
     };
-    let (address, pkscript, key) = wallet_key(&db, wallet).await?;
+    let (address, pkscript, key) = wallet_key_in(&mut tx, wallet).await?;
     // a category list without an event category lists no events
     let filter = key
         .as_ref()
@@ -1250,14 +1274,15 @@ pub async fn wallet_events(
         let count = cursor.rows.saturating_add(wanted);
         let mut block = Vec::new();
         if let Some(filter) = &filter
-            && let Some((lo, hi)) = block_event_ids(&db, height).await?
+            && let Some((lo, hi)) = block_event_ids_in(&mut tx, height).await?
         {
-            let events = wallet_event_rows(&db, filter, Some(lo), Some(hi + 1), count).await?;
+            let events = wallet_event_rows(&mut tx, filter, Some(lo), Some(hi + 1), count).await?;
             block.extend(events.into_iter().map(WalletRow::Event));
         }
         if let Some(evm_address) = &evm_address {
             let transfers =
-                wallet_transfer_rows(&db, evm_address, Some(height), Some(height), count).await?;
+                wallet_transfer_rows(&mut tx, evm_address, Some(height), Some(height), count)
+                    .await?;
             block.extend(transfers.into_iter().map(WalletRow::Transfer));
         }
         rows.extend(
@@ -1274,11 +1299,11 @@ pub async fn wallet_events(
         let events = match (&filter, below) {
             (None, _) => Vec::new(),
             (Some(filter), None) => {
-                wallet_event_rows(&db, filter, None, request.before_id, remaining).await?
+                wallet_event_rows(&mut tx, filter, None, request.before_id, remaining).await?
             }
-            (Some(filter), Some(height)) => match last_event_id_below(&db, height).await? {
+            (Some(filter), Some(height)) => match last_event_id_below(&mut tx, height).await? {
                 Some(last) => {
-                    wallet_event_rows(&db, filter, None, Some(last + 1), remaining).await?
+                    wallet_event_rows(&mut tx, filter, None, Some(last + 1), remaining).await?
                 }
                 None => Vec::new(),
             },
@@ -1286,11 +1311,12 @@ pub async fn wallet_events(
         let transfers = match (&evm_address, below) {
             (None, _) => Vec::new(),
             (Some(evm_address), None) => {
-                wallet_transfer_rows(&db, evm_address, None, None, remaining).await?
+                wallet_transfer_rows(&mut tx, evm_address, None, None, remaining).await?
             }
             (Some(_), Some(0)) => Vec::new(),
             (Some(evm_address), Some(height)) => {
-                wallet_transfer_rows(&db, evm_address, None, Some(height - 1), remaining).await?
+                wallet_transfer_rows(&mut tx, evm_address, None, Some(height - 1), remaining)
+                    .await?
             }
         };
         rows.extend(
@@ -1314,9 +1340,9 @@ pub async fn wallet_events(
                 // a before_id page: the last block's events at or above the
                 // id came on earlier pages
                 (None, Some(before_id), Some(filter)) => {
-                    let earlier = match block_event_ids(&db, last).await? {
+                    let earlier = match block_event_ids_in(&mut tx, last).await? {
                         Some((lo, hi)) if before_id <= hi => {
-                            wallet_event_count(&db, filter, lo.max(before_id), hi + 1).await?
+                            wallet_event_count(&mut tx, filter, lo.max(before_id), hi + 1).await?
                         }
                         _ => 0,
                     };
@@ -1327,6 +1353,7 @@ pub async fn wallet_events(
             Some(block_cursor_after(&blocks, earlier_block, earlier).text())
         }
     };
+    tx.commit().await?;
     let events = rows
         .into_iter()
         .map(WalletRow::into_event)

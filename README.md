@@ -677,9 +677,9 @@ module's.
 | `opi_network_check_age_seconds` | gauge | | seconds since that comparison completed |
 | `opi_block_seconds` | histogram | `module` | seconds the module takes to apply one block |
 | `opi_engine_seconds` | histogram | `module` (`brc20`) | seconds of one brc20 block spent in the BRC2.0 engine; blocks that make no engine call, such as those below BRC2.0's first height, are not observed |
-| `opi_fill_running` | gauge | `module`, `fill` | runs of the start-up fill in progress, 0 once it has finished; `fill` is `block_time`, `evm_addresses` or `prog_balances` |
-| `opi_fill_progress` | gauge | `module`, `fill` | last block filled (`block_time`, `prog_balances`), or events read (`evm_addresses`) |
-| `opi_fill_target` | gauge | `module`, `fill` | the block the fill ends at (`prog_balances`) |
+| `opi_fill_running` | gauge | `module`, `fill` | runs of the start-up fill in progress, 0 once it has finished; `fill` is `block_time`, `evm_addresses`, `prog_balances` or `prog_transfers` |
+| `opi_fill_progress` | gauge | `module`, `fill` | last block filled (`block_time`, `prog_balances`, `prog_transfers`), or events read (`evm_addresses`) |
+| `opi_fill_target` | gauge | `module`, `fill` | the block the fill ends at (`prog_balances`, `prog_transfers`) |
 | `opi_db_pool_connections` | gauge | `module` | open connections of the module's database pool |
 | `opi_db_pool_idle_connections` | gauge | `module` | idle connections of the module's database pool |
 | `opi_api_requests_total` | counter | `module`, `route`, `status` | API requests answered |
@@ -1165,6 +1165,15 @@ that block. A database without these tables gets them filled from the engine's
 logs, from the BRC2.0 activation height up, on the next start before indexing
 resumes (a few seconds on signet). The fill needs the engine and brc20 at the
 same height and refuses to start otherwise.
+
+A database also carries `brc20_prog_transfers`, one row per ERC-20 `Transfer`
+log of a BRC2.0 token. A database without it creates it and fills it from the
+BRC2.0 activation height on the next start: indexing pauses, `/health/ready`
+answers 503 meanwhile, and a stop resumes the fill later. Before running an
+image that predates the table, stop the indexer and run
+`DROP TABLE IF EXISTS brc20_prog_transfers, brc20_prog_transfers_fill;`. An
+older image neither writes nor rolls back the table, and a later upgrade
+does not refill a table that already exists.
 
 **Tickers.** `/v1/brc20/ticker` answers the ticker's `tick`, `original_tick`,
 `decimals`, `ticker_decimals`, `max_supply`, `minted_supply`,
