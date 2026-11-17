@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (exists(select 1 from brc20_current_balances\n                    where block_height > coalesce($1::int4, -1))\n                or exists(select 1 from brc20_prog_current_balances\n                    where block_height > coalesce($1::int4, -1))\n                -- the BRC2.0 balance fill (opi-brc20's FILL_TABLE) writes\n                -- balances at or below the tip while it runs\n                or to_regclass('public.brc20_prog_balances_fill') is not null) as \"ahead!\";",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ahead!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d15b9f60e202de578197e703721186fc3aa3389864e9c92410158c2ffcc9c418"
+}

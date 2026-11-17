@@ -1071,7 +1071,8 @@ async fn get_hash_of_all_current_balances(
 
 /// The hash answer at `height`. The indexer commits a block's current
 /// balances before its block hash, so an answer that reads a balance
-/// written above `height` is not settled.
+/// written above `height`, or while the BRC2.0 balance fill runs, is not
+/// settled.
 fn current_balances_answer(
     conn: &mut PgConnection,
     height: Option<i32>,
@@ -1081,7 +1082,10 @@ fn current_balances_answer(
             r#"select (exists(select 1 from brc20_current_balances
                     where block_height > coalesce($1::int4, -1))
                 or exists(select 1 from brc20_prog_current_balances
-                    where block_height > coalesce($1::int4, -1))) as "ahead!";"#,
+                    where block_height > coalesce($1::int4, -1))
+                -- the BRC2.0 balance fill (opi-brc20's FILL_TABLE) writes
+                -- balances at or below the tip while it runs
+                or to_regclass('public.brc20_prog_balances_fill') is not null) as "ahead!";"#,
             height,
         )
         .fetch_one(&mut *conn)
