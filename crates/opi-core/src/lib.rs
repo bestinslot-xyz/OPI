@@ -9,6 +9,36 @@ use std::collections::BTreeMap;
 /// confirmations by it.
 pub const MAX_ROLLBACK_DEPTH: u32 = 1000;
 
+/// How much of its history a module keeps, from `<MODULE>_HISTORY`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum History {
+    /// Every event since the module's start height.
+    #[default]
+    Full,
+    /// Current state, and the events of the last [`MAX_ROLLBACK_DEPTH`]
+    /// blocks that a rollback reads.
+    Window,
+}
+
+impl History {
+    /// Parses `value` of the variable `var`: `full` (the default when unset)
+    /// or `window`.
+    pub fn parse(var: &str, value: Option<&str>) -> anyhow::Result<History> {
+        match value {
+            None | Some("full") => Ok(History::Full),
+            Some("window") => Ok(History::Window),
+            Some(other) => anyhow::bail!("{var} is {other}; expected full or window"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            History::Full => "full",
+            History::Window => "window",
+        }
+    }
+}
+
 /// Block-level metadata for one finalized height.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockInfo {

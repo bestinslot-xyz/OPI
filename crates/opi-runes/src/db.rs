@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, anyhow, bail};
-use opi_core::{BlockRef, BlockView, RuneCounter, RuneEvent, RuneEventKind, metrics::PoolStats};
+use opi_core::{
+    BlockRef, BlockView, History, MAX_ROLLBACK_DEPTH, RuneCounter, RuneEvent, RuneEventKind,
+    metrics::PoolStats,
+};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -24,6 +27,7 @@ pub struct BlockHashes {
 
 pub struct Db {
     pool: PgPool,
+    history: History,
 }
 
 impl Db {
@@ -33,7 +37,8 @@ impl Db {
     /// `indexer_version` is refused; otherwise the stored `indexer_version` is
     /// set to the reported `INDEXER_VERSION`. It then creates and fills the
     /// holder tables and builds the API indexes when they are missing
-    /// ([`holders::create_if_missing`]).
+    /// ([`holders::create_if_missing`]). A full-history database switches to
+    /// `config.history`'s window; a windowed one refuses full history.
     pub async fn connect(config: &RunesConfig) -> anyhow::Result<Db> {
         let mut options = PgConnectOptions::new()
             .host(&config.db_host)
@@ -53,12 +58,90 @@ impl Db {
             .connect_with(options)
             .await
             .context("connecting to the runes database")?;
-        let db = Db { pool };
+        let db = Db {
+            pool,
+            history: config.history,
+        };
         db.ensure_schema(&config.network_type).await?;
+        db.ensure_history().await?;
         holders::create_if_missing(&db.pool)
             .await
             .context("creating the runes holder tables and API indexes")?;
         Ok(db)
+    }
+
+    /// Reads the history the database keeps from `runes_history` (none is
+    /// full history), switches a full one to a window when the config asks
+    /// for it and refuses full history on a windowed one.
+    async fn ensure_history(&self) -> anyhow::Result<()> {
+        sqlx::query("CREATE TABLE IF NOT EXISTS runes_history (history text NOT NULL)")
+            .execute(&self.pool)
+            .await?;
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT history FROM runes_history LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        match (stored.as_deref(), self.history) {
+            (Some("window"), History::Window) | (None | Some("full"), History::Full) => Ok(()),
+            (Some("window"), History::Full) => bail!(
+                "the runes database keeps a history window; RUNES_HISTORY=full needs the \
+                 database recreated"
+            ),
+            (None | Some("full"), History::Window) => self.switch_to_window().await,
+            (Some(other), _) => bail!("runes_history holds unknown history {other}"),
+        }
+    }
+
+    /// Deletes, in one transaction, the history a window leaves out below
+    /// the cursor: the events and spent outpoints of the heights more than
+    /// `MAX_ROLLBACK_DEPTH` blocks deep, and the entry changes there but
+    /// each rune's latest. The kept rows of the two large tables move
+    /// through temporary tables and back after a truncate, which frees the
+    /// disk at once.
+    async fn switch_to_window(&self) -> anyhow::Result<()> {
+        tracing::info!(module = "runes", "switching to a history window");
+        let started = std::time::Instant::now();
+        let cursor: Option<i32> =
+            sqlx::query_scalar("SELECT max(block_height) FROM runes_block_hashes")
+                .fetch_one(&self.pool)
+                .await?;
+        // the lowest height a window keeps
+        let window = cursor.map_or(0, |cursor| {
+            (i64::from(cursor) + 1 - i64::from(MAX_ROLLBACK_DEPTH)).max(0)
+        });
+        let mut tx = self.pool.begin().await?;
+        for statement in [
+            "CREATE TEMPORARY TABLE runes_events_kept ON COMMIT DROP AS \
+             SELECT * FROM runes_events WHERE block_height >= $1",
+            "CREATE TEMPORARY TABLE runes_outpoints_kept ON COMMIT DROP AS \
+             SELECT * FROM runes_outpoint_to_balances \
+             WHERE spent_block_height IS NULL OR spent_block_height >= $1",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(
+                statement.replace("$1", &window.to_string()),
+            ))
+            .execute(&mut *tx)
+            .await?;
+        }
+        for statement in [
+            "TRUNCATE runes_events",
+            "INSERT INTO runes_events SELECT * FROM runes_events_kept",
+            "TRUNCATE runes_outpoint_to_balances",
+            "INSERT INTO runes_outpoint_to_balances SELECT * FROM runes_outpoints_kept",
+            "DELETE FROM runes_history",
+            "INSERT INTO runes_history (history) VALUES ('window')",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+        prune_entry_changes(&mut tx, window).await?;
+        tx.commit().await?;
+        tracing::info!(
+            module = "runes",
+            window,
+            secs = started.elapsed().as_secs(),
+            "switched to a history window"
+        );
+        Ok(())
     }
 
     /// The pool's open and idle connections.
@@ -247,19 +330,11 @@ impl Db {
     /// `height` or above reads. No API route reads entry changes.
     pub async fn prune_below(&self, height: u32) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
-        for statement in [
-            "DELETE FROM runes_block_hashes WHERE block_height < $1",
-            "DELETE FROM runes_id_to_entry_changes c \
-             WHERE c.block_height < $1 AND EXISTS ( \
-                 SELECT 1 FROM runes_id_to_entry_changes later \
-                 WHERE later.rune_id = c.rune_id \
-                 AND later.block_height > c.block_height AND later.block_height < $1)",
-        ] {
-            sqlx::query(statement)
-                .bind(height as i32)
-                .execute(&mut *tx)
-                .await?;
-        }
+        sqlx::query("DELETE FROM runes_block_hashes WHERE block_height < $1")
+            .bind(height as i32)
+            .execute(&mut *tx)
+            .await?;
+        prune_entry_changes(&mut tx, i64::from(height)).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -282,6 +357,11 @@ impl Db {
         let counters = block_counters(&mut tx, &events).await?;
         apply_counters(&mut tx, &counters, height).await?;
         insert_events(&mut tx, &events, height).await?;
+        if self.history == History::Window
+            && let Some(deep) = block.height.checked_sub(MAX_ROLLBACK_DEPTH)
+        {
+            prune_window(&mut tx, deep as i32).await?;
+        }
 
         let hashes = if hashed {
             let previous: Option<String> = sqlx::query_scalar(
@@ -323,6 +403,48 @@ impl Db {
         tx.commit().await?;
         Ok(hashes)
     }
+}
+
+/// Deletes every entry change below `height` but the latest of its rune
+/// there, which is all a rollback to `height` or above reads.
+async fn prune_entry_changes(
+    tx: &mut Transaction<'_, Postgres>,
+    height: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "DELETE FROM runes_id_to_entry_changes c \
+         WHERE c.block_height < $1 AND EXISTS ( \
+             SELECT 1 FROM runes_id_to_entry_changes later \
+             WHERE later.rune_id = c.rune_id \
+             AND later.block_height > c.block_height AND later.block_height < $1)",
+    )
+    .bind(height as i32)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Deletes the history of block `height` that a window leaves out once the
+/// block is `MAX_ROLLBACK_DEPTH` deep: the outpoints its input events spent,
+/// its events, and the entry changes of the runes it changed that it makes
+/// stale.
+async fn prune_window(tx: &mut Transaction<'_, Postgres>, height: i32) -> anyhow::Result<()> {
+    for statement in [
+        "DELETE FROM runes_outpoint_to_balances o USING runes_events e \
+         WHERE e.block_height = $1 AND e.event_type = 0 \
+         AND o.txid = e.outpoint_txid AND o.vout = e.outpoint_vout \
+         AND o.spent_block_height = $1",
+        "DELETE FROM runes_events WHERE block_height = $1",
+        "DELETE FROM runes_id_to_entry_changes old USING runes_id_to_entry_changes cur \
+         WHERE cur.block_height = $1 AND old.rune_id = cur.rune_id \
+         AND old.block_height < $1",
+    ] {
+        sqlx::query(statement)
+            .bind(height)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
 }
 
 async fn insert_entries(

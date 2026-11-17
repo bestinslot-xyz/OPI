@@ -2,8 +2,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use opi_core::{
-    BlockInfo, BlockSource, BlockView, InscriptionFeed, InscriptionRecord, Module, RuneEtching,
-    RuneEvent, RuneEventKind, RuneSpend, RuneTerms,
+    BlockInfo, BlockSource, BlockView, History, InscriptionFeed, InscriptionRecord, Module,
+    RuneEtching, RuneEvent, RuneEventKind, RuneSpend, RuneTerms,
 };
 use opi_runes::{RunesConfig, RunesModule, block_event_hash, cumulative_hash, event_str};
 use sqlx::postgres::PgConnectOptions;
@@ -57,7 +57,133 @@ fn config(database: &str, network: &str) -> RunesConfig {
         report_url: String::new(),
         report_retries: 1,
         report_name: "test".into(),
+        history: History::Full,
     }
+}
+
+fn window_config(database: &str) -> RunesConfig {
+    RunesConfig {
+        history: History::Window,
+        ..config(database, "regtest")
+    }
+}
+
+/// Applies [`blocks`], then blocks 4 to 1003 without rune events: block 1003
+/// is the first whose window leaves out height 3.
+async fn blocks_and_a_window(module: &mut RunesModule) {
+    for block in blocks() {
+        module.apply(&block).await.unwrap();
+    }
+    for height in 4..=1003 {
+        module
+            .apply(&view(height, RuneFeed::default()))
+            .await
+            .unwrap();
+    }
+}
+
+/// Block 1004 spends dd:0 into a1:0 and mints `1:1` to a2:1.
+fn block_1004() -> BlockView {
+    use RuneEventKind::*;
+    view(
+        1004,
+        RuneFeed {
+            events: vec![
+                located(Input, "a1", outpoint("d0", 0), pk2(), "1:1", 650),
+                located(Input, "a1", outpoint("d0", 0), pk2(), "3:1", 5),
+                located(Output, "a1", outpoint("a1", 0), pk1(), "1:1", 650),
+                located(Output, "a1", outpoint("a1", 0), pk1(), "3:1", 5),
+                plain(Mint, "a2", "1:1", 50),
+                located(Output, "a2", outpoint("a2", 1), pk1(), "1:1", 50),
+            ],
+            etchings: Vec::new(),
+        },
+    )
+}
+
+/// `(outpoint, spent)` of every outpoint row.
+async fn outpoints_spent(conn: &mut PgConnection) -> Vec<(String, bool)> {
+    outpoint_rows(conn)
+        .await
+        .into_iter()
+        .map(|row| (row.0, row.5))
+        .collect()
+}
+
+async fn events_up_to(conn: &mut PgConnection, height: i32) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM runes_events WHERE block_height <= $1")
+        .bind(height)
+        .fetch_one(conn)
+        .await
+        .unwrap()
+}
+
+/// What a window keeps after [`blocks_and_a_window`]: the unspent outpoints,
+/// no event of heights 1 to 3, and every entry; a rollback within the window
+/// unspends and restores the entries.
+async fn assert_window_state(module: &mut RunesModule, name: &str) {
+    let mut conn = connect(name).await;
+    assert_eq!(
+        outpoints_spent(&mut conn).await,
+        vec![
+            (outpoint("d0", 0), false),
+            (outpoint("e0", 0), false),
+            (outpoint("f0", 1), false),
+        ]
+    );
+    assert_eq!(events_up_to(&mut conn, 3).await, 0);
+    let entries = entry_totals(&mut conn).await;
+    assert_eq!(entries.len(), 2);
+
+    module.apply(&block_1004()).await.unwrap();
+    assert_ne!(entry_totals(&mut conn).await, entries);
+    module.rollback_to(1003).await.unwrap();
+    assert_eq!(entry_totals(&mut conn).await, entries);
+    assert_eq!(
+        outpoints_spent(&mut conn).await,
+        vec![
+            (outpoint("d0", 0), false),
+            (outpoint("e0", 0), false),
+            (outpoint("f0", 1), false),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_window_keeps_unspent_outpoints_and_the_rollback_depth_of_events() {
+    with_database("window", |name| async move {
+        let mut module = RunesModule::new(window_config(&name), journal())
+            .await
+            .unwrap();
+        blocks_and_a_window(&mut module).await;
+        assert_window_state(&mut module, &name).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_full_database_switches_to_a_window_and_not_back() {
+    with_database("to_window", |name| async move {
+        let mut module = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .unwrap();
+        blocks_and_a_window(&mut module).await;
+        let mut conn = connect(&name).await;
+        assert!(events_up_to(&mut conn, 3).await > 0);
+        assert_eq!(outpoints_spent(&mut conn).await.len(), 6);
+
+        let mut module = RunesModule::new(window_config(&name), journal())
+            .await
+            .unwrap();
+        assert_window_state(&mut module, &name).await;
+
+        let error = RunesModule::new(config(&name, "regtest"), journal())
+            .await
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("window"), "{error:#}");
+    })
+    .await;
 }
 
 async fn connect(database: &str) -> PgConnection {
