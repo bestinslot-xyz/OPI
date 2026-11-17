@@ -1281,7 +1281,8 @@ party (`deployer`, `minted`, `source`, `spent`, `predeployer`): for
 `pkscript`, the party's `*_pkScript` field is that pkScript; for `address`,
 the party's `*_wallet` field is that address. `address` is a Bitcoin address
 or an EVM address that answers as its mapped Bitcoin address (an unmapped one
-has no events), and `pkscript` is hex. `/v1/brc20/deploys` lists the whole
+has no inscription events; with transfers asked for, it lists its BRC2.0
+transfers), and `pkscript` is hex. `/v1/brc20/deploys` lists the whole
 network's deploy and predeploy events, or with `category` the events of those
 categories (every wrap, say). The feeds page by key: `before_id` is the
 previous page's `next_before_id`, and a page holds the events with a lower
@@ -1312,7 +1313,9 @@ the wallet sends (a transfer to itself is one `out` row) and `in` when it
 receives; the counterparty's `address` is its Bitcoin address from
 `evm_addresses`, null for an unmapped one. A `type` filter keeps events of
 that type, so it leaves the transfers out. Without either parameter the
-answer lists events alone, as above.
+answer lists events alone, as above. The transfers are complete once the
+BRC2.0 transfers fill finishes: while `brc20_prog_transfers_fill` exists,
+older transfers may be missing.
 
 The wallet feed also pages by block, which a page with transfers needs (it
 refuses `before_id`): `before=<block_height>:<rows>` is the previous page's

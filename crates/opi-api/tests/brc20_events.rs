@@ -919,14 +919,20 @@ async fn seeded_wallet_events_page_by_block_cursor() {
             assert_eq!(rows.len(), all.len());
             walks.push(pages);
         }
-        // the events alone page by block too
+        // the events alone page by block too, in the order of one page
+        let (_, events, _, _) = wallet_page(
+            &app,
+            &format!("/v1/brc20/wallet/events?address={ALICE}&type=&limit=500"),
+        )
+        .await;
+        assert_eq!(events.len(), 9);
         for limit in 1..=4 {
             let rows: Vec<String> = walk(&app, "type=", limit)
                 .await
                 .into_iter()
                 .flat_map(|(_, rows, _)| rows)
                 .collect();
-            assert_eq!(rows.len(), 9, "limit {limit}");
+            assert_eq!(rows, events, "limit {limit}");
         }
         // the same cursors on a database whose event ids differ (gaps
         // within and between blocks) answer the same pages

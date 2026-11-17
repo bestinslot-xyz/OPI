@@ -72,7 +72,8 @@
 //! and an address of another network, or not in the form the indexer
 //! writes, names none. `address` is a Bitcoin address, or an EVM address
 //! whose Bitcoin address comes from `evm_addresses` (an unmapped one has no
-//! events), and `pkscript` is hex.
+//! inscription events; with transfers asked for, it lists its BRC2.0
+//! transfers), and `pkscript` is hex.
 //!
 //! The wallet feed also lists the wallet's BRC2.0 token transfers (the rows
 //! of `brc20_prog_transfers` from or to its EVM address) when `category`
@@ -930,7 +931,9 @@ async fn wallet_event_rows(
 ) -> Result<Vec<FeedRow>, ApiError> {
     // Each table is read through brc20_event_parties' (pkscript, event_id)
     // key backwards from the cursor, joined to the events by id, up to the
-    // limit; the filters apply to the joined rows.
+    // limit; the filters apply to the joined rows. The id bounds repeat on
+    // the events side so a merge join's scan of the events also starts at
+    // the cursor.
     Ok(sqlx::query_as!(
         FeedRow,
         r#"select u.id as "id!", u.block_height as "block_height!", h.block_time as "block_time?",
@@ -947,6 +950,8 @@ async fn wallet_event_rows(
                  where p.pkscript = decode($1, 'hex')
                    and ($3::int8 is null or p.event_id < $3)
                    and ($7::int8 is null or p.event_id >= $7)
+                   and ($3::int8 is null or e.id < $3)
+                   and ($7::int8 is null or e.id >= $7)
                    and ($2::int4 is null or e.event_type = $2)
                    and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))
                    and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',
@@ -959,6 +964,8 @@ async fn wallet_event_rows(
                  where p.pkscript = decode($1, 'hex')
                    and ($3::int8 is null or p.event_id < $3)
                    and ($7::int8 is null or p.event_id >= $7)
+                   and ($3::int8 is null or e.id < $3)
+                   and ($7::int8 is null or e.id >= $7)
                    and ($2::int4 is null or e.event_type = $2)
                    and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))
                    and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',
@@ -977,6 +984,51 @@ async fn wallet_event_rows(
         from,
     )
     .fetch_all(db.pool()?)
+    .await?)
+}
+
+/// The count of the wallet's events with an id at least `from` and below
+/// `before`, under the filters of [`wallet_event_rows`].
+async fn wallet_event_count(
+    db: &Db,
+    filter: &WalletEventFilter<'_>,
+    from: i64,
+    before: i64,
+) -> Result<i64, ApiError> {
+    // The parties key's range between the two ids, joined to the events by
+    // id; a range inside one block holds a few rows.
+    Ok(sqlx::query_scalar!(
+        r#"select count(*) as "count!" from (
+                (select e.id
+                 from brc20_event_parties p
+                 join brc20_events e on e.id = p.event_id
+                 where p.pkscript = decode($1, 'hex')
+                   and p.event_id >= $3 and p.event_id < $4
+                   and e.id >= $3 and e.id < $4
+                   and ($2::int4 is null or e.event_type = $2)
+                   and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))
+                   and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',
+                        e.event ->> 'source_wallet', e.event ->> 'spent_wallet', e.event ->> 'predeployer_wallet')))
+                union all
+                (select e.id
+                 from brc20_event_parties p
+                 join brc20_light_events e on e.id = p.event_id
+                 where p.pkscript = decode($1, 'hex')
+                   and p.event_id >= $3 and p.event_id < $4
+                   and e.id >= $3 and e.id < $4
+                   and ($2::int4 is null or e.event_type = $2)
+                   and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))
+                   and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',
+                        e.event ->> 'source_wallet', e.event ->> 'spent_wallet', e.event ->> 'predeployer_wallet')))
+            ) u;"#,
+        filter.key.pkscript,
+        filter.event_type,
+        from,
+        before,
+        filter.categories as Option<&[String]>,
+        filter.key.wallet,
+    )
+    .fetch_one(db.pool()?)
     .await?)
 }
 
@@ -1133,7 +1185,8 @@ fn block_cursor_after(blocks: &[i32], earlier_block: Option<i32>, earlier: i64) 
 /// The events where the wallet is a party (`deployer`, `minted`, `source`,
 /// `spent`, `predeployer`): by its `*_pkScript` field for `pkscript`, by its
 /// `*_wallet` field for `address`, of the `type` and the `category` list
-/// when given. An unmapped EVM address has no events. With `category`
+/// when given. An unmapped EVM address has no inscription events; with
+/// transfers asked for, it lists its BRC2.0 transfers. With `category`
 /// listing `prog_transfer` or `include_prog_transfers=true`, the wallet's
 /// BRC2.0 token transfers too, by its EVM address (none for a Bitcoin
 /// address `evm_addresses` does not map). Newest block first; in a block,
@@ -1262,15 +1315,9 @@ pub async fn wallet_events(
                 // id came on earlier pages
                 (None, Some(before_id), Some(filter)) => {
                     let earlier = match block_event_ids(&db, last).await? {
-                        Some((lo, hi)) if before_id <= hi => wallet_event_rows(
-                            &db,
-                            filter,
-                            Some(lo.max(before_id)),
-                            Some(hi + 1),
-                            i64::MAX,
-                        )
-                        .await?
-                        .len() as i64,
+                        Some((lo, hi)) if before_id <= hi => {
+                            wallet_event_count(&db, filter, lo.max(before_id), hi + 1).await?
+                        }
                         _ => 0,
                     };
                     (Some(last), earlier)

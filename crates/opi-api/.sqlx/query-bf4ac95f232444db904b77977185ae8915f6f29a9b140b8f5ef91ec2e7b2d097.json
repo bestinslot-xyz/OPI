@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"count!\" from (\n                (select e.id\n                 from brc20_event_parties p\n                 join brc20_events e on e.id = p.event_id\n                 where p.pkscript = decode($1, 'hex')\n                   and p.event_id >= $3 and p.event_id < $4\n                   and e.id >= $3 and e.id < $4\n                   and ($2::int4 is null or e.event_type = $2)\n                   and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))\n                   and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',\n                        e.event ->> 'source_wallet', e.event ->> 'spent_wallet', e.event ->> 'predeployer_wallet')))\n                union all\n                (select e.id\n                 from brc20_event_parties p\n                 join brc20_light_events e on e.id = p.event_id\n                 where p.pkscript = decode($1, 'hex')\n                   and p.event_id >= $3 and p.event_id < $4\n                   and e.id >= $3 and e.id < $4\n                   and ($2::int4 is null or e.event_type = $2)\n                   and ($5::text[] is null or brc20_event_category(e.event_type, e.event) = any($5))\n                   and ($6::text is null or $6 in (e.event ->> 'deployer_wallet', e.event ->> 'minted_wallet',\n                        e.event ->> 'source_wallet', e.event ->> 'spent_wallet', e.event ->> 'predeployer_wallet')))\n            ) u;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Int8",
+        "Int8",
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bf4ac95f232444db904b77977185ae8915f6f29a9b140b8f5ef91ec2e7b2d097"
+}
