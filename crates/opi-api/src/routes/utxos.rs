@@ -517,7 +517,7 @@ pub async fn wallet(
                     .fetch_one(&mut *tx)
                     .await?;
             // brc20_events_inscription_id_event_type_idx
-            let used: HashSet<String> = sqlx::query_scalar!(
+            let mut used: HashSet<String> = sqlx::query_scalar!(
                 r#"select distinct inscription_id as "inscription_id!"
                     from brc20_events
                     where inscription_id = any($1::text[]) and event_type = any($2::int4[]);"#,
@@ -528,6 +528,24 @@ pub async fn wallet(
             .await?
             .into_iter()
             .collect();
+            // A history window moves the transfers it deletes to
+            // brc20_used_transfers, which the brc20 module creates at start.
+            let windowed: bool =
+                sqlx::query_scalar("select to_regclass('brc20_used_transfers') is not null")
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if windowed {
+                used.extend(
+                    sqlx::query_scalar::<_, String>(
+                        "select inscription_id from brc20_used_transfers
+                         where inscription_id = any($1::text[]) and event_type = any($2::int4[])",
+                    )
+                    .bind(&ids)
+                    .bind(&USED_TRANSFER_EVENT_TYPES[..])
+                    .fetch_all(&mut *tx)
+                    .await?,
+                );
+            }
             tx.commit().await?;
             (height, Some(used))
         }

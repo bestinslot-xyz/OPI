@@ -12,6 +12,7 @@ pub mod block_time;
 pub mod event_feed_indexes;
 pub mod evm_addresses;
 pub mod extras_verified;
+pub mod history_window;
 pub mod prog_balances;
 pub mod snapshot_indexes;
 pub mod ticker_holders;

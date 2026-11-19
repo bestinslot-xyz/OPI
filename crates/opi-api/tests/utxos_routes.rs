@@ -276,6 +276,50 @@ async fn the_wallet_route_classifies_outputs() {
     .await;
 }
 
+/// A brc20 history window deletes a spent transfer's events and records it in
+/// `brc20_used_transfers`; the route still answers it as used.
+#[tokio::test]
+async fn a_brc20_window_keeps_spent_transfers_used() {
+    let seed = format!(
+        "{}
+         delete from brc20_events where inscription_id = '{a}';
+         create table brc20_used_transfers (
+             inscription_id text primary key, event_type int4 not null);
+         insert into brc20_used_transfers values ('{a}', 3);",
+        seed(),
+        a = id(1)
+    );
+    with_seeded_modules(
+        &[
+            Module::Brc20,
+            Module::Inscriptions,
+            Module::Runes,
+            Module::Utxos,
+        ],
+        "utxos_window",
+        None,
+        &[
+            include_str!("../../opi-brc20/src/database/sql/db_init.sql"),
+            include_str!("../../opi-inscriptions/src/db_init.sql"),
+            include_str!("../../opi-runes/src/db_init.sql"),
+            include_str!("../../opi-utxos/src/db_init.sql"),
+            &seed,
+        ],
+        4,
+        |app, _pool| async move {
+            let base = format!("/v1/utxos/wallet?pkscript={SCRIPT}");
+            let all = result(&app, &base).await;
+            assert_eq!(
+                all["utxos"][3]["inscriptions"],
+                json!([{"inscription_id": id(1), "offset": 0, "used_brc20_transfer": true}])
+            );
+            let cardinal = result(&app, &format!("{base}&type=cardinal")).await;
+            assert_eq!(outpoints(&cardinal), [op(1, 0), op(2, 0)]);
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn mempool_true_needs_the_view_and_its_first_poll() {
     let uri = format!("/v1/utxos/wallet?pkscript={SCRIPT}&mempool=true");

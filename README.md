@@ -219,7 +219,7 @@ directory or an ancestor, so run `opi-indexer` from inside the repository) or ex
 | `OPI_CHUNK` | blocks per ord update, default `1000` |
 | `OPI_MODULES` | comma-separated modules (`brc20`, `bitmap`, `sns`, `runes`, `inscriptions`, `utxos`), default `brc20`; `runes` also switches on ord's rune indexing (see [Running without runes](#running-without-runes)) and `inscriptions` the journal's inscription moves (see [Inscriptions module](#inscriptions-module)) |
 | `OPI_PRUNE` | blocks of history to keep, at least `1000`; unset keeps everything (see [Pruning](#pruning)) |
-| `RUNES_HISTORY`, `INSCRIPTIONS_HISTORY` | `full` (default) or `window`: the module keeps its current state and only the last 1000 blocks of history (see [History windows](#history-windows)) |
+| `BRC20_HISTORY`, `RUNES_HISTORY`, `INSCRIPTIONS_HISTORY` | `full` (default) or `window`: the module keeps its current state and only the last 1000 blocks of history (see [History windows](#history-windows)) |
 | `DB_*`, `BITMAP_DB_*`, `SNS_DB_*`, `RUNES_DB_*`, `INSCRIPTIONS_DB_*`, `UTXOS_DB_*` | the module databases (see Modules); `DB_DATABASE`, `BITMAP_DB_DATABASE`, `SNS_DB_DATABASE`, `RUNES_DB_DATABASE`, `INSCRIPTIONS_DB_DATABASE` and `UTXOS_DB_DATABASE` have no default and are required when the module is enabled |
 | `NETWORK_TYPE` | network every module indexes; must match `OPI_CHAIN` |
 | `REPORT_*` | block reporting, shared by all modules; one `REPORT_NAME` names the node for all of them, and each report's payload carries its module type |
@@ -317,22 +317,25 @@ data dir and index again.
 
 #### History windows
 
-`RUNES_HISTORY=window` and `INSCRIPTIONS_HISTORY=window` keep a module's
-current state and only the history a rollback reads: the last 1000 blocks
-(`MAX_ROLLBACK_DEPTH`). They are independent of `OPI_PRUNE`, which prunes the
-journal: a node can keep its full journal, to add or reindex modules from it,
-while its runes and inscriptions keep windows.
+`BRC20_HISTORY=window`, `RUNES_HISTORY=window` and `INSCRIPTIONS_HISTORY=window`
+keep a module's current state and only the history a rollback reads: the last
+1000 blocks (`MAX_ROLLBACK_DEPTH`). They are independent of `OPI_PRUNE`, which
+prunes the journal: a node can keep its full journal, to add or reindex modules
+from it, while chosen modules keep windows.
 
 | Module | Kept | Deleted once 1000 blocks deep |
 | --- | --- | --- |
+| brc20 | tickers, current balances and holders, each wallet and ticker's latest `brc20_historic_balances` row, the inscribe events of transfer and BRC2.0 inscriptions not yet spent, predeploy events, the inscription of each deleted transfer event (`brc20_used_transfers`), cumulative event hashes, block hashes, BRC2.0 tables | the other events and their `brc20_event_parties` rows; balance rows but each wallet and ticker's latest |
 | runes | entries, unspent outpoints, current balances, holders, cumulative event hashes, block hashes | events; outpoints spent at that height; entry changes but each rune's latest |
 | inscriptions | `inscriptions_entries`, each inscription's creation and latest event, block hashes | the event a transfer moved the inscription from |
 
 Wallet balances, unspent rune outpoints, inscription locations and the
 `cardinal` rule of `/v1/utxos/wallet` read current state and answer as on a
-full node. The routes that read history (rune activity and balances at a past
-height, rune event feeds, `etchings`, inscription and wallet history) answer
-from what the window keeps.
+full node. The routes that read history (brc20 and rune activity and balances
+at a past height, event feeds, `etchings`, inscription and wallet history)
+answer from what the window keeps. The brc20 event hashes reported to an OPI
+network are computed per block as it is indexed, so a windowed brc20 node
+reports like a full one.
 
 A module switches from full history to a window on its next start, in one
 transaction that deletes the history below the window. A database that keeps a
