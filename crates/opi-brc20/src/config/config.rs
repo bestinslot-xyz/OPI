@@ -1,6 +1,7 @@
 use anyhow::Context;
 use bitcoin::network::Network;
 use brc20_prog::Brc20ProgConfig;
+use opi_core::History;
 use std::{collections::HashMap, path::PathBuf};
 
 lazy_static::lazy_static! {
@@ -395,6 +396,9 @@ fn check_bitcoin_rpc_settings(
 #[derive(Clone)]
 pub struct Brc20IndexerConfig {
     pub light_client_mode: bool,
+    /// The history the database keeps, from `BRC20_HISTORY` (which
+    /// opi-indexer reads); [`History::Full`] by default.
+    pub history: History,
     pub save_logs: bool,
 
     pub db_host: String,
@@ -472,6 +476,7 @@ impl Default for Brc20IndexerConfig {
         let network_type = get_bitcoin_network_type(network_type_string);
 
         Brc20IndexerConfig {
+            history: History::Full,
             db_host: std::env::var(DB_HOST_KEY).unwrap_or_else(|_| DB_HOST_DEFAULT.to_string()),
             db_port: std::env::var(DB_PORT_KEY).unwrap_or_else(|_| DB_PORT_DEFAULT.to_string()),
             db_user: std::env::var(DB_USER_KEY).unwrap_or_else(|_| DB_USER_DEFAULT.to_string()),
