@@ -259,6 +259,7 @@ async fn each_instance_starts_from_a_fresh_database() {
 fn config_has_no_prog_toggle() {
     let Brc20IndexerConfig {
         light_client_mode: _,
+        history: _,
         save_logs: _,
         db_host: _,
         db_port: _,

@@ -21,5 +21,7 @@ drop table if exists brc20_prog_transfers_fill;
 drop table if exists brc20_ticker_holders;
 drop table if exists brc20_extras_verified;
 drop table if exists brc20_event_parties;
+drop table if exists brc20_history;
+drop table if exists brc20_used_transfers;
 drop function if exists brc20_event_party_pkscripts(jsonb);
 drop function if exists brc20_event_category(int4, jsonb);
