@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct on (inscription_id) inscription_id, inscription_number, \"name\", domain,\n                block_height\n            from sns_names\n            where inscription_id = any($1::text[])\n            order by inscription_id, id;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inscription_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "inscription_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "inscription_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "inscription_number"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "block_height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sns_names",
+            "name": "block_height"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dedfa1bb130eebaa22d037ed306dbbc4c2eeb35757cd0c1814bd8c3eda5bc8cb"
+}

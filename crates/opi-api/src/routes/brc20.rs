@@ -1,8 +1,9 @@
 //! The brc20 module's routes, including the
 //! `/v1/brc20/explorer/...` routes for the BRC2.0 blockscout frontend and the
 //! ticker routes of [`tickers`], the holders snapshot of [`snapshot`], the
-//! event feeds of [`events`] and the balance history of [`history`], which
-//! have no JavaScript counterpart.
+//! event feeds of [`events`], the balance history of [`history`] and the
+//! batch event lookup of [`by_inscriptions`], which have no JavaScript
+//! counterpart.
 //!
 //! Each other handler follows its JavaScript counterpart line by line: query
 //! params keep their JavaScript values ([`JsValue`]) through the checks and
@@ -37,6 +38,7 @@ use {
     utoipa_axum::{router::UtoipaMethodRouterExt, routes},
 };
 
+mod by_inscriptions;
 pub(super) mod events;
 mod history;
 pub(super) mod snapshot;
@@ -73,6 +75,7 @@ pub fn routes(db: &Db, settings: &super::RouteSettings) -> ModuleRoutes {
             )),
         )
         .routes(routes!(event))
+        .routes(routes!(by_inscriptions::events_by_inscriptions))
         .routes(routes!(explorer_btc_address))
         .routes(routes!(explorer_balances))
         .routes(routes!(explorer_address_tabs_counters))
@@ -345,9 +348,9 @@ async fn extras_block_height_of_db(db: &Db) -> JsValue {
 
 /// The event type names by id (`event_type_id_to_name`): a plain object
 /// whose keys are the ids as strings.
-async fn event_type_names(db: &Db) -> Result<JsObject, ApiError> {
+async fn event_type_names<'e>(executor: impl PgExecutor<'e>) -> Result<JsObject, ApiError> {
     let rows = sqlx::query!("select event_type_name, event_type_id from brc20_event_types;")
-        .fetch_all(db.pool()?)
+        .fetch_all(executor)
         .await?;
     let mut names = JsObject::new();
     for row in rows {
@@ -557,7 +560,7 @@ async fn activity_on_block(
         return Ok(Reply::error(400, "block not indexed yet"));
     }
 
-    let names = event_type_names(&db).await?;
+    let names = event_type_names(db.pool()?).await?;
     let rules = db.int_rules().await?;
     // the union keeps its jsonb columns, so it removes the same duplicates
     // the route's union does; the text cast comes after it
@@ -1161,7 +1164,7 @@ async fn current_balances_reply(
     ),
 )]
 async fn event(State(db): State<Db>, JsQuery(query): JsQuery) -> Result<Reply, ApiError> {
-    let names = event_type_names(&db).await?;
+    let names = event_type_names(db.pool()?).await?;
 
     let inscription_id = query.get("inscription_id").clone();
     if !inscription_id.truthy() {

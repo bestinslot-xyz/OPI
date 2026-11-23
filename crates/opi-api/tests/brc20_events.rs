@@ -1,6 +1,7 @@
-//! The brc20 event feeds and the balance history over HTTP:
-//! `/v1/brc20/ticker/events`, `/v1/brc20/wallet/events`, `/v1/brc20/deploys`
-//! and `/v1/brc20/wallet/balance_history`.
+//! The brc20 event feeds, the balance history and the batch event lookup
+//! over HTTP: `/v1/brc20/ticker/events`, `/v1/brc20/wallet/events`,
+//! `/v1/brc20/deploys`, `/v1/brc20/wallet/balance_history` and
+//! `/v1/brc20/events_by_inscriptions`.
 //!
 //! The first tests use a database double that answers only the latest block
 //! height: parameters are checked before any query, and a valid request
@@ -13,8 +14,9 @@ mod common;
 
 use {
     axum::Router,
-    common::{INTERNAL_ERROR, JSON, app, expect, get, height},
+    common::{INTERNAL_ERROR, JSON, app, expect, get, height, post},
     opi_api::{config::Module, db::Db},
+    serde_json::{Value, json},
     sqlx::{
         Connection, PgConnection, PgPool,
         postgres::{PgConnectOptions, PgPoolOptions},
@@ -1141,6 +1143,137 @@ async fn seeded_balance_history_pages_newest_first() {
             &bad("ticker not found"),
         )
         .await;
+    })
+    .await;
+}
+
+/// The batch body of `ids`.
+fn ids_body(ids: &[String]) -> String {
+    json!({ "inscription_ids": ids }).to_string()
+}
+
+/// The inscription id whose txid is `byte` 32 times, with index `index`.
+fn inscription(byte: &str, index: u32) -> String {
+    format!("{}i{index}", byte.repeat(32))
+}
+
+const EVENTS_BY_INSCRIPTIONS: &str = "/v1/brc20/events_by_inscriptions";
+
+#[tokio::test]
+async fn events_by_inscriptions_refuses_a_bad_body_before_any_query() {
+    let app = height(BRC20, 7.into());
+    let shape = "the body must be JSON {\"inscription_ids\":[...]} with 1 to 500 inscription ids";
+    let item = "inscription_ids[1] must be an inscription id <txid>i<index> (64 hex digits, `i` and a 32-bit index)";
+    let one = inscription("ab", 0);
+    for (body, reason) in [
+        (String::new(), shape),
+        ("{".into(), shape),
+        (json!([one]).to_string(), shape),
+        (ids_body(&[]), shape),
+        (ids_body(&vec![one.clone(); 501]), shape),
+        (ids_body(&[one.clone(), "t1i0".into()]), item),
+    ] {
+        let answer = post(&app, EVENTS_BY_INSCRIPTIONS, &body).await;
+        assert_eq!(answer.status, 400, "{body}");
+        let refusal = json!({"error": reason, "result": null}).to_string();
+        assert_eq!(answer.body, refusal, "{body}");
+    }
+    let answer = post(&app, EVENTS_BY_INSCRIPTIONS, &ids_body(&[one])).await;
+    assert_eq!((answer.status, answer.body.as_str()), (500, INTERNAL_ERROR));
+}
+
+/// Events under canonical inscription ids, beside the fixture's: `aa…i0`
+/// has two full events and a light one, `bb…i0` a mint stored in both
+/// tables (one row after the union) and an event of a type
+/// `brc20_event_types` does not list, `cc…i5` none.
+const CANONICAL_EVENTS: &str = r#"
+INSERT INTO brc20_events (id, event_type, block_height, inscription_id, event) VALUES
+  (20, 2, 300, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaai0', '{"tick":"ordi","amount":"1"}'),
+  (21, 3, 301, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaai0', '{"tick":"ordi","amount":"1","using_tx_id":"u3"}'),
+  (22, 1, 301, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbi0', '{"tick":"pepe","amount":"2"}'),
+  (23, 999, 301, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbi0', '{"x":"y"}');
+INSERT INTO brc20_light_events (id, event_type, block_height, inscription_id, event) VALUES
+  (19, 1, 300, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaai0', '{"tick":"ordi","amount":"3"}'),
+  (22, 1, 301, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbi0', '{"tick":"pepe","amount":"2"}');
+"#;
+
+/// The `result` of a 200 JSON answer.
+fn result_of(answer: &common::Answer) -> Value {
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.content_type.as_deref(), Some(JSON));
+    let body: Value = serde_json::from_str(&answer.body).unwrap();
+    assert_eq!(body["error"], Value::Null);
+    body["result"].clone()
+}
+
+#[tokio::test]
+async fn seeded_events_by_inscriptions_answer_each_id_as_the_single_route() {
+    with_seeded("byinsc", |app, pool| async move {
+        sqlx::raw_sql(CANONICAL_EVENTS)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (a, b, c) = (
+            inscription("aa", 0),
+            inscription("bb", 0),
+            inscription("cc", 5),
+        );
+        let requested = [
+            format!("{}i00", "BB".repeat(32)),
+            c.clone(),
+            a.clone(),
+            b.clone(),
+        ];
+        let answer = post(&app, EVENTS_BY_INSCRIPTIONS, &ids_body(&requested)).await;
+        let result = result_of(&answer);
+        assert_eq!(result["block_height"], 301);
+        let entries = result["inscriptions"].as_array().unwrap();
+        let listed: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["inscription_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(listed, [&b, &c, &a, &b]);
+        for entry in entries {
+            let id = entry["inscription_id"].as_str().unwrap();
+            let single =
+                result_of(&get(&app, &format!("/v1/brc20/event?inscription_id={id}")).await);
+            assert_eq!(entry["events"], single, "{id}");
+        }
+        // the union's order and dedupe, the event type names, an id without
+        // events
+        let amounts = |entry: &Value| -> Vec<(Value, Value)> {
+            entry["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| (event["event_type"].clone(), event["amount"].clone()))
+                .collect()
+        };
+        assert_eq!(
+            amounts(&entries[2]),
+            [
+                (json!("mint-inscribe"), json!("3")),
+                (json!("transfer-inscribe"), json!("1")),
+                (json!("transfer-transfer"), json!("1")),
+            ]
+        );
+        assert_eq!(
+            amounts(&entries[0]),
+            [
+                (json!("mint-inscribe"), json!("2")),
+                (Value::Null, Value::Null)
+            ]
+        );
+        assert!(entries[0]["events"][1].get("event_type").is_none());
+        assert_eq!(entries[0]["events"][1]["inscription_id"], json!(b));
+        assert_eq!(entries[1]["events"], json!([]));
+        // the cap is 500 ids
+        let many: Vec<String> = (0..500).map(|n| format!("{n:064x}i{n}")).collect();
+        let answer = post(&app, EVENTS_BY_INSCRIPTIONS, &ids_body(&many)).await;
+        assert_eq!(
+            result_of(&answer)["inscriptions"].as_array().unwrap().len(),
+            500
+        );
     })
     .await;
 }

@@ -192,3 +192,55 @@ fn a_batch_body_names_1_to_500_outpoints() {
         Ok(500)
     );
 }
+
+#[test]
+fn a_batch_body_names_1_to_500_inscription_ids() {
+    let lower = TXID.to_ascii_lowercase();
+    let id = format!("{lower}i1");
+    let other = format!("{lower}i0");
+    let body = |list: &[&str]| json!({ "inscription_ids": list }).to_string();
+    // lowercased, canonical, in the body's order, a repeated id kept
+    assert_eq!(
+        inscription_ids_body(body(&[&format!("{TXID}i01"), &other, &id]).as_bytes()),
+        Ok(vec![id.clone(), other.clone(), id.clone()])
+    );
+    let shape = || {
+        BadParam(
+            "the body must be JSON {\"inscription_ids\":[...]} with 1 to 500 inscription ids"
+                .into(),
+        )
+    };
+    let many = vec![id.as_str(); 501];
+    for bad in [
+        String::new(),
+        "{".into(),
+        "not json".into(),
+        "[]".into(),
+        "{\"inscription_ids\":\"x\"}".into(),
+        json!({ "outpoints": [id] }).to_string(),
+        body(&[]),
+        body(&many),
+    ] {
+        assert_eq!(inscription_ids_body(bad.as_bytes()), Err(shape()), "{bad}");
+    }
+    let item = |i: usize| {
+        BadParam(format!(
+            "inscription_ids[{i}] must be an inscription id {INSCRIPTION_ID_FORM}"
+        ))
+    };
+    for bad in ["x", &format!("{lower}:0"), &format!("{lower}i4294967296")] {
+        assert_eq!(
+            inscription_ids_body(body(&[&id, bad]).as_bytes()),
+            Err(item(1)),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        inscription_ids_body(json!({"inscription_ids": [1, id]}).to_string().as_bytes()),
+        Err(item(0))
+    );
+    assert_eq!(
+        inscription_ids_body(body(&vec![id.as_str(); 500]).as_bytes()).map(|list| list.len()),
+        Ok(500)
+    );
+}
