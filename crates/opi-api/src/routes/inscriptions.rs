@@ -34,9 +34,9 @@ use {
         ModuleRoutes,
         address::address_of,
         paging::{
-            BadParam, DEFAULT_LIMIT, MAX_CONTENT_TYPE_LEN, MAX_CURSOR_LEN, MAX_LIMIT,
-            MAX_OUTPOINTS, Wallet, integer, optional_text, prefix_pattern, single, split_page,
-            text,
+            BadParam, DEFAULT_LIMIT, MAX_CONTENT_TYPE_LEN, MAX_CURSOR_LEN, MAX_INSCRIPTION_IDS,
+            MAX_LIMIT, MAX_OUTPOINTS, Wallet, integer, optional_text, prefix_pattern, single,
+            split_page, text,
         },
     },
     crate::{
@@ -352,6 +352,73 @@ impl ToSchema for OutpointsBody {}
 /// The pattern of an outpoint parameter.
 pub const OUTPOINT_PATTERN: &str = "^[0-9a-fA-F]{64}:[0-9]{1,10}$";
 
+/// The inscription id the error messages name.
+const INSCRIPTION_ID_FORM: &str = "<txid>i<index> (64 hex digits, `i` and a 32-bit index)";
+
+/// The pattern of an inscription id parameter.
+pub const INSCRIPTION_ID_PATTERN: &str = "^[0-9a-fA-F]{64}i[0-9]{1,10}$";
+
+/// The `inscription_ids` of a batch body
+/// `{"inscription_ids":["<txid>i<index>",...]}`: 1 to
+/// [`MAX_INSCRIPTION_IDS`] ids, each read by [`parse_inscription_id`], in
+/// the body's order (a repeated id stays repeated).
+pub fn inscription_ids_body(body: &[u8]) -> Result<Vec<String>, BadParam> {
+    let shape = || {
+        BadParam(format!(
+            "the body must be JSON {{\"inscription_ids\":[...]}} with 1 to {MAX_INSCRIPTION_IDS} inscription ids"
+        ))
+    };
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| shape())?;
+    let list = value
+        .get("inscription_ids")
+        .and_then(serde_json::Value::as_array)
+        .filter(|list| (1..=MAX_INSCRIPTION_IDS).contains(&list.len()))
+        .ok_or_else(shape)?;
+    list.iter()
+        .enumerate()
+        .map(|(i, item)| {
+            item.as_str().and_then(parse_inscription_id).ok_or_else(|| {
+                BadParam(format!(
+                    "inscription_ids[{i}] must be an inscription id {INSCRIPTION_ID_FORM}"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// The inscription ids of a batch body, or the answer to a body the route
+/// cannot read (one over the body limit, say).
+pub(super) fn batch_inscription_ids(
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Vec<String>, Reply> {
+    let body = body
+        .map_err(|rejection| Reply::error(rejection.status().as_u16(), &rejection.body_text()))?;
+    inscription_ids_body(&body).map_err(BadParam::reply)
+}
+
+/// A batch body: up to 500 inscription ids.
+pub struct InscriptionIdsBody;
+
+impl PartialSchema for InscriptionIdsBody {
+    fn schema() -> RefOr<Schema> {
+        openapi::json_schema(json!({
+            "type": "object",
+            "required": ["inscription_ids"],
+            "properties": {
+                "inscription_ids": {
+                    "type": "array",
+                    "description": "The inscription ids, `<txid>i<index>`; one may repeat.",
+                    "minItems": 1,
+                    "maxItems": MAX_INSCRIPTION_IDS,
+                    "items": {"type": "string", "pattern": INSCRIPTION_ID_PATTERN},
+                },
+            },
+        }))
+    }
+}
+
+impl ToSchema for InscriptionIdsBody {}
+
 /// A creation or transfer of an inscription, as the push feed carries it.
 #[derive(ToSchema)]
 #[allow(dead_code)]
@@ -519,12 +586,13 @@ impl InscriptionRef {
         match (id, number) {
             (None, None) => Err(BadParam("id or number is required".into())),
             (Some(_), Some(_)) => Err(BadParam("give id or number, not both".into())),
-            (Some(id), None) => parse_inscription_id(id).map(InscriptionRef::Id).ok_or_else(|| {
-                BadParam(
-                    "id must be an inscription id <txid>i<index> (64 hex digits, `i` and a 32-bit index)"
-                        .into(),
-                )
-            }),
+            (Some(id), None) => parse_inscription_id(id)
+                .map(InscriptionRef::Id)
+                .ok_or_else(|| {
+                    BadParam(format!(
+                        "id must be an inscription id {INSCRIPTION_ID_FORM}"
+                    ))
+                }),
             (None, Some(number)) => {
                 let digits = number.strip_prefix('-').unwrap_or(number);
                 let parsed = (!digits.is_empty()

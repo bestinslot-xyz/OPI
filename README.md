@@ -1030,6 +1030,7 @@ bracketed parameter).
 | `GET /v1/brc20/deploys` | `type`, `category`, `before_id`, `limit` | A page of the network's events of some categories, newest first. |
 | `GET /v1/brc20/event` | **`inscription_id`** | Every event of an inscription id. |
 | `GET /v1/brc20/event_hash_version` |  | The version of the event hash format. |
+| `POST /v1/brc20/events_by_inscriptions` |  | Every event of up to 500 inscription ids. |
 | `GET /v1/brc20/explorer/address_tabs_counters/{evm_address}` |  | The address tab counters of an EVM address, for the BRC2.0 explorer. |
 | `GET /v1/brc20/explorer/balances/{evm_address}` |  | The BRC-20 balances of an EVM address's BTC address, for the BRC2.0 explorer. |
 | `GET /v1/brc20/explorer/btc_address/{evm_address}` |  | The BTC address an EVM address maps to, for the BRC2.0 explorer. |
@@ -1070,6 +1071,7 @@ bracketed parameter).
 | --- | --- | --- |
 | `GET /v1/sns/block_height` |  | The latest indexed block height. |
 | `GET /v1/sns/by_inscription` | **`inscription_id`** | The name an inscription registered. |
+| `POST /v1/sns/by_inscriptions` |  | The names up to 500 inscriptions registered. |
 | `GET /v1/sns/get_hash_of_all_activity` | **`block_height`** | A block's event hashes, cumulative and its own. |
 | `GET /v1/sns/get_hash_of_all_registered_names` |  | The hash of every registered name. |
 | `GET /v1/sns/get_info_of_sns` | **`name`** | The inscription and namespace of a registered name. |
@@ -1373,6 +1375,17 @@ address as given). It pages by key with `before_id` as the feeds do, and
 each page is a backward range scan of the `(pkscript, tick, block_height)`
 index from the cursor's block. An unknown ticker answers `404`.
 
+**Events by inscription.** `POST /v1/brc20/events_by_inscriptions` takes the
+body `{"inscription_ids":["<txid>i<index>",...]}` with 1 to 500 inscription
+ids (64 hex digits, any case, `i` and a 32-bit index) and answers
+`{"inscriptions":[{"inscription_id","events"}],"block_height"}`, one entry
+per requested id in the request's order (a repeated id answers each time).
+Each `events` list is what `/v1/brc20/event?inscription_id=` answers for that
+id: its rows of `brc20_events` and `brc20_light_events` by id, each the
+stored event object with `event_type` and `inscription_id` set, empty for an
+id without events. `block_height` is the module's height, read in one
+snapshot with the events. Answers name ids in lowercase.
+
 **Bitmap and SNS lookups.** A bitmap is `{"inscription_id",
 "inscription_number","bitmap_number","block_height"}` and a name is
 `{"inscription_id","inscription_number","name","namespace","block_height"}`,
@@ -1384,7 +1397,13 @@ optionally within one `namespace`; the prefix and namespace are lowercased as
 SNS stores names (the result's `prefix` and `namespace` are those lowercase
 forms), and `%`, `_` and `\` match themselves. Both page by key:
 `after` is the previous page's `next_after`, `has_more` tells whether more
-follow and `next_after` is null on the last page.
+follow and `next_after` is null on the last page. `POST /v1/sns/by_inscriptions`
+takes the same body as `/v1/brc20/events_by_inscriptions` and answers
+`{"names":[{"inscription_id","name"}],"block_height"}`, one entry per
+requested id in the request's order, `name` being what
+`/v1/sns/by_inscription` answers for the id or null for one that registered
+no name; `block_height` is the module's height, read in one snapshot with the
+names.
 
 ### Rune, holder and wallet routes
 

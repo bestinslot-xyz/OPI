@@ -78,6 +78,9 @@ pub const MAX_CONTENT_TYPE_LEN: usize = 256;
 /// The most outpoints a batch request may name.
 pub const MAX_OUTPOINTS: usize = 500;
 
+/// The most inscription ids a batch request may name.
+pub const MAX_INSCRIPTION_IDS: usize = 500;
+
 /// The wallet a route lists: exactly one of `address` and `pkscript`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wallet {

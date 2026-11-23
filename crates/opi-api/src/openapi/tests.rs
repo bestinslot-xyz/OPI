@@ -12,9 +12,10 @@ use {
             paging::{
                 BLOCK_CURSOR_PATTERN, CATEGORY_PATTERN, DEFAULT_LIMIT, MAX_ADDRESS_LEN,
                 MAX_BEFORE_ID, MAX_CATEGORY_LEN, MAX_CONTENT_TYPE_LEN, MAX_CURSOR_LEN,
-                MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_MODULES_LEN,
-                MAX_NAME_LEN, MAX_OFFSET, MAX_OUTPOINTS, MAX_PKSCRIPT_LEN, MAX_PREFIX_DIGITS,
-                MAX_RUNE_LEN, MAX_TICKER_LEN, MAX_TYPE_LEN, WALLET_CATEGORY_PATTERN,
+                MAX_HOLDERS_CURSOR_LEN, MAX_INSCRIPTION_ID_LEN, MAX_INSCRIPTION_IDS, MAX_LIMIT,
+                MAX_MODULES_LEN, MAX_NAME_LEN, MAX_OFFSET, MAX_OUTPOINTS, MAX_PKSCRIPT_LEN,
+                MAX_PREFIX_DIGITS, MAX_RUNE_LEN, MAX_TICKER_LEN, MAX_TYPE_LEN,
+                WALLET_CATEGORY_PATTERN,
             },
         },
     },
@@ -382,7 +383,37 @@ fn batch_bodies_are_bounded_as_the_routes_read_them() {
         assert_eq!(list["maxItems"], MAX_OUTPOINTS, "{path}");
         assert_eq!(list["items"]["pattern"], OUTPOINT_PATTERN, "{path}");
     }
+    for path in [
+        "/v1/brc20/events_by_inscriptions",
+        "/v1/sns/by_inscriptions",
+    ] {
+        let operation = &document["paths"][path]["post"];
+        let body = &operation["requestBody"];
+        assert_eq!(body["required"], true, "{path}");
+        let schema = &body["content"]["application/json"]["schema"];
+        let schema = match schema["$ref"].as_str() {
+            Some(reference) => {
+                let name = reference.rsplit('/').next().unwrap();
+                &document["components"]["schemas"][name]
+            }
+            None => schema,
+        };
+        assert_eq!(schema["required"], json!(["inscription_ids"]), "{path}");
+        let list = &schema["properties"]["inscription_ids"];
+        assert_eq!(list["minItems"], 1, "{path}");
+        assert_eq!(list["maxItems"], MAX_INSCRIPTION_IDS, "{path}");
+        assert_eq!(list["items"]["pattern"], INSCRIPTION_ID_PATTERN, "{path}");
+        for status in ["200", "400", "413"] {
+            assert!(
+                operation["responses"][status].is_object(),
+                "{path} {status}"
+            );
+        }
+    }
 }
+
+/// The inscription id pattern of the batch bodies.
+const INSCRIPTION_ID_PATTERN: &str = "^[0-9a-fA-F]{64}i[0-9]{1,10}$";
 
 /// `ModuleRoutes` and the app's merge panic on a schema name two different
 /// schemas take, so the build itself is the assertion that component names

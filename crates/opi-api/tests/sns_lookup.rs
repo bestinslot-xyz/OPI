@@ -1,4 +1,5 @@
-//! `/v1/sns/by_inscription` and `/v1/sns/search` over HTTP.
+//! `/v1/sns/by_inscription`, `/v1/sns/by_inscriptions` and `/v1/sns/search`
+//! over HTTP.
 //!
 //! The first tests use a database double that answers only the latest block
 //! height: parameters are checked before any query, and a valid request
@@ -11,7 +12,7 @@ mod common;
 
 use {
     axum::Router,
-    common::{INTERNAL_ERROR, JSON, encode, expect, get, height, js_string, with_seeded},
+    common::{INTERNAL_ERROR, JSON, encode, expect, get, height, js_string, post, with_seeded},
     opi_api::config::Module,
     sqlx::PgPool,
 };
@@ -328,6 +329,107 @@ async fn seeded_search_matches_prefixes_and_normalises() {
 #[tokio::test]
 async fn seeded_search_pages_by_key() {
     seeded("sns_paging", None, |app, _| paging_checks(app)).await;
+}
+
+const BY_INSCRIPTIONS: &str = "/v1/sns/by_inscriptions";
+
+/// The batch body of `ids`.
+fn ids_body(ids: &[String]) -> String {
+    serde_json::json!({ "inscription_ids": ids }).to_string()
+}
+
+/// The inscription id whose txid is `byte` 32 times, with index `index`.
+fn inscription(byte: &str, index: u32) -> String {
+    format!("{}i{index}", byte.repeat(32))
+}
+
+#[tokio::test]
+async fn by_inscriptions_refuses_a_bad_body_before_any_query() {
+    let app = height(SNS, 7.into());
+    let shape = "the body must be JSON {\"inscription_ids\":[...]} with 1 to 500 inscription ids";
+    let item = "inscription_ids[1] must be an inscription id <txid>i<index> (64 hex digits, `i` and a 32-bit index)";
+    let one = inscription("ab", 0);
+    for (body, reason) in [
+        (String::new(), shape),
+        ("not json".into(), shape),
+        (r#"{"inscription_ids":"x"}"#.into(), shape),
+        (ids_body(&[]), shape),
+        (ids_body(&vec![one.clone(); 501]), shape),
+        (ids_body(&[one.clone(), "n02".into()]), item),
+    ] {
+        let answer = post(&app, BY_INSCRIPTIONS, &body).await;
+        assert_eq!(answer.status, 400, "{body}");
+        let refusal = serde_json::json!({"error": reason, "result": null}).to_string();
+        assert_eq!(answer.body, refusal, "{body}");
+    }
+    let answer = post(&app, BY_INSCRIPTIONS, &ids_body(&[one])).await;
+    assert_eq!((answer.status, answer.body.as_str()), (500, INTERNAL_ERROR));
+}
+
+/// Names under canonical inscription ids: `aa…i0` registered one, `bb…i3`
+/// two rows (the lowest id answers), `cc…i0` none; and the module's blocks.
+const CANONICAL_NAMES: &str = r#"
+INSERT INTO sns_block_hashes (block_height, block_hash) VALUES (200, 'h200'), (201, 'h201');
+INSERT INTO sns_names (id, inscription_id, inscription_number, "name", domain, block_height)
+VALUES (100, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaai0', 20, 'x.sats', 'sats', 200),
+       (102, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbi3', 22, 'z.btc', 'btc', 201),
+       (101, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbi3', 21, 'y.btc', 'btc', 201);
+"#;
+
+#[tokio::test]
+async fn seeded_by_inscriptions_answer_each_id_as_the_single_route() {
+    seeded("sns_batch", None, |app, pool| async move {
+        sqlx::raw_sql(CANONICAL_NAMES).execute(&pool).await.unwrap();
+        let (a, b, c) = (
+            inscription("aa", 0),
+            inscription("bb", 3),
+            inscription("cc", 0),
+        );
+        let requested = [
+            format!("{}i03", "BB".repeat(32)),
+            c.clone(),
+            a.clone(),
+            b.clone(),
+        ];
+        let answer = post(&app, BY_INSCRIPTIONS, &ids_body(&requested)).await;
+        assert_eq!(answer.status, 200, "{}", answer.body);
+        assert_eq!(answer.content_type.as_deref(), Some(JSON));
+        let name = |id: &str, number: u32, name: &str, namespace: &str, height: u32| {
+            format!(
+                r#"{{"inscription_id":"{id}","inscription_number":{number},"name":"{name}","namespace":"{namespace}","block_height":{height}}}"#
+            )
+        };
+        let (name_a, name_b) = (
+            name(&a, 20, "x.sats", "sats", 200),
+            name(&b, 21, "y.btc", "btc", 201),
+        );
+        assert_eq!(
+            answer.body,
+            ok(&format!(
+                r#"{{"names":[{{"inscription_id":"{b}","name":{name_b}}},{{"inscription_id":"{c}","name":null}},{{"inscription_id":"{a}","name":{name_a}}},{{"inscription_id":"{b}","name":{name_b}}}],"block_height":201}}"#
+            ))
+        );
+        // each name is what by_inscription answers
+        for (id, name) in [(&a, &name_a), (&b, &name_b)] {
+            expect(
+                &app,
+                &format!("/v1/sns/by_inscription?inscription_id={id}"),
+                200,
+                JSON,
+                &ok(name),
+            )
+            .await;
+        }
+        expect(
+            &app,
+            &format!("/v1/sns/by_inscription?inscription_id={c}"),
+            404,
+            JSON,
+            &bad("sns name not found"),
+        )
+        .await;
+    })
+    .await;
 }
 
 /// The order and the cursor are bytewise whatever the database collation.

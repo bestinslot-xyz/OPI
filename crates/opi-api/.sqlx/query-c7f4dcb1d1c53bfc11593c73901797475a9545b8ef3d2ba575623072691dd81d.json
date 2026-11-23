@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select max(block_height) as \"h?\" from sns_block_hashes;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "h?",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c7f4dcb1d1c53bfc11593c73901797475a9545b8ef3d2ba575623072691dd81d"
+}

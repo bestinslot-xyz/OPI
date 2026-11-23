@@ -4,16 +4,26 @@
 //! brc20 routes do. The JS routes have no catch of their own, so any failed
 //! query, the latest-height one included, ends in the app's 500 answer.
 //!
-//! `/v1/sns/by_inscription` and `/v1/sns/search` have no JavaScript
-//! counterpart. They answer `{"error":null,"result":...}`; a missing or
-//! invalid parameter answers `400 {"error":"<reason>","result":null}` and an
-//! unknown inscription `404 {"error":"sns name not found","result":null}`.
+//! `/v1/sns/by_inscription`, `/v1/sns/by_inscriptions` and `/v1/sns/search`
+//! have no JavaScript counterpart. They answer `{"error":null,"result":...}`;
+//! a missing or invalid parameter or body answers
+//! `400 {"error":"<reason>","result":null}` and an unknown inscription
+//! `404 {"error":"sns name not found","result":null}`.
 //!
 //! A name is `{"inscription_id","inscription_number","name","namespace",
 //! "block_height"}`: `namespace` is the stored `domain`, the part of the
 //! name after its dot, and `block_height` is the block that registered it.
 //! An inscription registers one name, so `by_inscription?inscription_id=`
-//! answers that one.
+//! answers that one (the lowest `sns_names` id should two rows name it).
+//!
+//! `POST by_inscriptions` takes `{"inscription_ids":["<txid>i<index>",...]}`
+//! with 1 to 500 ids, lowercased as the indexer stores them, and answers
+//! `{"names":[{"inscription_id","name"}],"block_height"}`: one entry per
+//! requested id, in the request's order (a repeated id answers each time),
+//! whose `name` is what `by_inscription` answers for the id, or null for an
+//! id that registered no name. `block_height` is the highest block of
+//! `sns_block_hashes`, read in the same `REPEATABLE READ READ ONLY` snapshot
+//! as the names.
 //!
 //! `search?prefix=&namespace=` lists the names that start with `prefix`,
 //! bytewise ascending by name (the `C` collation, which a `COLLATE "C"`
@@ -36,6 +46,7 @@
 use {
     super::ModuleRoutes,
     super::{
+        inscriptions::{InscriptionIdsBody, batch_inscription_ids, snapshot},
         no_row,
         paging::{
             BadParam, DEFAULT_LIMIT, MAX_INSCRIPTION_ID_LEN, MAX_LIMIT, MAX_NAME_LEN, integer,
@@ -54,11 +65,15 @@ use {
         pg_json::ToJs,
         reply::{ApiError, Reply},
     },
-    axum::extract::State,
+    axum::{
+        body::Bytes,
+        extract::{State, rejection::BytesRejection},
+    },
     futures::future::BoxFuture,
     opi_sns::unicode::to_lowercase,
     sha2::{Digest, Sha256},
     sqlx::{PgConnection, PgExecutor},
+    std::collections::HashMap,
     utoipa::{IntoParams, ToSchema},
     utoipa_axum::{router::UtoipaMethodRouterExt, routes},
 };
@@ -81,6 +96,7 @@ pub fn routes(db: &Db, _settings: &super::RouteSettings) -> ModuleRoutes {
         .routes(routes!(get_inscriptions_of_domain))
         .routes(routes!(get_registered_namespaces))
         .routes(routes!(by_inscription))
+        .routes(routes!(by_inscriptions))
         .routes(routes!(search))
 }
 
@@ -488,7 +504,8 @@ async fn get_registered_namespaces(State(db): State<Db>) -> Result<Reply, ApiErr
     }))
 }
 
-/// An sns_names row as the new routes answer it.
+/// An sns_names row as the routes without a JavaScript counterpart answer
+/// it.
 pub(super) struct SnsRow {
     pub(super) inscription_id: String,
     pub(super) inscription_number: i32,
@@ -551,6 +568,103 @@ async fn by_inscription(State(db): State<Db>, JsQuery(query): JsQuery) -> Result
             block_height: row.block_height,
         }
         .into_object(),
+    }))
+}
+
+/// The name of one inscription id.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsInscriptionName {
+    /// The requested id, lowercase.
+    inscription_id: String,
+    /// The name the inscription registered; null when it registered none.
+    #[schema(nullable)]
+    name: SnsName,
+}
+
+/// The names of many inscription ids and the height the answer covers.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct SnsNamesByInscriptions {
+    /// One entry per requested id, in the request's order.
+    names: Vec<SnsInscriptionName>,
+    /// The highest block of `sns_block_hashes`, read in one snapshot with
+    /// the names; null before the first block.
+    #[schema(nullable)]
+    block_height: i32,
+}
+
+/// The names up to 500 inscriptions registered.
+///
+/// One entry per requested id, in the request's order; each `name` is what
+/// `/v1/sns/by_inscription` answers for the id, null for an id that
+/// registered no name.
+#[utoipa::path(
+    post,
+    path = "/v1/sns/by_inscriptions",
+    tag = "sns",
+    request_body(content = InscriptionIdsBody, content_type = "application/json", description = "`{\"inscription_ids\":[\"<txid>i<index>\",...]}`, 1 to 500 inscription ids"),
+    responses(
+        (status = 200, description = "Each inscription's name", body = Answer<SnsNamesByInscriptions>),
+        (status = 400, description = "A body that is not `{\"inscription_ids\":[...]}` with 1 to 500 valid inscription ids", body = ErrorBody),
+        (status = 413, description = "A body over 2 MB", body = ErrorBody),
+    ),
+)]
+async fn by_inscriptions(
+    State(db): State<Db>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Reply, ApiError> {
+    let ids = match batch_inscription_ids(body) {
+        Ok(ids) => ids,
+        Err(reply) => return Ok(reply),
+    };
+    let mut tx = snapshot(&db).await?;
+    let height: Option<i32> =
+        sqlx::query_scalar!(r#"select max(block_height) as "h?" from sns_block_hashes;"#)
+            .fetch_one(&mut *tx)
+            .await?;
+    // sns_names_inscription_id_idx; per id, the row by_inscription answers
+    let rows = sqlx::query!(
+        r#"select distinct on (inscription_id) inscription_id, inscription_number, "name", domain,
+                block_height
+            from sns_names
+            where inscription_id = any($1::text[])
+            order by inscription_id, id;"#,
+        &ids,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let by_id: HashMap<String, JsObject> = rows
+        .into_iter()
+        .map(|row| {
+            let name = SnsRow {
+                inscription_id: row.inscription_id,
+                inscription_number: row.inscription_number,
+                name: row.name,
+                namespace: row.domain,
+                block_height: row.block_height,
+            };
+            (name.inscription_id.clone(), name.into_object())
+        })
+        .collect();
+    let names: Vec<JsValue> = ids
+        .into_iter()
+        .map(|id| {
+            let name = by_id.get(&id).cloned().map_or(JsValue::Null, JsValue::from);
+            js_object! {
+                "inscription_id" => id,
+                "name" => name,
+            }
+            .into()
+        })
+        .collect();
+    Ok(Reply::send_json(js_object! {
+        "error" => JsValue::Null,
+        "result" => js_object! {
+            "names" => names,
+            "block_height" => height,
+        },
     }))
 }
 
