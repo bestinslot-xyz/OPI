@@ -171,7 +171,9 @@ impl ModuleConfigs {
             match module {
                 ModuleKind::Brc20 => {
                     require("DB_DATABASE")?;
-                    let brc20 = brc20.take().expect("parse_modules drops repeats")();
+                    let mut brc20 = brc20.take().expect("parse_modules drops repeats")();
+                    brc20.history =
+                        opi_core::History::parse("BRC20_HISTORY", get("BRC20_HISTORY").as_deref())?;
                     if brc20.light_client_mode {
                         bail!("the brc20 module runs in full mode; set OPERATION_MODE=full");
                     }
@@ -852,6 +854,21 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("OPERATION_MODE=full"), "{err}");
+    }
+
+    #[test]
+    fn brc20_history_comes_from_brc20_history() {
+        let database = ("DB_DATABASE", "brc20_db");
+        let history = |env: &[(&'static str, &'static str)]| {
+            load_modules("brc20", env, brc20_signet()).map(|configs| configs.brc20.unwrap().history)
+        };
+        assert_eq!(history(&[database]).unwrap(), opi_core::History::Full);
+        assert_eq!(
+            history(&[database, ("BRC20_HISTORY", "window")]).unwrap(),
+            opi_core::History::Window
+        );
+        let err = history(&[database, ("BRC20_HISTORY", "pruned")]).unwrap_err();
+        assert!(err.to_string().contains("BRC20_HISTORY"), "{err}");
     }
 
     #[test]

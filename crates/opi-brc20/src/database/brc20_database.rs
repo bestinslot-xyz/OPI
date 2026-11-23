@@ -12,6 +12,7 @@ use bitcoin::Network;
 use lazy_static::lazy_static;
 use num_traits::ToPrimitive;
 use once_cell::sync::OnceCell;
+use opi_core::{History, MAX_ROLLBACK_DEPTH};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -22,7 +23,8 @@ use tokio::sync::Mutex;
 
 use super::{
     bitcoin_rpc_cache::{BitcoinRpcBuffer, BitcoinRpcCache, remove_committed, snapshot_buffer},
-    block_time, event_feed_indexes, evm_addresses, prog_balances, snapshot_indexes, ticker_holders,
+    block_time, event_feed_indexes, evm_addresses, history_window, prog_balances, snapshot_indexes,
+    ticker_holders,
 };
 use crate::{
     config::{
@@ -165,6 +167,8 @@ pub struct Brc20Database {
     pub light_client_mode: bool,
     pub save_logs: bool,
     pub events_table: String,
+    /// The history the database keeps (see [`history_window`]).
+    pub history: History,
 }
 
 /// A lazily connecting Postgres pool with brc20's database settings. A pool's
@@ -441,6 +445,7 @@ impl Brc20Database {
             } else {
                 "brc20_events".to_string()
             },
+            history: config.history,
         }
     }
 
@@ -504,6 +509,13 @@ impl Brc20Database {
             .await
             .map_err(|error| format!("event feed indexes: {error}"))?;
 
+        // The switch to a window truncates brc20_historic_balances, so it
+        // runs before the snapshot index build starts beside the indexer.
+        if self.light_client_mode && self.history == History::Window {
+            return Err("BRC20_HISTORY=window needs full mode".into());
+        }
+        history_window::ensure(&self.client, self.history).await?;
+
         // A build reads a whole history table, which on an existing database
         // takes long, so it runs beside the indexer.
         let pool = self.client.clone();
@@ -558,12 +570,15 @@ impl Brc20Database {
                 "SELECT id, event_type, event->>'tick' AS tick FROM brc20_events WHERE block_height = $1 AND inscription_id LIKE '%00000000i0' ORDER BY id ASC LIMIT 1",
                 refund_height
             ).fetch_one(&self.client).await;
-            if let Ok(row) = row {
-                if row.tick.as_deref() == Some(".com") {
+            match row {
+                Ok(row) if row.tick.as_deref() == Some(".com") => return Ok(false),
+                Ok(_) => {}
+                // A window keeps no events of the refund block once it is
+                // deeper than a rollback reaches.
+                Err(sqlx::Error::RowNotFound) if self.history == History::Window => {
                     return Ok(false);
                 }
-            } else {
-                return Err("BRC20 Swap Refund events not found".into());
+                Err(_) => return Err("BRC20 Swap Refund events not found".into()),
             }
         }
 
@@ -838,6 +853,12 @@ impl Brc20Database {
         )
         .execute(&mut *tx)
         .await?;
+
+        if self.history == History::Window
+            && let Some(deep) = block_height.checked_sub(MAX_ROLLBACK_DEPTH as i32)
+        {
+            history_window::prune(&mut tx, deep).await?;
+        }
 
         tx.commit().await?;
         Ok(())
